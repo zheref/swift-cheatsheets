@@ -1,8 +1,9 @@
 # Swift Interview Cheat Sheets
 
-A single, self-contained HTML page holding 21 dense cheat sheets on SwiftUI, TCA, Swift
-concurrency, Combine, SOLID, functional Swift, Clean Code, iOS architecture,
-modularization, testing and Core Bluetooth — including eight hand-laid-out SVG
+A single, self-contained HTML page holding 25 dense cheat sheets — SwiftUI, TCA, Swift
+concurrency, Combine, SOLID, functional Swift, Clean Code, engineering practices, iOS
+architecture, modularization, testing, algorithms and complexity, streaming/time-series
+patterns, AI-assisted workflows, and Core Bluetooth — including twelve hand-laid-out SVG
 infographics.
 
 Designed to be opened on a second screen (iPad, phone, laptop) and skimmed while you code:
@@ -115,15 +116,15 @@ make           # both
 
 ```
 swift-cheatsheets/
-├── index.html              generated — the whole deliverable, ~255 KB, no dependencies
+├── index.html              generated — the whole deliverable, ~373 KB, no dependencies
 ├── serve.command           HTTP server for LAN access
 ├── serve-https.command     HTTPS server (self-signed) for TLS-forcing browsers
 ├── Makefile                build / verify / serve / clean
 └── src/
     ├── build.py            assembles every sheet into index.html  (sheet ORDER lives here)
     ├── render.py           HTML shell, CSS, client-side JS, card renderers
-    ├── svgkit.py           tiny SVG layout helpers (boxes, arrows, chips, bands)
-    ├── diagrams.py         the eight infographics
+    ├── svgkit.py           tiny SVG layout helpers (boxes, arrows, chips, curves, slabs)
+    ├── diagrams.py         the twelve infographics
     ├── verify.py           post-build sanity checks
     ├── data_swiftui.py     SwiftUI: state & data flow, views/layout, vs UIKit
     ├── data_tca.py         TCA: core loop, composition/dependencies/testing, navigation
@@ -131,8 +132,15 @@ swift-cheatsheets/
     ├── data_combine.py     Combine core, and the timers/async pattern cookbook
     ├── data_extra.py       SwiftUI + Combine wiring, Clean Code
     ├── data_principles.py  SOLID, functional Swift, language essentials
+    ├── data_practice.py    Swift engineering best practices
+    ├── data_algos.py       algorithmic patterns + complexity, streaming/time-series patterns
+    ├── data_ai.py          AI workflows for Swift (Cursor + Claude)
     └── data_ios.py         architecture, modularization, testing, Core Bluetooth
 ```
+
+`make verify` checks that the output is well formed, that every sidebar link resolves, that
+no raw markup leaked into a code block, and that sheets sharing a `group` are adjacent (a
+split group would print its sidebar heading twice).
 
 ### Adding a card
 

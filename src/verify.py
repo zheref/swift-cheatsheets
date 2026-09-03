@@ -73,6 +73,15 @@ def main():
     if missing:
         failures.append("nav links with no matching section: %s" % missing)
 
+    # Sheets sharing a group must be adjacent, or the sidebar repeats a heading.
+    groups = re.findall(r'<section class="sheet" id="[^"]+" data-group="([^"]+)"', src)
+    seen, previous = set(), None
+    for g in groups:
+        if g != previous and g in seen:
+            failures.append("group %r is split across non-adjacent sheets" % g)
+        seen.add(g)
+        previous = g
+
     blocks = re.findall(r"<pre[^>]*><code>(.*?)</code></pre>", src, re.S)
     if not blocks:
         failures.append("no code blocks found")

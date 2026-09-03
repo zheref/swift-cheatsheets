@@ -141,3 +141,35 @@ def row(n, width=CANVAS, gap=26, margin=3):
     """Evenly split `width` into n columns. Returns (x_positions, column_width)."""
     w = (width - 2 * margin - gap * (n - 1)) / float(n)
     return [margin + i * (w + gap) for i in range(n)], w
+
+
+def polyline(points, tone="neutral", width=2.0, dash=False, opacity="1"):
+    """An open path through `points` with no arrow head."""
+    d = ' stroke-dasharray="5 4"' if dash else ""
+    path = " ".join(("M%.1f,%.1f" if i == 0 else "L%.1f,%.1f") % p
+                    for i, p in enumerate(points))
+    return ('<path d="%s" fill="none" stroke="%s" stroke-width="%s" opacity="%s"%s '
+            'stroke-linecap="round" stroke-linejoin="round"/>'
+            % (path, color(tone), width, opacity, d))
+
+
+def axis(x0, y0, x1, y1, tone="neutral"):
+    """A plain rule, used for chart axes and time lines."""
+    return ('<line x1="%s" y1="%s" x2="%s" y2="%s" stroke="%s" stroke-width="1.2" '
+            'opacity=".6"/>' % (x0, y0, x1, y1, color(tone)))
+
+
+def dot(x, y, tone="neutral", r=3.5, opacity="1"):
+    return '<circle cx="%s" cy="%s" r="%s" fill="%s" opacity="%s"/>' % (
+        x, y, r, color(tone), opacity)
+
+
+def slab(x, y, w, h, label, tone="neutral", radius=5, opacity=".22", size=9.5):
+    """A filled block with a centred label - windows on a timeline, chart bars."""
+    out = ['<rect x="%.1f" y="%s" width="%.1f" height="%s" rx="%s" fill="%s" '
+           'opacity="%s" stroke="%s" stroke-width="1.2"/>'
+           % (x, y, w, h, radius, color(tone), opacity, color(tone))]
+    if label:
+        out.append(text(x + w / 2.0, y + h / 2.0 + 3.5, label, size, tone,
+                        anchor="middle", weight="700"))
+    return "".join(out)

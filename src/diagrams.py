@@ -1,7 +1,10 @@
-"""The eight infographics: Core Bluetooth, Testing, Architecture, Modularization."""
+"""The infographics: Core Bluetooth, Testing, Architecture, Modularization,
+algorithm selection, Big-O growth, stream windowing and the AI-assisted loop."""
+
+import math
 
 from svgkit import (CANVAS, canvas, box, band, chips, arrow, elbow, text, title,
-                    row, bracket, color)
+                    row, bracket, color, polyline, axis, dot, slab)
 
 
 # ==========================================================================
@@ -313,3 +316,207 @@ def mod_interface():
         out.append(box(xs[i], 296, w, 82, name, lines, tone, title_size=11.5, line_size=9.6))
     out.append(text(4, 290, "PICKING A STRATEGY", 11, "accent", weight="800"))
     return canvas(390, "".join(out))
+
+
+# ==========================================================================
+# Algorithms
+# ==========================================================================
+
+def algo_picker():
+    """Trigger -> pattern -> complexity, in a scannable grid."""
+    out = [title(4, 16, "PATTERN PICKER - READ THE TRIGGER, REACH FOR THE PATTERN", "accent", 11.5)]
+    items = [
+        ("Two pointers", "sorted array, pair/triplet, in-place", "O(n) / O(1)", "good"),
+        ("Sliding window", "contiguous subarray/substring, 'longest'", "O(n) / O(k)", "good"),
+        ("Binary search", "sorted, or 'minimise the maximum'", "O(log n)", "good"),
+        ("Hash map counting", "frequency, anagram, 'seen before'", "O(n) / O(n)", "modern"),
+        ("Prefix sum", "range sums, 'subarray equals k'", "O(n) / O(n)", "modern"),
+        ("Sort then sweep", "intervals, overlaps, scheduling", "O(n log n)", "modern"),
+        ("Monotonic stack", "'next greater', spans, histograms", "O(n) / O(n)", "type"),
+        ("Heap / top-K", "'k largest', streaming median, merge k", "O(n log k)", "type"),
+        ("Fast & slow pointers", "linked list cycle, middle, palindrome", "O(n) / O(1)", "type"),
+        ("BFS", "shortest path on unweighted graph, levels", "O(V+E)", "attr"),
+        ("DFS / backtracking", "all combinations, permutations, paths", "O(2^n) / O(n!)", "attr"),
+        ("Topological sort", "dependencies, 'can you finish', ordering", "O(V+E)", "attr"),
+        ("Union-Find", "connected components, cycle in undirected", "~O(1) amortised", "legacy"),
+        ("Dynamic programming", "'ways to', 'min cost', overlapping subproblems", "O(n*m)", "legacy"),
+        ("Greedy", "local choice provably optimal, intervals", "O(n log n)", "legacy"),
+        ("Trie", "prefix search, autocomplete, word dictionary", "O(len)", "bad"),
+        ("Bit manipulation", "subsets, 'appears once', flags", "O(n) / O(1)", "bad"),
+        ("Cyclic sort", "values are 1...n, 'find the missing'", "O(n) / O(1)", "bad"),
+    ]
+    xs, w = row(3, gap=18)
+    for i, (name, trigger, cost, tone) in enumerate(items):
+        r, c = divmod(i, 3)
+        y = 30 + r * 64
+        out.append(box(xs[c], y, w, 56, name, [trigger, cost], tone,
+                       title_size=11.5, line_size=9.4))
+    out.append(text(4, 434, "Say the pattern name out loud before you write code - "
+                            "it tells the interviewer you recognised the shape of the problem.",
+                    11, "accent", weight="700"))
+    return canvas(444, "".join(out))
+
+
+def bigo_curves():
+    """Growth curves plus a 'what it costs at n = 1,000,000' panel."""
+    x0, x1, ytop, ybot = 62.0, 540.0, 40.0, 292.0
+    nmax, cap = 20.0, 110.0
+
+    out = [title(4, 18, "HOW FAST IT BLOWS UP", "accent", 11.5)]
+    out.append(axis(x0, ybot, x1 + 8, ybot))
+    out.append(axis(x0, ybot, x0, ytop - 6))
+    out.append(text(x1 + 8, ybot + 16, "input size n", 9.5, "neutral", anchor="end"))
+    out.append(text(x0 - 6, ytop - 10, "work", 9.5, "neutral", anchor="start"))
+
+    # `place` keeps the flat curves' labels from colliding at the right edge.
+    curves = [
+        ("O(1)", lambda n: 1.0, "good", "left"),
+        ("O(log n)", lambda n: math.log2(n) if n > 1 else 0.0, "good", "end"),
+        ("O(n)", lambda n: n, "modern", "end"),
+        ("O(n log n)", lambda n: n * math.log2(n) if n > 1 else 0.0, "legacy", "end"),
+        ("O(n^2)", lambda n: n * n, "bad", "end"),
+        ("O(2^n)", lambda n: 2.0 ** n, "bad", "end"),
+    ]
+    for label, fn, tone, place in curves:
+        pts, steps = [], 160
+        for i in range(steps + 1):
+            t = i / float(steps)
+            n = 1.0 + t * (nmax - 1.0)
+            v = fn(n)
+            if v > cap:
+                break
+            pts.append((x0 + t * (x1 - x0), ybot - (v / cap) * (ybot - ytop)))
+        if len(pts) < 2:
+            continue
+        out.append(polyline(pts, tone, width=2.2))
+        lx, ly = pts[-1]
+        if place == "left":
+            out.append(text(x0 + 10, ly - 7, label, 10, tone, weight="800"))
+        else:
+            out.append(text(lx + 7, max(ly - 5, ytop + 4), label, 10, tone, weight="800"))
+
+    rows = [
+        ("O(1)", "constant", "dictionary lookup, array index", "1 step", "good"),
+        ("O(log n)", "logarithmic", "binary search, balanced tree", "~20 steps", "good"),
+        ("O(n)", "linear", "one pass, map / filter / reduce", "1 million", "modern"),
+        ("O(n log n)", "linearithmic", "sort(), heap build + drain", "~20 million", "legacy"),
+        ("O(n^2)", "quadratic", "nested loop, naive dedupe", "10^12 - too slow", "bad"),
+        ("O(2^n), O(n!)", "exponential", "all subsets, all permutations", "not happening", "bad"),
+    ]
+    out.append(text(600, 34, "AT n = 1,000,000", 11, "accent", weight="800"))
+    for i, (o, name, example, cost, tone) in enumerate(rows):
+        y = 56 + i * 40
+        out.append(dot(606, y + 6, tone, 4)),
+        out.append(text(618, y + 10, o, 11.5, tone, weight="800"))
+        out.append(text(722, y + 10, name, 10, "neutral"))
+        out.append(text(618, y + 24, example, 9.6, cls="mono"))
+        out.append(text(936, y + 10, cost, 10, tone, anchor="end", weight="700"))
+
+    out.append(text(4, 320, "Space matters too: recursion depth is O(n) stack. "
+                            "An interviewer asking \"can you do better?\" usually means "
+                            "drop one factor of n with a hash map, a sort, or two pointers.",
+                    10.5, "neutral"))
+    return canvas(334, "".join(out))
+
+
+# ==========================================================================
+# Streams
+# ==========================================================================
+
+def stream_windows():
+    """Tumbling / sliding / session windows, plus watermarks and late events."""
+    x0, x1 = 96.0, 924.0
+    span = x1 - x0
+    out = [title(4, 16, "WINDOWING A STREAM OVER TIME", "accent", 11.5)]
+
+    def tx(t):                       # t in 0...100 -> x
+        return x0 + (t / 100.0) * span
+
+    events = [3, 9, 14, 21, 24, 33, 38, 41, 52, 57, 61, 63, 74, 78, 86, 92, 96]
+
+    # ---- raw event line ----
+    out.append(text(6, 48, "events", 10.5, "neutral", weight="700"))
+    out.append(axis(x0, 44, x1, 44))
+    for t in events:
+        out.append(dot(tx(t), 44, "accent", 4))
+
+    # ---- tumbling ----
+    out.append(text(6, 84, "tumbling", 10.5, "good", weight="700"))
+    out.append(text(6, 97, "fixed, disjoint", 8.8, "neutral"))
+    for i in range(4):
+        out.append(slab(tx(i * 25) + 2, 68, span * 0.25 - 4, 30, "W%d" % (i + 1), "good"))
+
+    # ---- sliding ----
+    out.append(text(6, 132, "sliding", 10.5, "modern", weight="700"))
+    out.append(text(6, 145, "size 40, step 20", 8.8, "neutral"))
+    for i in range(4):
+        out.append(slab(tx(i * 20) + 2, 112 + (i % 2) * 14, span * 0.40 - 4, 12, "", "modern"))
+    out.append(text(x1, 152, "overlapping - every event lands in 2 windows", 9,
+                    "modern", anchor="end"))
+
+    # ---- session ----
+    out.append(text(6, 186, "session", 10.5, "legacy", weight="700"))
+    out.append(text(6, 199, "gap > 6 closes it", 8.8, "neutral"))
+    sessions = [(1, 26), (31, 43), (50, 65), (72, 98)]
+    for i, (a, b) in enumerate(sessions):
+        out.append(slab(tx(a), 172, tx(b) - tx(a), 30, "session %d" % (i + 1), "legacy"))
+
+    # ---- watermark / lateness ----
+    out.append(text(6, 240, "watermark", 10.5, "bad", weight="700"))
+    out.append(axis(x0, 236, x1, 236))
+    wm = tx(70)
+    out.append(polyline([(wm, 216), (wm, 256)], "bad", width=2))
+    out.append(text(wm + 8, 224, "watermark: \"no more events older than this\"", 9.5, "bad", weight="700"))
+    out.append(dot(tx(46), 236, "bad", 4.5))
+    out.append(text(tx(46), 252, "late event", 9, "bad", anchor="middle", weight="700"))
+    out.append(text(tx(46), 264, "drop it, or re-open the window", 8.6, "neutral", anchor="middle"))
+
+    c, _ = chips(4, 284, [("tumbling = counters & billing", "good"),
+                          ("sliding = rolling averages & alerts", "modern"),
+                          ("session = user activity bursts", "legacy"),
+                          ("always decide what happens to late data", "bad")])
+    out.append(c)
+    return canvas(312, "".join(out))
+
+
+# ==========================================================================
+# AI-assisted development
+# ==========================================================================
+
+def ai_loop():
+    """The agentic loop for Swift work, plus where each kind of context belongs."""
+    out = [title(4, 16, "THE LOOP THAT ACTUALLY SHIPS SWIFT CODE", "accent", 11.5)]
+    stages = [
+        ("1. Ground", ["point at the real files", "paste the real error", "@file, not \"my app\""], "accent"),
+        ("2. Plan", ["plan mode / ask for a plan", "approve or correct it", "before any edit"], "modern"),
+        ("3. Implement", ["small, reviewable diffs", "one concern per turn", "tests first when you can"], "type"),
+        ("4. Verify", ["xcodebuild test via MCP", "agent reads the failure", "loop until green"], "good"),
+        ("5. Review", ["you read every diff", "check API + concurrency", "then commit"], "legacy"),
+    ]
+    xs, w = row(5, gap=18)
+    for i, (name, lines, tone) in enumerate(stages):
+        out.append(box(xs[i], 34, w, 78, name, lines, tone, title_size=11.5, line_size=9.4))
+        if i < 4:
+            out.append(arrow(xs[i] + w + 2, 73, xs[i + 1] - 4, 73, "neutral"))
+    out.append(elbow([(xs[4] + w / 2, 112), (xs[4] + w / 2, 132), (xs[0] + w / 2, 132),
+                      (xs[0] + w / 2, 116)], "neutral", dash=True))
+    out.append(text(470, 145, "failing test / wrong approach -> back to grounding, not to nagging",
+                   9.5, "neutral", anchor="middle", weight="700"))
+
+    out.append(text(4, 176, "WHERE EACH KIND OF CONTEXT BELONGS", 11, "accent", weight="800"))
+    homes = [
+        ("Always-on rules", ["CLAUDE.md / AGENTS.md", ".cursor/rules/*.mdc", "keep it SHORT"], "modern"),
+        ("Reusable know-how", ["Claude Code skills", "(SKILL.md + scripts)", "loaded on demand"], "type"),
+        ("Isolated work", ["subagents / parallel agents", "own context window", "search, review, migrate"], "good"),
+        ("Hard guarantees", ["hooks + permissions", "format on write,", "tests before commit"], "legacy"),
+        ("External systems", ["MCP servers", "XcodeBuildMCP, Xcode MCP,", "Figma, Sentry, docs"], "attr"),
+    ]
+    hxs, hw = row(5, gap=18)
+    for i, (name, lines, tone) in enumerate(homes):
+        out.append(box(hxs[i], 190, hw, 76, name, lines, tone, title_size=11, line_size=9.2))
+
+    out.append(text(4, 288, "If it must be enforced -> a hook. If it is knowledge -> a skill. "
+                            "If it is a delegation boundary -> a subagent. "
+                            "If it is always true -> one short line in CLAUDE.md.",
+                    10.5, "neutral"))
+    return canvas(302, "".join(out))

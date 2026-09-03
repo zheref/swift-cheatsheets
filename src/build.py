@@ -18,6 +18,9 @@ import data_combine                # noqa: E402
 import data_extra                  # noqa: E402
 import data_principles             # noqa: E402
 import data_ios                    # noqa: E402
+import data_practice               # noqa: E402
+import data_ai                     # noqa: E402
+import data_algos                  # noqa: E402
 
 OUTPUT = os.path.join(ROOT, "index.html")
 
@@ -40,9 +43,13 @@ SHEETS = [
     data_principles.SOLID,
     data_principles.FP,
     data_principles.LANG,
+    data_practice.PRACTICES,
     data_ios.ARCH,
     data_ios.MODULES,
     data_ios.TESTING,
+    data_ai.AI,
+    data_algos.ALGOS,
+    data_algos.STREAMS,
     data_ios.BLE,
 ]
 
