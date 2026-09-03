@@ -1,10 +1,10 @@
 # Swift Interview Cheat Sheets
 
-A single, self-contained HTML page holding 25 dense cheat sheets — SwiftUI, TCA, Swift
+A single, self-contained HTML page holding 26 dense cheat sheets — SwiftUI, TCA, Swift
 concurrency, Combine, SOLID, functional Swift, Clean Code, engineering practices, iOS
 architecture, modularization, testing, algorithms and complexity, streaming/time-series
-patterns, AI-assisted workflows, and Core Bluetooth — including twelve hand-laid-out SVG
-infographics.
+patterns, AI-assisted workflows, atomic file I/O, and Core Bluetooth — including fourteen
+hand-laid-out SVG infographics.
 
 Designed to be opened on a second screen (iPad, phone, laptop) and skimmed while you code:
 sidebar navigation, instant full-text search, syntax-highlighted snippets, dark/light
@@ -116,7 +116,7 @@ make           # both
 
 ```
 swift-cheatsheets/
-├── index.html              generated — the whole deliverable, ~373 KB, no dependencies
+├── index.html              generated — the whole deliverable, ~413 KB, no dependencies
 ├── serve.command           HTTP server for LAN access
 ├── serve-https.command     HTTPS server (self-signed) for TLS-forcing browsers
 ├── Makefile                build / verify / serve / clean
@@ -124,7 +124,7 @@ swift-cheatsheets/
     ├── build.py            assembles every sheet into index.html  (sheet ORDER lives here)
     ├── render.py           HTML shell, CSS, client-side JS, card renderers
     ├── svgkit.py           tiny SVG layout helpers (boxes, arrows, chips, curves, slabs)
-    ├── diagrams.py         the twelve infographics
+    ├── diagrams.py         the fourteen infographics
     ├── verify.py           post-build sanity checks
     ├── data_swiftui.py     SwiftUI: state & data flow, views/layout, vs UIKit
     ├── data_tca.py         TCA: core loop, composition/dependencies/testing, navigation
@@ -135,6 +135,7 @@ swift-cheatsheets/
     ├── data_practice.py    Swift engineering best practices
     ├── data_algos.py       algorithmic patterns + complexity, streaming/time-series patterns
     ├── data_ai.py          AI workflows for Swift (Cursor + Claude)
+    ├── data_files.py       files, text and atomic I/O
     └── data_ios.py         architecture, modularization, testing, Core Bluetooth
 ```
 

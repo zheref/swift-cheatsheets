@@ -520,3 +520,84 @@ def ai_loop():
                             "If it is always true -> one short line in CLAUDE.md.",
                     10.5, "neutral"))
     return canvas(302, "".join(out))
+
+
+# ==========================================================================
+# Files
+# ==========================================================================
+
+def file_atomic_write():
+    """The five steps of a crash-safe write, and what a crash at each point leaves."""
+    xs, w = row(5, gap=18)
+    out = [title(4, 16, "THE ATOMIC WRITE, STEP BY STEP", "accent", 11.5)]
+    steps = [
+        ("1. Write to temp", ["a NEW file, in the SAME", "directory as the target", "(rename needs one volume)"], "modern"),
+        ("2. Flush", ["fsync, or F_FULLFSYNC", "for real durability", "bytes leave the page cache"], "type"),
+        ("3. Rename over", ["rename(2) / replaceItemAt", "ATOMIC on one volume:", "the swap has no midpoint"], "good"),
+        ("4. fsync the dir", ["makes the rename itself", "survive power loss", "usually skipped - know that"], "legacy"),
+        ("5. Done", ["every reader saw either", "the whole old file or", "the whole new one"], "accent"),
+    ]
+    for i, (name, lines, tone) in enumerate(steps):
+        out.append(box(xs[i], 42, w, 80, name, lines, tone, title_size=11.5, line_size=9.4))
+        if i < 4:
+            out.append(arrow(xs[i] + w + 2, 82, xs[i + 1] - 4, 82, "neutral"))
+
+    out.append(text(4, 142, "IF THE PROCESS DIES HERE...", 10.5, "neutral", weight="800"))
+    out.append(axis(3, 150, 934, 150))
+    out.append(slab(3, 156, xs[1] + w - 3, 32,
+                    "old file untouched - a stray temp file is the only damage", "good"))
+    out.append(slab(xs[2], 156, w, 32, "old OR new, never a mix", "good"))
+    out.append(slab(xs[3], 156, 934 - xs[3], 32,
+                    "content is correct; on power loss the rename itself may be lost", "legacy"))
+
+    out.append(box(3, 202, 460, 72, "What Foundation already does for you",
+                   ["try data.write(to: url, options: .atomic)",
+                    "-> temp file + rename. It does NOT fsync,",
+                    "so it is crash-safe, not power-loss-safe."], "good"))
+    out.append(box(477, 202, 457, 72, "The classic mistake",
+                   ["let h = FileHandle(forWritingTo: url)",
+                    "h.truncateFile(atOffset: 0)   // <- destroys the",
+                    "h.write(newData)              //    only good copy"], "bad"))
+    return canvas(286, "".join(out))
+
+
+def file_size_strategy():
+    """Pick the read strategy from the file size, not from habit."""
+    xs, w = row(4, gap=20)
+    out = [title(4, 16, "PICK THE STRATEGY FROM THE SIZE", "accent", 11.5)]
+
+    tiers = [
+        ("up to ~1 MB", "Load it whole", [
+            "String(contentsOf: url,", "          encoding: .utf8)",
+            "Data(contentsOf: url)", "", "simplest, one syscall,",
+            "peak memory = file size"], "good", 1.00),
+        ("~1 - 100 MB", "Memory-map it", [
+            "Data(contentsOf: url,", "     options: .mappedIfSafe)",
+            "", "the kernel pages it in on", "demand; random access is",
+            "free, no copy"], "modern", 0.30),
+        ("100 MB - GBs", "Stream it", [
+            "for try await line in url.lines",
+            "handle.read(upToCount: 1 << 16)",
+            "", "one pass, constant memory,", "cannot random-access"], "legacy", 0.10),
+        ("bigger than RAM", "Chunk, sort, merge", [
+            "split into sorted runs ->", "k-way merge with a heap",
+            "", "external sort: O(n log n) time,", "O(k * chunk) memory"], "bad", 0.20),
+    ]
+
+    for i, (size, name, lines, tone, _) in enumerate(tiers):
+        out.append(text(xs[i] + w / 2, 36, size, 10.5, tone, anchor="middle", weight="800"))
+        out.append(box(xs[i], 44, w, 124, name, lines, tone, title_size=12, line_size=9.4))
+
+    out.append(text(4, 190, "PEAK MEMORY, RELATIVE", 10.5, "neutral", weight="800"))
+    captions = ["= the whole file", "= pages touched", "= one chunk", "= k chunks"]
+    for i, (_, _, _, tone, ratio) in enumerate(tiers):
+        out.append(slab(xs[i], 198, max(w * ratio, 26), 20, "", tone, opacity=".35"))
+        # Caption goes BELOW the bar - to the right it would collide with the next column.
+        out.append(text(xs[i], 234, captions[i], 9.6, tone, weight="700"))
+
+    c, _ = chips(4, 250, [("file I/O blocks - never on the main actor", "bad"),
+                          ("mmap is not free on a slow disk: page faults still cost", "legacy"),
+                          ("streaming beats mapping when you only need one pass", "good"),
+                          ("measure with a real file, not a 4 KB fixture", "modern")])
+    out.append(c)
+    return canvas(280, "".join(out))

@@ -21,6 +21,7 @@ import data_ios                    # noqa: E402
 import data_practice               # noqa: E402
 import data_ai                     # noqa: E402
 import data_algos                  # noqa: E402
+import data_files                  # noqa: E402
 
 OUTPUT = os.path.join(ROOT, "index.html")
 
@@ -50,6 +51,7 @@ SHEETS = [
     data_ai.AI,
     data_algos.ALGOS,
     data_algos.STREAMS,
+    data_files.FILES,
     data_ios.BLE,
 ]
 
