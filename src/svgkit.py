@@ -83,14 +83,24 @@ def chip(x, y, label, tone="neutral", pad=8, h=18, char=6.1):
     return s, w
 
 
-def chips(x, y, items, gap=6):
-    """Row of chips: items is a list of (label, tone)."""
+def chips(x, y, items, gap=6, width=CANVAS):
+    """Row of chips: items is a list of (label, tone).
+
+    Raises if the row would run past the canvas edge — an overflowing chip row
+    is invisible in the browser, so it should break the build instead.
+    """
     out, cx = [], x
     for label, tone in items:
         s, w = chip(cx, y, label, tone)
         out.append(s)
         cx += w + gap
-    return "".join(out), cx - x - gap
+    total = cx - x - gap
+    if x + total > width:
+        raise ValueError(
+            "chip row overflows the canvas by %.0f units (%.0f > %d). Shorten or drop a chip: %r"
+            % (x + total - width, x + total, width, [label for label, _ in items])
+        )
+    return "".join(out), total
 
 
 def arrow(x1, y1, x2, y2, tone="neutral", dash=False, label=None,

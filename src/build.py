@@ -22,6 +22,8 @@ import data_practice               # noqa: E402
 import data_ai                     # noqa: E402
 import data_algos                  # noqa: E402
 import data_files                  # noqa: E402
+import data_collections            # noqa: E402
+import data_timing                 # noqa: E402
 
 OUTPUT = os.path.join(ROOT, "index.html")
 
@@ -40,10 +42,13 @@ SHEETS = [
     data_combine.COMBINE_CORE,
     data_combine.PATTERNS,
     data_extra.SWIFTUI_COMBINE,
+    data_timing.TIMING,
     data_extra.CLEAN,
     data_principles.SOLID,
     data_principles.FP,
     data_principles.LANG,
+    data_collections.TYPES,
+    data_collections.OPS,
     data_practice.PRACTICES,
     data_ios.ARCH,
     data_ios.MODULES,

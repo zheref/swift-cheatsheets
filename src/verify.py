@@ -97,6 +97,11 @@ def main():
         if artefact in src:
             failures.append("suspicious artefact in output: %s" % artefact)
 
+    # A tone name landing in the `size` slot of svgkit.text() renders invisibly.
+    bogus = re.findall(r'font-size="([A-Za-z][^"]*)"', src)
+    if bogus:
+        failures.append("non-numeric font-size in a diagram: %s" % sorted(set(bogus)))
+
     svgs = re.findall(r'<svg class="dg"', src)
     print("sections: %d   nav links: %d   code blocks: %d   diagrams: %d"
           % (len(checker.ids), len(checker.hrefs), len(blocks), len(svgs)))

@@ -1,10 +1,10 @@
 # Swift Interview Cheat Sheets
 
-A single, self-contained HTML page holding 26 dense cheat sheets — SwiftUI, TCA, Swift
-concurrency, Combine, SOLID, functional Swift, Clean Code, engineering practices, iOS
-architecture, modularization, testing, algorithms and complexity, streaming/time-series
-patterns, AI-assisted workflows, atomic file I/O, and Core Bluetooth — including fourteen
-hand-laid-out SVG infographics.
+A single, self-contained HTML page holding 29 dense cheat sheets — SwiftUI, TCA, Swift
+concurrency, Combine, timing operators, collections, SOLID, functional Swift, Clean Code,
+engineering practices, iOS architecture, modularization, testing, algorithms and
+complexity, streaming/time-series patterns, AI-assisted workflows, atomic file I/O, and
+Core Bluetooth — including seventeen hand-laid-out SVG infographics.
 
 Designed to be opened on a second screen (iPad, phone, laptop) and skimmed while you code:
 sidebar navigation, instant full-text search, syntax-highlighted snippets, dark/light
@@ -116,7 +116,7 @@ make           # both
 
 ```
 swift-cheatsheets/
-├── index.html              generated — the whole deliverable, ~413 KB, no dependencies
+├── index.html              generated — the whole deliverable, ~497 KB, no dependencies
 ├── serve.command           HTTP server for LAN access
 ├── serve-https.command     HTTPS server (self-signed) for TLS-forcing browsers
 ├── Makefile                build / verify / serve / clean
@@ -124,14 +124,16 @@ swift-cheatsheets/
     ├── build.py            assembles every sheet into index.html  (sheet ORDER lives here)
     ├── render.py           HTML shell, CSS, client-side JS, card renderers
     ├── svgkit.py           tiny SVG layout helpers (boxes, arrows, chips, curves, slabs)
-    ├── diagrams.py         the fourteen infographics
+    ├── diagrams.py         the seventeen infographics
     ├── verify.py           post-build sanity checks
     ├── data_swiftui.py     SwiftUI: state & data flow, views/layout, vs UIKit
     ├── data_tca.py         TCA: core loop, composition/dependencies/testing, navigation
     ├── data_conc.py        concurrency: core, actors/Sendable, Swift 6 do's & don'ts, GCD vs Combine vs async
     ├── data_combine.py     Combine core, and the timers/async pattern cookbook
+    ├── data_timing.py      timing operators: Combine vs Swift Concurrency
     ├── data_extra.py       SwiftUI + Combine wiring, Clean Code
     ├── data_principles.py  SOLID, functional Swift, language essentials
+    ├── data_collections.py collection types & protocols, operation cookbook
     ├── data_practice.py    Swift engineering best practices
     ├── data_algos.py       algorithmic patterns + complexity, streaming/time-series patterns
     ├── data_ai.py          AI workflows for Swift (Cursor + Claude)
@@ -140,8 +142,12 @@ swift-cheatsheets/
 ```
 
 `make verify` checks that the output is well formed, that every sidebar link resolves, that
-no raw markup leaked into a code block, and that sheets sharing a `group` are adjacent (a
-split group would print its sidebar heading twice).
+no raw markup leaked into a code block, that sheets sharing a `group` are adjacent (a split
+group would print its sidebar heading twice), and that no diagram carries a non-numeric
+`font-size` (the symptom of passing a tone name into `svgkit.text()`'s `size` slot).
+
+`svgkit.chips()` refuses to build a chip row wider than the 940-unit canvas, so an
+overflowing row fails the build instead of silently rendering off-screen.
 
 ### Adding a card
 

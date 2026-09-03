@@ -45,7 +45,7 @@ def ble_lifecycle():
     c1, _ = chips(4, 306, [("every step is async + delegate based", "neutral"),
                            ("errors arrive in the SAME callback", "bad"),
                            ("iOS caches the GATT table per device", "legacy"),
-                           ("one CBCentralManager per app is enough", "good")])
+                           ("one CBCentralManager is enough", "good")])
     out.append(c1)
     return canvas(334, "".join(out))
 
@@ -277,10 +277,10 @@ def mod_layers():
     out.append(bracket(34, 208, 262, "good", "domain"))
     out.append(bracket(34, 292, 346, "type", "core"))
 
-    c, _ = chips(4, 358, [("no cycles - SPM will refuse to build them", "bad"),
-                          ("a 'Common' dumping-ground module is an anti-pattern", "bad"),
-                          ("every module gets its own test target", "good"),
-                          ("each feature can run in a preview app", "good")])
+    c, _ = chips(4, 358, [("no cycles - SPM refuses to build them", "bad"),
+                          ("a 'Common' module is an anti-pattern", "bad"),
+                          ("one test target per module", "good"),
+                          ("a preview app per feature", "good")])
     out.append(c)
     return canvas(386, "".join(out))
 
@@ -596,8 +596,165 @@ def file_size_strategy():
         out.append(text(xs[i], 234, captions[i], 9.6, tone, weight="700"))
 
     c, _ = chips(4, 250, [("file I/O blocks - never on the main actor", "bad"),
-                          ("mmap is not free on a slow disk: page faults still cost", "legacy"),
-                          ("streaming beats mapping when you only need one pass", "good"),
-                          ("measure with a real file, not a 4 KB fixture", "modern")])
+                          ("mmap still page-faults on a slow disk", "legacy"),
+                          ("one pass? stream. random access? map.", "good"),
+                          ("test on a real-sized file", "modern")])
     out.append(c)
     return canvas(280, "".join(out))
+
+
+# ==========================================================================
+# Collections
+# ==========================================================================
+
+def collection_hierarchy():
+    """Sequence -> Collection -> Bidirectional -> RandomAccess, plus the orthogonal ones."""
+    xs, w = row(4, gap=26)
+    out = [title(4, 16, "THE PROTOCOL LADDER - EACH RUNG ADDS A GUARANTEE", "accent", 11.5)]
+    rungs = [
+        ("Sequence", ["ONE pass, may be infinite", "makeIterator() / next()",
+                      "map filter reduce first(where:)", "no count, no indices, no reuse"], "legacy"),
+        ("Collection", ["multi-pass, finite, indexed", "startIndex endIndex subscript",
+                        "count isEmpty indices first", "index math may be O(n)"], "modern"),
+        ("BidirectionalCollection", ["can walk backwards", "index(before:) last reversed()",
+                                     "String Set Dictionary", "suffix / dropLast are cheap"], "type"),
+        ("RandomAccessCollection", ["O(1) index offset AND count", "distance(from:to:) is O(1)",
+                                    "Array ArraySlice Range", "makes sort + binary search fast"], "good"),
+    ]
+    for i, (name, lines, tone) in enumerate(rungs):
+        out.append(box(xs[i], 42, w, 92, name, lines, tone, title_size=11.5, line_size=9.4))
+        if i < 3:
+            out.append(arrow(xs[i] + w + 2, 88, xs[i + 1] - 4, 88, "neutral", label="refines"))
+
+    out.append(title(4, 158, "ORTHOGONAL CAPABILITIES - MIX THEM IN", "accent", 11))
+    oxs, ow = row(3, gap=26)
+    others = [
+        ("MutableCollection", ["subscript has a SETTER", "length cannot change",
+                               "swapAt sort() reverse()", "shuffle() partition(by:)"], "attr"),
+        ("RangeReplaceableCollection", ["the length CAN change", "append insert remove +=",
+                                        "replaceSubrange(_:with:)", "removeAll(where:)"], "attr"),
+        ("SetAlgebra", ["union intersection subtracting", "symmetricDifference",
+                        "isSubset(of:) isDisjoint(with:)", "Set  OptionSet  IndexSet"], "str"),
+    ]
+    for i, (name, lines, tone) in enumerate(others):
+        out.append(box(oxs[i], 166, ow, 92, name, lines, tone, title_size=11.5, line_size=9.4))
+
+    out.append(text(4, 282, "Array = RandomAccess + Mutable + RangeReplaceable    "
+                            "String = Bidirectional + RangeReplaceable (NOT RandomAccess)    "
+                            "Set / Dictionary = Bidirectional, not ordered", 10.2, "neutral"))
+    c, _ = chips(4, 292, [("target the WEAKEST rung that compiles", "good"),
+                          ("Sequence for infinite or streaming data", "legacy"),
+                          ("a Slice reuses the parent's indices", "bad")])
+    out.append(c)
+    return canvas(322, "".join(out))
+
+
+def collection_picker():
+    """What do you need -> which type, with the cost that matters."""
+    out = [title(4, 16, "PICK THE CONTAINER", "accent", 11.5)]
+    items = [
+        ("Array", "ordered, indexed, duplicates ok", "index O(1) · append O(1)* · contains O(n)", "good"),
+        ("Set", "membership + dedupe, unordered", "insert / contains O(1) avg", "good"),
+        ("Dictionary", "key to value, unordered", "subscript O(1) avg", "good"),
+        ("ContiguousArray", "Array without ObjC bridging", "same, slightly faster for classes", "modern"),
+        ("ArraySlice", "a window onto an Array, no copy", "shares storage · indices are the PARENT's", "modern"),
+        ("Range / ClosedRange", "0..<n, a..​.b — a lazy collection", "O(1) count · contains O(1)", "modern"),
+        ("String / Substring", "grapheme clusters, not bytes", "count O(n) · no Int subscript", "legacy"),
+        ("KeyValuePairs", "ordered literal pairs, duplicates ok", "lookup O(n) — for small fixed config", "legacy"),
+        ("IndexSet", "a set of integers, run-length packed", "great for row/section index math", "legacy"),
+        ("Deque", "queue: push/pop at BOTH ends", "O(1) both ends (Array.removeFirst is O(n))", "type"),
+        ("OrderedSet", "Set that keeps insertion order", "O(1) lookup + a random-access view", "type"),
+        ("OrderedDictionary", "Dictionary with a stable order", "O(1) lookup, ordered iteration", "type"),
+        ("Heap", "min/max priority queue", "insert / popMin O(log n) · min O(1)", "type"),
+        ("TreeDictionary / TreeSet", "persistent, cheap copies + diffing", "O(log n), structural sharing", "type"),
+        ("BitSet", "dense set of small integers", "1 bit per element, fast set algebra", "type"),
+        ("IdentifiedArray", "ordered AND keyed by Identifiable id", "TCA — O(1) by id, O(1) by index", "attr"),
+        (".lazy view", "chain map/filter with no intermediates", "work happens on demand, per element", "accent"),
+        ("AnyCollection / AnySequence", "erase the concrete type at an API edge", "adds a box + dynamic dispatch", "bad"),
+    ]
+    xs, w = row(3, gap=18)
+    for i, (name, need, cost, tone) in enumerate(items):
+        r, c = divmod(i, 3)
+        out.append(box(xs[c], 30 + r * 64, w, 56, name, [need, cost], tone,
+                       title_size=11.5, line_size=9.3))
+    out.append(text(4, 434, "Deque · OrderedSet · OrderedDictionary · Heap · BitSet · TreeDictionary all come from "
+                            "apple/swift-collections — one SPM dependency, no bridging cost.",
+                    10.5, "accent", weight="700"))
+    return canvas(444, "".join(out))
+
+
+# ==========================================================================
+# Timing
+# ==========================================================================
+
+def timing_marbles():
+    """One input timeline, six timing operators, side by side."""
+    x0, x1 = 232.0, 924.0
+    span = x1 - x0
+    row_h = 46.0
+    top = 44.0
+
+    def tx(ms):
+        return x0 + (ms / 1000.0) * span
+
+    out = [title(4, 16, "SAME INPUT, SIX OPERATORS - WINDOW = 200 ms", "accent", 11.5)]
+
+    # window gridlines behind everything
+    for ms in (200, 400, 600, 800):
+        out.append(polyline([(tx(ms), top - 12), (tx(ms), top + row_h * 6 + 12)],
+                            "neutral", width=1, dash=True, opacity=".35"))
+        out.append(text(tx(ms), top - 16, "%d" % ms, 8.6, "neutral", anchor="middle"))
+
+    def marble(x, y, label, tone, wide=False):
+        if wide:
+            width = max(len(label) * 6.0 + 12, 34)
+            return slab(x - width / 2.0, y - 11, width, 22, label, tone, radius=11, opacity=".30", size=9)
+        return (dot(x, y, tone, 9, opacity=".95")
+                + text(x, y + 3.5, label, 9.5, anchor="middle", weight="800",
+                       cls="", tone=None))
+
+    events = [("A", 50), ("B", 120), ("C", 180), ("D", 520),
+              ("E", 560), ("F", 600), ("G", 640), ("H", 700)]
+
+    rows = [
+        ("input", "8 values, two bursts", "accent",
+         [(lbl, ms, False) for lbl, ms in events]),
+        ("debounce(200ms)", "waits for 200 ms of SILENCE, keeps the LAST of a burst", "good",
+         [("C", 380, False), ("H", 900, False)]),
+        ("throttle(latest: false)", "at most one per window - keeps the FIRST", "modern",
+         [("A", 200, False), ("D", 600, False), ("F", 800, False)]),
+        ("throttle(latest: true)", "at most one per window - keeps the LAST", "modern",
+         [("C", 200, False), ("E", 600, False), ("H", 800, False)]),
+        ("delay(150ms)", "shifts EVERYTHING, drops nothing", "type",
+         [(lbl, ms + 150, False) for lbl, ms in events]),
+        ("collect(byTime: 200ms)", "buffers each window into an array", "legacy",
+         [("[A,B,C]", 200, True), ("[D,E]", 600, True), ("[F,G,H]", 800, True)]),
+        ("timeout(300ms)", "no value for 300 ms -> the stream FAILS and is over", "bad",
+         [("A", 50, False), ("B", 120, False), ("C", 180, False)]),
+    ]
+
+    for i, (name, note, tone, marbles) in enumerate(rows):
+        y = top + i * row_h
+        out.append(text(6, y - 3, name, 10.5, tone, weight="800"))
+        out.append(text(6, y + 11, note, 8.5, "neutral"))
+        # The timeout row's stream is dead after the failure, so its axis stops there.
+        fx = tx(480)
+        out.append(axis(x0, y, fx if name.startswith("timeout") else x1, y))
+        for label, ms, wide in marbles:
+            if ms <= 1000:
+                out.append(marble(tx(ms), y, label, tone, wide=wide))
+        if name.startswith("timeout"):
+            out.append(polyline([(fx - 8, y - 8), (fx + 8, y + 8)], "bad", width=2.6))
+            out.append(polyline([(fx - 8, y + 8), (fx + 8, y - 8)], "bad", width=2.6))
+            out.append(text(fx + 16, y - 2, "failure at 480 ms - the 340 ms gap blew the budget",
+                            9, "bad", weight="700"))
+
+    out.append(text(6, top + row_h * 6 + 34,
+                    "debounce = \"tell me when they stop typing\".   throttle = \"at most N per second\".   "
+                    "delay = \"same thing, later\".   collect = \"batch it\".   timeout = \"give up\".",
+                    10.4, "accent", weight="700"))
+    out.append(text(6, top + row_h * 6 + 50,
+                    "Combine delivers the leading value of a throttle immediately and then one per window; "
+                    "empty collect windows can still emit []. Verify against your Combine version.",
+                    9.6, "neutral"))
+    return canvas(int(top + row_h * 6 + 62), "".join(out))
