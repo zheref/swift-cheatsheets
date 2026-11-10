@@ -14,3 +14,6 @@ __pycache__/
 # Generated page — uncomment to keep it out of version control.
 # (Committed by default so the repo can be cloned and served with no build step.)
 # index.html
+Reports/
+.nen/
+.claude/worktrees/

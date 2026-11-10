@@ -1,0 +1,44 @@
+# RENDERED BY hatsu:tenkai from templates/forbidden-commit-trailers.yml
+# Reader provenance: Hatsu v0.142.0, commit 16ff11b07b69305cf6a420972ca3d3926b44be67.
+# The trusted base publisher fetches PR objects into a bare store; no PR files are checked out.
+name: forbidden-commit-trailers
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, ready_for_review, edited]
+
+permissions:
+  contents: read
+  checks: write
+
+concurrency:
+  group: forbidden-commit-trailers-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  trailer-policy-runner:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout exact base policy
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: .base
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up trusted TypeScript runtime
+        uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          package-manager-cache: false
+
+      - name: Check and publish verdict on the exact PR head
+        shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          GH_TOKEN: ${{ github.token }}
+        run: node .base/scripts/consumer_trailer_ci.mts "$PWD"

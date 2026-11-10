@@ -1,0 +1,104 @@
+# colors.yml — RENDERED BY hatsu:tenkai from `templates/colors.yml`.
+#
+# WHY THIS FILE IS SHIPPED AS A TEMPLATE AND NOT SCAFFOLDED BY NEN. nen reads a
+# repository's colour vocabulary from `nen/colors.yml` in the TARGET repo and
+# ships NO built-in copy and no fallback, deliberately: a binary that guessed the
+# names would report a taxonomy the repository does not have. `nen scaffold init`
+# therefore does not write one either. So a repository that adopts Hatsu without
+# this file has a permanently red `nen schema check` and a `nen color status`
+# that cannot run — which is precisely what `zheref/hatsu` itself lived with
+# until zheref/hatsu#79.
+#
+# The vocabulary below is not nen's and not invented: it is the one the SHIPPED
+# HATSU SKILLS already resolve. `backlog-state` § 6 carries the `status` values,
+# their glyphs and the precedence line verbatim; `backlog-board` § 3 reads
+# `resolved.name`, `resolved.emoji` and `resolved.label` from the same category;
+# and the `severity` band names are the ones `hatsu:futon <repo>@<severity>` and
+# `hatsu:backlog-synthesis <critical|high|medium|low|all>` already take on the
+# command line. Shipping it as a template is what makes those skills work in a
+# consumer repository at all.
+#
+# TUNE IT. This is a seed, not a canon file. A repository with its own status or
+# severity families edits the values and the precedence here and re-runs
+# `nen schema check --repo .`; nothing in Hatsu hard-codes a glyph or a
+# tie-break, and `tenkai_adopt.sh diagnose` reports this file as satisfied once
+# it parses, never comparing it byte-for-byte against this seed.
+#
+# NO LABEL FAMILY IS DECLARED, deliberately. A category this file does not
+# declare is a USAGE error (exit 2) naming the ones it does, which is a typo
+# being caught rather than a gap to fill.
+version: 1
+
+categories:
+  status:
+    scope: >-
+      One backlog row's state, as backlog-state § 6 and backlog-board § 3
+      resolve it. The precedence is what decides when several are true of the
+      same row at once: a row that is both blocked and ready_g2_g4 is reported
+      blocked, because the thing a human must act on outranks the thing that is
+      merely finished.
+    precedence:
+      - on_hold
+      - blocked
+      - ready_g2_g4
+      - ready_g1
+      - in_progress
+    values:
+      on_hold:
+        emoji: "🔵"
+        hex: "#1f6feb"
+        label: "On hold"
+        means: "Deliberately parked — name what it waits on."
+      blocked:
+        emoji: "🔴"
+        hex: "#d73a4a"
+        label: "Blocked"
+        means: "A G5 decision or action is required."
+      ready_g2_g4:
+        emoji: "🟢"
+        hex: "#2da44e"
+        label: "G2/G4-ready"
+        means: "nen pr ready says Ready and mergeable."
+      ready_g1:
+        emoji: "🟡"
+        hex: "#d4a72c"
+        label: "Ready to start"
+        means: "Ready to be started, or to have its spec iterated — G1 or G1-M."
+      in_progress:
+        emoji: "🟠"
+        hex: "#e36209"
+        label: "In progress"
+        means: "Work is moving; nobody is waiting on the human."
+
+  severity:
+    scope: >-
+      The band a backlog item sits in, as hatsu:futon and
+      hatsu:backlog-synthesis already take it on the command line. The same
+      circles as `status` by canon, disambiguated by the column header — always
+      head the column Status or Severity, never the two combined.
+    precedence:
+      - critical
+      - high
+      - medium
+      - low
+    values:
+      critical:
+        emoji: "🔴"
+        hex: "#d73a4a"
+        label: "Critical"
+        means: "Work stops until this is settled."
+      high:
+        emoji: "🟠"
+        hex: "#e36209"
+        label: "High"
+        means: "Taken before the next band is started."
+      medium:
+        emoji: "🟡"
+        hex: "#d4a72c"
+        label: "Medium"
+        means: "Scheduled into a band of its own."
+      low:
+        emoji: "🟢"
+        hex: "#2da44e"
+        label: "Low"
+        means: "Taken when the bands above it are clear."

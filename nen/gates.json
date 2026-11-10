@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "$comment": "Product repository, authored at adoption on 2026-11-10 on the maintainer's answer and modelled on the sibling repositories' gate shape (docs/GATE-CONFIGURATION.md). Copilot supplies the sole automated review round; a separate APPROVED review is not required, and the maintainer's human merge decision stays outside this automated readiness verdict at G2. `approval_policy: \"review-round-only\"` is what makes the empty `default_approvers` legal and is load-bearing in both directions. OUTSIDE STEP STILL OWED: enable Copilot code review on the GitHub repository once zheref/swift-cheatsheets exists, and confirm its login on a test pull request; until then every PR reads rounds-owed. head_ref_prefixes are the model aliases nen/workflow.json's branch template {model}/{persona}/{descriptor} produces.",
+  "reviewers": [
+    {
+      "name": "copilot",
+      "login_pattern": { "pattern": "^(copilot|copilot-pull-request-reviewer(\\[bot\\])?)$", "ignoreCase": true }
+    }
+  ],
+  "approval_policy": "review-round-only",
+  "$approval_policy": "one of: required | review-round-only",
+  "default_approvers": [],
+  "base_reviewers": ["copilot"],
+  "delivery": {
+    "author_pattern": { "pattern": "^zheref$", "ignoreCase": true },
+    "head_ref_prefixes": ["fable/", "opus/", "sonnet/", "haiku/", "codex/"],
+    "labels": []
+  },
+  "round_policy": { "stallMinutes": 30, "minRounds": 1, "maxRounds": 3 },
+  "checks": { "excluded": [] },
+  "round_quorum": { "any_of": ["copilot"], "minimum": 1 }
+}

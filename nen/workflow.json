@@ -1,0 +1,275 @@
+{
+  "$schema": "nen.workflow/v0.1",
+  "$comment": "Hand-written at adoption on 2026-11-10 (nen scaffold init had no lane to write it from). The iteration checks are the two commands the Makefile already runs: `build` regenerates index.html and `lint` runs src/verify.py's structural checks on it. There is no test suite, so tests.required is deliberately empty: a statement, not an omission. review.scopes starts from Hatsu's own rows cut down to what this repository has: code (every path), security (CI workflows, scripts, the serve scripts, the contract) and ui (the renderers and the generated page). Values below marked with a $<key> sibling were written at their catalogue default by config_values.sh fill and are the repository's own once set.",
+  "branch": { "template": "{model}/{persona}/{descriptor}", "base": "main" },
+  "iteration": { "checks": ["build", "lint"], "lane": "site" },
+  "tests": { "required": [], "extra": [] },
+  "commits": {
+    "allowedAttributionTrailers": ["Hatsu-Agent"],
+    "forbiddenTrailers": ["Co-Authored-By", "Claude-Session", "Signed-off-by", "Generated-by", "Generated-with", "Reviewed-by"]
+  },
+  "review": {
+    "excludedPersonas": ["satotz", "lippo", "buhara", "bisky"],
+    "scopes": {
+      "code": { "persona": "nobunaga", "tier": "deep", "budget": 2, "paths": ["**"] },
+      "security": { "persona": "feitan", "tier": "deep", "budget": 1,
+                    "paths": [".github/workflows/**", "scripts/**", "nen/contract.json", "serve.command", "serve-https.command", "**/*secret*", "**/*token*", "**/*credential*"] },
+      "ui": { "persona": "hisoka", "tier": "fast", "budget": 2,
+              "paths": ["src/render.py", "src/svgkit.py", "src/diagrams.py", "index.html", "**/*.css", "**/*.svg"] }
+    }
+  },
+  "coverage": {
+    "minimum": 80,
+    "recommended": 85,
+    "ideal": 90,
+    "scope": "touched"
+  },
+  "reports": {
+    "dir": "Reports",
+    "retain": "final-only",
+    "template": "spiritual-message",
+    "$template": "one of: spiritual-message | rikugan",
+    "captures": "Reports/captures"
+  },
+  "mukai": {
+    "autoEn": false,
+    "$autoEn": "one of: true | false"
+  },
+  "classify": {
+    "publish": "label",
+    "$publish": "one of: label | label+comment"
+  },
+  "direct": {
+    "publish": "none",
+    "$publish": "one of: none | label | label+comment"
+  },
+  "port": {
+    "handbooksRepo": "zheref/bankai-handbooks",
+    "rulingsDir": "handbooks/ports",
+    "specKit": {
+      "pin": "v1.2.2",
+      "layout": "specs/{nnn}-{slug}"
+    }
+  },
+  "aiReviewers": "required",
+  "$aiReviewers": "one of: required | optional | off",
+  "monitor": {
+    "maxCycles": 20,
+    "pollSeconds": 300,
+    "localSlotFrees": "ready+prompted"
+  },
+  "notifications": {
+    "rungs": [
+      "push",
+      "os",
+      "sound"
+    ],
+    "$rungs": "any of: push | os | sound",
+    "sound": "Glass",
+    "turn": "rung1",
+    "$turn": "one of: rung1 | all"
+  },
+  "profile": {
+    "allowed": [
+      "fast",
+      "standard",
+      "thorough"
+    ],
+    "$allowed": "any of: fast | standard | thorough"
+  },
+  "release": {
+    "proposalMerge": "self",
+    "$proposalMerge": "one of: self | human"
+  },
+  "pr": {
+    "sections": {
+      "max": 7,
+      "variants": {
+        "product.build": [
+          "changes",
+          "why",
+          "how",
+          "improves",
+          "verify",
+          "evidence"
+        ],
+        "product.fix": [
+          "changes",
+          "why",
+          "how",
+          "improves",
+          "verify",
+          "evidence"
+        ],
+        "product.maintain": [
+          "changes",
+          "why",
+          "how",
+          "improves",
+          "verify",
+          "rollout"
+        ],
+        "product.verify": [
+          "changes",
+          "why",
+          "how",
+          "improves",
+          "verify",
+          "evidence"
+        ],
+        "product.canon": [
+          "changes",
+          "why",
+          "how",
+          "improves",
+          "verify"
+        ],
+        "product.release": [
+          "changes",
+          "why",
+          "release-unit",
+          "rollout",
+          "verify",
+          "evidence"
+        ],
+        "library.build": [
+          "changes",
+          "why",
+          "how",
+          "compat",
+          "improves",
+          "verify"
+        ],
+        "library.fix": [
+          "changes",
+          "why",
+          "how",
+          "compat",
+          "improves",
+          "verify"
+        ],
+        "library.maintain": [
+          "changes",
+          "why",
+          "how",
+          "compat",
+          "improves",
+          "verify"
+        ],
+        "library.verify": [
+          "changes",
+          "why",
+          "how",
+          "improves",
+          "verify"
+        ],
+        "library.canon": [
+          "changes",
+          "why",
+          "how",
+          "improves",
+          "verify"
+        ],
+        "library.release": [
+          "changes",
+          "why",
+          "release-unit",
+          "compat",
+          "verify"
+        ],
+        "process.build": [
+          "changes",
+          "why",
+          "how",
+          "improves",
+          "across",
+          "verify"
+        ],
+        "process.fix": [
+          "changes",
+          "why",
+          "how",
+          "improves",
+          "across",
+          "verify"
+        ],
+        "process.maintain": [
+          "changes",
+          "why",
+          "how",
+          "improves",
+          "across",
+          "verify"
+        ],
+        "process.verify": [
+          "changes",
+          "why",
+          "how",
+          "improves",
+          "verify"
+        ],
+        "process.canon": [
+          "changes",
+          "why",
+          "how",
+          "improves",
+          "across",
+          "verify"
+        ],
+        "process.release": [
+          "changes",
+          "why",
+          "release-unit",
+          "across",
+          "verify"
+        ],
+        "unknown.build": [
+          "changes",
+          "why",
+          "how",
+          "improves",
+          "verify"
+        ],
+        "unknown.fix": [
+          "changes",
+          "why",
+          "how",
+          "improves",
+          "verify"
+        ],
+        "unknown.maintain": [
+          "changes",
+          "why",
+          "how",
+          "improves",
+          "verify"
+        ],
+        "unknown.verify": [
+          "changes",
+          "why",
+          "how",
+          "improves",
+          "verify"
+        ],
+        "unknown.canon": [
+          "changes",
+          "why",
+          "how",
+          "improves",
+          "verify"
+        ],
+        "unknown.release": [
+          "changes",
+          "why",
+          "release-unit",
+          "verify"
+        ]
+      },
+      "$canon": {
+        "contract": "hatsu.pr-sections/v1",
+        "sha256": "7d90997f59c780fc3058c9da6d501964f045eab5dedb3c5963a695c04cb8c340"
+      }
+    },
+    "$sections": "available sections: delivery — Always-first ledger-rendered delivery metadata; outside the seven-reader cap. | changes — Before/After for a named consumer; Case for/Case against; what would flip the decision. | why — Source/What it showed/Why it matters now, followed by the authoring nature. | how — Mermaid structure diagram and Item/Kind/Change legend; flow diagram only when behavior flow changed; one rejected alternative. | improves — All thirteen aspects, marked ⬆ improves / ➖ unchanged / ⬇ regresses; justify only movement, citing evidence where the repository and scope allow. | verify — Product: numbered steps. Library: Consumer scenario/Call or import/Expected, plus published artifact command. Process: Behavior changed/Lane or verb run/Refuses on/Passes on. Every kind adds one Criterion/Coverage/Evidence row per AC id of each closing issue (HR-11; judged by nen pr converge). content: an empty heading fails body-check through the derived verify-content requirement. | evidence — UZF-26 state/variant evidence table; only where project.evidence.globs is declared. | compat — Symbol/Before/After/Consumer action; semver verdict. | across — What another repository does differently after this merge; recorded rulings. | release-unit — Artifact/Size/Provenance; CON-22 fan-out. | rollout — Target/Flag/Rollback step. | economics — Leorio summary, then the full report in details; no new level-2 headings inside it. | spec — One row per F<nnn>-SC-### the closing spec-derived issue carries, satisfied with a test id or deferred with a reason and a follow-up (docs/config/spec-repo.md, The PR Spec section). Admitted by the run fact spec; rows is nen's spec-rows requirement quoted whole (zheref/nen#493, src/spec/coverage.ts), and nen spec coverage's delivery form proves every criterion is accounted for. | decisions — Every pre-answered row and every default the run took for the maintainer; mandatory on every PR whose run took one, idle (HR-334) or attended (HA#474 AC-1), whatever the kind or family. Any positive source includes it: --decisions, --idle, or --decisions-from a nen.run manifest with a non-empty idleAnswers. A manifest proves only launch pre-answers: a null or empty idleAnswers adds nothing beside --decisions or --idle (the flag wins) and refuses alone; a malformed manifest refuses whatever else is passed. A default taken mid-run or attended is --decisions. | hanten — Exact adopted-gate heading and settled Hanten findings. Each deferred row cites a tracked issue. | prose — HA#503, HR-369: the four PRS rows (criteria, measurable, scope, markers) Chrollo answers on a canon-prose PR, each with a yes or no verdict and the line he read (line N or path:N), never the author. Admitted by the run fact canon-prose (--canon-prose, or --scopes-from a nen review scopes document in which Chrollo's scope claims a changed .md; the architecture globs in nen/workflow.json are canon prose's one definition); rows requires exactly one answered row per letter under the heading. A no is also a Hanten finding with rule PRS-<letter>, medium and pushable. docs/PR-SECTIONS.md section The prose checklist. | checklist — Compact evidence-backed completion conditions, including the checked Hanten-settled evidence line. | issues — Canonical issue URL/scope/merging verdict table and closing lines; Development guard applies. | attribution — Final heading; exact participant ledger from docs/AGENT-ATTRIBUTION.md."
+  }
+}
