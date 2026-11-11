@@ -220,6 +220,8 @@ external resource at all.
 - **Node.js 22.22+ or 24.15+** (`.nvmrc` says 24; Gatsby 5.16 supports up to 25, jsdom 31 needs
   22.22+/24.15+) and npm. Dependencies are pinned exactly in
   `package-lock.json`: Gatsby 5.16.1, React 19.2.9, Chakra UI 3.38.0.
+  The overrides in `package.json` and the two build-time advisories still accepted are recorded,
+  with their reachability, in [`docs/DEPENDENCY-ADVISORIES.md`](docs/DEPENDENCY-ADVISORIES.md).
 - **openssl** — preinstalled on macOS; only used by `serve-https.command`.
 - Any modern browser. Rendering uses `color-mix()` and CSS cascade layers —
   Safari 16.4+, Chrome 111+.
