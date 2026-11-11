@@ -10,6 +10,8 @@
  *  - code blocks hold only text and highlight spans (no raw markup leaked);
  *  - every diagram's font-size is numeric;
  *  - no template or serialisation artefacts leaked into the text;
+ *  - the language selector lists the registry's languages in order, marks exactly this one
+ *    current, and every language link it holds lands on a page that was built;
  *  - the site requests resources only from itself, and the offline file requests nothing at all:
  *    every URL-bearing attribute (src, srcset, data, poster, and href on anything but a link
  *    a reader follows), and every url()/@import in style sheets and style attributes, is read.
@@ -72,10 +74,28 @@ export function resourceReferences(d: Document): ResourceReference[] {
   return out;
 }
 
-/** The problems with one built page; `offline` pages may reference nothing at all. */
-export function checkPage(html: string, sheets: string[], offline: boolean): { problems: string[]; stats: PageStats } {
+/**
+ * The problems with one built page; `offline` pages may reference nothing at all. With
+ * `languages` (the registry's ids, in order) the selector is checked too, and its link
+ * targets are returned for the caller to resolve against the built files.
+ */
+export function checkPage(
+  html: string,
+  sheets: string[],
+  offline: boolean,
+  languages?: { ids: string[]; current: string },
+): { problems: string[]; stats: PageStats; languageLinks: string[] } {
   const problems: string[] = [];
   const { document: d } = new JSDOM(html).window;
+
+  const options = [...d.querySelectorAll<HTMLElement>("nav#langnav #langlist > li")];
+  if (languages) {
+    const ids = options.map((o) => o.getAttribute("data-lang-option") ?? "");
+    if (JSON.stringify(ids) !== JSON.stringify(languages.ids)) problems.push(`language selector lists [${ids.join(", ")}], registry.yaml [${languages.ids.join(", ")}]`);
+    const current = options.filter((o) => o.querySelector("[aria-current]")).map((o) => o.getAttribute("data-lang-option"));
+    if (JSON.stringify(current) !== JSON.stringify([languages.current])) problems.push(`language selector marks [${current.join(", ")}] current, not ${languages.current}`);
+  }
+  const languageLinks = options.flatMap((o) => [...o.querySelectorAll("a[href]")].map((a) => a.getAttribute("href")!));
 
   const sections = [...d.querySelectorAll("section.sheet")];
   const ids = sections.map((s) => s.id);
@@ -125,7 +145,7 @@ export function checkPage(html: string, sheets: string[], offline: boolean): { p
     blocks: blocks.length,
     diagrams: d.querySelectorAll("svg.dg").length,
   };
-  return { problems, stats };
+  return { problems, stats, languageLinks };
 }
 
 interface LanguageFile {
@@ -135,10 +155,24 @@ interface LanguageFile {
   sheets: string[];
 }
 
+/**
+ * The built file a selector link lands on, or `null` when the link cannot work: the site
+ * links by route (under public/), an offline file only by a path relative to itself.
+ */
+function linkTarget(root: string, page: string, href: string, offline: boolean): string | null {
+  const bare = href.replace(/[?#].*$/, "");
+  if (bare.startsWith("/") === offline || /^[a-z][a-z0-9+.-]*:/i.test(bare)) return null;
+  const target = offline ? path.resolve(path.dirname(page), bare) : path.join(root, "public", bare);
+  return bare.endsWith("/") ? path.join(target, "index.html") : target;
+}
+
 /** Checks every published catalog's two pages under `root`; returns the failures. */
 export function verifyRepository(root: string, log: (line: string) => void = console.log): string[] {
   const failures: string[] = [];
   const langRoot = path.join(root, "content/languages");
+  const registryFile = path.join(root, "content/registry.yaml");
+  const registry = fs.existsSync(registryFile) ? (YAML.parse(fs.readFileSync(registryFile, "utf8")) as { languages: { id: string }[] }).languages.map((l) => l.id) : null;
+  if (!registry) failures.push("content/registry.yaml: missing");
   let checked = 0;
   for (const dir of fs.readdirSync(langRoot, { withFileTypes: true }).filter((e) => e.isDirectory())) {
     const lang = YAML.parse(fs.readFileSync(path.join(langRoot, dir.name, "language.yaml"), "utf8")) as LanguageFile;
@@ -155,8 +189,12 @@ export function verifyRepository(root: string, log: (line: string) => void = con
         continue;
       }
       const html = fs.readFileSync(file, "utf8");
-      const { problems, stats } = checkPage(html, lang.sheets, offline);
+      const { problems, stats, languageLinks } = checkPage(html, lang.sheets, offline, registry ? { ids: registry, current: lang.id } : undefined);
       failures.push(...problems.map((p) => `${where}: ${p}`));
+      for (const href of languageLinks) {
+        const target = linkTarget(root, file, href, offline);
+        if (!target || !fs.existsSync(target)) failures.push(`${where}: language link ${href} lands on no built page`);
+      }
       log(
         `${where.padEnd(28)} sections ${stats.sections}  links ${stats.links}  cards ${stats.cards}  code blocks ${stats.blocks}  diagrams ${stats.diagrams}  ${Math.round(html.length / 1024)} KB`,
       );

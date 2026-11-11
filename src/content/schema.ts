@@ -7,16 +7,13 @@
  * language adds files, never a page template (see docs/CONTENT-MODEL.md).
  */
 import { z } from "zod";
+import { CONCEPT_ID, SLUG } from "./ids";
 
 /** Stable, URL-safe identifier: lowercase words joined by single hyphens. */
-export const slug = z
-  .string()
-  .regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/, "must be a lowercase kebab-case slug");
+export const slug = z.string().regex(SLUG, "must be a lowercase kebab-case slug");
 
 /** Language-neutral concept ID shared by equivalent topics across languages, e.g. `concurrency.isolation`. */
-export const conceptId = z
-  .string()
-  .regex(/^[a-z0-9]+(?:-[a-z0-9]+)*(?:\.[a-z0-9]+(?:-[a-z0-9]+)*)*$/, "must be dot-separated kebab-case segments");
+export const conceptId = z.string().regex(CONCEPT_ID, "must be dot-separated kebab-case segments");
 
 export const tone = z.enum(["good", "bad", "modern", "legacy", "neutral"]);
 
@@ -192,6 +189,29 @@ export const language = z
   })
   .strict();
 
+/**
+ * The languages the top-navigation selector offers, in order — one `registry.yaml`
+ * per content root. An entry names a catalog folder under `languages/`; when that
+ * catalog is missing or not built, the selector shows the language as not yet
+ * available instead of an empty page.
+ */
+export const registry = z
+  .object({
+    languages: z
+      .array(
+        z
+          .object({
+            /** The catalog folder (and language) id. */
+            id: slug,
+            /** The selector's label; must equal the catalog's own `name` when the catalog exists. */
+            name: z.string().min(1),
+          })
+          .strict(),
+      )
+      .min(1),
+  })
+  .strict();
+
 export type Tone = z.infer<typeof tone>;
 export type Source = z.infer<typeof source>;
 export type Applicability = z.infer<typeof applicability>;
@@ -205,9 +225,29 @@ export type Card = z.infer<typeof card>;
 export type Sheet = z.infer<typeof sheet>;
 export type Highlight = z.infer<typeof highlight>;
 export type Language = z.infer<typeof language>;
+export type Registry = z.infer<typeof registry>;
 
 /** A loaded, validated catalog: the language definition with its sheets resolved in order. */
 export interface Catalog {
   language: Omit<Language, "sheets">;
   sheets: Sheet[];
+}
+
+/** One sheet as another language's page sees it: enough to land on it, or to name it. */
+export interface Topic {
+  concept: string;
+  sheet: string;
+  title: string;
+}
+
+/**
+ * One registry entry resolved against the catalogs of a build. `href` is where
+ * its page lives — the adapter's to fill (a route on the site, a relative file
+ * offline); `null` means the language has no catalog in this build.
+ */
+export interface SiteLanguage {
+  id: string;
+  name: string;
+  href: string | null;
+  topics: Topic[];
 }

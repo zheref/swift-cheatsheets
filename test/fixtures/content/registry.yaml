@@ -1,0 +1,12 @@
+# TEST FIXTURES, not reference material: the fixture site stands in for the four
+# configured languages of content/registry.yaml (zheref/swift-cheatsheets#2, SC-1),
+# one `<language>-fixture` catalog each, in the same order.
+languages:
+  - id: swift-fixture
+    name: Swift (fixture)
+  - id: typescript-fixture
+    name: TypeScript (fixture)
+  - id: kotlin-fixture
+    name: Kotlin (fixture)
+  - id: csharp-fixture
+    name: C# (fixture)

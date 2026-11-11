@@ -7,18 +7,18 @@
  * Files app — no server, no network.
  */
 import { renderToString } from "react-dom/server";
-import type { Catalog } from "../../content/schema";
+import type { Catalog, SiteLanguage } from "../../content/schema";
 import { CatalogPage } from "../../ui/CatalogPage";
 import { UiProvider } from "../../ui/Provider";
 import { DEFAULT_THEME, themeInitScript } from "../../ui/theme";
 import { escapeHtml, scriptSafeJs, scriptSafeJson } from "./escape";
-import { CATALOG_ELEMENT_ID, ROOT_ELEMENT_ID } from "./ids";
+import { CATALOG_ELEMENT_ID, LANGUAGES_ELEMENT_ID, ROOT_ELEMENT_ID } from "./ids";
 
-export function renderOffline(catalog: Catalog, clientJs: string): string {
+export function renderOffline(catalog: Catalog, clientJs: string, languages?: SiteLanguage[]): string {
   const { language } = catalog;
   const markup = renderToString(
     <UiProvider>
-      <CatalogPage catalog={catalog} />
+      <CatalogPage catalog={catalog} languages={languages} />
     </UiProvider>,
   );
   return [
@@ -35,6 +35,7 @@ export function renderOffline(catalog: Catalog, clientJs: string): string {
     "<body>",
     `<div id="${ROOT_ELEMENT_ID}">${markup}</div>`,
     `<script type="application/json" id="${CATALOG_ELEMENT_ID}">${scriptSafeJson(catalog)}</script>`,
+    ...(languages ? [`<script type="application/json" id="${LANGUAGES_ELEMENT_ID}">${scriptSafeJson(languages)}</script>`] : []),
     `<script>${scriptSafeJs(clientJs)}</script>`,
     "</body>",
     "</html>",

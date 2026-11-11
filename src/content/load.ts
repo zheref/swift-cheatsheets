@@ -7,7 +7,16 @@ import fs from "node:fs";
 import path from "node:path";
 import YAML from "yaml";
 import { z } from "zod";
-import { type Catalog, language as languageSchema, sheet as sheetSchema, type Sheet } from "./schema";
+import { topicsOf } from "./languages";
+import {
+  type Catalog,
+  language as languageSchema,
+  registry as registrySchema,
+  type Registry,
+  type SiteLanguage,
+  sheet as sheetSchema,
+  type Sheet,
+} from "./schema";
 
 export class CatalogError extends Error {
   constructor(readonly problems: string[]) {
@@ -170,4 +179,43 @@ export function loadCatalogs(contentRoot: string, statuses: string[] = ["publish
   const clash = routes.filter((r, i) => routes.indexOf(r) !== i);
   if (clash.length) throw new CatalogError([`two catalogs publish at ${[...new Set(clash)].join(", ")}`]);
   return catalogs.sort((a, b) => a.language.route.localeCompare(b.language.route));
+}
+
+/** The selector's registry, `<contentRoot>/registry.yaml`, validated. */
+export function loadRegistry(contentRoot: string): Registry {
+  const file = path.join(contentRoot, "registry.yaml");
+  const problems: string[] = [];
+  if (!fs.existsSync(file)) throw new CatalogError([`${file}: missing — every content root lists its languages there`]);
+  const raw = readYaml(file, problems);
+  if (!raw.ok) throw new CatalogError(problems);
+  const parsed = registrySchema.safeParse(raw.value);
+  if (!parsed.success) throw new CatalogError(issues(file, parsed.error));
+  const ids = parsed.data.languages.map((l) => l.id);
+  const dupes = ids.filter((id, i) => ids.indexOf(id) !== i);
+  if (dupes.length) throw new CatalogError([`${file}: duplicate language ids ${[...new Set(dupes)].join(", ")}`]);
+  return parsed.data;
+}
+
+/**
+ * The catalogs a build publishes, and the selector's languages in registry
+ * order. Each built catalog must be in the registry under its own name, so the
+ * selector can never omit or mislabel a page; a registry entry with no built
+ * catalog is listed with `href: null`. `href` defaults to the catalog's route.
+ */
+export function loadSite(contentRoot: string, statuses: string[] = ["published"]): { catalogs: Catalog[]; languages: SiteLanguage[] } {
+  const catalogs = loadCatalogs(contentRoot, statuses);
+  const { languages: entries } = loadRegistry(contentRoot);
+  const file = path.join(contentRoot, "registry.yaml");
+  const problems: string[] = [];
+  for (const c of catalogs) {
+    const entry = entries.find((e) => e.id === c.language.id);
+    if (!entry) problems.push(`${file}: catalog '${c.language.id}' is built but not listed`);
+    else if (entry.name !== c.language.name) problems.push(`${file}: '${entry.id}' is named '${entry.name}' but its catalog says '${c.language.name}'`);
+  }
+  if (problems.length) throw new CatalogError(problems);
+  const languages = entries.map(({ id, name }) => {
+    const catalog = catalogs.find((c) => c.language.id === id);
+    return { id, name, href: catalog?.language.route ?? null, topics: catalog ? topicsOf(catalog) : [] };
+  });
+  return { catalogs, languages };
 }

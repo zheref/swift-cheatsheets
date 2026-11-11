@@ -67,6 +67,17 @@ describe("verify: built-page checks", () => {
     expect(checkPage(page('<svg class="dg"><text font-size="good">x</text></svg>'), ["a"], true).problems.join()).toMatch(/font-size/);
   });
 
+  it("checks the language selector against the registry: order, the current language, its links", () => {
+    const nav = (items: string) => `<nav id="langnav"><ul id="langlist">${items}</ul></nav>`;
+    const opt = (id: string, inner: string) => `<li data-lang-option="${id}">${inner}</li>`;
+    const good = nav(opt("a", '<span aria-current="true">A</span>') + opt("b", '<a href="offline/b.html#x">B</a>') + opt("c", "<span>C</span>"));
+    const langs = { ids: ["a", "b", "c"], current: "a" };
+    expect(checkPage(page(good), ["a"], true, langs)).toMatchObject({ problems: [], languageLinks: ["offline/b.html#x"] });
+    expect(checkPage(page(good), ["a"], true, { ids: ["a", "c", "b"], current: "a" }).problems.join()).toMatch(/selector lists \[a, b, c\], registry\.yaml \[a, c, b\]/);
+    expect(checkPage(page(good), ["a"], true, { ...langs, current: "b" }).problems.join()).toMatch(/marks \[a\] current, not b/);
+    expect(checkPage(page(""), ["a"], true, langs).problems.join()).toMatch(/selector lists \[\]/);
+  });
+
   it("reads url() and @import forms out of CSS", () => {
     expect(cssReferences("a{b:url('x.png')} c{d:url(#m)} @import \"y.css\"; @import url(z.css);")).toEqual(["x.png", "z.css", "y.css"]);
   });
@@ -80,12 +91,29 @@ describe("verify: built-page checks", () => {
     fs.mkdirSync(path.join(empty, "content/languages/x"), { recursive: true });
     fs.writeFileSync(path.join(empty, "content/languages/x/language.yaml"), "id: x\nroute: /x/\nstatus: draft\nsheets: [a]\n");
     fs.writeFileSync(path.join(empty, "content/languages/.DS_Store"), ""); // a stray file is not a catalog
-    expect(verifyRepository(empty, () => {})).toEqual(["content/languages: no published catalog to check"]);
+    expect(verifyRepository(empty, () => {})).toEqual(["content/registry.yaml: missing", "content/languages: no published catalog to check"]);
 
     fs.writeFileSync(path.join(empty, "content/languages/x/language.yaml"), "id: x\nroute: /x/\nstatus: published\nsheets: [a]\n");
     expect(verifyRepository(empty, () => {})).toEqual([
+      "content/registry.yaml: missing",
       "public/x/index.html: missing — run `npm run build`",
       "offline/x.html: missing — run `npm run build`",
+    ]);
+
+    // Selector links must land on a built page: by route on the site, by relative path offline.
+    fs.writeFileSync(path.join(empty, "content/registry.yaml"), "languages:\n  - {id: x, name: X}\n  - {id: y, name: Y}\n");
+    const selector = (links: string[]) =>
+      `<nav id="langnav"><ul id="langlist"><li data-lang-option="x"><span aria-current="true">X</span></li><li data-lang-option="y">${links.map((h) => `<a href="${h}">Y</a>`).join("")}</li></ul></nav>`;
+    fs.mkdirSync(path.join(empty, "public/x"), { recursive: true });
+    fs.mkdirSync(path.join(empty, "offline"), { recursive: true });
+    fs.writeFileSync(path.join(empty, "public/x/index.html"), page(selector(["/y/#a", "/x/", "y.html"])));
+    fs.writeFileSync(path.join(empty, "offline/x.html"), page(selector(["y.html?from=x&concept=a.b", "x.html", "/x/", "https://x.test/"])));
+    expect(verifyRepository(empty, () => {})).toEqual([
+      "public/x/index.html: language link /y/#a lands on no built page",
+      "public/x/index.html: language link y.html lands on no built page",
+      "offline/x.html: language link y.html?from=x&concept=a.b lands on no built page",
+      "offline/x.html: language link /x/ lands on no built page",
+      "offline/x.html: language link https://x.test/ lands on no built page",
     ]);
   });
 });

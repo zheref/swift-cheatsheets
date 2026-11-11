@@ -1,0 +1,19 @@
+# A TEST FIXTURE, not reference material: one of the four fixture catalogs that
+# prove the language selector (zheref/swift-cheatsheets#2). status `fixture` keeps
+# it out of every published build. It alone has `concurrency.isolation`, so
+# switching away from that sheet exercises the absence state.
+id: swift-fixture
+name: Swift (fixture)
+title: Swift Fixture Catalog
+route: /swift-fixture/
+status: fixture
+description: Fixture catalog used by tests to prove the language selector.
+locale: en
+codeLanguage: swift
+highlight:
+  keywords: [func, let, var, struct, actor, async, await, return, "true", "false"]
+  lineComment: "//"
+  blockComment: ["/*", "*/"]
+  attributePrefix: "@"
+  directivePrefix: "#"
+sheets: [swift-collections, swift-concurrency, swift-isolation]

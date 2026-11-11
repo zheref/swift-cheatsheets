@@ -1,0 +1,13 @@
+id: cs-collections
+concept: collections.types
+scope: shared
+title: Fixture — C# collections
+group: Fixture Basics
+subtitle: ""
+cards:
+  - id: list-collection
+    kind: code
+    title: A list collection
+    note: ""
+    code: |-
+      var xs = new List<int> { 1, 2, 3 };

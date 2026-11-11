@@ -1,0 +1,13 @@
+id: swift-concurrency
+concept: concurrency.async-await
+scope: shared
+title: Fixture — Swift async/await
+group: Fixture Basics
+subtitle: ""
+cards:
+  - id: async-function
+    kind: code
+    title: An async function
+    note: ""
+    code: |-
+      func load() async -> String { "done" }

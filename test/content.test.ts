@@ -99,7 +99,12 @@ describe("loader", () => {
   it("loads only published catalogs by default", () => {
     expect(loadCatalogs(path.join(ROOT, "content")).map((c) => c.language.id)).toEqual(["swift"]);
     expect(loadCatalogs(FIXTURE_ROOT)).toEqual([]);
-    expect(loadCatalogs(FIXTURE_ROOT, ["fixture"]).map((c) => c.language.id)).toEqual(["kotlin-fixture"]);
+    expect(loadCatalogs(FIXTURE_ROOT, ["fixture"]).map((c) => c.language.id)).toEqual([
+      "csharp-fixture",
+      "kotlin-fixture",
+      "swift-fixture",
+      "typescript-fixture",
+    ]);
   });
 
   it("accepts every committed diagram under the allowlist", () => {

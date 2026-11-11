@@ -1,0 +1,13 @@
+id: cs-patterns
+concept: language.pattern-matching
+scope: language
+title: Fixture — C# patterns
+group: Fixture Language
+subtitle: ""
+cards:
+  - id: is-pattern
+    kind: code
+    title: An is pattern
+    note: ""
+    code: |-
+      if (shape is Circle c) return c.Radius;

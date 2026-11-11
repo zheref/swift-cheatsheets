@@ -1,0 +1,13 @@
+id: ts-collections
+concept: collections.types
+scope: shared
+title: Fixture — TypeScript collections
+group: Fixture Basics
+subtitle: ""
+cards:
+  - id: readonly-array
+    kind: code
+    title: A readonly array collection
+    note: ""
+    code: |-
+      const xs: readonly number[] = [1, 2, 3];

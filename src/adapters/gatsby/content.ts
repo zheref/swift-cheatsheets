@@ -2,7 +2,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { Actions, Reporter } from "gatsby";
-import { loadCatalogs } from "../../content/load";
+import { loadSite } from "../../content/load";
 
 const contentRoots = () => {
   const roots: [string, string[]][] = [[path.resolve("content"), ["published"]]];
@@ -10,12 +10,17 @@ const contentRoots = () => {
   return roots;
 };
 
-/** (Re)creates one page per catalog; calling it again with the same paths replaces their context. */
+/**
+ * (Re)creates one page per catalog; calling it again with the same paths replaces their context.
+ * Each content root is its own site: its pages' selectors list its own registry, so the
+ * fixture pages and the published ones never link to each other.
+ */
 export function publishCatalogs(actions: Pick<Actions, "createPage">, reporter: Pick<Reporter, "info">) {
   const template = path.resolve("src/adapters/gatsby/CatalogTemplate.tsx");
   for (const [root, statuses] of contentRoots()) {
-    for (const catalog of loadCatalogs(root, statuses)) {
-      actions.createPage({ path: catalog.language.route, component: template, context: { catalog } });
+    const { catalogs, languages } = loadSite(root, statuses);
+    for (const catalog of catalogs) {
+      actions.createPage({ path: catalog.language.route, component: template, context: { catalog, languages } });
       reporter.info(
         `catalog ${catalog.language.id} → ${catalog.language.route} (${catalog.sheets.length} sheets, ${catalog.sheets.reduce((n, s) => n + s.cards.length, 0)} cards)`,
       );

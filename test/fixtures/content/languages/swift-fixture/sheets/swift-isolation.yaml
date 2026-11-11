@@ -1,0 +1,13 @@
+id: swift-isolation
+concept: concurrency.isolation
+scope: language
+title: Fixture — Swift actors
+group: Fixture Basics
+subtitle: A concept no other fixture has.
+cards:
+  - id: actor
+    kind: code
+    title: An actor
+    note: ""
+    code: |-
+      actor Counter { var n = 0 }

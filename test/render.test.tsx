@@ -216,6 +216,18 @@ describe("offline artifact opened from disk (AC-5)", () => {
     expect([...d.querySelectorAll("#side a")].map((a) => a.getAttribute("href"))).toEqual(
       swiftCatalog().sheets.map((s) => `#${s.id}`),
     );
+    // The selector: Swift current, the other three configured languages listed as not yet published.
+    expect([...d.querySelectorAll("#langlist > li")].map((li) => [li.getAttribute("data-lang-option"), li.getAttribute("data-state")])).toEqual([
+      ["swift", "current"],
+      ["typescript", "unavailable"],
+      ["kotlin", "unavailable"],
+      ["csharp", "unavailable"],
+    ]);
+    expect(d.querySelectorAll("#langlist a")).toHaveLength(0);
+    const toggle = d.getElementById("lang-toggle")!;
+    toggle.click();
+    await new Promise((r) => setTimeout(r, 20));
+    expect((d.getElementById("lang") as HTMLDetailsElement).open).toBe(true);
 
     const q = d.getElementById("q") as HTMLInputElement;
     const setter = Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype, "value")!.set!;
