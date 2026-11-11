@@ -29,30 +29,45 @@ export interface PageStats {
   diagrams: number;
 }
 
-const FETCHING_ATTRIBUTES = ["src", "srcset", "data", "poster", "action", "formaction", "background"];
+const FETCHING_ATTRIBUTES = ["src", "data", "poster", "action", "formaction", "background"];
 const isExternal = (url: string) => /^(?:[a-z][a-z0-9+.-]*:)?\/\//i.test(url.trim()) || /^(?:data|javascript|blob):/i.test(url.trim());
 
-/** `url(...)` targets other than same-document fragments, and every `@import`. */
+/** The URLs a style sheet fetches: `url(...)` targets other than same-document fragments, and every `@import`. */
 export function cssReferences(css: string): string[] {
   const urls = [...css.matchAll(/url\(\s*(["']?)([^"')]*)\1\s*\)/gi)].map((m) => m[2] ?? "").filter((u) => !u.startsWith("#"));
-  const imports = [...css.matchAll(/@import\s+(?:url\()?\s*["']?([^"');\s]+)/gi)].map((m) => `@import ${m[1]}`);
+  // `@import url(x)` is already counted above; a bare or quoted `@import "x"` is not.
+  const imports = [...css.matchAll(/@import\s+(["'])([^"']+)\1/gi)].map((m) => m[2] ?? "");
   return [...urls, ...imports];
 }
 
-/** Every resource the markup would make a browser fetch, as `<where>: <url>` strings. */
-export function resourceReferences(d: Document): string[] {
-  const out: string[] = [];
+/** Each candidate URL of a `srcset` (`url [descriptor], url [descriptor], …`). */
+export const srcsetCandidates = (value: string) =>
+  value
+    .split(",")
+    .map((c) => c.trim().split(/\s+/)[0] ?? "")
+    .filter(Boolean);
+
+export interface ResourceReference {
+  where: string;
+  url: string;
+}
+
+/** Every resource the markup would make a browser fetch, one URL per entry. */
+export function resourceReferences(d: Document): ResourceReference[] {
+  const out: ResourceReference[] = [];
   for (const el of d.querySelectorAll("*")) {
     const tag = el.tagName.toLowerCase();
     for (const attr of el.getAttributeNames()) {
       const value = el.getAttribute(attr) ?? "";
       const name = attr.toLowerCase();
-      if (FETCHING_ATTRIBUTES.includes(name)) out.push(`<${tag} ${name}>: ${value}`);
+      const where = `<${tag} ${name}>`;
+      if (name === "srcset") out.push(...srcsetCandidates(value).map((url) => ({ where, url })));
+      else if (FETCHING_ATTRIBUTES.includes(name)) out.push({ where, url: value });
       // A link the reader follows is not a request; any other href (stylesheet, svg image/use…) is.
-      if ((name === "href" || name === "xlink:href") && tag !== "a" && !value.startsWith("#")) out.push(`<${tag} ${name}>: ${value}`);
-      if (name === "style") out.push(...cssReferences(value).map((u) => `<${tag} style>: ${u}`));
+      if ((name === "href" || name === "xlink:href") && tag !== "a" && !value.startsWith("#")) out.push({ where, url: value });
+      if (name === "style") out.push(...cssReferences(value).map((url) => ({ where: `<${tag} style>`, url })));
     }
-    if (tag === "style") out.push(...cssReferences(el.textContent ?? "").map((u) => `<style>: ${u}`));
+    if (tag === "style") out.push(...cssReferences(el.textContent ?? "").map((url) => ({ where: "<style>", url })));
   }
   return out;
 }
@@ -98,10 +113,9 @@ export function checkPage(html: string, sheets: string[], offline: boolean): { p
     if (text.includes(artefact)) problems.push(`suspicious artefact in output: ${artefact}`);
   }
 
-  for (const ref of resourceReferences(d)) {
-    const url = ref.slice(ref.indexOf(": ") + 2);
-    if (offline) problems.push(`offline file references ${ref}`);
-    else if (isExternal(url)) problems.push(`site loads an external resource: ${ref}`);
+  for (const { where, url } of resourceReferences(d)) {
+    if (offline) problems.push(`offline file references ${where}: ${url}`);
+    else if (isExternal(url)) problems.push(`site loads an external resource: ${where}: ${url}`);
   }
 
   const stats = {

@@ -3,11 +3,15 @@
  * The two adapters around the shared page stay thin: the Gatsby lifecycle
  * files and template, and the offline renderer and client.
  */
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { act, type ReactElement } from "react";
 import { renderToStaticMarkup, renderToString } from "react-dom/server";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import gatsbyConfig from "../gatsby-config";
-import { createPages } from "../gatsby-node";
+import { createPages, createPagesStatefully } from "../gatsby-node";
+import { stopContentWatch } from "../src/adapters/gatsby/content";
 import { wrapRootElement as wrapBrowser } from "../gatsby-browser";
 import { onRenderBody, wrapRootElement as wrapSsr } from "../gatsby-ssr";
 import CatalogTemplate, { Head } from "../src/adapters/gatsby/CatalogTemplate";
@@ -56,6 +60,40 @@ describe("Gatsby adapter", () => {
     const withFixtures = await run("1");
     expect(withFixtures.map((p) => p.path)).toEqual(["/", "/kotlin-fixture/"]);
     expect(new Set(withFixtures.map((p) => p.component)).size).toBe(1); // one template for every language
+  });
+
+  it("re-creates catalog pages when content changes under gatsby develop, and survives a bad save", async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "develop-"));
+    fs.cpSync(path.resolve("content"), path.join(tmp, "content"), { recursive: true });
+    fs.mkdirSync(path.join(tmp, "src/adapters/gatsby"), { recursive: true });
+    const cwd = process.cwd();
+    const env = process.env.NODE_ENV;
+    const createPage = vi.fn();
+    const error = vi.fn();
+    process.chdir(tmp);
+    process.env.NODE_ENV = "development";
+    try {
+      await (createPagesStatefully as (a: unknown) => Promise<void>)({ actions: { createPage }, reporter: { info: vi.fn(), error } });
+      const sheet = path.join(tmp, "content/languages/swift/sheets/solid.yaml");
+      fs.writeFileSync(sheet, fs.readFileSync(sheet, "utf8").replace("title: SOLID in Swift", "title: SOLID in Swift (edited)"));
+      await vi.waitFor(() => expect(createPage).toHaveBeenCalled(), { timeout: 3000, interval: 50 });
+      const ctx = createPage.mock.calls.at(-1)![0].context.catalog;
+      expect(ctx.sheets.find((x: { id: string }) => x.id === "solid").title).toBe("SOLID in Swift (edited)");
+
+      fs.writeFileSync(sheet, "id: [\n");
+      await vi.waitFor(() => expect(error).toHaveBeenCalled(), { timeout: 3000, interval: 50 });
+      expect(String(error.mock.calls[0]![0])).toMatch(/solid\.yaml/);
+    } finally {
+      stopContentWatch();
+      process.chdir(cwd);
+      process.env.NODE_ENV = env;
+    }
+  });
+
+  it("does not watch content in a production build", async () => {
+    const createPage = vi.fn();
+    await (createPagesStatefully as (a: unknown) => Promise<void>)({ actions: { createPage }, reporter: { info: vi.fn(), error: vi.fn() } });
+    expect(createPage).not.toHaveBeenCalled();
   });
 
   it("renders the template and its head from page context", () => {

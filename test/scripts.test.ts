@@ -41,6 +41,16 @@ describe("verify: built-page checks", () => {
     expect(checkPage(page('<a href="https://swift.org">docs</a><svg><path marker-end="url(#m)"></path></svg>'), ["a"], true).problems).toEqual([]);
   });
 
+  it("checks every srcset candidate and quoted @import on the site, not just the first or the label", () => {
+    const mixed = '<img srcset="/small.png 1x, https://cdn.example/large.png 2x">';
+    expect(checkPage(page(mixed), ["a"], false).problems.join()).toMatch(/external resource: <img srcset>: https:\/\/cdn\.example\/large\.png/);
+    expect(checkPage(page('<img srcset="/a.png 1x, /b.png 2x">'), ["a"], false).problems).toEqual([]);
+    for (const css of ['@import "https://cdn.example/theme.css";', "@import 'https://cdn.example/theme.css';", "@import url(https://cdn.example/theme.css);"]) {
+      expect(checkPage(page(`<style>${css}</style>`), ["a"], false).problems.join(), css).toMatch(/external resource: <style>: https:\/\/cdn\.example/);
+    }
+    expect(checkPage(page('<style>@import "/local.css";</style>'), ["a"], false).problems).toEqual([]);
+  });
+
   it("lets the site load its own files but nothing external", () => {
     expect(checkPage(page('<script src="/app.js"></script><link rel="preload" href="/page-data/app.json">'), ["a"], false).problems).toEqual([]);
     expect(checkPage(page('<script src="https://cdn.test/x.js"></script>'), ["a"], false).problems.join()).toMatch(/external resource/);
@@ -58,7 +68,7 @@ describe("verify: built-page checks", () => {
   });
 
   it("reads url() and @import forms out of CSS", () => {
-    expect(cssReferences("a{b:url('x.png')} c{d:url(#m)} @import \"y.css\";")).toEqual(["x.png", "@import y.css"]);
+    expect(cssReferences("a{b:url('x.png')} c{d:url(#m)} @import \"y.css\"; @import url(z.css);")).toEqual(["x.png", "z.css", "y.css"]);
   });
 
   it("checks the repository's built pages, and fails when there is nothing to check", () => {
