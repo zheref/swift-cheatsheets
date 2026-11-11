@@ -6,6 +6,7 @@
 import { act, type ReactElement } from "react";
 import { renderToStaticMarkup, renderToString } from "react-dom/server";
 import { beforeAll, describe, expect, it, vi } from "vitest";
+import gatsbyConfig from "../gatsby-config";
 import { createPages } from "../gatsby-node";
 import { wrapRootElement as wrapBrowser } from "../gatsby-browser";
 import { onRenderBody, wrapRootElement as wrapSsr } from "../gatsby-ssr";
@@ -30,6 +31,10 @@ const fixture = loadCatalog(FIXTURE_DIR);
 type Call<F> = F extends (...a: infer A) => unknown ? A[0] : never;
 
 describe("Gatsby adapter", () => {
+  it("is configured for folder routes, with no plugins and no GraphQL typegen", () => {
+    expect(gatsbyConfig).toMatchObject({ trailingSlash: "always", jsxRuntime: "automatic", graphqlTypegen: false, plugins: [] });
+  });
+
   it("creates one page per published catalog, and the fixtures only on request", async () => {
     const run = async (env?: string) => {
       const createPage = vi.fn();

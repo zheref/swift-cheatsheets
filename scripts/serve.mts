@@ -72,8 +72,13 @@ export const lanAddress = () =>
     .flat()
     .find((i) => i && i.family === "IPv4" && !i.internal)?.address ?? "127.0.0.1";
 
-function main() {
+/**
+ * Parses the command line and starts listening. Returns the server, or the one-line
+ * reason it refused to start (the CLI prints it and exits 1).
+ */
+export function start(argv: string[], log: (line: string) => void = console.log): http.Server | string {
   const { values } = parseArgs({
+    args: argv,
     options: {
       port: { type: "string", default: "8000" },
       dir: { type: "string", default: "public" },
@@ -85,14 +90,8 @@ function main() {
   });
 
   const root = path.resolve(values.dir);
-  if (!fs.existsSync(path.join(root, "index.html"))) {
-    console.error(`  ${root}/index.html is missing — run \`npm run build\` first.`);
-    process.exit(1);
-  }
-  if (Boolean(values.cert) !== Boolean(values.key)) {
-    console.error("  --cert and --key go together: give both for HTTPS, or neither for HTTP.");
-    process.exit(1);
-  }
+  if (!fs.existsSync(path.join(root, "index.html"))) return `${root}/index.html is missing — run \`npm run build\` first.`;
+  if (Boolean(values.cert) !== Boolean(values.key)) return "--cert and --key go together: give both for HTTPS, or neither for HTTP.";
 
   const secure = Boolean(values.cert && values.key);
   const handler = createHandler(root);
@@ -100,20 +99,30 @@ function main() {
     ? https.createServer({ cert: fs.readFileSync(values.cert!), key: fs.readFileSync(values.key!) }, handler)
     : http.createServer(handler);
   const scheme = secure ? "https" : "http";
-  const port = Number(values.port);
   const lan = values.lan || lanAddress();
 
-  server.listen(port, values.host, () => {
-    console.log("");
-    console.log(`  Reference Cheat Sheets  (${scheme.toUpperCase()})`);
-    console.log("  ---------------------------------------------------------");
-    console.log(`  This Mac : ${scheme}://localhost:${port}/`);
-    console.log(`  iPad etc : ${scheme}://${lan}:${port}/`);
-    console.log("  ---------------------------------------------------------");
-    console.log(secure ? "  Self-signed: accept the certificate warning once per device." : "  Type the http:// prefix explicitly on the other device.");
-    console.log("  Same Wi-Fi network required. Ctrl-C to stop.");
-    console.log("");
+  server.listen(Number(values.port), values.host, () => {
+    const port = (server.address() as { port: number }).port;
+    for (const line of [
+      "",
+      `  Reference Cheat Sheets  (${scheme.toUpperCase()})`,
+      "  ---------------------------------------------------------",
+      `  This Mac : ${scheme}://localhost:${port}/`,
+      `  iPad etc : ${scheme}://${lan}:${port}/`,
+      "  ---------------------------------------------------------",
+      secure ? "  Self-signed: accept the certificate warning once per device." : "  Type the http:// prefix explicitly on the other device.",
+      "  Same Wi-Fi network required. Ctrl-C to stop.",
+      "",
+    ])
+      log(line);
   });
+  return server;
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) main();
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  const result = start(process.argv.slice(2));
+  if (typeof result === "string") {
+    console.error(`  ${result}`);
+    process.exit(1);
+  }
+}

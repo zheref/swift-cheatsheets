@@ -8,7 +8,7 @@ import type { AddressInfo } from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { createHandler, resolveRequest } from "../scripts/serve.mts";
+import { createHandler, lanAddress, resolveRequest, start } from "../scripts/serve.mts";
 import { checkPage, cssReferences, verifyRepository } from "../scripts/verify.mts";
 import { ROOT } from "./helpers";
 
@@ -127,6 +127,22 @@ describe("serve: the LAN static server", () => {
       expect(res.body, p).not.toMatch(/secret|sibling/);
     }
     expect(resolveRequest(site, "/../sitex/x.txt")).toBeNull();
+  });
+
+  it("starts from the command line, printing the LAN address it was given", async () => {
+    const lines: string[] = [];
+    const s = start(["--port", "0", "--host", "127.0.0.1", "--dir", site, "--lan", "192.0.2.7"], (l) => lines.push(l));
+    expect(typeof s).not.toBe("string");
+    await new Promise((r) => setTimeout(r, 50));
+    expect(lines.join("\n")).toMatch(/iPad etc : http:\/\/192\.0\.2\.7:\d+\//);
+    (s as http.Server).close();
+    expect(lanAddress()).toMatch(/^\d+\.\d+\.\d+\.\d+$/);
+  });
+
+  it("refuses to start without a built site, or with only one of --cert and --key", () => {
+    expect(start(["--dir", path.join(root, "nope")])).toMatch(/index\.html is missing/);
+    expect(start(["--dir", site, "--cert", "c.pem"])).toMatch(/--cert and --key go together/);
+    expect(start(["--dir", site, "--key", "k.pem"])).toMatch(/--cert and --key go together/);
   });
 
   it("allows only GET and HEAD, and HEAD sends no body", async () => {
