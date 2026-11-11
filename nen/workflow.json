@@ -18,6 +18,45 @@
               "paths": ["src/ui/**", "src/adapters/**", "src/pages/**", "gatsby-ssr.tsx", "gatsby-browser.tsx", "content/**/diagrams/**", "index.html", "**/*.css", "**/*.svg"] }
     }
   },
+  "models": {
+    "$comment": "Set up at zheref/swift-cheatsheets#1's PR (shibari's Delivery block reads it) from Hatsu's catalogue default: model aliases by tier, never versions. Consumer-owned once set.",
+    "rule": "latest alias only, never a version; subagents never on the frontier tier, save great-hiker's prose subsession (docs/ROSTER.md HR-336, HR-362)",
+    "claude": {
+      "frontier": "fable",
+      "deep": "opus",
+      "fast": "sonnet",
+      "economy": "haiku"
+    },
+    "codex": {
+      "frontier": "astra",
+      "deep": "sol",
+      "fast": "terra",
+      "economy": "luna"
+    },
+    "cursor": {
+      "frontier": "grok",
+      "deep": "grok",
+      "fast": "composer",
+      "economy": "composer",
+      "note": "Cursor-native only; provider models there are reserved for Bugbot"
+    },
+    "antigravity": {
+      "frontier": "gemini-4-argon",
+      "deep": "pro",
+      "fast": "flash",
+      "economy": "flash",
+      "note": "Google AI / Gemini tiers. A persona's model accepts only inherit, flash or pro (https://antigravity.google/docs/subagents, fetched 2026-09-20), so economy maps to flash here; flash_lite is not a documented persona value"
+    },
+    "roles": {
+      "reviewer": "deep",
+      "worker": "fast",
+      "measurer": "fast",
+      "orchestrator": "frontier",
+      "watcher": "economy",
+      "formatter": "economy",
+      "$comment": "watcher and formatter run on economy (zheref/hatsu#93): Illumi and hatsu:izanami polls run as watcher, formatting passes (gyo's auto-fix, prose reflow) as formatter. A role maps to a tier, never to a model. A subagent's tier is its scope's or role's, never its caller's (zheref/hatsu#222, ruling of 2026-10-13): a reviewer keeps its scope's declared tier (review.scopes.<scope>.tier, this reviewer tier by default) when hatsu:direct sends the maintainer's own session to fast or economy; docs/WORKFLOW.md section models states it."
+    }
+  },
   "coverage": {
     "minimum": 80,
     "recommended": 85,
