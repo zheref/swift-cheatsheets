@@ -1,0 +1,210 @@
+id: swiftui-state
+concept: ui.state-and-data-flow
+scope: platform
+title: SwiftUI — State & Data Flow
+group: SwiftUI
+subtitle: Pick the wrong wrapper and the view either never updates or resets constantly.
+applies:
+  platforms:
+    - ios
+    - ipados
+    - macos
+    - tvos
+    - watchos
+    - visionos
+  requires:
+    - SwiftUI
+sources:
+  - title: SwiftUI — Apple Developer Documentation
+    url: https://developer.apple.com/documentation/swiftui
+  - title: Observation — Apple Developer Documentation
+    url: https://developer.apple.com/documentation/observation
+cards:
+  - id: property-wrapper-decision-table
+    kind: table
+    title: Property wrapper decision table
+    note: Left column is what you should reach for first.
+    headers:
+      - Wrapper
+      - Owns the value?
+      - Use when
+    rows:
+      - - "`@State`"
+        - yes
+        - view-local value type, or (iOS 17+) a view-owned `@Observable` object
+      - - "`@Binding`"
+        - no
+        - child needs read/write access to a parent's state
+      - - "`@Observable` + `let`/`@State`"
+        - depends
+        - reference-type model (iOS 17+). Replaces `ObservableObject`
+      - - "`@Bindable`"
+        - no
+        - you need `$` bindings into an `@Observable` object you don't own
+      - - "`@Environment`"
+        - no
+        - system values (`\.dismiss`, `\.colorScheme`) or injected `@Observable` models
+      - - "`@StateObject`"
+        - yes
+        - "**legacy** — view creates an `ObservableObject`; created once per view identity"
+      - - "`@ObservedObject`"
+        - no
+        - "**legacy** — object passed in from outside"
+      - - "`@EnvironmentObject`"
+        - no
+        - "**legacy** — `ObservableObject` from the environment"
+      - - "`@AppStorage` / `@SceneStorage`"
+        - yes
+        - UserDefaults / state restoration
+      - - "`@FocusState`"
+        - yes
+        - keyboard focus for text fields
+  - id: observation-ios-17-vs-observableobject
+    kind: compare
+    title: Observation (iOS 17+) vs ObservableObject
+    note: The single biggest modern-SwiftUI talking point.
+    columns:
+      - label: Modern — @Observable
+        tone: modern
+        code: |-
+          @Observable
+          final class Cart {
+            var items: [Item] = []
+            var isLoading = false
+            var total: Decimal { items.reduce(0) { $0 + $1.price } }
+          }
+
+          struct CartView: View {
+            @State private var cart = Cart()        // view owns it
+            var body: some View {
+              List(cart.items) { ... }
+              ChildView(cart: cart)                 // plain let, no wrapper needed
+            }
+          }
+
+          struct ChildView: View {
+            @Bindable var cart: Cart                // only when you need $bindings
+            var body: some View { Toggle("Gift", isOn: $cart.isGift) }
+          }
+
+          // Tracks per-property: a view only re-renders if it READ that property.
+      - label: Legacy — ObservableObject
+        tone: legacy
+        code: |-
+          final class Cart: ObservableObject {
+            @Published var items: [Item] = []
+            @Published var isLoading = false
+          }
+
+          struct CartView: View {
+            @StateObject private var cart = Cart()  // created ONCE
+            var body: some View {
+              List(cart.items) { ... }
+              ChildView(cart: cart)
+            }
+          }
+
+          struct ChildView: View {
+            @ObservedObject var cart: Cart          // passed in; do NOT create here
+            var body: some View { ... }
+          }
+
+          // objectWillChange fires for ANY @Published change -> whole view re-renders.
+  - id: state-binding
+    kind: code
+    title: State ↔ Binding
+    note: "`$` gives you the projected value."
+    code: |-
+      struct Parent: View {
+        @State private var name = ""
+        @State private var isOn = false
+
+        var body: some View {
+          VStack {
+            Child(name: $name)                // pass a binding down
+            Toggle("On", isOn: $isOn)
+            Text(name)
+          }
+        }
+      }
+
+      struct Child: View {
+        @Binding var name: String
+        var body: some View { TextField("Name", text: $name) }
+      }
+
+      // Derived / computed binding
+      let upper = Binding(
+        get: { name.uppercased() },
+        set: { name = $0.lowercased() }
+      )
+      // Optional -> non-optional binding
+      Binding($optionalName) ?? .constant("")
+  - id: environment-injection
+    kind: code
+    title: Environment injection
+    note: iOS 17+ `@Observable` works with plain `@Environment`.
+    code: |-
+      @Observable final class Session { var user: User? }
+
+      // Inject
+      ContentView()
+        .environment(session)                  // @Observable
+        .environmentObject(legacyStore)        // ObservableObject (legacy)
+
+      // Consume
+      struct ProfileView: View {
+        @Environment(Session.self) private var session
+        @Environment(\.dismiss) private var dismiss
+        @Environment(\.colorScheme) private var scheme
+
+        var body: some View {
+          Text(session.user?.name ?? "Guest")
+          Button("Close") { dismiss() }
+        }
+      }
+
+      // Custom environment value (iOS 17+ macro)
+      extension EnvironmentValues {
+        @Entry var accentTheme: Theme = .default
+      }
+  - id: identity-lifetime-rules
+    kind: rules
+    title: Identity & lifetime rules
+    note: Where most SwiftUI bugs come from.
+    items:
+      - tone: bad
+        text: "`@State` initialisers run every `body` evaluation, but the value is kept — never rely on the initialiser running once for side effects."
+      - tone: bad
+        text: Creating an `ObservableObject` with `@ObservedObject var vm = VM()` recreates it on every render. Use `@StateObject`.
+      - tone: bad
+        text: Changing a view's **structural identity** (branch of `if`, position in a `ForEach`) destroys its `@State`.
+      - tone: good
+        text: Give `ForEach` stable IDs (`Identifiable`), never array indices for mutable collections.
+      - tone: good
+        text: "`.id(value)` deliberately forces a fresh identity — useful to reset a subview."
+      - tone: good
+        text: "`.task(id:)` cancels and restarts when the id changes; it's tied to view lifetime."
+      - tone: neutral
+        text: "`onAppear`/`onDisappear` can fire multiple times (e.g. in `NavigationStack`); prefer `.task` for async work."
+  - id: async-work-in-a-view
+    kind: code
+    title: Async work in a view
+    note: ""
+    code: |-
+      struct FeedView: View {
+        @State private var items: [Item] = []
+        @State private var phase: Phase = .loading
+
+        var body: some View {
+          List(items) { ItemRow($0) }
+            .task {                              // auto-cancelled on disappear
+              do { items = try await api.feed() ; phase = .loaded }
+              catch { phase = .failed(error) }
+            }
+            .refreshable {                       // pull-to-refresh, async by design
+              items = (try? await api.feed()) ?? items
+            }
+            .task(id: selectedCategory) { ... }  // restart when the id changes
+        }
+      }

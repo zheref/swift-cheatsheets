@@ -1,0 +1,179 @@
+id: conc-actors
+concept: concurrency.isolation
+scope: language
+title: Actors, Sendable & Isolation
+group: Concurrency
+subtitle: The Swift 6 data-race safety model, and how to talk about it.
+applies:
+  versions:
+    swift: ">=6.0"
+sources:
+  - title: Concurrency — The Swift Programming Language
+    url: https://docs.swift.org/swift-book/documentation/the-swift-programming-language/concurrency/
+  - title: Migrating to Swift 6 — swift.org
+    url: https://www.swift.org/migration/documentation/migrationguide/
+cards:
+  - id: actor-reference-type-with-a-serial-executor
+    kind: code
+    title: actor = reference type with a serial executor
+    note: Mutable state protected by the compiler.
+    code: |-
+      actor ImageCache {
+        private var cache: [URL: UIImage] = [:]        // isolated: only reachable via await
+
+        func image(for url: URL) -> UIImage? { cache[url] }     // implicitly async from outside
+
+        func insert(_ image: UIImage, for url: URL) { cache[url] = image }
+
+        nonisolated let name: String = "images"        // immutable -> no isolation needed
+        nonisolated func describe() -> String { "Cache(\(name))" }
+      }
+
+      let cache = ImageCache()
+      await cache.insert(image, for: url)              // cross-actor call = await
+      let img = await cache.image(for: url)
+  - id: actor-reentrancy-the-classic-trap
+    kind: code
+    title: Actor reentrancy — the classic trap
+    note: Every `await` inside an actor is a chance for other calls to interleave.
+    code: |-
+      actor Downloader {
+        private var cache: [URL: Data] = [:]
+        private var inFlight: [URL: Task<Data, Error>] = [:]
+
+        // BUG: two callers can both see an empty cache and both download.
+        func badFetch(_ url: URL) async throws -> Data {
+          if let hit = cache[url] { return hit }
+          let data = try await URLSession.shared.data(from: url).0   // <-- suspension!
+          cache[url] = data
+          return data
+        }
+
+        // FIX: store the *task*, not just the result, before suspending.
+        func fetch(_ url: URL) async throws -> Data {
+          if let hit = cache[url] { return hit }
+          if let running = inFlight[url] { return try await running.value }
+          let task = Task { try await URLSession.shared.data(from: url).0 }
+          inFlight[url] = task
+          defer { inFlight[url] = nil }
+          let data = try await task.value
+          cache[url] = data
+          return data
+        }
+      }
+  - id: sendable-in-one-screen
+    kind: rules
+    title: Sendable in one screen
+    note: What can safely cross an isolation boundary.
+    items:
+      - tone: good
+        text: "`struct`/`enum` of `Sendable` members → implicit `Sendable` (if not `public`; `public` needs explicit conformance)."
+      - tone: good
+        text: "`final class` with only `let` `Sendable` properties → can be `Sendable`."
+      - tone: good
+        text: "`actor` types are always `Sendable`."
+      - tone: bad
+        text: Non-final classes and classes with `var` state are **not** `Sendable`.
+      - tone: legacy
+        text: '`@unchecked Sendable` = "I promise I lock correctly." Only with a real mutex/queue inside.'
+      - tone: modern
+        text: "`@Sendable` on closures: no capture of non-Sendable state, no mutable captures."
+      - tone: modern
+        text: "`sending` parameters (SE-0430) transfer ownership across isolation without needing `Sendable`."
+  - id: sendable-conformance
+    kind: compare
+    title: Sendable conformance
+    note: ""
+    columns:
+      - label: Do
+        tone: good
+        code: |-
+          struct User: Sendable {
+            let id: UUID
+            let name: String
+          }
+
+          final class Counter: @unchecked Sendable {
+            private let lock = NSLock()
+            private var _value = 0
+            var value: Int { lock.withLock { _value } }
+            func increment() { lock.withLock { _value += 1 } }
+          }
+
+          @MainActor final class ViewModel { var items: [User] = [] }
+          // MainActor isolation makes it safe to share.
+      - label: Don't
+        tone: bad
+        code: |-
+          final class Counter: @unchecked Sendable {
+            var value = 0                 // no lock -> a lie to the compiler
+          }
+
+          class Model: Sendable { }       // non-final: subclass can add mutable state
+
+          // Capturing mutable local state in a @Sendable closure
+          var total = 0
+          Task { total += 1 }             // error / race
+  - id: global-actors-custom-isolation
+    kind: code
+    title: Global actors & custom isolation
+    note: "`@MainActor` is just the built-in global actor."
+    code: |-
+      @globalActor
+      actor DatabaseActor {
+        static let shared = DatabaseActor()
+      }
+
+      @DatabaseActor
+      final class Store {
+        private var rows: [Row] = []          // all members isolated to DatabaseActor
+        func insert(_ r: Row) { rows.append(r) }
+      }
+
+      @DatabaseActor func migrate() async { ... }
+
+      // Opting a member out
+      @MainActor
+      final class VM {
+        nonisolated let id = UUID()
+        nonisolated func pureHelper(_ x: Int) -> Int { x * 2 }
+      }
+  - id: isolated-sending-parameters
+    kind: code
+    title: Isolated & sending parameters
+    note: Advanced but very quotable in an interview.
+    code: |-
+      // Run code *in* someone else's isolation domain
+      func mutate(_ cache: isolated ImageCache, url: URL) {
+        cache.evict(url)                        // no await needed: we're isolated to it
+      }
+
+      // Transfer a non-Sendable value across a boundary (compiler proves no other refs)
+      func handOff(_ model: sending NonSendableModel) async {
+        await actor.consume(model)
+      }
+
+      // #isolation gives the caller's isolation to a generic API
+      func run(isolation: isolated (any Actor)? = #isolation, _ body: () async -> Void) async {
+        await body()
+      }
+  - id: isolation-quick-decisions
+    kind: table
+    title: Isolation quick decisions
+    note: ""
+    headers:
+      - Situation
+      - Answer
+    rows:
+      - - UI / view model state
+        - "`@MainActor` on the type"
+      - - Shared mutable cache or connection pool
+        - "`actor`"
+      - - Pure value passed between tasks
+        - "`struct` + `Sendable`"
+      - - Legacy class you can't change
+        - wrap in an `actor`, or `@unchecked Sendable` + lock
+      - - One-off background computation
+        - "`Task.detached` or `await` a `nonisolated` func"
+      - - Callback API from a C/ObjC lib
+        - "`AsyncStream` or continuation, marked `@Sendable`"

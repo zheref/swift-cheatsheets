@@ -1,0 +1,21 @@
+# A TEST FIXTURE, not reference material: it proves a second language renders
+# through the same content model and page with data alone (issue #1, AC-4).
+# status `fixture` keeps it out of every published build; the real Kotlin
+# catalog is issue #3's.
+id: kotlin-fixture
+name: Kotlin (fixture)
+title: Kotlin Fixture Catalog
+route: /kotlin-fixture/
+status: fixture
+description: Fixture catalog used by tests to prove the content model is language-neutral.
+locale: en
+codeLanguage: kotlin
+highlight:
+  keywords: [fun, val, var, class, data, object, interface, when, if, else, return, suspend, "null", "true", "false", is, in, for, while, import, package]
+  lineComment: "//"
+  blockComment: ["/*", "*/"]
+  attributePrefix: "@"
+applies:
+  runtime: Kotlin/JVM
+  platforms: [jvm]
+sheets: [fixture-collections, fixture-concurrency]

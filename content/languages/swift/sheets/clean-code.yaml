@@ -1,0 +1,327 @@
+id: clean-code
+concept: practice.clean-code
+scope: shared
+title: Clean Code in Swift
+group: Design & Language
+subtitle: Naming, functions, comments, errors, tests — the reviewable habits, with Swift-flavoured examples.
+cards:
+  - id: the-short-version
+    kind: rules
+    title: The short version
+    note: If you can only remember five things.
+    items:
+      - tone: modern
+        text: "**Names reveal intent.** A good name removes the need for a comment."
+      - tone: modern
+        text: "**Functions do one thing**, at one level of abstraction, and are small."
+      - tone: modern
+        text: "**Fewer arguments is better.** 0 > 1 > 2 > 3. Flags are a smell."
+      - tone: modern
+        text: "**No surprises.** A function's name should predict its side effects — ideally there are none."
+      - tone: modern
+        text: "**The boy scout rule.** Leave the code cleaner than you found it; refactor in small, safe steps."
+      - tone: neutral
+        text: Clean code is optimised for *reading*. Code is read far more often than it is written.
+  - id: naming
+    kind: compare
+    title: Naming
+    note: Intention-revealing, pronounceable, searchable, no encodings.
+    columns:
+      - label: Don't
+        tone: bad
+        code: |-
+          var d: Int                     // elapsed time in days
+          var list1: [User]
+          var flag = false
+          let strName: String            // Hungarian notation
+          func proc(_ a: [User]) -> [User]
+
+          func getUserData() -> Data     // "data"? "info"? "manager"?
+          class UserInfoDataManagerHelper { }
+
+          if user.t == 2 { ... }         // magic number
+      - label: Do
+        tone: good
+        code: |-
+          var elapsedDays: Int
+          var activeUsers: [User]
+          var isEligibleForRefund = false
+          let customerName: String
+          func removingBannedUsers(from users: [User]) -> [User]
+
+          func fetchUserProfile() async throws -> UserProfile
+          struct UserProfileRepository { }
+
+          enum AccountTier: Int { case free, plus, pro }
+          if user.tier == .pro { ... }
+
+          // Swift API Design Guidelines:
+          //   mutating -> imperative verb:  array.sort()
+          //   nonmutating -> -ed/-ing noun: array.sorted()
+  - id: functions-small-one-level-of-abstraction
+    kind: compare
+    title: "Functions: small, one level of abstraction"
+    note: Extract until you cannot extract anymore.
+    columns:
+      - label: Before
+        tone: bad
+        code: |-
+          func checkout(_ cart: Cart) throws -> Receipt {
+            var total: Decimal = 0
+            for item in cart.items {
+              guard item.stock > 0 else { throw CheckoutError.outOfStock(item.id) }
+              var price = item.price
+              if item.isOnSale { price *= 0.8 }
+              if cart.user.tier == .pro { price *= 0.9 }
+              total += price * Decimal(item.quantity)
+            }
+            if total > 100 { total -= 5 }
+            let tax = total * 0.21
+            let charge = total + tax
+            let token = try payments.charge(charge)
+            analytics.log("checkout", ["total": charge])
+            return Receipt(total: charge, tax: tax, token: token)
+          }
+      - label: After
+        tone: good
+        code: |-
+          func checkout(_ cart: Cart) throws -> Receipt {
+            try validateStock(cart)
+            let subtotal = subtotal(for: cart)
+            let discounted = applyOrderDiscounts(to: subtotal)
+            let tax = taxAmount(on: discounted)
+            let token = try payments.charge(discounted + tax)
+            analytics.log(.checkout(total: discounted + tax))
+            return Receipt(total: discounted + tax, tax: tax, token: token)
+          }
+
+          private func price(of item: CartItem, for tier: AccountTier) -> Decimal {
+            item.price * item.saleMultiplier * tier.discountMultiplier
+          }
+          // Each helper sits at ONE level of abstraction, and each is unit-testable.
+  - id: arguments-flag-parameters
+    kind: compare
+    title: Arguments & flag parameters
+    note: A boolean argument means the function does two things.
+    columns:
+      - label: Don't
+        tone: bad
+        code: |-
+          func render(_ user: User, _ compact: Bool, _ animated: Bool) { ... }
+          render(user, true, false)          // unreadable at the call site
+
+          func save(_ item: Item, validate: Bool = true) {
+            if validate { ... }
+            store.write(item)
+          }
+      - label: Do
+        tone: good
+        code: |-
+          enum RowStyle { case compact, expanded }
+          func render(_ user: User, style: RowStyle, animation: Animation?) { ... }
+          render(user, style: .compact, animation: nil)
+
+          func save(_ item: Item) throws { try validate(item); store.write(item) }
+          func saveWithoutValidation(_ item: Item) { store.write(item) }
+
+          // >3 arguments? Introduce a parameter object.
+          struct SearchQuery { let text: String; let page: Int; let filters: [Filter] }
+          func search(_ query: SearchQuery) async throws -> [Result]
+  - id: comments
+    kind: compare
+    title: Comments
+    note: Comments explain WHY. Code explains WHAT.
+    columns:
+      - label: Noise
+        tone: bad
+        code: |-
+          // increment the counter by one
+          counter += 1
+
+          // MARK: - Properties
+          var name: String        // the name
+
+          /*
+          func oldImplementation() {   // dead code, delete it
+             ...
+          }
+          */
+
+          // TODO: fix this (2019)
+      - label: Useful
+        tone: good
+        code: |-
+          // The server returns 200 with an empty body when the token has
+          // expired (see BUG-4821); treat it as unauthenticated.
+          guard !data.isEmpty else { throw APIError.unauthenticated }
+
+          /// Returns the users who can be refunded.
+          /// - Note: Only orders under 30 days old are eligible.
+          func refundableUsers() -> [User]
+
+          // Prefer making it self-documenting instead of commenting:
+          let isRefundEligible = order.age < .days(30) && order.state == .delivered
+  - id: error-handling-over-sentinel-values
+    kind: compare
+    title: Error handling over sentinel values
+    note: ""
+    columns:
+      - label: Don't
+        tone: bad
+        code: |-
+          func loadUser(id: String) -> User? {
+            guard let data = try? Data(contentsOf: url) else { return nil }
+            return try? JSONDecoder().decode(User.self, from: data)
+          }
+          // Caller has no idea WHY it failed.
+
+          func parse(_ s: String) -> Int { Int(s) ?? -1 }   // magic sentinel
+
+          if result == nil { /* network? decoding? not found? */ }
+      - label: Do
+        tone: good
+        code: |-
+          enum UserError: Error {
+            case notFound(id: String)
+            case decoding(underlying: Error)
+          }
+
+          func loadUser(id: String) async throws -> User {
+            let data = try await api.data(for: id)
+            do { return try JSONDecoder().decode(User.self, from: data) }
+            catch { throw UserError.decoding(underlying: error) }
+          }
+
+          // Return empty collections, not nil.
+          func tags() -> [Tag] { stored ?? [] }
+  - id: code-smells-checklist
+    kind: rules
+    title: Code smells checklist
+    note: Say these names when reviewing code out loud.
+    items:
+      - tone: bad
+        text: "**Long function / god object** — many reasons to change, hard to name."
+      - tone: bad
+        text: "**Deep nesting** — invert conditions and use `guard` for early exit."
+      - tone: bad
+        text: "**Duplicated logic** — the third copy is when you extract."
+      - tone: bad
+        text: "**Primitive obsession** — `String` for an id/email; use a typed wrapper."
+      - tone: bad
+        text: "**Feature envy** — a method that mostly touches another type's data; move it."
+      - tone: bad
+        text: "**Shotgun surgery** — one change forces edits in ten files; the abstraction is wrong."
+      - tone: bad
+        text: "**Temporal coupling** — `configure()` must be called before `start()`; enforce it in the initialiser."
+      - tone: bad
+        text: "**Boolean blindness** — several `Bool`s that encode one state; use an `enum`."
+  - id: guard-clauses-the-arrow-anti-pattern
+    kind: compare
+    title: Guard clauses & the arrow anti-pattern
+    note: ""
+    columns:
+      - label: Nested
+        tone: bad
+        code: |-
+          func handle(_ response: Response?) {
+            if let response {
+              if response.statusCode == 200 {
+                if let body = response.body {
+                  if !body.isEmpty {
+                    process(body)
+                  }
+                }
+              }
+            }
+          }
+      - label: Flat
+        tone: good
+        code: |-
+          func handle(_ response: Response?) {
+            guard let response else { return }
+            guard response.statusCode == 200 else { return log(.badStatus) }
+            guard let body = response.body, !body.isEmpty else { return }
+            process(body)
+          }
+          // Happy path stays at the left margin.
+  - id: typed-wrappers-beat-primitives
+    kind: code
+    title: Typed wrappers beat primitives
+    note: Cheap in Swift, and the compiler catches whole bug classes.
+    code: |-
+      struct UserID: Hashable, Codable, RawRepresentable { let rawValue: String }
+      struct Email: Hashable {
+        let value: String
+        init?(_ raw: String) {
+          guard raw.contains("@") else { return nil }   // parse, don't validate later
+          value = raw
+        }
+      }
+
+      func message(from: UserID, to: UserID) { }
+      message(from: sender, to: recipient)     // can't accidentally swap with an order id
+
+      // Units
+      struct Meters: Numeric { ... }
+      let distance: Meters = 400
+  - id: clean-tests-f-i-r-s-t
+    kind: rules
+    title: Clean tests (F.I.R.S.T.)
+    note: ""
+    items:
+      - tone: good
+        text: "**Fast** — milliseconds. No network, no sleeps: inject a clock."
+      - tone: good
+        text: "**Independent** — order must not matter; no shared mutable state between tests."
+      - tone: good
+        text: "**Repeatable** — inject `Date`, `UUID`, randomness. No flakiness."
+      - tone: good
+        text: "**Self-validating** — a pass/fail assertion, never manual inspection of a log."
+      - tone: good
+        text: "**Timely** — written with (or before) the code."
+      - tone: neutral
+        text: One logical assertion per test; name it `test_whenX_thenY`. Arrange / Act / Assert structure.
+  - id: arrange-act-assert
+    kind: code
+    title: Arrange–Act–Assert
+    note: ""
+    code: |-
+      @Test
+      func refund_isRejected_whenOrderIsOlderThan30Days() throws {
+        // Arrange
+        let order = Order.stub(placedAt: .distantPast, state: .delivered)
+        let sut = RefundService(now: { .fixed })      // injected clock -> repeatable
+
+        // Act
+        let result = sut.eligibility(for: order)
+
+        // Assert
+        #expect(result == .rejected(reason: .expired))
+      }
+
+      // "sut" = system under test. Keep stubs in factory helpers so the
+      // test body shows only what is RELEVANT to this case.
+  - id: uncle-bob-rule-swift-idiom
+    kind: table
+    title: Uncle Bob rule → Swift idiom
+    note: ""
+    headers:
+      - Clean Code rule
+      - Swift way to satisfy it
+    rows:
+      - - Avoid `null`
+        - "`Optional` + `guard let`; return empty collections"
+      - - Don't return error codes
+        - "`throws` + typed `Error` enums, or `Result`"
+      - - Prefer polymorphism to `switch`
+        - protocols, or an `enum` when the set is closed
+      - - Encapsulate conditionals
+        - "computed properties: `var isEligible: Bool`"
+      - - Avoid output arguments
+        - return values; `inout` only for local, obvious mutation
+      - - Keep classes small (SRP)
+        - "`struct` + protocol composition; extensions per concern"
+      - - Dependency injection
+        - initialiser injection, closures, `@Dependency` in TCA
+      - - Separate construction from use
+        - factories, `Builder`, DI container / composition root

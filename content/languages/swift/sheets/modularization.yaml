@@ -1,0 +1,176 @@
+id: modularization
+concept: architecture.modularization
+scope: shared
+title: Modularization Approaches
+group: iOS Practice
+subtitle: Split by feature, invert with interfaces, keep the graph acyclic — and watch build times fall.
+sources:
+  - title: Swift Package Manager — swift.org
+    url: https://www.swift.org/documentation/package-manager/
+cards:
+  - id: a-module-graph-that-scales
+    kind: diagram
+    title: A module graph that scales
+    note: Four layers, arrows only ever point down. This is the picture to draw.
+    svg: modularization--a-module-graph-that-scales.svg
+  - id: interface-modules-strategy-comparison
+    kind: diagram
+    title: Interface modules + strategy comparison
+    note: How to break a dependency between two features without a shared 'Common' blob.
+    svg: modularization--interface-modules-strategy-comparison.svg
+  - id: why-modularize-at-all
+    kind: rules
+    title: Why modularize at all
+    note: Have concrete reasons ready; "cleanliness" is not one.
+    items:
+      - tone: good
+        text: "**Build times** — only the changed module and its dependents recompile."
+      - tone: good
+        text: "**Enforced boundaries** — `internal` is invisible across modules, so architecture becomes compiler-checked."
+      - tone: good
+        text: "**Parallel teams** — clear ownership, fewer merge conflicts in one giant project file."
+      - tone: good
+        text: "**Faster feedback** — run one module's tests, or launch a tiny preview app for one feature."
+      - tone: good
+        text: "**Reuse** — share a design system or networking layer with an extension, watch app, or second product."
+      - tone: bad
+        text: "Cost: more setup, dependency-injection plumbing, resource/bundle handling, and versioning discipline."
+  - id: package-swift-for-a-feature-module
+    kind: code
+    title: Package.swift for a feature module
+    note: One package can hold many targets — start there before many packages.
+    code: |-
+      // swift-tools-version: 6.0
+      import PackageDescription
+
+      let package = Package(
+        name: "Modules",
+        platforms: [.iOS(.v17)],
+        products: [
+          .library(name: "FeatureCheckout", targets: ["FeatureCheckout"]),
+          .library(name: "CatalogInterface", targets: ["CatalogInterface"]),
+        ],
+        dependencies: [
+          .package(url: "https://github.com/pointfreeco/swift-composable-architecture", from: "1.15.0")
+        ],
+        targets: [
+          .target(name: "CatalogInterface"),                       // protocols + models only
+
+          .target(name: "FeatureCheckout",
+                  dependencies: [
+                    "CatalogInterface", "DomainKit", "DesignSystem",
+                    .product(name: "ComposableArchitecture", package: "swift-composable-architecture")
+                  ],
+                  resources: [.process("Resources")],
+                  swiftSettings: [.swiftLanguageMode(.v6)]),
+
+          .target(name: "CatalogLive", dependencies: ["CatalogInterface", "CoreNetworking"]),
+
+          .testTarget(name: "FeatureCheckoutTests",
+                      dependencies: ["FeatureCheckout", "CatalogMock", "CoreTesting"]),
+        ]
+      )
+  - id: interface-module-composition-root
+    kind: code
+    title: Interface module + composition root
+    note: Dependency inversion at module scale.
+    code: |-
+      // ---------- CatalogInterface (tiny, stable, no heavy imports) ----------
+      public protocol CatalogService: Sendable {
+        func products(matching query: String) async throws -> [Product]
+      }
+      public struct Product: Identifiable, Sendable, Equatable { public let id: UUID; public let name: String }
+
+      // ---------- FeatureCheckout: imports the INTERFACE only ----------
+      import CatalogInterface
+
+      public struct CheckoutView: View {
+        private let catalog: any CatalogService          // never knows the concrete type
+        public init(catalog: any CatalogService) { self.catalog = catalog }
+      }
+
+      // ---------- CatalogLive: the heavy implementation ----------
+      import CatalogInterface
+      public struct LiveCatalog: CatalogService { ... }
+
+      // ---------- App: the ONLY place that sees both ----------
+      import FeatureCheckout
+      import CatalogLive
+
+      @main struct MyApp: App {
+        var body: some Scene {
+          WindowGroup { CheckoutView(catalog: LiveCatalog(client: .live)) }
+        }
+      }
+      // Tests & previews inject CatalogMock instead - no rebuild of CatalogLive.
+  - id: access-control-is-the-enforcement-mechanism
+    kind: code
+    title: Access control is the enforcement mechanism
+    note: ""
+    code: |-
+      public struct PaymentSheet: View {        // visible to other modules
+        public init(...) { }                    // public types need an explicit public init!
+        internal let engine: Engine             // module-only (the default)
+        private var attempts = 0                // file/type-only
+        fileprivate func log() { }
+      }
+
+      open class Themable { }                   // subclassable outside the module
+      package func sharedHelper() { }           // Swift 5.9: visible to the same package only
+
+      @_exported import CatalogInterface        // re-export so consumers get it for free
+                                                // (convenient, but leaks your dependency graph)
+
+      // Rule of thumb: default to internal, promote to public deliberately.
+      // The public surface IS the module's contract - review it like an API.
+  - id: choosing-a-strategy
+    kind: table
+    title: Choosing a strategy
+    note: ""
+    headers:
+      - Strategy
+      - Looks like
+      - Use when
+    rows:
+      - - Single app target
+        - everything in the app
+        - solo dev, prototype, < ~20 screens
+      - - Layer-based
+        - "`UI`, `Domain`, `Data`"
+        - small team wanting rules without much plumbing
+      - - Feature-based
+        - "`FeatureCart`, `FeatureSearch`"
+        - multiple squads; the common default
+      - - Feature + interface modules
+        - "`XInterface` / `XLive` / `XMock`"
+        - big codebase where build time and previews matter
+      - - Local SPM packages
+        - one `Package.swift`, many targets
+        - start here — cheapest, fully Xcode-native
+      - - Separate repos + versions
+        - one package per repo
+        - genuine reuse across products; adds release overhead
+      - - Tuist / XcodeGen
+        - generated projects
+        - many modules and you're tired of `.xcodeproj` conflicts
+  - id: pitfalls
+    kind: rules
+    title: Pitfalls
+    note: ""
+    items:
+      - tone: bad
+        text: A **`Common`/`Utils`/`Shared` module** everything depends on — it becomes the new monolith and rebuilds constantly.
+      - tone: bad
+        text: "**Cyclic dependencies** — SPM refuses them; the fix is an interface module or moving the shared type down a layer."
+      - tone: bad
+        text: "**Over-modularization** — 80 micro-modules cost more in linking and DI wiring than they save."
+      - tone: bad
+        text: Feature A importing Feature B. Features should be siblings that only meet in the app or via an interface module.
+      - tone: bad
+        text: Forgetting `Bundle.module` for resources, or localizing strings in the wrong bundle.
+      - tone: legacy
+        text: Mixing dynamic and static linking carelessly — too many dynamic frameworks slows app launch.
+      - tone: good
+        text: Give every module a test target and, ideally, a runnable preview/demo app.
+      - tone: good
+        text: Enforce the graph in CI (a dependency-lint step) — documentation alone never holds.

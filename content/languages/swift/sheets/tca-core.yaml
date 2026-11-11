@@ -1,0 +1,254 @@
+id: tca-core
+concept: architecture.unidirectional-core
+scope: platform
+title: TCA — Core Loop
+group: Composable Architecture
+subtitle: State - Action - Reducer - Store - Effect. Everything else is composition.
+applies:
+  platforms:
+    - ios
+    - ipados
+    - macos
+    - tvos
+    - watchos
+    - visionos
+  requires:
+    - swift-composable-architecture
+sources:
+  - title: The Composable Architecture (Point-Free)
+    url: https://github.com/pointfreeco/swift-composable-architecture
+cards:
+  - id: the-5-nouns
+    kind: rules
+    title: The 5 nouns
+    note: Memorise this; every TCA answer starts here.
+    items:
+      - tone: modern
+        text: "**State** — a value type holding everything the feature needs to render."
+      - tone: modern
+        text: "**Action** — an enum of *everything that can happen* (user intent + system results)."
+      - tone: modern
+        text: "**Reducer** — `(inout State, Action) -> Effect<Action>`. Pure, synchronous, testable."
+      - tone: modern
+        text: "**Store** — runtime that holds state, runs the reducer, executes effects."
+      - tone: modern
+        text: "**Effect** — the *only* place async / side effects live. Feeds actions back in."
+      - tone: neutral
+        text: "Golden rule: reducers never do async work; effects never mutate state."
+  - id: minimal-feature
+    kind: code
+    title: Minimal feature
+    note: The skeleton you should be able to type from memory.
+    code: |-
+      import ComposableArchitecture
+
+      @Reducer
+      struct Counter {
+        @ObservableState
+        struct State: Equatable {
+          var count = 0
+          var fact: String?
+          var isLoading = false
+        }
+
+        enum Action {
+          case incrementTapped
+          case decrementTapped
+          case factButtonTapped
+          case factResponse(Result<String, Error>)
+        }
+
+        @Dependency(\.numberFact) var numberFact
+
+        var body: some ReducerOf<Self> {
+          Reduce { state, action in
+            switch action {
+            case .incrementTapped:
+              state.count += 1
+              return .none
+
+            case .decrementTapped:
+              state.count -= 1
+              return .none
+
+            case .factButtonTapped:
+              state.isLoading = true
+              return .run { [count = state.count] send in
+                await send(.factResponse(Result { try await numberFact.fetch(count) }))
+              }
+
+            case let .factResponse(.success(fact)):
+              state.isLoading = false
+              state.fact = fact
+              return .none
+
+            case .factResponse(.failure):
+              state.isLoading = false
+              return .none
+            }
+          }
+        }
+      }
+  - id: the-view-entry-point
+    kind: code
+    title: The view + entry point
+    note: "`StoreOf<F>` is `Store<F.State, F.Action>`."
+    code: |-
+      struct CounterView: View {
+        let store: StoreOf<Counter>          // @Bindable var store  when you need bindings
+
+        var body: some View {
+          Form {
+            // With @ObservableState you read state directly - no WithViewStore needed.
+            Text("\(store.count)")
+            Button("-") { store.send(.decrementTapped) }
+            Button("+") { store.send(.incrementTapped) }
+            if store.isLoading { ProgressView() }
+            if let fact = store.fact { Text(fact) }
+          }
+        }
+      }
+
+      // App entry
+      @main
+      struct MyApp: App {
+        static let store = Store(initialState: Counter.State()) {
+          Counter()
+            ._printChanges()               // debug: logs every action + state diff
+        }
+        var body: some Scene {
+          WindowGroup { CounterView(store: Self.store) }
+        }
+      }
+  - id: action-naming
+    kind: compare
+    title: Action naming
+    note: Actions describe *facts*, not commands to the store.
+    columns:
+      - label: Do — user intent + results
+        tone: good
+        code: |-
+          enum Action {
+            case onAppear
+            case saveButtonTapped
+            case emailChanged(String)
+            case userResponse(Result<User, Error>)
+            case timerTicked
+          }
+      - label: Don't — imperative / logic-y
+        tone: bad
+        code: |-
+          enum Action {
+            case setLoadingTrue        // that's state, not an event
+            case fetchUserAndSave      // two things
+            case reloadEverything      // what happened?
+            case doTheThing(() -> Void)// not Equatable, untestable
+          }
+  - id: effects-cheat-list
+    kind: code
+    title: Effects cheat list
+    note: Everything `Effect` gives you.
+    code: |-
+      return .none                                   // no side effect
+
+      return .send(.otherAction)                     // synchronous follow-up (avoid for logic sharing)
+
+      return .run { send in                          // async work
+        let value = try await api.load()
+        await send(.loaded(value))
+      } catch: { error, send in
+        await send(.failed(error))
+      }
+
+      return .merge(.run { ... }, .run { ... })      // run in parallel
+      return .concatenate(.run { ... }, .run { ... })// run in order
+
+      return .run { _ in await analytics.log("x") }  // fire-and-forget
+
+      // Cancellation
+      enum CancelID { case search, timer }
+      return .run { ... }.cancellable(id: CancelID.search, cancelInFlight: true)
+      return .cancel(id: CancelID.search)
+  - id: debounce-long-running-effects
+    kind: code
+    title: Debounce & long-running effects
+    note: Debounced search + a timer effect started/stopped by actions.
+    code: |-
+      @Dependency(\.continuousClock) var clock
+
+      case let .queryChanged(q):
+        state.query = q
+        return .run { send in
+          try await clock.sleep(for: .milliseconds(300))    // debounce
+          await send(.searchResponse(try await api.search(q)))
+        }
+        .cancellable(id: CancelID.search, cancelInFlight: true)
+
+      case .startTimerTapped:
+        return .run { send in
+          for await _ in clock.timer(interval: .seconds(1)) {
+            await send(.timerTicked)
+          }
+        }
+        .cancellable(id: CancelID.timer)
+
+      case .stopTimerTapped:
+        return .cancel(id: CancelID.timer)
+  - id: bindings-two-way-swiftui-state
+    kind: code
+    title: Bindings (two-way SwiftUI state)
+    note: "`BindableAction` + `BindingReducer` + `@Bindable`."
+    code: |-
+      @Reducer
+      struct Settings {
+        @ObservableState
+        struct State: Equatable {
+          var displayName = ""
+          var notificationsOn = false
+        }
+
+        enum Action: BindableAction {
+          case binding(BindingAction<State>)
+          case saveTapped
+        }
+
+        var body: some ReducerOf<Self> {
+          BindingReducer()                       // must come before your Reduce
+          Reduce { state, action in
+            switch action {
+            case .binding(\.notificationsOn):    // react to one specific binding
+              return .run { _ in await push.sync() }
+            case .binding, .saveTapped:
+              return .none
+            }
+          }
+        }
+      }
+
+      struct SettingsView: View {
+        @Bindable var store: StoreOf<Settings>
+        var body: some View {
+          Form {
+            TextField("Name", text: $store.displayName)
+            Toggle("Notifications", isOn: $store.notificationsOn)
+          }
+        }
+      }
+  - id: shared-state-across-features
+    kind: code
+    title: Shared state (across features)
+    note: "`@Shared` replaces passing the same value up and down the tree."
+    code: |-
+      // In-memory, app-scoped
+      extension SharedKey where Self == InMemoryKey<Int> {
+        static var streak: Self { .inMemory("streak") }
+      }
+
+      @ObservableState
+      struct State: Equatable {
+        @Shared(.appStorage("hasOnboarded")) var hasOnboarded = false
+        @Shared(.streak) var streak = 0
+      }
+
+      // Mutating shared state inside a reducer:
+      state.$streak.withLock { $0 += 1 }

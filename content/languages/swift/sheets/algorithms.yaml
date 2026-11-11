@@ -1,0 +1,606 @@
+id: algorithms
+concept: algorithms.patterns
+scope: shared
+title: Algorithmic Patterns & Complexity
+group: Algorithms
+subtitle: Eighteen patterns, the trigger phrase that reveals each one, and Swift you can type from memory.
+cards:
+  - id: pattern-picker
+    kind: diagram
+    title: Pattern picker
+    note: Match the sentence in the problem statement to the row, then write the template.
+    svg: algorithms--pattern-picker.svg
+  - id: complexity-and-what-it-costs
+    kind: diagram
+    title: Complexity, and what it costs
+    note: "Know where the cliff is: n log n is fine at a million, n² is not."
+    svg: algorithms--complexity-and-what-it-costs.svg
+  - id: swift-standard-library-complexity
+    kind: table
+    title: Swift standard library complexity
+    note: The numbers interviewers expect you to know.
+    headers:
+      - Operation
+      - Cost
+      - Note
+    rows:
+      - - "`array[i]`"
+        - O(1)
+        - random access, contiguous storage
+      - - "`array.append`"
+        - O(1) amortised
+        - O(n) on the occasional grow — `reserveCapacity(n)` to avoid
+      - - "`array.insert(at:)` / `remove(at:)`"
+        - O(n)
+        - shifts every later element
+      - - "`array.contains`"
+        - O(n)
+        - use a `Set` if you ask more than once
+      - - "`dict[key]`, `set.insert`"
+        - O(1) average
+        - O(n) worst case; needs a good `Hashable`
+      - - "`sort()` / `sorted()`"
+        - O(n log n)
+        - introsort; **not** stable (use `enumerated()` as a tiebreak)
+      - - "`min()` / `max()` / `reduce`"
+        - O(n)
+        - single pass
+      - - "`string.count`"
+        - O(n)
+        - grapheme clusters — cache it in a loop
+      - - "`string[i]`"
+        - —
+        - no integer subscript; `Index` walking is O(n)
+      - - "`Array(set)` / `Set(array)`"
+        - O(n)
+        - the cheapest dedupe, loses order
+      - - "`Deque` push/pop both ends"
+        - O(1)
+        - "`swift-collections`; `Array.removeFirst()` is O(n)"
+      - - "`Heap.insert` / `popMin`"
+        - O(log n)
+        - "`swift-collections`; Swift has no built-in heap"
+  - id: two-pointers
+    kind: code
+    title: Two pointers
+    note: Sorted input, pairs, or in-place compaction. O(n) time, O(1) space.
+    code: |-
+      // Pair summing to a target in a SORTED array
+      func twoSum(_ a: [Int], _ target: Int) -> (Int, Int)? {
+        var lo = 0, hi = a.count - 1
+        while lo < hi {
+          let sum = a[lo] + a[hi]
+          if sum == target { return (lo, hi) }
+          sum < target ? (lo += 1) : (hi -= 1)
+        }
+        return nil
+      }
+
+      // In-place removal, the "slow writer / fast reader" variant
+      func removeDuplicates(_ a: inout [Int]) -> Int {
+        guard !a.isEmpty else { return 0 }
+        var write = 1
+        for read in 1..<a.count where a[read] != a[write - 1] {
+          a[write] = a[read]
+          write += 1
+        }
+        return write
+      }
+
+      // Three-sum = sort, then fix one index and two-pointer the rest -> O(n^2)
+  - id: sliding-window
+    kind: code
+    title: Sliding window
+    note: Contiguous subarray/substring. Grow right, shrink left. O(n).
+    code: |-
+      // Fixed size: max sum of any k consecutive elements
+      func maxSum(_ a: [Int], k: Int) -> Int {
+        var window = a.prefix(k).reduce(0, +)
+        var best = window
+        for i in k..<a.count {
+          window += a[i] - a[i - k]      // slide, don't recompute
+          best = max(best, window)
+        }
+        return best
+      }
+
+      // Variable size: longest substring with no repeated character
+      func longestUnique(_ s: String) -> Int {
+        var lastSeen: [Character: Int] = [:]
+        var start = 0, best = 0
+        for (i, ch) in Array(s).enumerated() {
+          if let seen = lastSeen[ch], seen >= start { start = seen + 1 }
+          lastSeen[ch] = i
+          best = max(best, i - start + 1)
+        }
+        return best
+      }
+  - id: binary-search
+    kind: code
+    title: Binary search
+    note: Sorted data, or any monotonic predicate. O(log n).
+    code: |-
+      func binarySearch(_ a: [Int], _ target: Int) -> Int? {
+        var lo = 0, hi = a.count - 1
+        while lo <= hi {
+          let mid = lo + (hi - lo) / 2          // avoids overflow
+          if a[mid] == target { return mid }
+          if a[mid] < target { lo = mid + 1 } else { hi = mid - 1 }
+        }
+        return nil
+      }
+
+      // Lower bound: first index where a[i] >= target  (the more useful variant)
+      func lowerBound(_ a: [Int], _ target: Int) -> Int {
+        var lo = 0, hi = a.count
+        while lo < hi {
+          let mid = (lo + hi) / 2
+          if a[mid] < target { lo = mid + 1 } else { hi = mid }
+        }
+        return lo
+      }
+
+      // "Binary search the ANSWER": minimise a value subject to a monotonic check
+      func minCapacity(_ check: (Int) -> Bool, in range: ClosedRange<Int>) -> Int {
+        var lo = range.lowerBound, hi = range.upperBound
+        while lo < hi {
+          let mid = (lo + hi) / 2
+          if check(mid) { hi = mid } else { lo = mid + 1 }
+        }
+        return lo
+      }
+  - id: hash-map-counting-grouping-memory-of-the-past
+    kind: code
+    title: "Hash map: counting, grouping, memory of the past"
+    note: The default first idea. O(n) time, O(n) space.
+    code: |-
+      // Two-sum, unsorted: remember what you've seen
+      func twoSum(_ a: [Int], _ target: Int) -> (Int, Int)? {
+        var seen: [Int: Int] = [:]                       // value -> index
+        for (i, v) in a.enumerated() {
+          if let j = seen[target - v] { return (j, i) }
+          seen[v] = i
+        }
+        return nil
+      }
+
+      // Frequency map - reduce(into:) avoids copying the dictionary each step
+      let counts = text.reduce(into: [Character: Int]()) { $0[$1, default: 0] += 1 }
+
+      // Group anagrams: build a canonical key
+      let groups = Dictionary(grouping: words) { String($0.sorted()) }
+
+      // First non-repeating character
+      let first = text.first { counts[$0] == 1 }
+  - id: prefix-sums-difference-arrays
+    kind: code
+    title: Prefix sums & difference arrays
+    note: Range queries in O(1) after O(n) prep.
+    code: |-
+      // prefix[i] = sum of the first i elements
+      let prefix = nums.reduce(into: [0]) { $0.append($0.last! + $1) }
+      func rangeSum(_ l: Int, _ r: Int) -> Int { prefix[r + 1] - prefix[l] }
+
+      // Count subarrays summing to k: prefix sums + a hash map. O(n)
+      func subarraysSumming(to k: Int, in nums: [Int]) -> Int {
+        var seen: [Int: Int] = [0: 1]        // prefix value -> how many times
+        var running = 0, total = 0
+        for n in nums {
+          running += n
+          total += seen[running - k, default: 0]
+          seen[running, default: 0] += 1
+        }
+        return total
+      }
+
+      // Difference array: apply many range increments in O(1) each
+      var diff = [Int](repeating: 0, count: n + 1)
+      func addRange(_ l: Int, _ r: Int, _ v: Int) { diff[l] += v; diff[r + 1] -= v }
+      let final = diff.dropLast().reduce(into: [Int]()) { $0.append(($0.last ?? 0) + $1) }
+  - id: sort-then-sweep-intervals
+    kind: code
+    title: "Sort then sweep: intervals"
+    note: Sorting first turns a hard problem into a linear scan. O(n log n).
+    code: |-
+      struct Interval { var start: Int; var end: Int }
+
+      func merge(_ intervals: [Interval]) -> [Interval] {
+        let sorted = intervals.sorted { $0.start < $1.start }
+        var result: [Interval] = []
+        for i in sorted {
+          if var last = result.last, i.start <= last.end {
+            last.end = max(last.end, i.end)        // overlap -> extend
+            result[result.count - 1] = last
+          } else {
+            result.append(i)
+          }
+        }
+        return result
+      }
+
+      // Minimum meeting rooms = max concurrent overlap.
+      // Sweep line: +1 at every start, -1 at every end, walk in time order.
+      func minRooms(_ intervals: [Interval]) -> Int {
+        let events = intervals.flatMap { [($0.start, 1), ($0.end, -1)] }
+          .sorted { $0.0 == $1.0 ? $0.1 < $1.1 : $0.0 < $1.0 }   // end before start on ties
+        var current = 0, best = 0
+        for (_, delta) in events { current += delta; best = max(best, current) }
+        return best
+      }
+  - id: stack-monotonic-stack
+    kind: code
+    title: Stack & monotonic stack
+    note: Matching, spans, and "next greater". O(n).
+    code: |-
+      func isBalanced(_ s: String) -> Bool {
+        let pairs: [Character: Character] = [")": "(", "]": "[", "}": "{"]
+        var stack: [Character] = []
+        for ch in s {
+          if let open = pairs[ch] {
+            guard stack.popLast() == open else { return false }
+          } else {
+            stack.append(ch)
+          }
+        }
+        return stack.isEmpty
+      }
+
+      // Monotonic decreasing stack: index of the next greater element
+      func nextGreater(_ a: [Int]) -> [Int] {
+        var result = [Int](repeating: -1, count: a.count)
+        var stack: [Int] = []                       // indices, values decreasing
+        for i in a.indices {
+          while let top = stack.last, a[top] < a[i] {
+            result[top] = i                         // a[i] is the answer for that index
+            stack.removeLast()
+          }
+          stack.append(i)
+        }
+        return result
+      }
+      // Same skeleton solves: daily temperatures, largest rectangle in a histogram,
+      // trapping rain water, stock span.
+  - id: heap-top-k
+    kind: code
+    title: Heap & top-K
+    note: When you need the k best out of n, not the whole order. O(n log k).
+    code: |-
+      import Collections                        // swift-collections
+
+      // k largest without sorting everything
+      func kLargest(_ nums: [Int], _ k: Int) -> [Int] {
+        var heap = Heap<Int>()                  // min-heap side used as the gate
+        for n in nums {
+          heap.insert(n)
+          if heap.count > k { _ = heap.popMin() }
+        }
+        return heap.unordered.sorted(by: >)
+      }
+
+      // No dependency? A sorted insert into a bounded array is fine for small k:
+      func topK(_ nums: [Int], _ k: Int) -> [Int] {
+        var best: [Int] = []
+        for n in nums {
+          let idx = best.firstIndex { $0 < n } ?? best.count
+          best.insert(n, at: idx)
+          if best.count > k { best.removeLast() }
+        }
+        return best
+      }
+
+      // Streaming median = a max-heap of the low half + a min-heap of the high half,
+      // rebalanced so their sizes differ by at most one.
+  - id: fast-slow-pointers-linked-lists
+    kind: code
+    title: Fast & slow pointers (linked lists)
+    note: Cycle, middle, k-from-end. O(n) time, O(1) space.
+    code: |-
+      final class Node { var value: Int; var next: Node?; init(_ v: Int) { value = v } }
+
+      func hasCycle(_ head: Node?) -> Bool {
+        var slow = head, fast = head
+        while fast?.next != nil {
+          slow = slow?.next
+          fast = fast?.next?.next
+          if slow === fast { return true }        // identity, not equality
+        }
+        return false
+      }
+
+      func middle(_ head: Node?) -> Node? {
+        var slow = head, fast = head
+        while fast?.next != nil { slow = slow?.next; fast = fast?.next?.next }
+        return slow
+      }
+
+      func reversed(_ head: Node?) -> Node? {
+        var prev: Node?, current = head
+        while let node = current {
+          current = node.next
+          node.next = prev
+          prev = node
+        }
+        return prev
+      }
+  - id: trees-dfs-and-bfs
+    kind: code
+    title: "Trees: DFS and BFS"
+    note: Recursion for depth, a queue for breadth.
+    code: |-
+      final class TreeNode { var val: Int; var left, right: TreeNode?; init(_ v: Int) { val = v } }
+
+      // DFS in-order (sorted output for a BST)
+      func inorder(_ node: TreeNode?, into out: inout [Int]) {
+        guard let node else { return }
+        inorder(node.left, into: &out); out.append(node.val); inorder(node.right, into: &out)
+      }
+
+      // BFS level order - the queue-of-levels trick
+      func levelOrder(_ root: TreeNode?) -> [[Int]] {
+        guard let root else { return [] }
+        var levels: [[Int]] = [], queue = [root]
+        while !queue.isEmpty {
+          levels.append(queue.map(\.val))
+          queue = queue.flatMap { [$0.left, $0.right].compactMap { $0 } }
+        }
+        return levels
+      }
+
+      // Validate a BST: pass the allowed range down, don't just compare with the parent
+      func isValid(_ n: TreeNode?, _ lo: Int = .min, _ hi: Int = .max) -> Bool {
+        guard let n else { return true }
+        return lo < n.val && n.val < hi
+            && isValid(n.left, lo, n.val) && isValid(n.right, n.val, hi)
+      }
+  - id: graphs-bfs-dfs-topological-sort
+    kind: code
+    title: "Graphs: BFS, DFS, topological sort"
+    note: O(V + E). Adjacency list, visited set, queue or stack.
+    code: |-
+      typealias Graph = [Int: [Int]]
+
+      // Shortest path in an UNWEIGHTED graph = BFS
+      func shortestPath(_ g: Graph, from s: Int, to t: Int) -> Int? {
+        var visited: Set = [s], queue = [(s, 0)], head = 0
+        while head < queue.count {
+          let (node, d) = queue[head]; head += 1        // head index beats removeFirst()
+          if node == t { return d }
+          for next in g[node, default: []] where visited.insert(next).inserted {
+            queue.append((next, d + 1))
+          }
+        }
+        return nil
+      }
+
+      // Kahn's algorithm: topological order, and cycle detection for free
+      func topologicalOrder(_ g: Graph, nodeCount n: Int) -> [Int]? {
+        var indegree = [Int](repeating: 0, count: n)
+        for (_, edges) in g { for e in edges { indegree[e] += 1 } }
+        var queue = (0..<n).filter { indegree[$0] == 0 }
+        var order: [Int] = [], head = 0
+        while head < queue.count {
+          let node = queue[head]; head += 1
+          order.append(node)
+          for next in g[node, default: []] {
+            indegree[next] -= 1
+            if indegree[next] == 0 { queue.append(next) }
+          }
+        }
+        return order.count == n ? order : nil          // nil => there is a cycle
+      }
+      // Weighted graph? Dijkstra = BFS with a min-heap keyed by distance.
+  - id: grid-matrix-traversal
+    kind: code
+    title: Grid / matrix traversal
+    note: A grid is just a graph with implicit edges.
+    code: |-
+      let directions = [(0, 1), (1, 0), (0, -1), (-1, 0)]
+
+      func numberOfIslands(_ grid: [[Character]]) -> Int {
+        var grid = grid, count = 0
+
+        func flood(_ r: Int, _ c: Int) {
+          guard grid.indices.contains(r), grid[r].indices.contains(c), grid[r][c] == "1"
+          else { return }
+          grid[r][c] = "0"                              // mark visited in place
+          for (dr, dc) in directions { flood(r + dr, c + dc) }
+        }
+
+        for r in grid.indices {
+          for c in grid[r].indices where grid[r][c] == "1" {
+            count += 1
+            flood(r, c)
+          }
+        }
+        return count
+      }
+      // Watch the stack: on a 1000x1000 grid switch the recursion to an explicit stack.
+  - id: backtracking
+    kind: code
+    title: Backtracking
+    note: Choose → explore → un-choose. O(2ⁿ) subsets, O(n!) permutations.
+    code: |-
+      func subsets(_ nums: [Int]) -> [[Int]] {
+        var result: [[Int]] = [], current: [Int] = []
+        func explore(_ start: Int) {
+          result.append(current)
+          for i in start..<nums.count {
+            current.append(nums[i])       // choose
+            explore(i + 1)                // explore
+            current.removeLast()          // un-choose
+          }
+        }
+        explore(0)
+        return result
+      }
+
+      func permutations(_ nums: [Int]) -> [[Int]] {
+        var result: [[Int]] = [], current: [Int] = [], used = [Bool](repeating: false, count: nums.count)
+        func explore() {
+          if current.count == nums.count { result.append(current); return }
+          for i in nums.indices where !used[i] {
+            used[i] = true;  current.append(nums[i])
+            explore()
+            current.removeLast(); used[i] = false
+          }
+        }
+        explore()
+        return result
+      }
+      // Prune early (bounds, sorted skips, "used" sets) - that is the whole game.
+  - id: dynamic-programming
+    kind: code
+    title: Dynamic programming
+    note: Overlapping subproblems + optimal substructure. Memoize, then flatten.
+    code: |-
+      // 1-D: house robber - keep only the last two states, O(n) time, O(1) space
+      func rob(_ nums: [Int]) -> Int {
+        var skip = 0, take = 0
+        for n in nums { (skip, take) = (max(skip, take), skip + n) }
+        return max(skip, take)
+      }
+
+      // 2-D: edit distance. dp[i][j] = cost to turn the first i of x into the first j of y.
+      func editDistance(_ a: String, _ b: String) -> Int {
+        let x = Array(a), y = Array(b)
+        var dp = Array(repeating: Array(repeating: 0, count: y.count + 1), count: x.count + 1)
+        for i in 0...x.count { dp[i][0] = i }         // delete everything
+        for j in 0...y.count { dp[0][j] = j }         // insert everything
+        for i in stride(from: 1, through: x.count, by: 1) {
+          for j in stride(from: 1, through: y.count, by: 1) {
+            dp[i][j] = x[i - 1] == y[j - 1]
+              ? dp[i - 1][j - 1]                                        // free match
+              : 1 + min(dp[i - 1][j],      // delete
+                        dp[i][j - 1],      // insert
+                        dp[i - 1][j - 1])  // substitute
+          }
+        }
+        return dp[x.count][y.count]
+      }
+
+      // Top-down memoization when the recurrence is easier to see:
+      var memo: [Int: Int] = [:]
+      func fib(_ n: Int) -> Int {
+        if n < 2 { return n }
+        if let hit = memo[n] { return hit }
+        let value = fib(n - 1) + fib(n - 2)
+        memo[n] = value
+        return value
+      }
+  - id: union-find-disjoint-set
+    kind: code
+    title: Union-Find (disjoint set)
+    note: Connectivity questions. Near O(1) per op with both optimisations.
+    code: |-
+      struct UnionFind {
+        private var parent: [Int]
+        private var rank: [Int]
+        private(set) var componentCount: Int
+
+        init(_ n: Int) {
+          parent = Array(0..<n); rank = Array(repeating: 0, count: n); componentCount = n
+        }
+
+        mutating func find(_ x: Int) -> Int {
+          if parent[x] != x { parent[x] = find(parent[x]) }   // path compression
+          return parent[x]
+        }
+
+        @discardableResult
+        mutating func union(_ a: Int, _ b: Int) -> Bool {
+          let (ra, rb) = (find(a), find(b))
+          guard ra != rb else { return false }                 // already connected
+          if rank[ra] < rank[rb] { parent[ra] = rb }           // union by rank
+          else if rank[ra] > rank[rb] { parent[rb] = ra }
+          else { parent[rb] = ra; rank[ra] += 1 }
+          componentCount -= 1
+          return true
+        }
+      }
+      // Solves: number of provinces, redundant connection, Kruskal's MST, account merge.
+  - id: trie-prefix-tree
+    kind: code
+    title: Trie (prefix tree)
+    note: Prefix queries in O(length), independent of dictionary size.
+    code: |-
+      final class Trie {
+        private final class Node {
+          var children: [Character: Node] = [:]
+          var isWord = false
+        }
+        private let root = Node()
+
+        func insert(_ word: String) {
+          var node = root
+          for ch in word {
+            if node.children[ch] == nil { node.children[ch] = Node() }
+            node = node.children[ch]!
+          }
+          node.isWord = true
+        }
+
+        private func node(matching prefix: String) -> Node? {
+          var node = root
+          for ch in prefix {
+            guard let next = node.children[ch] else { return nil }
+            node = next
+          }
+          return node
+        }
+
+        func contains(_ word: String) -> Bool { node(matching: word)?.isWord ?? false }
+        func hasPrefix(_ prefix: String) -> Bool { node(matching: prefix) != nil }
+      }
+  - id: bit-manipulation-cyclic-sort
+    kind: code
+    title: Bit manipulation & cyclic sort
+    note: Two tricks that turn O(n) space into O(1).
+    code: |-
+      // XOR: every value appears twice except one
+      let unique = nums.reduce(0, ^)
+
+      x & (x - 1)            // clears the lowest set bit
+      x & -x                 // isolates the lowest set bit
+      x.nonzeroBitCount      // popcount
+      (mask >> i) & 1 == 1   // is bit i set
+      1 << i                 // bit i
+
+      // Enumerate every subset of n elements with a bitmask
+      for mask in 0..<(1 << n) {
+        let subset = (0..<n).filter { mask & (1 << $0) != 0 }.map { nums[$0] }
+      }
+
+      // Cyclic sort: values are 1...n, so put each value at its own index
+      func findMissing(_ nums: inout [Int]) -> Int {
+        var i = 0
+        while i < nums.count {
+          let target = nums[i] - 1
+          if target >= 0, target < nums.count, nums[i] != nums[target] {
+            nums.swapAt(i, target)
+          } else {
+            i += 1
+          }
+        }
+        return (nums.indices.first { nums[$0] != $0 + 1 } ?? nums.count) + 1
+      }
+  - id: working-a-problem-out-loud
+    kind: rules
+    title: Working a problem out loud
+    note: The process is graded as much as the answer.
+    items:
+      - tone: good
+        text: "**Restate + clarify** first: input size, value ranges, duplicates, sorted?, can I mutate the input, what about empty?"
+      - tone: good
+        text: "**Say the brute force** and its complexity — it proves you understand the problem and gives you a baseline."
+      - tone: good
+        text: "**Name the pattern** you're reaching for and *why* the trigger fits."
+      - tone: good
+        text: "**Write it, then state time and space** without being asked."
+      - tone: good
+        text: "**Dry-run one small example** by hand, then call out the edge cases: empty, one element, all equal, negatives, overflow."
+      - tone: neutral
+        text: "Common speed-ups: sort first (O(n log n) is usually free), trade space for time with a hash map, use two pointers instead of a nested loop, precompute prefixes."
+      - tone: bad
+        text: Don't silently rewrite. If you change approach, say what you learned that made you change.
+      - tone: bad
+        text: In Swift, don't use `array.removeFirst()` in a BFS loop — it's O(n). Use a head index or `Deque`.

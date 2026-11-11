@@ -1,0 +1,217 @@
+id: lang
+concept: language.essentials
+scope: language
+title: Swift Language Essentials
+group: Design & Language
+subtitle: Generics, protocols, memory and error handling — the fill-in-the-blank parts of a live exercise.
+sources:
+  - title: The Swift Programming Language
+    url: https://docs.swift.org/swift-book/documentation/the-swift-programming-language/
+  - title: Generics — The Swift Programming Language
+    url: https://docs.swift.org/swift-book/documentation/the-swift-programming-language/generics/
+cards:
+  - id: generics-constraints
+    kind: code
+    title: Generics & constraints
+    note: ""
+    code: |-
+      func first<T: Equatable>(_ value: T, in items: [T]) -> Int? {
+        items.firstIndex(of: value)
+      }
+
+      struct Stack<Element> {
+        private var storage: [Element] = []
+        mutating func push(_ e: Element) { storage.append(e) }
+        mutating func pop() -> Element? { storage.popLast() }
+        var isEmpty: Bool { storage.isEmpty }
+      }
+
+      extension Stack where Element: Comparable {       // conditional extension
+        var max: Element? { storage.max() }
+      }
+      extension Stack: Equatable where Element: Equatable { }
+
+      // where clauses on associated types
+      func sum<S: Sequence>(_ s: S) -> Int where S.Element == Int {
+        s.reduce(0, +)
+      }
+  - id: some-vs-any
+    kind: compare
+    title: some vs any
+    note: Opaque type vs existential — a very common question.
+    columns:
+      - label: "`some` — opaque, static"
+        tone: good
+        code: |-
+          func makeShape() -> some Shape { Circle() }
+          // - ONE concrete type, known to the compiler
+          // - no boxing, full specialisation, fast
+          // - caller can't see which type it is
+
+          func area(of s: some Shape) -> Double { s.area }
+          // sugar for: func area<S: Shape>(of s: S) -> Double
+      - label: "`any` — existential, dynamic"
+        tone: neutral
+        code: |-
+          let shapes: [any Shape] = [Circle(), Square()]
+          // - heterogeneous storage
+          // - boxed, dynamic dispatch (slower)
+          // - needed for heterogeneous collections
+
+          func area(of s: any Shape) -> Double { s.area }
+          // Swift 5.7+ can open existentials automatically
+  - id: protocols-with-associated-types-primary-associated-types
+    kind: code
+    title: Protocols with associated types & primary associated types
+    note: ""
+    code: |-
+      protocol Repository {
+        associatedtype Item: Identifiable
+        func all() async throws -> [Item]
+        func save(_ item: Item) async throws
+      }
+
+      // Swift 5.7 primary associated types make PATs usable as `some`/`any`
+      protocol Storage<Value> {
+        associatedtype Value
+        func load() -> Value?
+      }
+      func use(_ s: some Storage<User>) { ... }
+      let boxed: any Storage<User> = KeychainStorage()
+
+      // Protocol with default implementation
+      extension Repository {
+        func first() async throws -> Item? { try await all().first }
+      }
+  - id: error-handling
+    kind: code
+    title: Error handling
+    note: ""
+    code: |-
+      enum APIError: Error, Equatable {
+        case badStatus(Int)
+        case decoding(String)
+      }
+      extension APIError: LocalizedError {
+        var errorDescription: String? {
+          switch self {
+          case .badStatus(let c): "Server returned \(c)"
+          case .decoding(let m):  "Could not read the response: \(m)"
+          }
+        }
+      }
+
+      do { let u = try await api.user() }
+      catch let e as APIError { show(e) }
+      catch { report(error) }
+
+      try? await api.user()          // Optional result
+      try! JSONDecoder().decode(...) // crash on failure - tests/known-good only
+
+      // Typed throws (Swift 6)
+      func load() throws(APIError) -> User { ... }
+
+      defer { file.close() }         // runs on every exit path (LIFO)
+  - id: memory-arc
+    kind: code
+    title: Memory & ARC
+    note: ""
+    code: |-
+      class Node {
+        var next: Node?
+        weak var parent: Node?          // weak: optional, becomes nil
+        unowned let owner: Owner        // unowned: non-optional, crashes if accessed after dealloc
+      }
+
+      // Closure capture lists
+      button.onTap = { [weak self] in
+        guard let self else { return }
+        self.reload()
+      }
+      Task { [weak self] in await self?.load() }
+
+      // Escaping vs non-escaping
+      func run(_ body: () -> Void) { body() }                 // non-escaping (default)
+      func store(_ body: @escaping () -> Void) { self.h = body }
+
+      // Retain-cycle checklist: delegate (weak), closures capturing self,
+      // Combine .assign(to:on: self), timers with strong targets, NotificationCenter observers.
+  - id: value-vs-reference-semantics
+    kind: code
+    title: Value vs reference semantics
+    note: ""
+    code: |-
+      struct Point { var x = 0 }          // value: copy on assign
+      final class Box { var x = 0 }       // reference: shared
+
+      var a = Point(); var b = a; b.x = 1   // a.x == 0
+      let p = Box(); let q = p; q.x = 1     // p.x == 1
+
+      // Copy-on-write for a custom buffer
+      struct Buffer {
+        private var storage = Storage()
+        mutating func mutate() {
+          if !isKnownUniquelyReferenced(&storage) { storage = storage.copy() }
+          storage.value += 1
+        }
+      }
+  - id: pattern-matching-control-flow
+    kind: code
+    title: Pattern matching & control flow
+    note: The syntax you forget under pressure.
+    code: |-
+      switch value {
+      case let .success(user) where user.isAdmin: grantAdmin(user)
+      case .success(let user):                    grant(user)
+      case .failure(APIError.badStatus(401)):     signOut()
+      case .failure:                              showRetry()
+      }
+
+      if case let .loaded(items) = state, !items.isEmpty { render(items) }
+      guard case .loading = state else { return }
+
+      for case let .some(x) in optionals { ... }
+      for (i, item) in items.enumerated() { ... }
+
+      let range = 1...10          // closed
+      0..<items.count             // half-open
+      if (0...100).contains(score) { ... }
+
+      // Result builders (how SwiftUI's DSL works)
+      @resultBuilder
+      enum StringBuilder {
+        static func buildBlock(_ parts: String...) -> String { parts.joined(separator: " ") }
+      }
+  - id: testing-quick-reference
+    kind: table
+    title: Testing quick reference
+    note: Swift Testing (Xcode 16+) alongside XCTest.
+    headers:
+      - Need
+      - Swift Testing
+      - XCTest
+    rows:
+      - - Test case
+        - "`@Test func x() { }`"
+        - "`func testX() { }`"
+      - - Assertion
+        - "`#expect(a == b)`"
+        - "`XCTAssertEqual(a, b)`"
+      - - Required assertion
+        - "`try #require(optional)`"
+        - "`XCTUnwrap(optional)`"
+      - - Async
+        - "`@Test func x() async throws`"
+        - "`func testX() async throws`"
+      - - Expected failure
+        - "`#expect(throws: APIError.self) { }`"
+        - "`XCTAssertThrowsError`"
+      - - Parametrised
+        - "`@Test(arguments: [1,2,3])`"
+        - loop by hand
+      - - Setup
+        - "`init()` / `deinit` on the suite"
+        - "`setUp()` / `tearDown()`"
+      - - Waiting
+        - just `await`
+        - "`XCTestExpectation` + `wait(for:)`"

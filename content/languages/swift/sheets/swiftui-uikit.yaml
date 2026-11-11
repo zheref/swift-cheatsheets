@@ -1,0 +1,185 @@
+id: swiftui-uikit
+concept: ui.declarative-vs-imperative
+scope: platform
+title: SwiftUI vs UIKit
+group: SwiftUI
+subtitle: Translate any UIKit answer into SwiftUI and back.
+applies:
+  platforms:
+    - ios
+    - ipados
+    - tvos
+    - visionos
+  requires:
+    - SwiftUI
+    - UIKit
+sources:
+  - title: SwiftUI — Apple Developer Documentation
+    url: https://developer.apple.com/documentation/swiftui
+  - title: UIKit — Apple Developer Documentation
+    url: https://developer.apple.com/documentation/uikit
+cards:
+  - id: concept-mapping
+    kind: table
+    title: Concept mapping
+    note: ""
+    headers:
+      - UIKit
+      - SwiftUI
+    rows:
+      - - "`UIViewController`"
+        - "`View` struct (no controller object)"
+      - - "`viewDidLoad`"
+        - "`.task { }` / `.onAppear { }` (fires each appearance)"
+      - - "`viewWillAppear`"
+        - "`.onAppear`"
+      - - "`deinit` / `viewDidDisappear`"
+        - "`.onDisappear`, or `.task` auto-cancel"
+      - - "`UITableView` + data source"
+        - "`List` / `ForEach`"
+      - - "`UICollectionView` + compositional layout"
+        - "`LazyVGrid` / `Grid`"
+      - - "`UIStackView`"
+        - "`VStack` / `HStack`"
+      - - Auto Layout constraints
+        - layout modifiers (`frame`, `padding`, `alignment`)
+      - - "`UINavigationController`"
+        - "`NavigationStack`"
+      - - "`UISplitViewController`"
+        - "`NavigationSplitView`"
+      - - "`present(_:animated:)`"
+        - "`.sheet` / `.fullScreenCover`"
+      - - "`UIAlertController`"
+        - "`.alert` / `.confirmationDialog`"
+      - - Target-action / `IBAction`
+        - "`Button { }` closure"
+      - - Delegate & data source protocols
+        - closures + declarative data
+      - - "`NotificationCenter` for state"
+        - "`@Observable` / `@Environment`"
+      - - "`UIView.animate`"
+        - "`withAnimation` / `.animation(_:value:)`"
+      - - "`reloadData()`"
+        - state change → automatic diff
+      - - "`prepareForSegue`"
+        - pass values into the destination `View`'s init
+      - - "`UIRefreshControl`"
+        - "`.refreshable { }`"
+      - - "`UISearchController`"
+        - "`.searchable(text:)`"
+  - id: a-list-screen-both-ways
+    kind: compare
+    title: A list screen, both ways
+    note: ""
+    columns:
+      - label: UIKit
+        tone: legacy
+        code: |-
+          final class ItemsVC: UITableViewController {
+            private var items: [Item] = [] {
+              didSet { tableView.reloadData() }
+            }
+
+            override func viewDidLoad() {
+              super.viewDidLoad()
+              tableView.register(Cell.self, forCellReuseIdentifier: "c")
+              Task { items = (try? await api.items()) ?? [] }
+            }
+
+            override func tableView(_ t: UITableView,
+                                    numberOfRowsInSection s: Int) -> Int { items.count }
+
+            override func tableView(_ t: UITableView,
+                                    cellForRowAt ip: IndexPath) -> UITableViewCell {
+              let cell = t.dequeueReusableCell(withIdentifier: "c", for: ip)
+              cell.textLabel?.text = items[ip.row].name
+              return cell
+            }
+
+            override func tableView(_ t: UITableView, didSelectRowAt ip: IndexPath) {
+              navigationController?.pushViewController(
+                DetailVC(item: items[ip.row]), animated: true)
+            }
+          }
+      - label: SwiftUI
+        tone: modern
+        code: |-
+          struct ItemsView: View {
+            @State private var items: [Item] = []
+
+            var body: some View {
+              NavigationStack {
+                List(items) { item in
+                  NavigationLink(item.name, value: item)
+                }
+                .navigationDestination(for: Item.self) { DetailView(item: $0) }
+                .task { items = (try? await api.items()) ?? [] }
+              }
+            }
+          }
+  - id: embedding-uikit-in-swiftui
+    kind: code
+    title: Embedding UIKit in SwiftUI
+    note: "`UIViewRepresentable` — know the 3 members + Coordinator."
+    code: |-
+      struct TextViewRepresentable: UIViewRepresentable {
+        @Binding var text: String
+
+        func makeUIView(context: Context) -> UITextView {
+          let tv = UITextView()
+          tv.delegate = context.coordinator
+          return tv
+        }
+
+        func updateUIView(_ tv: UITextView, context: Context) {
+          if tv.text != text { tv.text = text }      // guard against feedback loops
+        }
+
+        func makeCoordinator() -> Coordinator { Coordinator(text: $text) }
+
+        final class Coordinator: NSObject, UITextViewDelegate {
+          let text: Binding<String>
+          init(text: Binding<String>) { self.text = text }
+          func textViewDidChange(_ tv: UITextView) { text.wrappedValue = tv.text }
+        }
+      }
+
+      // Also: UIViewControllerRepresentable (same shape, makeUIViewController/updateUIViewController)
+  - id: embedding-swiftui-in-uikit
+    kind: code
+    title: Embedding SwiftUI in UIKit
+    note: ""
+    code: |-
+      let host = UIHostingController(rootView: ProfileView(user: user))
+
+      // As a child view controller
+      addChild(host)
+      host.view.translatesAutoresizingMaskIntoConstraints = false
+      view.addSubview(host.view)
+      NSLayoutConstraint.activate([
+        host.view.topAnchor.constraint(equalTo: view.topAnchor),
+        host.view.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+        host.view.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+        host.view.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+      ])
+      host.didMove(toParent: self)
+
+      // As a cell (iOS 16+)
+      cell.contentConfiguration = UIHostingConfiguration { RowView(item: item) }
+  - id: interview-talking-points
+    kind: rules
+    title: Interview talking points
+    note: ""
+    items:
+      - tone: modern
+        text: "SwiftUI is **declarative + state-driven**: you describe *what* the UI is for a given state; the framework diffs and applies changes."
+      - tone: modern
+        text: Views are cheap value types recreated constantly; the persistent thing is the view *identity* and its attached state.
+      - tone: legacy
+        text: "UIKit is **imperative + reference-based**: you mutate a long-lived view object tree and must keep it in sync by hand."
+      - tone: neutral
+        text: "SwiftUI's weak spots: fine-grained scroll control, complex text editing, deep customisation → drop down via `Representable`."
+      - tone: neutral
+        text: UIKit's diffable data source (`NSDiffableDataSourceSnapshot`) is the imperative world catching up to SwiftUI's diffing.
+      - tone: good
+        text: Both can coexist screen-by-screen; migration is usually leaf-first.

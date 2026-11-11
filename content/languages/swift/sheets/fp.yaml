@@ -1,0 +1,227 @@
+id: fp
+concept: principles.functional
+scope: shared
+title: Functional Programming in Swift
+group: Design & Language
+subtitle: Values, purity, and functions as data — with the standard-library tools that express them.
+sources:
+  - title: Closures — The Swift Programming Language
+    url: https://docs.swift.org/swift-book/documentation/the-swift-programming-language/closures/
+cards:
+  - id: core-ideas
+    kind: rules
+    title: Core ideas
+    note: ""
+    items:
+      - tone: modern
+        text: "**Pure function** — same input → same output, no observable side effects. Trivially testable and parallelisable."
+      - tone: modern
+        text: "**Immutability** — `let` by default; model changes as new values, not mutations."
+      - tone: modern
+        text: "**Value semantics** — `struct`/`enum` copy on assignment, so no shared-state races."
+      - tone: modern
+        text: "**First-class functions** — pass, return and store functions like any value."
+      - tone: modern
+        text: "**Declarative** — describe *what*, not the loop mechanics."
+      - tone: modern
+        text: "**Algebraic data types** — `struct` = AND (product), `enum` = OR (sum). Make illegal states unrepresentable."
+      - tone: neutral
+        text: "Swift is multi-paradigm: use FP where it clarifies (transforms, pipelines), not dogmatically."
+  - id: imperative-declarative
+    kind: compare
+    title: Imperative → declarative
+    note: ""
+    columns:
+      - label: Imperative
+        tone: legacy
+        code: |-
+          var names: [String] = []
+          for user in users {
+            if user.isActive && user.age >= 18 {
+              names.append(user.name.uppercased())
+            }
+          }
+          names.sort()
+
+          var total = 0
+          for o in orders { total += o.amount }
+      - label: Functional
+        tone: good
+        code: |-
+          let names = users
+            .filter { $0.isActive && $0.age >= 18 }
+            .map { $0.name.uppercased() }
+            .sorted()
+
+          let total = orders.reduce(0) { $0 + $1.amount }
+          // or: orders.map(\.amount).reduce(0, +)
+  - id: higher-order-functions-you-must-know-cold
+    kind: table
+    title: Higher-order functions you must know cold
+    note: ""
+    headers:
+      - Function
+      - Signature idea
+      - Example
+    rows:
+      - - "`map`"
+        - "`[A] -> (A -> B) -> [B]`"
+        - "`[1,2,3].map { $0 * 2 }` → `[2,4,6]`"
+      - - "`compactMap`"
+        - drops nils
+        - '`["1","x"].compactMap(Int.init)` → `[1]`'
+      - - "`flatMap`"
+        - flattens one level
+        - "`[[1,2],[3]].flatMap { $0 }` → `[1,2,3]`"
+      - - "`filter`"
+        - keeps matches
+        - "`nums.filter { $0.isMultiple(of: 2) }`"
+      - - "`reduce`"
+        - fold to one value
+        - "`nums.reduce(0, +)`"
+      - - "`reduce(into:)`"
+        - fold without copying
+        - "`words.reduce(into: [:]) { $0[$1, default: 0] += 1 }`"
+      - - "`zip`"
+        - pairwise
+        - '`zip(names, scores).map { "\($0): \($1)" }`'
+      - - "`sorted(by:)`"
+        - custom order
+        - "`items.sorted { $0.date > $1.date }`"
+      - - "`allSatisfy` / `contains`"
+        - predicates
+        - "`nums.allSatisfy { $0 > 0 }`"
+      - - "`prefix/drop(while:)`"
+        - lazy slicing
+        - "`nums.prefix(while: { $0 < 10 })`"
+      - - "`chunked` / `split`"
+        - partition
+        - '`text.split(separator: " ")`'
+  - id: keypaths-as-functions
+    kind: code
+    title: KeyPaths as functions
+    note: Concise, and a favourite trick in interviews.
+    code: |-
+      let names = users.map(\.name)                       // KeyPath as (User) -> String
+      let sorted = users.sorted(using: KeyPathComparator(\.createdAt))
+      let grouped = Dictionary(grouping: users, by: \.country)
+      let ids = Set(users.map(\.id))
+
+      // Generic helper built on a key path
+      func by<T, V: Comparable>(_ kp: KeyPath<T, V>) -> (T, T) -> Bool {
+        { $0[keyPath: kp] < $1[keyPath: kp] }
+      }
+      users.sorted(by: by(\.age))
+  - id: function-composition-currying
+    kind: code
+    title: Function composition & currying
+    note: ""
+    code: |-
+      infix operator >>>: AdditionPrecedence
+      func >>> <A, B, C>(f: @escaping (A) -> B, g: @escaping (B) -> C) -> (A) -> C {
+        { a in g(f(a)) }
+      }
+
+      let trim: (String) -> String = { $0.trimmingCharacters(in: .whitespaces) }
+      let lower: (String) -> String = { $0.lowercased() }
+      let normalize = trim >>> lower
+
+      // Currying: turn a 2-arg function into a chain of 1-arg functions
+      func curry<A, B, C>(_ f: @escaping (A, B) -> C) -> (A) -> (B) -> C {
+        { a in { b in f(a, b) } }
+      }
+      let add = curry(+)
+      let inc = add(1)                       // (Int) -> Int
+      [1, 2, 3].map(inc)                     // [2, 3, 4]
+  - id: optional-result-as-containers
+    kind: code
+    title: Optional & Result as containers
+    note: "`map`/`flatMap` are not just for arrays."
+    code: |-
+      // Optional chaining is flatMap
+      let length: Int? = name.map(\.count)                 // Optional<Int>
+      let user: User? = id.flatMap(repository.user(id:))   // avoids Optional<Optional<User>>
+
+      // Coalescing + guard for early exit
+      guard let email = form.email, email.contains("@") else { throw ValidationError.email }
+
+      // Result
+      let parsed = Result { try JSONDecoder().decode(User.self, from: data) }
+        .map(\.name)
+        .mapError(APIError.decoding)
+
+      switch parsed {
+      case .success(let name): print(name)
+      case .failure(let error): report(error)
+      }
+
+      try parsed.get()                         // back to throwing world
+  - id: make-illegal-states-unrepresentable
+    kind: code
+    title: Make illegal states unrepresentable
+    note: The highest-value FP idea in day-to-day Swift.
+    code: |-
+      // Bad: 4 booleans = 16 states, 12 of which are nonsense
+      struct ViewState {
+        var isLoading = false
+        var items: [Item] = []
+        var error: Error?
+      }
+
+      // Good: exactly 4 possible states
+      enum ViewState {
+        case idle
+        case loading
+        case loaded([Item])
+        case failed(Error)
+      }
+
+      // Enums with associated values + exhaustive switch = compiler-checked logic
+      switch state {
+      case .idle:            EmptyView()
+      case .loading:         ProgressView()
+      case .loaded(let xs):  List(xs) { ItemRow($0) }
+      case .failed(let e):   ErrorView(error: e)
+      }
+  - id: laziness-memoization-pure-transforms
+    kind: code
+    title: Laziness, memoization & pure transforms
+    note: ""
+    code: |-
+      // Lazy: no intermediate arrays, work happens on demand
+      let firstBig = numbers.lazy
+        .map(expensiveTransform)
+        .first { $0 > 1_000 }
+
+      // Infinite sequence
+      let evens = sequence(first: 0) { $0 + 2 }.prefix(5)   // 0,2,4,6,8
+
+      // Memoize a pure function
+      func memoize<A: Hashable, B>(_ f: @escaping (A) -> B) -> (A) -> B {
+        var cache: [A: B] = [:]
+        return { a in
+          if let hit = cache[a] { return hit }
+          let value = f(a); cache[a] = value; return value
+        }
+      }
+
+      // Pure update on a value type
+      func updating<T>(_ value: T, _ mutate: (inout T) -> Void) -> T {
+        var copy = value; mutate(&copy); return copy
+      }
+      let renamed = updating(user) { $0.name = "Ada" }
+  - id: trade-offs-to-mention-out-loud
+    kind: rules
+    title: Trade-offs to mention out loud
+    note: ""
+    items:
+      - tone: good
+        text: Pure functions are trivially unit-testable and thread-safe — a natural fit for Swift 6 `Sendable`.
+      - tone: good
+        text: Value semantics remove whole classes of aliasing bugs; SwiftUI and TCA are built on it.
+      - tone: bad
+        text: Copying large structs can cost; Swift's CoW helps, but measure (`isKnownUniquelyReferenced` for custom CoW).
+      - tone: bad
+        text: Deep operator chains can hurt readability and compile times — name intermediate steps.
+      - tone: neutral
+        text: "`inout` and `mutating` are the pragmatic escape hatch: local mutation, value semantics preserved."

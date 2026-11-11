@@ -1,0 +1,59 @@
+# Builds and checks the site on every pull request and on main: typecheck, the
+# test suite (content and anchor parity, highlighter and search parity, static
+# render + hydration, the offline file opened from disk), the Gatsby build, the
+# offline export, structural verification — and that the committed offline
+# index.html is exactly what the sources produce.
+name: site
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: site-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      GATSBY_TELEMETRY_DISABLED: "1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Node
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Install pinned dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Tests with coverage
+        run: npx vitest run --coverage
+
+      - name: Build site and offline file
+        run: npm run build
+
+      - name: Verify built pages
+        run: npm run verify
+
+      - name: Offline file is current
+        run: |
+          if ! git diff --quiet -- index.html offline; then
+            echo "::error::index.html is stale — run 'npm run build' and commit the result."
+            git diff --stat -- index.html offline
+            exit 1
+          fi

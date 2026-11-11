@@ -1,0 +1,194 @@
+id: conc-dos
+concept: concurrency.migration
+scope: language
+title: Swift 6 Concurrency — Do's & Don'ts
+group: Concurrency
+subtitle: Migration traps, and how modern code meets legacy GCD/Combine code.
+applies:
+  versions:
+    swift: ">=6.0"
+sources:
+  - title: Migrating to Swift 6 — swift.org
+    url: https://www.swift.org/migration/documentation/migrationguide/
+  - title: Concurrency — The Swift Programming Language
+    url: https://docs.swift.org/swift-book/documentation/the-swift-programming-language/concurrency/
+cards:
+  - id: never-block-a-thread-waiting-on-async
+    kind: compare
+    title: Never block a thread waiting on async
+    note: The cooperative thread pool has ~one thread per core. Blocking one can deadlock the app.
+    columns:
+      - label: Don't
+        tone: bad
+        code: |-
+          func value() -> Int {
+            let sem = DispatchSemaphore(value: 0)
+            var result = 0
+            Task {
+              result = await compute()
+              sem.signal()
+            }
+            sem.wait()          // deadlock risk, priority inversion
+            return result
+          }
+
+          DispatchQueue.main.sync { ... }   // from async code: hangs
+      - label: Do
+        tone: good
+        code: |-
+          func value() async -> Int {
+            await compute()
+          }
+
+          // At a sync boundary you cannot change, hop instead of block:
+          Task { @MainActor in
+            let v = await compute()
+            self.label.text = "\(v)"
+          }
+  - id: don-t-use-queues-for-mutual-exclusion-in-new-code
+    kind: compare
+    title: Don't use queues for mutual exclusion in new code
+    note: ""
+    columns:
+      - label: Legacy
+        tone: legacy
+        code: |-
+          final class Store {
+            private let q = DispatchQueue(label: "store")
+            private var items: [Item] = []
+
+            func add(_ i: Item) { q.async { self.items.append(i) } }
+            func all(_ done: @escaping ([Item]) -> Void) {
+              q.async { done(self.items) }
+            }
+          }
+      - label: Modern
+        tone: modern
+        code: |-
+          actor Store {
+            private var items: [Item] = []
+            func add(_ i: Item) { items.append(i) }
+            func all() -> [Item] { items }
+          }
+
+          let store = Store()
+          await store.add(item)
+          let items = await store.all()
+  - id: mainactor-over-dispatchqueue-main
+    kind: compare
+    title: "@MainActor over DispatchQueue.main"
+    note: ""
+    columns:
+      - label: Legacy
+        tone: legacy
+        code: |-
+          URLSession.shared.dataTask(with: url) { data, _, error in
+            DispatchQueue.main.async {
+              self.items = decode(data)
+              self.tableView.reloadData()
+            }
+          }.resume()
+      - label: Modern
+        tone: modern
+        code: |-
+          @MainActor
+          func reload() async throws {
+            let (data, _) = try await URLSession.shared.data(from: url)
+            items = try decode(data)      // already on main; compiler-checked
+          }
+  - id: do
+    kind: rules
+    title: Do
+    note: ""
+    items:
+      - tone: good
+        text: Mark model types `Sendable` and keep them value types.
+      - tone: good
+        text: Put `@MainActor` on view models / anything touching UIKit or SwiftUI state.
+      - tone: good
+        text: Use `nonisolated` for pure helpers so callers don't need `await`.
+      - tone: good
+        text: Prefer `async let` / `TaskGroup` over manually spawned `Task`s.
+      - tone: good
+        text: Store `Task` handles you need to cancel (and cancel in `deinit` / `onDisappear`).
+      - tone: good
+        text: Use `Task.sleep`, `ContinuousClock`, or an injected clock instead of `Thread.sleep`/`Timer`.
+      - tone: good
+        text: Turn on `SWIFT_STRICT_CONCURRENCY = complete` per-module and migrate incrementally.
+      - tone: good
+        text: Use `@preconcurrency import` to silence a legacy module while you migrate.
+  - id: don-t
+    kind: rules
+    title: Don't
+    note: ""
+    items:
+      - tone: bad
+        text: Don't use `DispatchSemaphore`/`DispatchGroup.wait()` to make async look sync.
+      - tone: bad
+        text: Don't sprinkle `Task { }` inside loops — that's unstructured and unbounded.
+      - tone: bad
+        text: Don't use `Task.detached` just to "get off the main thread"; a `nonisolated async func` already does.
+      - tone: bad
+        text: Don't add `@unchecked Sendable` to silence errors without a real lock.
+      - tone: bad
+        text: Don't assume state is unchanged across an `await` inside an actor (reentrancy).
+      - tone: bad
+        text: Don't capture `self` strongly in a long-lived `Task` on a view controller.
+      - tone: bad
+        text: Don't resume a continuation twice (crash) or zero times (leak + hang).
+      - tone: bad
+        text: Don't rely on `Thread.current` — a task can resume on any thread.
+  - id: making-a-legacy-delegate-swift-6-safe
+    kind: code
+    title: Making a legacy delegate Swift 6 safe
+    note: Common migration exercise.
+    code: |-
+      // The delegate protocol is not isolated; the callback arrives on an unknown thread.
+      final class Scanner: NSObject, ScannerDelegate {
+        private let continuation: AsyncStream<Code>.Continuation
+        let codes: AsyncStream<Code>
+
+        override init() {
+          var c: AsyncStream<Code>.Continuation!
+          codes = AsyncStream { c = $0 }
+          continuation = c
+          super.init()
+        }
+
+        nonisolated func scanner(_ s: RawScanner, didFind code: Code) {
+          continuation.yield(code)          // Continuation is Sendable -> safe from any thread
+        }
+      }
+
+      // Consumer stays on the main actor:
+      @MainActor
+      func observe(_ scanner: Scanner) async {
+        for await code in scanner.codes { self.lastCode = code }
+      }
+  - id: common-swift-6-errors-fix
+    kind: table
+    title: Common Swift 6 errors → fix
+    note: ""
+    headers:
+      - Compiler says
+      - Meaning
+      - Fix
+    rows:
+      - - Capture of non-Sendable type in `@Sendable` closure
+        - You're sharing a class across domains
+        - make it a `struct`, an `actor`, or pass `sending`
+      - - Main actor-isolated property can not be referenced from a nonisolated context
+        - Sync access to UI state
+        - "`await MainActor.run { }` or make the caller `@MainActor`"
+      - - Sending value risks causing data races
+        - Value could still be referenced by the sender
+        - make it `Sendable`, or don't touch it after sending
+      - - Static property is not concurrency-safe
+        - Mutable global
+        - "`let` + `Sendable`, `@MainActor static var`, or `nonisolated(unsafe)` as a stopgap"
+      - - Call to actor-isolated method in a synchronous nonisolated context
+        - Missing `await`
+        - make the caller `async`, or wrap in `Task { }`
+      - - Non-sendable type exiting main actor-isolated context
+        - Returning a class from `@MainActor` code
+        - return a `Sendable` snapshot instead

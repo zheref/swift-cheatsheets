@@ -1,0 +1,295 @@
+id: tca-nav
+concept: architecture.unidirectional-navigation
+scope: platform
+title: TCA + SwiftUI — Navigation & UI
+group: Composable Architecture
+subtitle: Tree-based (@Presents) for sheets/alerts, stack-based (StackState) for push navigation.
+applies:
+  platforms:
+    - ios
+    - ipados
+    - macos
+    - tvos
+    - watchos
+    - visionos
+  requires:
+    - swift-composable-architecture
+    - SwiftUI
+sources:
+  - title: The Composable Architecture (Point-Free)
+    url: https://github.com/pointfreeco/swift-composable-architecture
+  - title: SwiftUI — Apple Developer Documentation
+    url: https://developer.apple.com/documentation/swiftui
+cards:
+  - id: pick-your-navigation-style
+    kind: rules
+    title: Pick your navigation style
+    note: ""
+    items:
+      - tone: modern
+        text: "**Tree-based** — `@Presents var destination: Destination.State?`. Best for sheets, popovers, alerts, one-off drill-ins."
+      - tone: modern
+        text: "**Stack-based** — `var path = StackState<Path.State>()`. Best for arbitrarily deep push navigation."
+      - tone: neutral
+        text: "Both make navigation *state-driven*: set state → screen appears. Deep links become `State` construction."
+      - tone: good
+        text: "`@Presents` gives you free dismissal handling: SwiftUI setting the binding to nil sends `.dismiss`."
+  - id: tree-based-sheet-popover-fullscreencover
+    kind: code
+    title: "Tree-based: sheet / popover / fullScreenCover"
+    note: One enum reducer for all destinations of a screen.
+    code: |-
+      @Reducer
+      struct Inventory {
+        @Reducer
+        enum Destination {                       // @Reducer on an enum = destination reducer
+          case addItem(ItemForm)
+          case detail(ItemDetail)
+        }
+
+        @ObservableState
+        struct State: Equatable {
+          @Presents var destination: Destination.State?
+          var items: IdentifiedArrayOf<Item> = []
+        }
+
+        enum Action {
+          case addTapped
+          case itemTapped(Item.ID)
+          case destination(PresentationAction<Destination.Action>)
+        }
+
+        var body: some ReducerOf<Self> {
+          Reduce { state, action in
+            switch action {
+            case .addTapped:
+              state.destination = .addItem(ItemForm.State())
+              return .none
+
+            case let .itemTapped(id):
+              guard let item = state.items[id: id] else { return .none }
+              state.destination = .detail(ItemDetail.State(item: item))
+              return .none
+
+            // Listen to a child action across the presentation boundary:
+            case let .destination(.presented(.addItem(.delegate(.saved(item))))):
+              state.items.append(item)
+              state.destination = nil            // programmatic dismiss
+              return .none
+
+            case .destination:
+              return .none
+            }
+          }
+          .ifLet(\.$destination, action: \.destination)
+        }
+      }
+  - id: tree-based-the-view-side
+    kind: code
+    title: "Tree-based: the view side"
+    note: "`$store.scope` turns optional child state into a SwiftUI item binding."
+    code: |-
+      struct InventoryView: View {
+        @Bindable var store: StoreOf<Inventory>
+
+        var body: some View {
+          List {
+            ForEach(store.items) { item in
+              Button(item.name) { store.send(.itemTapped(item.id)) }
+            }
+          }
+          .toolbar { Button("Add") { store.send(.addTapped) } }
+
+          .sheet(item: $store.scope(state: \.destination?.addItem,
+                                    action: \.destination.addItem)) { formStore in
+            NavigationStack { ItemFormView(store: formStore) }
+          }
+
+          .navigationDestination(item: $store.scope(state: \.destination?.detail,
+                                                    action: \.destination.detail)) { detailStore in
+            ItemDetailView(store: detailStore)
+          }
+          // also: .popover(item:), .fullScreenCover(item:)
+        }
+      }
+  - id: alerts-confirmation-dialogs
+    kind: code
+    title: Alerts & confirmation dialogs
+    note: "`AlertState` keeps alerts testable — no view code decides anything."
+    code: |-
+      @ObservableState
+      struct State: Equatable {
+        @Presents var alert: AlertState<Action.Alert>?
+      }
+
+      enum Action {
+        case deleteTapped
+        case alert(PresentationAction<Alert>)
+        @CasePathable enum Alert: Equatable { case confirmDelete }
+      }
+
+      case .deleteTapped:
+        state.alert = AlertState {
+          TextState("Delete this item?")
+        } actions: {
+          ButtonState(role: .destructive, action: .confirmDelete) { TextState("Delete") }
+          ButtonState(role: .cancel) { TextState("Cancel") }
+        } message: {
+          TextState("This cannot be undone.")
+        }
+        return .none
+
+      case .alert(.presented(.confirmDelete)):
+        state.items.remove(id: state.selectedID)
+        return .none
+
+      case .alert:
+        return .none
+
+      // reducer:  .ifLet(\.$alert, action: \.alert)
+      // view:     .alert($store.scope(state: \.alert, action: \.alert))
+  - id: stack-based-navigation
+    kind: code
+    title: Stack-based navigation
+    note: "`StackState` + `NavigationStack(path:)`. Deep links = appending to the path."
+    code: |-
+      @Reducer
+      struct AppFeature {
+        @Reducer
+        enum Path {
+          case detail(Detail)
+          case settings(Settings)
+        }
+
+        @ObservableState
+        struct State: Equatable {
+          var path = StackState<Path.State>()
+          var root = Root.State()
+        }
+
+        enum Action {
+          case root(Root.Action)
+          case path(StackActionOf<Path>)
+        }
+
+        var body: some ReducerOf<Self> {
+          Scope(state: \.root, action: \.root) { Root() }
+          Reduce { state, action in
+            switch action {
+            // React to an action from *any* Detail screen on the stack:
+            case let .path(.element(id: id, action: .detail(.doneTapped))):
+              state.path.pop(from: id)
+              return .none
+            case .root, .path:
+              return .none
+            }
+          }
+          .forEach(\.path, action: \.path)
+        }
+      }
+  - id: stack-based-the-view-side
+    kind: code
+    title: "Stack-based: the view side"
+    note: "`NavigationLink(state:)` replaces `NavigationLink(destination:)`."
+    code: |-
+      struct AppView: View {
+        @Bindable var store: StoreOf<AppFeature>
+
+        var body: some View {
+          NavigationStack(path: $store.scope(state: \.path, action: \.path)) {
+            RootView(store: store.scope(state: \.root, action: \.root))
+          } destination: { store in
+            switch store.case {                       // exhaustive over Path
+            case let .detail(store):   DetailView(store: store)
+            case let .settings(store): SettingsView(store: store)
+            }
+          }
+        }
+      }
+
+      // Inside RootView — push by *state*, not by view:
+      NavigationLink(state: AppFeature.Path.State.detail(Detail.State(id: item.id))) {
+        Text(item.name)
+      }
+
+      // Programmatic push / pop / deep link:
+      state.path.append(.detail(Detail.State(id: id)))
+      state.path.removeLast()
+      state.path = StackState([.settings(Settings.State())])
+  - id: dismissing-yourself-child-initiated
+    kind: code
+    title: Dismissing yourself (child-initiated)
+    note: "`@Dependency(\\.dismiss)` — the child doesn't need to know its parent."
+    code: |-
+      @Reducer
+      struct ItemForm {
+        @Dependency(\.dismiss) var dismiss
+
+        var body: some ReducerOf<Self> {
+          Reduce { state, action in
+            switch action {
+            case .cancelTapped:
+              return .run { _ in await self.dismiss() }   // must be in .run, not sync
+            ...
+            }
+          }
+        }
+      }
+  - id: navigation-vanilla-swiftui-vs-tca
+    kind: compare
+    title: "Navigation: vanilla SwiftUI vs TCA"
+    note: Same idea — state drives navigation — but TCA moves the state into the reducer.
+    columns:
+      - label: Vanilla SwiftUI
+        tone: legacy
+        code: |-
+          struct ListView: View {
+            @State private var selected: Item?
+            @State private var showingAdd = false
+
+            var body: some View {
+              List(items) { item in
+                Button(item.name) { selected = item }
+              }
+              .sheet(item: $selected) { DetailView(item: $0) }
+              .sheet(isPresented: $showingAdd) { AddView() }
+            }
+          }
+      - label: TCA
+        tone: modern
+        code: |-
+          struct ListView: View {
+            @Bindable var store: StoreOf<Feature>
+
+            var body: some View {
+              List(store.items) { item in
+                Button(item.name) { store.send(.itemTapped(item.id)) }
+              }
+              .sheet(item: $store.scope(state: \.destination?.detail,
+                                        action: \.destination.detail),
+                     content: DetailView.init(store:))
+            }
+          }
+          // Navigation is now testable + deep-linkable.
+  - id: modifier-tca-scope-mapping
+    kind: table
+    title: Modifier → TCA scope mapping
+    note: Cheat table for the live exercise.
+    headers:
+      - SwiftUI
+      - TCA form
+    rows:
+      - - "`.sheet(isPresented:)`"
+        - "`.sheet(item: $store.scope(state: \\.destination?.x, action: \\.destination.x))`"
+      - - "`.sheet(item:)`"
+        - same as above (identity comes from the store)
+      - - "`.alert(isPresented:)`"
+        - "`.alert($store.scope(state: \\.alert, action: \\.alert))`"
+      - - "`.confirmationDialog`"
+        - "`.confirmationDialog($store.scope(state: \\.dialog, action: \\.dialog))`"
+      - - "`NavigationStack(path:)`"
+        - "`NavigationStack(path: $store.scope(state: \\.path, action: \\.path))`"
+      - - "`NavigationLink(value:)`"
+        - "`NavigationLink(state: Path.State.detail(...))`"
+      - - "`@Environment(\\.dismiss)`"
+        - "`@Dependency(\\.dismiss)` inside the reducer"

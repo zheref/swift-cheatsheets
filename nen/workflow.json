@@ -1,9 +1,9 @@
 {
   "$schema": "nen.workflow/v0.1",
-  "$comment": "Hand-written at adoption on 2026-11-10 (nen scaffold init had no lane to write it from). The iteration checks are the two commands the Makefile already runs: `build` regenerates index.html and `lint` runs src/verify.py's structural checks on it. There is no test suite, so tests.required is deliberately empty: a statement, not an omission. review.scopes starts from Hatsu's own rows cut down to what this repository has: code (every path), security (CI workflows, scripts, the serve scripts, the contract) and ui (the renderers and the generated page). Values below marked with a $<key> sibling were written at their catalogue default by config_values.sh fill and are the repository's own once set.",
+  "$comment": "Hand-written at adoption on 2026-11-10 (nen scaffold init had no lane to write it from). Since zheref/swift-cheatsheets#1 (2026-11-11) the site is Gatsby + TypeScript: the iteration checks are `build` (Gatsby site + offline index.html) then `lint` (tsc and scripts/verify.mts on both built pages), and `test` is the vitest suite, required. review.scopes starts from Hatsu's own rows cut down to what this repository has: code (every path), security (CI workflows, scripts, the serve scripts, the contract) and ui (the shared components, the adapters, the diagrams and the generated page). Values below marked with a $<key> sibling were written at their catalogue default by config_values.sh fill and are the repository's own once set.",
   "branch": { "template": "{model}/{persona}/{descriptor}", "base": "main" },
   "iteration": { "checks": ["build", "lint"], "lane": "site" },
-  "tests": { "required": [], "extra": [] },
+  "tests": { "required": ["test"], "extra": [] },
   "commits": {
     "allowedAttributionTrailers": ["Hatsu-Agent"],
     "forbiddenTrailers": ["Co-Authored-By", "Claude-Session", "Signed-off-by", "Generated-by", "Generated-with", "Reviewed-by"]
@@ -13,9 +13,9 @@
     "scopes": {
       "code": { "persona": "nobunaga", "tier": "deep", "budget": 2, "paths": ["**"] },
       "security": { "persona": "feitan", "tier": "deep", "budget": 1,
-                    "paths": [".github/workflows/**", "scripts/**", "nen/contract.json", "serve.command", "serve-https.command", "**/*secret*", "**/*token*", "**/*credential*"] },
+                    "paths": [".github/workflows/**", "scripts/**", "nen/contract.json", "serve.command", "serve-https.command", "package.json", "package-lock.json", ".npmrc", "src/adapters/offline/**", "src/content/load.ts", "**/*secret*", "**/*token*", "**/*credential*"] },
       "ui": { "persona": "hisoka", "tier": "fast", "budget": 2,
-              "paths": ["src/render.py", "src/svgkit.py", "src/diagrams.py", "index.html", "**/*.css", "**/*.svg"] }
+              "paths": ["src/ui/**", "src/adapters/**", "src/pages/**", "gatsby-ssr.tsx", "gatsby-browser.tsx", "content/**/diagrams/**", "index.html", "**/*.css", "**/*.svg"] }
     }
   },
   "coverage": {
