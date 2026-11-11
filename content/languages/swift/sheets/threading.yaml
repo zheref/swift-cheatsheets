@@ -1,0 +1,314 @@
+id: threading
+concept: concurrency.models-compared
+scope: platform
+title: Multithreading — GCD vs Combine vs async/await
+group: Concurrency
+subtitle: Same 12 problems, three eras of solution. Read across the row.
+applies:
+  platforms:
+    - ios
+    - ipados
+    - macos
+    - tvos
+    - watchos
+    - visionos
+  requires:
+    - Dispatch
+    - Combine
+sources:
+  - title: Dispatch — Apple Developer Documentation
+    url: https://developer.apple.com/documentation/dispatch
+  - title: Combine — Apple Developer Documentation
+    url: https://developer.apple.com/documentation/combine
+  - title: Concurrency — The Swift Programming Language
+    url: https://docs.swift.org/swift-book/documentation/the-swift-programming-language/concurrency/
+cards:
+  - id: run-work-off-the-main-thread-then-update-ui
+    kind: compare
+    title: Run work off the main thread, then update UI
+    note: ""
+    columns:
+      - label: GCD (legacy)
+        tone: legacy
+        code: |-
+          DispatchQueue.global(qos: .userInitiated).async {
+            let result = expensive()
+            DispatchQueue.main.async {
+              self.label.text = result
+            }
+          }
+      - label: Combine
+        tone: neutral
+        code: |-
+          Just(input)
+            .subscribe(on: DispatchQueue.global())
+            .map(expensive)
+            .receive(on: DispatchQueue.main)
+            .sink { self.label.text = $0 }
+            .store(in: &cancellables)
+      - label: async/await
+        tone: modern
+        code: |-
+          Task { @MainActor in
+            let result = await Task.detached(priority: .userInitiated) {
+              expensive()
+            }.value
+            label.text = result
+          }
+  - id: wait-for-n-parallel-jobs
+    kind: compare
+    title: Wait for N parallel jobs
+    note: ""
+    columns:
+      - label: DispatchGroup
+        tone: legacy
+        code: |-
+          let group = DispatchGroup()
+          var images: [UIImage] = []
+          let lock = NSLock()
+
+          for url in urls {
+            group.enter()
+            download(url) { image in
+              lock.withLock { images.append(image) }
+              group.leave()
+            }
+          }
+          group.notify(queue: .main) { render(images) }
+      - label: Combine
+        tone: neutral
+        code: |-
+          Publishers.MergeMany(urls.map(downloadPublisher))
+            .collect()
+            .receive(on: DispatchQueue.main)
+            .sink { render($0) }
+            .store(in: &cancellables)
+
+          // or Publishers.Zip / .zip for pairwise
+      - label: TaskGroup
+        tone: modern
+        code: |-
+          let images = try await withThrowingTaskGroup(of: UIImage.self) { group in
+            for url in urls { group.addTask { try await download(url) } }
+            var out: [UIImage] = []
+            for try await img in group { out.append(img) }
+            return out
+          }
+          render(images)          // ordering is completion order
+  - id: serialize-access-to-shared-mutable-state
+    kind: compare
+    title: Serialize access to shared mutable state
+    note: ""
+    columns:
+      - label: Serial queue / lock
+        tone: legacy
+        code: |-
+          let queue = DispatchQueue(label: "counter")
+          var count = 0
+          queue.sync { count += 1 }
+
+          // or a barrier on a concurrent queue (readers-writer)
+          let rw = DispatchQueue(label: "rw", attributes: .concurrent)
+          rw.async(flags: .barrier) { count += 1 }
+          rw.sync { _ = count }
+      - label: Combine
+        tone: neutral
+        code: |-
+          // Combine has no mutual exclusion primitive.
+          // You still need a lock/queue, or confine all
+          // mutation to one scheduler:
+          subject
+            .receive(on: serialQueue)
+            .sink { count += $0 }
+            .store(in: &cancellables)
+      - label: Actor
+        tone: modern
+        code: |-
+          actor Counter {
+            private var value = 0
+            func increment() { value += 1 }
+            func current() -> Int { value }
+          }
+          await counter.increment()
+  - id: cancel-in-flight-work
+    kind: compare
+    title: Cancel in-flight work
+    note: ""
+    columns:
+      - label: GCD
+        tone: legacy
+        code: |-
+          let item = DispatchWorkItem { heavyWork() }
+          DispatchQueue.global().async(execute: item)
+          item.cancel()               // only prevents *start*, can't interrupt
+
+          URLSessionTask.cancel()     // for networking
+      - label: Combine
+        tone: neutral
+        code: |-
+          let c = publisher.sink { ... }
+          c.cancel()                  // cancels the whole chain
+
+          // automatic when the AnyCancellable deallocates
+          cancellables.removeAll()
+      - label: Structured
+        tone: modern
+        code: |-
+          let task = Task { try await work() }
+          task.cancel()               // propagates to children
+
+          // cooperative check inside:
+          try Task.checkCancellation()
+          if Task.isCancelled { return }
+  - id: delay-debounce-throttle
+    kind: compare
+    title: Delay / debounce / throttle
+    note: ""
+    columns:
+      - label: GCD
+        tone: legacy
+        code: |-
+          DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { ... }
+
+          // manual debounce
+          var work: DispatchWorkItem?
+          func search(_ q: String) {
+            work?.cancel()
+            let w = DispatchWorkItem { performSearch(q) }
+            work = w
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: w)
+          }
+      - label: Combine
+        tone: neutral
+        code: |-
+          $query
+            .debounce(for: .milliseconds(300), scheduler: RunLoop.main)
+            .removeDuplicates()
+            .sink { performSearch($0) }
+            .store(in: &cancellables)
+
+          $scroll.throttle(for: .seconds(1),
+                           scheduler: RunLoop.main,
+                           latest: true)
+      - label: async/await
+        tone: modern
+        code: |-
+          var searchTask: Task<Void, Never>?
+
+          func search(_ q: String) {
+            searchTask?.cancel()
+            searchTask = Task {
+              try? await Task.sleep(for: .milliseconds(300))
+              guard !Task.isCancelled else { return }
+              await performSearch(q)
+            }
+          }
+  - id: retry-with-backoff
+    kind: compare
+    title: Retry with backoff
+    note: ""
+    columns:
+      - label: GCD
+        tone: legacy
+        code: |-
+          func attempt(_ n: Int) {
+            request { result in
+              switch result {
+              case .success(let v): done(v)
+              case .failure where n > 0:
+                DispatchQueue.global().asyncAfter(
+                  deadline: .now() + pow(2, Double(3 - n))) {
+                  attempt(n - 1)
+                }
+              case .failure(let e): fail(e)
+              }
+            }
+          }
+      - label: Combine
+        tone: neutral
+        code: |-
+          requestPublisher
+            .retry(3)                       // immediate retries
+            .catch { _ in Just(.cached) }
+            .eraseToAnyPublisher()
+
+          // backoff needs delay + retry composition:
+          .catch { _ in
+            Just(()).delay(for: .seconds(2), scheduler: q)
+              .flatMap { requestPublisher }
+          }
+      - label: async/await
+        tone: modern
+        code: |-
+          func withRetry<T>(_ max: Int = 3,
+                            _ op: () async throws -> T) async throws -> T {
+            for attempt in 0..<max {
+              do { return try await op() }
+              catch {
+                if attempt == max - 1 { throw error }
+                try await Task.sleep(for: .seconds(pow(2, Double(attempt))))
+              }
+            }
+            fatalError("unreachable")
+          }
+  - id: concept-translation-table
+    kind: table
+    title: Concept translation table
+    note: ""
+    headers:
+      - Need
+      - GCD
+      - Combine
+      - Concurrency
+    rows:
+      - - Background execution
+        - "`DispatchQueue.global().async`"
+        - "`.subscribe(on:)`"
+        - "`await` a nonisolated func / `Task.detached`"
+      - - Main-thread delivery
+        - "`DispatchQueue.main.async`"
+        - "`.receive(on: DispatchQueue.main)`"
+        - "`@MainActor`"
+      - - Fan-out + join
+        - "`DispatchGroup`"
+        - "`MergeMany` + `collect`"
+        - "`TaskGroup` / `async let`"
+      - - Mutual exclusion
+        - serial queue, `NSLock`, barrier
+        - — (use a lock)
+        - "`actor`"
+      - - Cancellation
+        - "`DispatchWorkItem.cancel()`"
+        - "`AnyCancellable.cancel()`"
+        - "`Task.cancel()` (cooperative)"
+      - - Timer
+        - "`DispatchSourceTimer`"
+        - "`Timer.publish`"
+        - "`AsyncTimerSequence` / `clock.timer`"
+      - - Stream of values
+        - callbacks
+        - "`Publisher`"
+        - "`AsyncSequence`"
+      - - Priority
+        - QoS on the queue
+        - scheduler choice
+        - "`TaskPriority` (inherited)"
+      - - Deadlock risk
+        - high (`sync` on same queue)
+        - low
+        - low (never block)
+  - id: talking-points
+    kind: rules
+    title: Talking points
+    note: Short answers that show depth.
+    items:
+      - tone: neutral
+        text: GCD threads *block*; Swift concurrency tasks *suspend* and free the thread. That's why blocking a cooperative thread is so bad.
+      - tone: neutral
+        text: "`await` does not guarantee a thread change; it guarantees the correct **isolation domain**."
+      - tone: neutral
+        text: "Thread explosion: 1000 `DispatchQueue.global().async` calls can spawn ~64+ threads. `TaskGroup` is bounded by the core count."
+      - tone: neutral
+        text: "Priority inversion: GCD needs manual QoS care; Swift concurrency escalates priority automatically for actor/task dependencies."
+      - tone: neutral
+        text: Combine is still the right answer for UIKit-era reactive pipelines and for `@Published`; new code usually prefers `AsyncSequence` + `Observation`.

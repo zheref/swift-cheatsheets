@@ -1,0 +1,13 @@
+id: fixture-concurrency
+concept: concurrency.async-await
+scope: shared
+title: Fixture — Coroutines
+group: Fixture Basics
+subtitle: A second sheet in the same group, to exercise grouping and ordering.
+cards:
+  - id: suspend-function
+    kind: code
+    title: A suspend function
+    note: ""
+    code: |-
+      suspend fun load(): String = "done"

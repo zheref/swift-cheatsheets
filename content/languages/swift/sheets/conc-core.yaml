@@ -1,0 +1,197 @@
+id: conc-core
+concept: concurrency.async-await
+scope: shared
+title: Modern Swift Concurrency — Core
+group: Concurrency
+subtitle: async/await, structured tasks, groups, streams, cancellation.
+sources:
+  - title: Concurrency — The Swift Programming Language
+    url: https://docs.swift.org/swift-book/documentation/the-swift-programming-language/concurrency/
+cards:
+  - id: async-await-basics
+    kind: code
+    title: async / await basics
+    note: "`await` = a possible suspension point, not a thread hop guarantee."
+    code: |-
+      func loadUser(id: Int) async throws -> User {
+        let (data, response) = try await URLSession.shared.data(from: url(id))
+        guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw APIError.badStatus }
+        return try JSONDecoder().decode(User.self, from: data)
+      }
+
+      // Sequential: total time = a + b
+      let user = try await loadUser(id: 1)
+      let posts = try await loadPosts(for: user)
+
+      // Concurrent: total time = max(a, b)
+      async let user  = loadUser(id: 1)
+      async let stats = loadStats(id: 1)
+      let (u, s) = try await (user, stats)      // both awaited here
+  - id: structured-vs-unstructured
+    kind: rules
+    title: Structured vs unstructured
+    note: Interviewers love this distinction.
+    items:
+      - tone: good
+        text: "**Structured**: `async let`, `TaskGroup`. Child tasks cannot outlive the scope; cancellation and errors propagate automatically."
+      - tone: legacy
+        text: "**Unstructured**: `Task { }` — inherits actor isolation + priority, but you must retain/cancel it yourself."
+      - tone: bad
+        text: "**Detached**: `Task.detached { }` — inherits *nothing*. Rarely the right answer; only for truly independent background work."
+      - tone: neutral
+        text: "Rule of thumb: use structured concurrency; `Task { }` only at the boundary between sync (e.g. a SwiftUI button) and async code."
+  - id: taskgroup-dynamic-fan-out
+    kind: code
+    title: TaskGroup — dynamic fan-out
+    note: Use when the number of child tasks is only known at runtime.
+    code: |-
+      func thumbnails(for ids: [String]) async throws -> [String: UIImage] {
+        try await withThrowingTaskGroup(of: (String, UIImage).self) { group in
+          for id in ids {
+            group.addTask { (id, try await fetchThumbnail(id)) }   // runs concurrently
+          }
+          var result: [String: UIImage] = [:]
+          for try await (id, image) in group {                     // results in COMPLETION order
+            result[id] = image
+          }
+          return result
+        }
+      }
+
+      // Bounded concurrency (don't launch 10 000 tasks):
+      try await withThrowingTaskGroup(of: Void.self) { group in
+        var it = ids.makeIterator()
+        for _ in 0..<4 { if let id = it.next() { group.addTask { try await work(id) } } }
+        while try await group.next() != nil {
+          if let id = it.next() { group.addTask { try await work(id) } }
+        }
+      }
+  - id: cancellation
+    kind: code
+    title: Cancellation
+    note: "Cooperative: nothing is killed, you must check."
+    code: |-
+      Task.isCancelled                       // non-throwing check
+      try Task.checkCancellation()           // throws CancellationError
+
+      let task = Task {
+        for chunk in chunks {
+          try Task.checkCancellation()
+          await process(chunk)
+        }
+      }
+      task.cancel()                          // cancels task AND all its children
+      await task.value                       // await result (rethrows)
+
+      // Clean up when cancelled mid-flight:
+      await withTaskCancellationHandler {
+        try await longRunningWork()
+      } onCancel: {
+        connection.close()                   // runs immediately, sync, on any thread
+      }
+
+      // try await Task.sleep(...) throws CancellationError immediately on cancel.
+  - id: asyncsequence-asyncstream
+    kind: code
+    title: AsyncSequence & AsyncStream
+    note: Bridge callbacks/delegates into async, and iterate over time.
+    code: |-
+      // Consume
+      for try await line in url.lines { print(line) }
+      for await note in NotificationCenter.default.notifications(named: .didLogin) { ... }
+
+      // Produce — bridging a callback API
+      func locations() -> AsyncStream<CLLocation> {
+        AsyncStream { continuation in
+          let manager = LocationManager()
+          manager.onUpdate = { continuation.yield($0) }
+          continuation.onTermination = { _ in manager.stop() }
+          manager.start()
+        }
+      }
+
+      // Throwing variant + explicit finish
+      let stream = AsyncThrowingStream<Int, Error> { c in
+        c.yield(1); c.yield(2); c.finish()
+      }
+
+      // Operators exist too:
+      for await x in stream.map { $0 * 2 }.filter({ $0 > 2 }).prefix(10) { ... }
+  - id: bridging-legacy-callbacks
+    kind: code
+    title: Bridging legacy callbacks
+    note: "Continuations: resume exactly once, or you crash / leak."
+    code: |-
+      func load() async throws -> Data {
+        try await withCheckedThrowingContinuation { continuation in
+          legacyLoad { data, error in
+            if let error { continuation.resume(throwing: error) }
+            else { continuation.resume(returning: data!) }
+          }
+        }
+      }
+
+      // Cancellable version
+      func load() async throws -> Data {
+        try await withTaskCancellationHandler {
+          try await withCheckedThrowingContinuation { c in
+            task = legacyLoad { ... }
+          }
+        } onCancel: { task?.cancel() }
+      }
+
+      // withUnsafeContinuation = same, no runtime checks. Use Checked while developing.
+  - id: task-api-quick-reference
+    kind: table
+    title: Task API quick reference
+    note: ""
+    headers:
+      - API
+      - Inherits isolation?
+      - Inherits priority?
+      - Use for
+    rows:
+      - - "`async let`"
+        - yes
+        - yes
+        - fixed number of parallel calls
+      - - "`withTaskGroup`"
+        - yes
+        - yes
+        - dynamic fan-out / bounded parallelism
+      - - "`Task { }`"
+        - yes
+        - yes
+        - sync → async boundary (button taps, `onAppear`)
+      - - "`Task.detached { }`"
+        - "**no**"
+        - no
+        - background work unrelated to the caller
+      - - "`Task.yield()`"
+        - —
+        - —
+        - give other tasks a turn in a long CPU loop
+      - - "`Task.sleep(for:)`"
+        - —
+        - —
+        - delays (cancellable, never blocks a thread)
+  - id: mainactor-hop
+    kind: code
+    title: MainActor hop
+    note: Only touch UI on the main actor; the compiler enforces it in Swift 6.
+    code: |-
+      @MainActor
+      final class ProfileViewModel: ObservableObject {
+        @Published private(set) var user: User?
+
+        func load() async {                     // inherits @MainActor
+          let fetched = try? await api.user()   // api call suspends off the main actor
+          self.user = fetched                   // back on main automatically
+        }
+      }
+
+      // Explicit hop from a nonisolated context:
+      await MainActor.run { label.text = "done" }
+
+      // Already on main and need it synchronously (e.g. in a delegate callback):
+      MainActor.assumeIsolated { label.text = "done" }   // traps if not actually on main

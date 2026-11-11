@@ -1,0 +1,231 @@
+id: solid
+concept: principles.solid
+scope: shared
+title: SOLID in Swift
+group: Design & Language
+subtitle: Five principles, one concrete Swift example each. Say the name, then the smell it prevents.
+cards:
+  - id: the-one-line-versions
+    kind: rules
+    title: The one-line versions
+    note: ""
+    items:
+      - tone: modern
+        text: "**S**ingle Responsibility — a type has one reason to change."
+      - tone: modern
+        text: "**O**pen/Closed — open for extension, closed for modification."
+      - tone: modern
+        text: "**L**iskov Substitution — a subtype must be usable anywhere its supertype is, without surprises."
+      - tone: modern
+        text: "**I**nterface Segregation — many small protocols beat one fat protocol."
+      - tone: modern
+        text: "**D**ependency Inversion — depend on abstractions, and let the caller supply them."
+      - tone: neutral
+        text: In Swift, protocols + value types + closures do most of the work; you rarely need class hierarchies.
+  - id: s-single-responsibility
+    kind: compare
+    title: S — Single Responsibility
+    note: "Smell: a class that talks to the network, parses, caches and formats."
+    columns:
+      - label: Violates
+        tone: bad
+        code: |-
+          final class UserManager {
+            func fetchUser(id: String) async throws -> User {
+              let (data, _) = try await URLSession.shared.data(from: url(id))
+              let user = try JSONDecoder().decode(User.self, from: data)
+              UserDefaults.standard.set(data, forKey: id)     // persistence
+              Analytics.log("user_fetched")                   // analytics
+              return user
+            }
+            func displayName(_ u: User) -> String { ... }     // formatting
+          }
+      - label: Respects
+        tone: good
+        code: |-
+          struct UserAPI {           // transport only
+            func user(id: String) async throws -> User
+          }
+          struct UserCache {         // persistence only
+            func save(_ user: User); func load(id: String) -> User?
+          }
+          struct UserFormatter {     // presentation only
+            func displayName(_ u: User) -> String
+          }
+
+          // A thin coordinator composes them:
+          struct UserRepository {
+            let api: UserAPI, cache: UserCache
+            func user(id: String) async throws -> User {
+              if let hit = cache.load(id: id) { return hit }
+              let u = try await api.user(id: id); cache.save(u); return u
+            }
+          }
+  - id: o-open-closed
+    kind: compare
+    title: O — Open/Closed
+    note: "Smell: adding a case means editing an existing switch in a shipped type."
+    columns:
+      - label: Violates
+        tone: bad
+        code: |-
+          struct DiscountCalculator {
+            func discount(for kind: String, price: Decimal) -> Decimal {
+              switch kind {
+              case "student": return price * 0.1
+              case "senior":  return price * 0.15
+              // every new rule edits THIS function
+              default: return 0
+              }
+            }
+          }
+      - label: Respects
+        tone: good
+        code: |-
+          protocol DiscountRule {
+            func discount(on price: Decimal) -> Decimal
+          }
+          struct StudentDiscount: DiscountRule {
+            func discount(on p: Decimal) -> Decimal { p * 0.1 }
+          }
+          struct SeniorDiscount: DiscountRule {
+            func discount(on p: Decimal) -> Decimal { p * 0.15 }
+          }
+
+          struct DiscountCalculator {
+            let rules: [DiscountRule]                 // extend by ADDING a type
+            func total(on p: Decimal) -> Decimal {
+              rules.reduce(0) { $0 + $1.discount(on: p) }
+            }
+          }
+          // Note: a closed enum + exhaustive switch is also fine when the set
+          // of cases is genuinely fixed - that's the trade-off to mention.
+  - id: l-liskov-substitution
+    kind: compare
+    title: L — Liskov Substitution
+    note: "Smell: a subclass that throws, no-ops, or tightens preconditions."
+    columns:
+      - label: Violates
+        tone: bad
+        code: |-
+          class Rectangle {
+            var width: Double = 0
+            var height: Double = 0
+            var area: Double { width * height }
+          }
+
+          class Square: Rectangle {
+            override var width: Double {
+              didSet { super.height = width }         // surprise side effect
+            }
+          }
+
+          func resize(_ r: Rectangle) {
+            r.width = 4; r.height = 5
+            assert(r.area == 20)                      // fails for Square
+          }
+      - label: Respects
+        tone: good
+        code: |-
+          protocol Shape { var area: Double { get } }
+
+          struct Rectangle: Shape {
+            let width, height: Double
+            var area: Double { width * height }
+          }
+          struct Square: Shape {
+            let side: Double
+            var area: Double { side * side }
+          }
+
+          func totalArea(_ shapes: [any Shape]) -> Double {
+            shapes.reduce(0) { $0 + $1.area }         // every Shape behaves
+          }
+  - id: i-interface-segregation
+    kind: compare
+    title: I — Interface Segregation
+    note: "Smell: conformances full of `fatalError()` or empty methods."
+    columns:
+      - label: Violates
+        tone: bad
+        code: |-
+          protocol Worker {
+            func fetch() async throws -> Data
+            func upload(_ d: Data) async throws
+            func deleteAll() async throws
+            func exportCSV() -> URL
+          }
+
+          struct ReadOnlyClient: Worker {
+            func fetch() async throws -> Data { ... }
+            func upload(_ d: Data) async throws { fatalError("unsupported") }
+            func deleteAll() async throws { }          // silently wrong
+            func exportCSV() -> URL { fatalError() }
+          }
+      - label: Respects
+        tone: good
+        code: |-
+          protocol Fetching  { func fetch() async throws -> Data }
+          protocol Uploading { func upload(_ d: Data) async throws }
+          protocol Purging   { func deleteAll() async throws }
+
+          struct ReadOnlyClient: Fetching {
+            func fetch() async throws -> Data { ... }
+          }
+          struct FullClient: Fetching, Uploading, Purging { ... }
+
+          func sync(_ c: some Fetching & Uploading) async throws { ... }
+  - id: d-dependency-inversion
+    kind: compare
+    title: D — Dependency Inversion
+    note: "Smell: `URLSession.shared` / `Date()` / singletons hard-coded inside logic."
+    columns:
+      - label: Violates
+        tone: bad
+        code: |-
+          final class CheckoutService {
+            func pay(_ order: Order) async throws {
+              let token = try await StripeSDK.shared.charge(order.total)
+              Database.shared.save(token)
+              Analytics.shared.log("paid")
+            }
+          }
+          // Untestable: every test hits the real world.
+      - label: Respects
+        tone: good
+        code: |-
+          struct CheckoutService {
+            var charge: (Decimal) async throws -> Token   // closures ARE protocols
+            var save: (Token) throws -> Void
+            var log: (String) -> Void
+
+            func pay(_ order: Order) async throws {
+              let token = try await charge(order.total)
+              try save(token)
+              log("paid")
+            }
+          }
+
+          // Production
+          CheckoutService(charge: StripeSDK.shared.charge,
+                          save: Database.shared.save,
+                          log: Analytics.shared.log)
+          // Test
+          CheckoutService(charge: { _ in .stub }, save: { _ in }, log: { _ in })
+  - id: related-principles-they-may-also-ask
+    kind: rules
+    title: Related principles they may also ask
+    note: ""
+    items:
+      - tone: neutral
+        text: "**DRY** — but prefer duplication over the wrong abstraction."
+      - tone: neutral
+        text: "**YAGNI** — don't build the protocol until there are two implementations."
+      - tone: neutral
+        text: "**Composition over inheritance** — Swift protocols + generics + structs make this the default."
+      - tone: neutral
+        text: "**Law of Demeter** — `a.b.c.d()` is a coupling smell; ask for what you need."
+      - tone: neutral
+        text: "**Tell, don't ask** — send a message rather than querying state and deciding externally."
+      - tone: good
+        text: "TCA angle: reducers = SRP, `@Dependency` = DIP, `Scope`/`ifLet` = composition over inheritance."

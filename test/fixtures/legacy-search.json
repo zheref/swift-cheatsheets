@@ -1,0 +1,119 @@
+{
+ "source": "pre-migration index.html (1093188) run in jsdom, its own search script, query typed into #q",
+ "queries": {
+  "actor sendable": {
+   "hits": "18 cards matching “actor sendable”",
+   "sheets": [
+    "conc-actors",
+    "conc-dos",
+    "best-practices",
+    "testing",
+    "ai-workflows",
+    "files"
+   ],
+   "cards": 18
+  },
+  "debounce": {
+   "hits": "23 cards matching “debounce”",
+   "sheets": [
+    "tca-core",
+    "tca-compose",
+    "threading",
+    "combine-core",
+    "async-patterns",
+    "swiftui-combine",
+    "timing",
+    "streams"
+   ],
+   "cards": 23
+  },
+  "Task": {
+   "hits": "68 cards matching “Task”",
+   "sheets": [
+    "swiftui-state",
+    "swiftui-uikit",
+    "tca-compose",
+    "conc-core",
+    "conc-actors",
+    "conc-dos",
+    "threading",
+    "combine-core",
+    "async-patterns",
+    "swiftui-combine",
+    "timing",
+    "lang",
+    "collections",
+    "best-practices",
+    "architecture",
+    "ai-workflows",
+    "streams",
+    "files",
+    "core-bluetooth"
+   ],
+   "cards": 68
+  },
+  "@MainActor": {
+   "hits": "32 cards matching “@MainActor”",
+   "sheets": [
+    "conc-core",
+    "conc-actors",
+    "conc-dos",
+    "threading",
+    "async-patterns",
+    "swiftui-combine",
+    "timing",
+    "best-practices",
+    "architecture",
+    "testing",
+    "ai-workflows",
+    "files"
+   ],
+   "cards": 32
+  },
+  "o(n log n)": {
+   "hits": "13 cards matching “o(n log n)”",
+   "sheets": [
+    "collections",
+    "collection-ops",
+    "algorithms",
+    "files"
+   ],
+   "cards": 13
+  },
+  "zzzz-no-match": {
+   "hits": "0 cards matching “zzzz-no-match”",
+   "sheets": [],
+   "cards": 0
+  },
+  "swiftui": {
+   "hits": "57 cards matching “swiftui”",
+   "sheets": [
+    "swiftui-state",
+    "swiftui-views",
+    "swiftui-uikit",
+    "tca-core",
+    "tca-nav",
+    "conc-core",
+    "conc-dos",
+    "async-patterns",
+    "swiftui-combine",
+    "timing",
+    "fp",
+    "lang",
+    "collection-ops",
+    "architecture",
+    "modularization",
+    "testing",
+    "ai-workflows"
+   ],
+   "cards": 57
+  },
+  "  heap   top  ": {
+   "hits": "3 cards matching “  heap   top  ”",
+   "sheets": [
+    "algorithms"
+   ],
+   "cards": 3
+  }
+ }
+}

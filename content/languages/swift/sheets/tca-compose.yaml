@@ -1,0 +1,224 @@
+id: tca-compose
+concept: architecture.unidirectional-composition
+scope: platform
+title: TCA — Composition, Dependencies, Testing
+group: Composable Architecture
+subtitle: How small features become a big app, and how you prove it works.
+applies:
+  platforms:
+    - ios
+    - ipados
+    - macos
+    - tvos
+    - watchos
+    - visionos
+  requires:
+    - swift-composable-architecture
+sources:
+  - title: The Composable Architecture (Point-Free)
+    url: https://github.com/pointfreeco/swift-composable-architecture
+cards:
+  - id: scope-parent-embeds-child
+    kind: code
+    title: "Scope: parent embeds child"
+    note: One `Scope` per child domain, then the parent's own `Reduce`.
+    code: |-
+      @Reducer
+      struct AppFeature {
+        @ObservableState
+        struct State: Equatable {
+          var counter = Counter.State()
+          var profile = Profile.State()
+        }
+        enum Action {
+          case counter(Counter.Action)
+          case profile(Profile.Action)
+        }
+
+        var body: some ReducerOf<Self> {
+          Scope(state: \.counter, action: \.counter) { Counter() }
+          Scope(state: \.profile, action: \.profile) { Profile() }
+
+          Reduce { state, action in
+            switch action {
+            case .counter(.incrementTapped):        // parent can observe child actions
+              state.profile.score += 1
+              return .none
+            case .counter, .profile:
+              return .none
+            }
+          }
+        }
+      }
+
+      // View side
+      CounterView(store: store.scope(state: \.counter, action: \.counter))
+  - id: optional-collection-children
+    kind: code
+    title: Optional & collection children
+    note: "`ifLet` for optional state, `forEach` for identified collections."
+    code: |-
+      @ObservableState
+      struct State: Equatable {
+        var editor: Editor.State?                        // optional child
+        var rows: IdentifiedArrayOf<Row.State> = []      // collection of children
+      }
+      enum Action {
+        case editor(Editor.Action)
+        case rows(IdentifiedActionOf<Row>)
+      }
+
+      var body: some ReducerOf<Self> {
+        Reduce { ... }
+          .ifLet(\.editor, action: \.editor) { Editor() }
+          .forEach(\.rows, action: \.rows) { Row() }
+      }
+
+      // View
+      ForEach(store.scope(state: \.rows, action: \.rows)) { rowStore in
+        RowView(store: rowStore)
+      }
+  - id: child-parent-communication
+    kind: code
+    title: Child → parent communication
+    note: Prefer a `delegate` action over the parent snooping on internals.
+    code: |-
+      @Reducer
+      struct Row {
+        enum Action {
+          case deleteTapped
+          case delegate(Delegate)                  // public API of the child
+          enum Delegate: Equatable { case didRequestDelete(Row.State.ID) }
+        }
+
+        var body: some ReducerOf<Self> {
+          Reduce { state, action in
+            switch action {
+            case .deleteTapped:
+              return .send(.delegate(.didRequestDelete(state.id)))
+            case .delegate:
+              return .none                          // parent handles it
+            }
+          }
+        }
+      }
+
+      // Parent
+      case let .rows(.element(id: _, action: .delegate(.didRequestDelete(id)))):
+        state.rows.remove(id: id)
+        return .none
+  - id: dependency-client
+    kind: code
+    title: Dependency client
+    note: Struct-of-closures, not a protocol. Swappable, `Sendable`, no subclassing.
+    code: |-
+      @DependencyClient
+      struct NumberFactClient {
+        var fetch: @Sendable (Int) async throws -> String
+      }
+
+      extension NumberFactClient: DependencyKey {
+        static let liveValue = Self { number in
+          let url = URL(string: "http://numbersapi.com/\(number)")!
+          let (data, _) = try await URLSession.shared.data(from: url)
+          return String(decoding: data, as: UTF8.self)
+        }
+        static let previewValue = Self { "\($0) is a preview number." }
+        static let testValue = Self()               // unimplemented -> test fails if called
+      }
+
+      extension DependencyValues {
+        var numberFact: NumberFactClient {
+          get { self[NumberFactClient.self] }
+          set { self[NumberFactClient.self] = newValue }
+        }
+      }
+  - id: built-in-dependencies-worth-knowing
+    kind: rules
+    title: Built-in dependencies worth knowing
+    note: Never reach for the global versions inside a reducer.
+    items:
+      - tone: bad
+        text: "`Date()` → use `@Dependency(\\.date.now)`"
+      - tone: bad
+        text: "`UUID()` → use `@Dependency(\\.uuid)` (`.incrementing` in tests)"
+      - tone: bad
+        text: "`Task.sleep` / `Timer` → use `@Dependency(\\.continuousClock)` + `TestClock`"
+      - tone: bad
+        text: "`Int.random(in:)` → use `@Dependency(\\.withRandomNumberGenerator)`"
+      - tone: neutral
+        text: "`@Dependency(\\.mainQueue)` for scheduler-based code, `\\.openURL`, `\\.dismiss`"
+      - tone: good
+        text: "Override for a subtree: `.dependency(\\.uuid, .incrementing)` on a reducer, or `withDependencies { } operation: { }`"
+  - id: teststore-exhaustive-testing
+    kind: code
+    title: TestStore — exhaustive testing
+    note: Every state mutation and every received action must be asserted.
+    code: |-
+      @Test
+      func incrementAndFetchFact() async {
+        let store = await TestStore(initialState: Counter.State()) {
+          Counter()
+        } withDependencies: {
+          $0.numberFact.fetch = { "\($0) is a good number." }
+        }
+
+        await store.send(.incrementTapped) {
+          $0.count = 1                        // assert the *diff* only
+        }
+
+        await store.send(.factButtonTapped) {
+          $0.isLoading = true
+        }
+
+        await store.receive(\.factResponse.success) {
+          $0.isLoading = false
+          $0.fact = "1 is a good number."
+        }
+      }
+  - id: testing-time-based-effects
+    kind: code
+    title: Testing time-based effects
+    note: "`TestClock` makes debounce/timers instant and deterministic."
+    code: |-
+      let clock = TestClock()
+      let store = await TestStore(initialState: Search.State()) {
+        Search()
+      } withDependencies: {
+        $0.continuousClock = clock
+        $0.apiClient.search = { _ in ["swift"] }
+      }
+
+      await store.send(.queryChanged("sw")) { $0.query = "sw" }
+      await clock.advance(by: .milliseconds(300))
+      await store.receive(\.searchResponse) { $0.results = ["swift"] }
+
+      // Non-exhaustive style (integration tests):
+      store.exhaustivity = .off(showSkippedAssertions: true)
+  - id: common-tca-pitfalls
+    kind: table
+    title: Common TCA pitfalls
+    note: The things interviewers poke at.
+    headers:
+      - Symptom
+      - Cause
+      - Fix
+    rows:
+      - - '"Unhandled action received"'
+        - Effect emitted an action you didn't assert
+        - "`await store.receive(\\.case)` or finish/cancel the effect"
+      - - Test hangs
+        - Long-running effect never ends
+        - "`.cancellable(id:)` + `await store.send(.stop)`, or `store.finish()`"
+      - - State not updating in view
+        - Missing `@ObservableState` or store not scoped
+        - Add the macro; scope with key paths
+      - - Effect keeps old state
+        - Captured `state` after mutation
+        - "Capture explicitly: `.run { [x = state.x] send in ... }`"
+      - - Duplicate network calls
+        - No cancellation on re-entry
+        - "`cancelInFlight: true`"
+      - - "`Store` deinit warnings"
+        - Child store outlived parent state
+        - Use `ifLet`/`forEach` scoping, not manual stores

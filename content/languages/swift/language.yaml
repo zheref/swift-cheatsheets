@@ -1,0 +1,127 @@
+id: swift
+name: Swift
+title: Swift Interview Cheat Sheets
+route: /
+status: published
+description: Dense Swift and Apple-platform cheat sheets — SwiftUI, TCA, concurrency, Combine, collections, principles, testing, algorithms and I/O — for a second screen while you code.
+locale: en
+codeLanguage: swift
+highlight:
+  keywords:
+    - func
+    - let
+    - var
+    - struct
+    - class
+    - enum
+    - actor
+    - protocol
+    - extension
+    - import
+    - return
+    - if
+    - else
+    - guard
+    - switch
+    - case
+    - default
+    - for
+    - in
+    - while
+    - repeat
+    - do
+    - try
+    - catch
+    - throw
+    - throws
+    - rethrows
+    - async
+    - await
+    - defer
+    - init
+    - deinit
+    - self
+    - Self
+    - nil
+    - "true"
+    - "false"
+    - some
+    - any
+    - where
+    - as
+    - is
+    - inout
+    - static
+    - private
+    - public
+    - internal
+    - fileprivate
+    - open
+    - final
+    - lazy
+    - weak
+    - unowned
+    - mutating
+    - nonmutating
+    - associatedtype
+    - typealias
+    - subscript
+    - get
+    - set
+    - willSet
+    - didSet
+    - override
+    - convenience
+    - required
+    - indirect
+    - operator
+    - nonisolated
+    - isolated
+    - sending
+    - consuming
+    - borrowing
+    - package
+    - each
+    - break
+    - continue
+    - fallthrough
+  lineComment: //
+  blockComment:
+    - /*
+    - "*/"
+  attributePrefix: "@"
+  directivePrefix: "#"
+  capitalisedTypes: true
+  members: true
+applies:
+  runtime: Swift toolchain
+sheets:
+  - swiftui-state
+  - swiftui-views
+  - swiftui-uikit
+  - tca-core
+  - tca-compose
+  - tca-nav
+  - conc-core
+  - conc-actors
+  - conc-dos
+  - threading
+  - combine-core
+  - async-patterns
+  - swiftui-combine
+  - timing
+  - clean-code
+  - solid
+  - fp
+  - lang
+  - collections
+  - collection-ops
+  - best-practices
+  - architecture
+  - modularization
+  - testing
+  - ai-workflows
+  - algorithms
+  - streams
+  - files
+  - core-bluetooth

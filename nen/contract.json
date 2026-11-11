@@ -1,6 +1,6 @@
 {
   "$schema": "nen.contract/v0.1",
-  "$comment": "Hand-written at adoption on 2026-11-10 because `nen shu detect` answered `no lane detected`: this repository is a single self-contained HTML page assembled by Python (src/build.py) and structurally checked by Python (src/verify.py), which is none of nen's reference stacks. The `dependency` block is copied from Hatsu's own contract at its pinned build and moves only at a repin. The `project` block declares exactly what the Makefile already runs; every verb the repository does not have is an explicit seat with its reason, never an omission.",
+  "$comment": "Hand-written at adoption on 2026-11-10 because `nen shu detect` answered `no lane detected`; re-declared on 2026-11-11 when issue #1 moved the site from a Python generator to Gatsby + TypeScript + Chakra UI (zheref/swift-cheatsheets#1). The `dependency` block is copied from Hatsu's own contract at its pinned build and moves only at a repin. The `project` block declares exactly what package.json runs; every verb the repository does not have is an explicit seat with its reason, never an omission.",
   "dependency": {
     "name": "nen",
     "source": "zheref/nen",
@@ -19,35 +19,100 @@
     "kind": "product",
     "$kind": "one of: product | process | library",
     "lanes": {
-      "site": { "stack": "python-static-site", "cwd": "." }
+      "site": {
+        "stack": "gatsby",
+        "cwd": "."
+      }
     },
     "defaultLane": "site",
     "verbs": {
       "site": {
-        "build": { "exe": "python3", "argv": ["src/build.py"], "artifacts": ["index.html"] },
-        "lint": { "exe": "python3", "argv": ["src/verify.py"] },
-        "dev": { "exe": "bash", "argv": ["serve.command"] },
-        "test": { "unsupported": "No test suite exists; src/verify.py's structural checks on the generated page run as `lint`." },
-        "ui-test": { "unsupported": "No UI or end-to-end suite exists for the static page." },
-        "coverage": { "unsupported": "No test suite exists, so there is nothing to measure coverage of." },
-        "archive": { "unsupported": "The distributable is the committed index.html that `build` regenerates; no separate archive step exists." },
-        "run": { "unsupported": "There is no production start: the page is opened directly or served over the LAN by `dev`." },
-        "deploy": { "unsupported": "No deploy destination has been chosen; the page is served locally over the LAN." },
-        "release": { "unsupported": "No publication destination has been chosen; nothing here publishes a release." }
+        "build": {
+          "exe": "npm",
+          "argv": [
+            "run",
+            "build"
+          ],
+          "artifacts": [
+            "public/index.html",
+            "index.html"
+          ],
+          "$comment": "Gatsby production build into public/, then the offline single-file export written to the committed index.html."
+        },
+        "lint": {
+          "exe": "npm",
+          "argv": [
+            "run",
+            "lint"
+          ],
+          "$comment": "tsc --noEmit, then scripts/verify.mts's structural checks on both built pages; runs after `build` in iteration.checks."
+        },
+        "test": {
+          "exe": "npx",
+          "argv": [
+            "vitest",
+            "run",
+            "--coverage"
+          ],
+          "artifacts": [
+            "coverage/lcov.info"
+          ],
+          "$comment": "The whole suite (a few seconds): content and anchor parity with the pre-migration page, highlighter and search parity, loader refusals, static render + hydration, both adapters, the offline file from disk. Writes the lcov capture the coverage row reads."
+        },
+        "coverage": {
+          "exe": "test",
+          "argv": [
+            "-s",
+            "coverage/lcov.info"
+          ],
+          "artifacts": [
+            "coverage/lcov.info"
+          ],
+          "$comment": "Extraction only: the test row wrote coverage/lcov.info (v8 provider, src/** and gatsby-*.ts[x]); this row runs nothing (byakugan section 3)."
+        },
+        "dev": {
+          "exe": "bash",
+          "argv": [
+            "serve.command"
+          ]
+        },
+        "ui-test": {
+          "unsupported": "No browser end-to-end suite; rendering, hydration and interaction are exercised in jsdom by the test row, and the built pages by `lint`."
+        },
+        "archive": {
+          "unsupported": "The distributable is the committed offline index.html that `build` regenerates; no separate archive step exists."
+        },
+        "run": {
+          "unsupported": "There is no production start: the site is served from public/ by `dev`, or the offline file is opened directly."
+        },
+        "deploy": {
+          "unsupported": "No deploy destination has been chosen; the site is served locally over the LAN."
+        },
+        "release": {
+          "unsupported": "No publication destination has been chosen; nothing here publishes a release."
+        }
       }
     },
     "hosts": {
-      "*": ["darwin", "linux"],
-      "dev": ["darwin"]
+      "*": [
+        "darwin",
+        "linux"
+      ],
+      "dev": [
+        "darwin"
+      ]
     },
     "targets": {},
     "toolchain": {
-      "python3": {
-        "version": ">=3.9.0",
-        "probe": ["python3", "--version"],
+      "node": {
+        "version": ">=22.22.2",
+        "probe": [
+          "node",
+          "--version"
+        ],
         "versionFrom": "first-semver-on-stdout",
         "installer": "verify-only",
-        "why": "src/build.py and src/verify.py run on the system Python; nen never installs a host toolchain."
+        "why": "Gatsby 5.16 supports Node 18-25 (package.json engines caps it below 26); jsdom 31 and vitest 5 need 22.22+ on the 22 line or 24.15+ on the 24 line (package.json engines: ^22.22.2 || ^24.15.0; nen reads a floor only). .nvmrc pins 24. nen never installs a host toolchain."
       }
     }
   }

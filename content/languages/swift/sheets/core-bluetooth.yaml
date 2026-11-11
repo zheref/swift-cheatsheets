@@ -1,0 +1,254 @@
+id: core-bluetooth
+concept: platform.bluetooth-le
+scope: platform
+title: Core Bluetooth (BLE)
+group: iOS Platform
+subtitle: Central role end to end, the GATT model, and the traps that fail interviews.
+applies:
+  platforms:
+    - ios
+    - ipados
+    - macos
+    - tvos
+    - watchos
+    - visionos
+  requires:
+    - Core Bluetooth
+sources:
+  - title: Core Bluetooth — Apple Developer Documentation
+    url: https://developer.apple.com/documentation/corebluetooth
+cards:
+  - id: the-connection-lifecycle
+    kind: diagram
+    title: The connection lifecycle
+    note: Every BLE bug is a step done out of order. Left to right, then wrap to row two.
+    svg: core-bluetooth--the-connection-lifecycle.svg
+  - id: gatt-object-model
+    kind: diagram
+    title: GATT object model
+    note: Peripheral → Service → Characteristic → Descriptor. Everything else is detail.
+    svg: core-bluetooth--gatt-object-model.svg
+  - id: vocabulary-in-8-lines
+    kind: rules
+    title: Vocabulary in 8 lines
+    note: ""
+    items:
+      - tone: modern
+        text: "**Central** — scans, connects, consumes data (usually your iPhone). `CBCentralManager`."
+      - tone: modern
+        text: "**Peripheral** — advertises and serves data (the accessory). `CBPeripheralManager` if *you* are the accessory."
+      - tone: modern
+        text: "**GATT** — the attribute database exposed by the peripheral; **ATT** is the wire protocol underneath."
+      - tone: modern
+        text: "**Service** — a named group of characteristics, identified by a `CBUUID` (16-bit for adopted, 128-bit for custom)."
+      - tone: modern
+        text: "**Characteristic** — the actual value + its `properties` (read / write / notify / indicate)."
+      - tone: modern
+        text: "**Descriptor** — metadata about a characteristic; `0x2902` (CCCD) is the notify on/off switch."
+      - tone: neutral
+        text: "**Advertising packet** — ≤31 bytes; carries the local name and service UUIDs you can filter on."
+      - tone: neutral
+        text: "**MTU** — negotiated automatically; `maximumWriteValueLength(for:)` tells you the real payload size (often 20 or 182 bytes)."
+  - id: central-setup-scan-connect
+    kind: code
+    title: "Central: setup, scan, connect"
+    note: The Info.plist key is `NSBluetoothAlwaysUsageDescription`.
+    code: |-
+      import CoreBluetooth
+
+      final class BLEClient: NSObject {
+        private var central: CBCentralManager!
+        private var peripheral: CBPeripheral?          // MUST be retained or it deallocates
+        private let hrService = CBUUID(string: "180D")
+        private let hrMeasure = CBUUID(string: "2A37")
+
+        override init() {
+          super.init()
+          // A nil queue means every callback arrives on the MAIN queue.
+          central = CBCentralManager(delegate: self, queue: .main,
+                                     options: [CBCentralManagerOptionShowPowerAlertKey: true])
+        }
+      }
+
+      extension BLEClient: CBCentralManagerDelegate {
+        func centralManagerDidUpdateState(_ c: CBCentralManager) {
+          switch c.state {
+          case .poweredOn:     c.scanForPeripherals(withServices: [hrService])
+          case .unauthorized:  showPermissionHelp()
+          case .poweredOff:    showTurnOnBluetooth()
+          default:             break        // .resetting, .unsupported, .unknown
+          }
+        }
+
+        func centralManager(_ c: CBCentralManager, didDiscover p: CBPeripheral,
+                            advertisementData: [String: Any], rssi RSSI: NSNumber) {
+          guard RSSI.intValue > -70 else { return }          // ignore far-away devices
+          c.stopScan()                                       // scanning drains the battery
+          peripheral = p                                     // retain BEFORE connecting
+          p.delegate = self
+          c.connect(p, options: nil)                         // no timeout: cancel it yourself
+        }
+
+        func centralManager(_ c: CBCentralManager, didConnect p: CBPeripheral) {
+          p.discoverServices([hrService])
+        }
+
+        func centralManager(_ c: CBCentralManager, didFailToConnect p: CBPeripheral, error: Error?) { retry() }
+
+        func centralManager(_ c: CBCentralManager, didDisconnectPeripheral p: CBPeripheral, error: Error?) {
+          // error != nil means it dropped; nil means you called cancelPeripheralConnection.
+          if error != nil { c.connect(p, options: nil) }     // iOS reconnects when it reappears
+        }
+      }
+  - id: peripheral-delegate-discover-subscribe-parse
+    kind: code
+    title: "Peripheral delegate: discover, subscribe, parse"
+    note: ""
+    code: |-
+      extension BLEClient: CBPeripheralDelegate {
+        func peripheral(_ p: CBPeripheral, didDiscoverServices error: Error?) {
+          guard error == nil, let services = p.services else { return }
+          for service in services {
+            p.discoverCharacteristics([hrMeasure], for: service)
+          }
+        }
+
+        func peripheral(_ p: CBPeripheral, didDiscoverCharacteristicsFor s: CBService, error: Error?) {
+          for c in s.characteristics ?? [] {
+            if c.properties.contains(.notify)  { p.setNotifyValue(true, for: c) }
+            if c.properties.contains(.read)    { p.readValue(for: c) }
+          }
+        }
+
+        // Fires for BOTH readValue(for:) and every notification.
+        func peripheral(_ p: CBPeripheral, didUpdateValueFor c: CBCharacteristic, error: Error?) {
+          guard error == nil, let data = c.value else { return }
+          switch c.uuid {
+          case hrMeasure: bpm = Self.parseHeartRate(data)
+          default: break
+          }
+        }
+
+        func peripheral(_ p: CBPeripheral, didWriteValueFor c: CBCharacteristic, error: Error?) {
+          // ONLY called for .withResponse writes.
+        }
+
+        func peripheralIsReady(toSendWriteWithoutResponse p: CBPeripheral) {
+          drainWriteQueue()          // back-pressure signal for .withoutResponse writes
+        }
+      }
+
+      // BLE is little-endian; the first byte is a flags bitfield.
+      static func parseHeartRate(_ data: Data) -> Int {
+        let is16Bit = data[0] & 0x01 == 1
+        return is16Bit ? Int(UInt16(data[1]) | UInt16(data[2]) << 8) : Int(data[1])
+      }
+  - id: writing-data
+    kind: compare
+    title: Writing data
+    note: Choosing the wrong write type is the most common accessory bug.
+    columns:
+      - label: "`.withResponse` — reliable"
+        tone: good
+        code: |-
+          p.writeValue(payload, for: control, type: .withResponse)
+
+          // - acknowledged by the peripheral
+          // - you get didWriteValueFor(error:)
+          // - ONE outstanding write at a time
+          // - slower: ~1 write per connection interval
+      - label: "`.withoutResponse` — fast"
+        tone: legacy
+        code: |-
+          guard p.canSendWriteWithoutResponse else { queue.append(payload); return }
+          p.writeValue(payload, for: stream, type: .withoutResponse)
+
+          // - fire and forget, no callback, can be DROPPED
+          // - respect canSendWriteWithoutResponse +
+          //   peripheralIsReady(toSendWriteWithoutResponse:)
+          // - chunk to maximumWriteValueLength(for: .withoutResponse)
+  - id: modern-wrapper-delegates-asyncstream
+    kind: code
+    title: "Modern wrapper: delegates → AsyncStream"
+    note: How to make Core Bluetooth testable and await-able.
+    code: |-
+      protocol BluetoothClient: Sendable {
+        func scan(services: [CBUUID]) -> AsyncStream<DiscoveredDevice>
+        func connect(_ id: UUID) async throws
+        func values(for characteristic: CBUUID) -> AsyncStream<Data>
+        func write(_ data: Data, to characteristic: CBUUID) async throws
+      }
+
+      // Live implementation bridges each delegate callback:
+      private var discoveries: AsyncStream<DiscoveredDevice>.Continuation?
+
+      func scan(services: [CBUUID]) -> AsyncStream<DiscoveredDevice> {
+        AsyncStream { continuation in
+          discoveries = continuation
+          continuation.onTermination = { [weak self] _ in self?.central.stopScan() }
+          central.scanForPeripherals(withServices: services)
+        }
+      }
+
+      // One-shot calls use a continuation, keyed so the delegate can resume it:
+      private var connectContinuations: [UUID: CheckedContinuation<Void, Error>] = [:]
+
+      func connect(_ id: UUID) async throws {
+        try await withCheckedThrowingContinuation { c in
+          connectContinuations[id] = c
+          central.connect(peripheral(for: id))
+        }
+      }
+      // In didConnect:   connectContinuations.removeValue(forKey: p.identifier)?.resume()
+      // In didFail:      ...?.resume(throwing: error)   // exactly once, always
+  - id: traps-that-fail-interviews
+    kind: rules
+    title: Traps that fail interviews
+    note: ""
+    items:
+      - tone: bad
+        text: Not retaining the `CBPeripheral` — it deallocates and the connection silently dies.
+      - tone: bad
+        text: Calling anything before `.poweredOn`. Queue your intent and act in `centralManagerDidUpdateState`.
+      - tone: bad
+        text: Assuming `peripheral.identifier` is stable across devices — it is a per-device, per-app UUID, **not** the MAC address.
+      - tone: bad
+        text: Forgetting that `didUpdateValueFor` serves both reads and notifications; switch on `characteristic.uuid`.
+      - tone: bad
+        text: Scanning without a service filter, or never calling `stopScan()` — battery killer, and required for background scanning.
+      - tone: bad
+        text: Writing more than `maximumWriteValueLength(for:)` — the data is silently truncated or the write fails.
+      - tone: bad
+        text: Ignoring that iOS **caches the GATT database**; a firmware change may need a Bluetooth toggle or a Service Changed indication.
+      - tone: legacy
+        text: "`connect(_:)` has no timeout. Start your own `Task.sleep` race and call `cancelPeripheralConnection`."
+      - tone: good
+        text: "Serialize commands: BLE has one outstanding operation per connection — use an actor or a command queue."
+  - id: state-background-reference
+    kind: table
+    title: State & background reference
+    note: ""
+    headers:
+      - Topic
+      - What to say
+    rows:
+      - - "`CBManagerState`"
+        - "`.unknown` `.resetting` `.unsupported` `.unauthorized` `.poweredOff` `.poweredOn`"
+      - - Permission
+        - "`NSBluetoothAlwaysUsageDescription` in Info.plist (iOS 13+)"
+      - - Background
+        - "`UIBackgroundModes`: `bluetooth-central` and/or `bluetooth-peripheral`"
+      - - Background scanning
+        - service UUID filter is **mandatory**; slower duty cycle, no `CBCentralManagerScanOptionAllowDuplicates`
+      - - State restoration
+        - "`CBCentralManagerOptionRestoreIdentifierKey` + `willRestoreState:` to survive termination"
+      - - Reconnect
+        - "`connect()` a known peripheral — iOS keeps a pending connection indefinitely"
+      - - Finding known devices
+        - "`retrievePeripherals(withIdentifiers:)`, `retrieveConnectedPeripherals(withServices:)`"
+      - - Peripheral role
+        - "`CBPeripheralManager` + `CBMutableService` / `CBMutableCharacteristic` + `startAdvertising`"
+      - - Throughput
+        - notify ≫ read; batch into the MTU; expect ~1–5 KB/s in practice
+      - - Testing
+        - hide it behind a protocol; simulator has no Bluetooth radio

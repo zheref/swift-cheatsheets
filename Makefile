@@ -1,19 +1,31 @@
-.PHONY: build verify serve serve-https clean all
+.PHONY: install build verify test check serve serve-https develop clean all
 
 PORT ?= 8000
 HTTPS_PORT ?= 8443
 
 all: build verify
 
-## Regenerate index.html from the content in src/
+## Install the pinned dependencies (Node 22.22+ or 24.15+)
+install:
+	npm ci
+
+## Build the Gatsby site (public/) and the offline file (index.html)
 build:
-	python3 src/build.py
+	npm run build
 
-## Structural checks on the generated page
+## Structural checks on both built outputs
 verify:
-	python3 src/verify.py
+	npm run verify
 
-## Serve over plain HTTP on the local network
+## Unit, parity, rendering and hydration tests
+test:
+	npm test
+
+## What CI runs (typecheck, tests, build, verify), except its offline-file staleness check
+check:
+	npm run check
+
+## Serve the built site over plain HTTP on the local network
 serve: build
 	./serve.command $(PORT)
 
@@ -21,7 +33,11 @@ serve: build
 serve-https: build
 	./serve-https.command $(HTTPS_PORT)
 
-## Remove generated artefacts
+## Live-reloading development server on http://localhost:8000
+develop:
+	npm run develop
+
+## Remove generated artefacts (the committed index.html is kept)
 clean:
-	rm -f index.html
-	rm -rf .localcert src/__pycache__
+	npm run clean
+	rm -rf .localcert coverage

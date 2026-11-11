@@ -1,0 +1,450 @@
+id: collections
+concept: collections.types
+scope: shared
+title: Collections — Types & Protocols
+group: Design & Language
+subtitle: Which container, which protocol rung, and what every operation costs.
+sources:
+  - title: Collection — Swift Standard Library
+    url: https://developer.apple.com/documentation/swift/collection
+  - title: Swift Collections (apple/swift-collections)
+    url: https://github.com/apple/swift-collections
+cards:
+  - id: the-protocol-ladder
+    kind: diagram
+    title: The protocol ladder
+    note: Generic code should demand the weakest rung that still works.
+    svg: collections--the-protocol-ladder.svg
+  - id: pick-the-container
+    kind: diagram
+    title: Pick the container
+    note: The need on the left decides the type; the cost on the right decides whether you got it right.
+    svg: collections--pick-the-container.svg
+  - id: costs-per-type
+    kind: table
+    title: Costs, per type
+    note: The table interviewers and profilers both care about.
+    headers:
+      - Type
+      - Lookup
+      - Insert
+      - Remove
+      - Ordered?
+      - Notes
+    rows:
+      - - "`Array`"
+        - O(1) by index, O(n) by value
+        - O(1)* append, O(n) insert
+        - O(1)* last, O(n) other
+        - yes
+        - "*amortised; contiguous storage"
+      - - "`ContiguousArray`"
+        - same
+        - same
+        - same
+        - yes
+        - skips ObjC bridging — for class elements
+      - - "`ArraySlice`"
+        - O(1)
+        - —
+        - —
+        - yes
+        - shares the parent's buffer **and keeps it alive**
+      - - "`Set`"
+        - O(1) avg
+        - O(1) avg
+        - O(1) avg
+        - no
+        - order varies between launches
+      - - "`Dictionary`"
+        - O(1) avg
+        - O(1) avg
+        - O(1) avg
+        - no
+        - "same; `Key: Hashable`"
+      - - "`String`"
+        - O(n) — no Int index
+        - O(1) append
+        - O(n)
+        - yes
+        - grapheme clusters; `count` is O(n)
+      - - "`Deque`"
+        - O(1) by index
+        - O(1) **both ends**
+        - O(1) both ends
+        - yes
+        - swift-collections
+      - - "`OrderedSet`"
+        - O(1) by element, O(1) by index
+        - O(1) append
+        - O(n) middle
+        - yes
+        - Set semantics + a RandomAccess view
+      - - "`OrderedDictionary`"
+        - O(1)
+        - O(1) append
+        - O(n) middle
+        - yes
+        - stable iteration order
+      - - "`Heap`"
+        - O(1) min/max only
+        - O(log n)
+        - O(log n)
+        - partial
+        - priority queue; no arbitrary lookup
+      - - "`BitSet`"
+        - O(1)
+        - O(1)
+        - O(1)
+        - yes (numeric)
+        - 1 bit per element; fast set algebra
+      - - "`TreeDictionary` / `TreeSet`"
+        - O(log n)
+        - O(log n)
+        - O(log n)
+        - no
+        - "persistent: copies share structure"
+  - id: array-essentials
+    kind: code
+    title: Array essentials
+    note: ""
+    code: |-
+      var xs = [1, 2, 3]
+      var zeros = Array(repeating: 0, count: 100)
+      var fromRange = Array(1...5)                  // [1,2,3,4,5]
+      var empty = [Int]()
+
+      xs.reserveCapacity(10_000)                    // one allocation instead of ~14 regrows
+      xs.append(4);  xs += [5, 6];  xs.append(contentsOf: 7...9)
+      xs.insert(0, at: 0)                           // O(n): shifts everything
+      xs.insert(contentsOf: [-2, -1], at: 0)
+
+      xs.removeLast()                               // O(1)
+      xs.popLast()                                  // O(1), returns Optional — never traps
+      xs.removeFirst()                              // O(n)!  use a Deque if you do this in a loop
+      xs.removeAll { $0 < 0 }                       // one pass, in place
+      xs.removeSubrange(0..<2)
+      xs.replaceSubrange(0..<2, with: [10, 20, 30]) // lengths need not match
+
+      xs.first;  xs.last                            // Optional — safe
+      xs[0]                                         // traps when empty
+      xs.indices                                    // Range<Int> for Array
+      xs.isEmpty                                    // ALWAYS this, never count == 0
+  - id: slices-the-trap-and-the-fix
+    kind: compare
+    title: "Slices: the trap and the fix"
+    note: A slice is a *view*, not a copy.
+    columns:
+      - label: What surprises people
+        tone: bad
+        code: |-
+          let xs = [10, 20, 30, 40, 50]
+          let tail = xs[2...]              // ArraySlice<Int>
+
+          tail.count       // 3
+          tail[0]          // 💥 traps — indices are the PARENT's
+          tail.startIndex  // 2
+          tail.first       // 30  ✓ safe
+
+          // A slice keeps the WHOLE parent buffer alive:
+          func firstLine(of huge: [UInt8]) -> ArraySlice<UInt8> {
+            huge.prefix(80)                // holds all 500 MB alive
+          }
+      - label: What to do
+        tone: good
+        code: |-
+          // Index relative to the slice, or offset from its start
+          tail[tail.startIndex]                       // 30
+          tail[tail.index(tail.startIndex, offsetBy: 1)]  // 40
+
+          // enumerated() gives OFFSETS, which is usually what you meant
+          for (offset, value) in tail.enumerated() { }
+
+          // zip(indices, self) when you need real indices
+          for (index, value) in zip(tail.indices, tail) { }
+
+          // Copy out to break the storage link
+          func firstLine(of huge: [UInt8]) -> [UInt8] {
+            Array(huge.prefix(80))                     // now 80 bytes
+          }
+  - id: set-setalgebra
+    kind: code
+    title: Set & SetAlgebra
+    note: ""
+    code: |-
+      var tags: Set<String> = ["swift", "ios"]
+
+      tags.insert("ios")                    // (inserted: false, memberAfterInsert: "ios")
+      if tags.insert("macos").inserted { }  // the "was it new?" idiom
+      tags.remove("ios")                    // returns the removed element, or nil
+      tags.contains("swift")                // O(1)
+
+      let a: Set = [1, 2, 3], b: Set = [3, 4]
+      a.union(b)                 // [1,2,3,4]
+      a.intersection(b)          // [3]
+      a.subtracting(b)           // [1,2]
+      a.symmetricDifference(b)   // [1,2,4]
+      a.isSubset(of: b);  a.isSuperset(of: b);  a.isDisjoint(with: b)
+      // Mutating twins: formUnion, formIntersection, subtract, formSymmetricDifference
+
+      // Cheapest dedupe there is — but it loses order
+      let unique = Array(Set(items))
+
+      // Set order is NOT stable across launches (hash seeding). Sort before display:
+      let display = tags.sorted()
+
+      // OptionSet is SetAlgebra over a bitfield:
+      struct Permissions: OptionSet {
+        let rawValue: Int
+        static let read = Permissions(rawValue: 1 << 0)
+        static let write = Permissions(rawValue: 1 << 1)
+        static let all: Permissions = [.read, .write]
+      }
+      if perms.contains(.write) { }
+  - id: dictionary-essentials
+    kind: code
+    title: Dictionary essentials
+    note: The `default:` subscript is the single most useful line here.
+    code: |-
+      var counts: [String: Int] = [:]
+
+      counts["a", default: 0] += 1          // read-modify-write, no optional dance
+      counts["a"] = nil                     // removes the key
+      counts.updateValue(5, forKey: "b")    // returns the OLD value
+      counts.removeValue(forKey: "b")
+
+      // Build from pairs
+      Dictionary(uniqueKeysWithValues: zip(ids, names))          // traps on a duplicate key
+      Dictionary(pairs, uniquingKeysWith: { first, _ in first }) // pick a winner instead
+      Dictionary(grouping: users, by: \.country)                 // [String: [User]]
+
+      // Transform
+      counts.mapValues { $0 * 2 }                   // [String: Int]
+      counts.compactMapValues { $0 > 1 ? $0 : nil } // drops entries
+      counts.filter { $0.value > 1 }                // returns a Dictionary, not an array
+
+      // Merge
+      var settings = defaults
+      settings.merge(overrides) { _, new in new }   // last one wins
+      let merged = defaults.merging(overrides) { _, new in new }
+
+      // Iteration order is unspecified. Sort explicitly when it matters:
+      for (key, value) in counts.sorted(by: { $0.key < $1.key }) { }
+
+      counts.keys;  counts.values                   // lazy views, not arrays
+      Array(counts.keys)                            // materialise only if you must
+  - id: string-is-a-collection-of-graphemes
+    kind: code
+    title: String is a collection — of graphemes
+    note: ""
+    code: |-
+      let s = "Cafe\u{301} 👍🏽"          // "Café 👍🏽"
+      s.count                              // 6 — user-perceived characters, O(n)
+      s.utf8.count                         // 13 — bytes
+      s.unicodeScalars.count               // 8
+
+      // No integer subscript. Indices are opaque and tied to THIS string.
+      let i = s.index(s.startIndex, offsetBy: 4)
+      s[i]                                 // " "
+      s[s.startIndex..<i]                  // "Café"  (a Substring — shares storage)
+      String(s.prefix(4))                  // copy out when you store it
+
+      s.hasPrefix("Ca");  s.hasSuffix("🏽")
+      s.split(separator: " ")              // [Substring]
+      s.components(separatedBy: ", ")      // [String] — Foundation
+      s.replacingOccurrences(of: "é", with: "e")
+      s.trimmingCharacters(in: .whitespacesAndNewlines)
+      s.lowercased();  s.uppercased()
+
+      if let range = s.range(of: "fé") { s[range] }         // Range<String.Index>
+      s.firstIndex(of: "é")
+
+      // Building strings in a loop: reserve, and append — never  result = result + x
+      var out = ""
+      out.reserveCapacity(1024)
+      for line in lines { out += line; out += "\n" }
+  - id: swift-collections-the-four-you-ll-actually-use
+    kind: code
+    title: "swift-collections: the four you'll actually use"
+    note: '`.package(url: "https://github.com/apple/swift-collections", from: "1.1.0")`'
+    code: |-
+      import Collections
+
+      // Deque — a queue that isn't O(n) at the front
+      var queue: Deque<Task> = []
+      queue.append(task)          // back
+      queue.prepend(task)         // front
+      queue.popFirst()            // O(1)  <- the reason it exists
+      queue.popLast()             // O(1)
+
+      // OrderedSet — Set lookup, Array order
+      var recents: OrderedSet<String> = []
+      recents.append("swift")     // (inserted: Bool, index: Int)
+      recents.contains("swift")   // O(1)
+      recents[0]                  // O(1) — it has a RandomAccess view
+      recents.remove("swift")
+
+      // OrderedDictionary — stable iteration, still O(1)
+      var config: OrderedDictionary<String, String> = [:]
+      config["theme"] = "dark"
+      for (key, value) in config { }        // insertion order, every time
+
+      // Heap — the priority queue Swift's stdlib is missing
+      var heap = Heap<Int>()
+      heap.insert(5); heap.insert(1)
+      heap.min                    // O(1) peek
+      heap.popMin()               // O(log n)
+      heap.popMax()               // O(log n) — it's a min-MAX heap
+
+      // Also: BitSet, BitArray, TreeSet, TreeDictionary (persistent, cheap copies)
+      // And apple/swift-algorithms for chunks, windows, uniqued, product, combinations.
+  - id: generic-algorithms-constrain-to-the-right-rung
+    kind: code
+    title: "Generic algorithms: constrain to the right rung"
+    note: ""
+    code: |-
+      // Works on anything you can walk once — including infinite sequences
+      func firstTwo<S: Sequence>(of s: S) -> [S.Element] { Array(s.prefix(2)) }
+
+      // Needs count / indices / multiple passes
+      func middle<C: Collection>(of c: C) -> C.Element? {
+        guard !c.isEmpty else { return nil }
+        return c[c.index(c.startIndex, offsetBy: c.count / 2)]
+      }
+
+      // Needs O(1) index math — binary search would be O(n log n) without this
+      func binarySearch<C: RandomAccessCollection>(_ c: C, _ target: C.Element) -> C.Index?
+        where C.Element: Comparable {
+        var lo = c.startIndex, hi = c.endIndex
+        while lo < hi {
+          let mid = c.index(lo, offsetBy: c.distance(from: lo, to: hi) / 2)
+          if c[mid] == target { return mid }
+          if c[mid] < target { lo = c.index(after: mid) } else { hi = mid }
+        }
+        return nil
+      }
+
+      // Needs in-place element assignment (length fixed)
+      func swapEnds<C: MutableCollection>(_ c: inout C) where C: BidirectionalCollection {
+        guard !c.isEmpty else { return }
+        c.swapAt(c.startIndex, c.index(before: c.endIndex))
+      }
+
+      // Needs to grow/shrink
+      func padded<C: RangeReplaceableCollection>(_ c: C, to n: Int, with e: C.Element) -> C {
+        var copy = c
+        while copy.count < n { copy.append(e) }
+        return copy
+      }
+
+      // Return `some Collection` / `[Element]`, not AnyCollection, unless you truly
+      // need type erasure at a module boundary.
+  - id: rolling-your-own
+    kind: code
+    title: Rolling your own
+    note: Conform to the smallest protocol that gives callers what they need.
+    code: |-
+      // A Sequence: one pass, possibly infinite
+      struct Fibonacci: Sequence, IteratorProtocol {
+        private var (a, b) = (0, 1)
+        mutating func next() -> Int? {
+          defer { (a, b) = (b, a + b) }
+          return a
+        }
+        func makeIterator() -> Fibonacci { self }
+      }
+      Array(Fibonacci().prefix(8))          // [0,1,1,2,3,5,8,13]
+
+      // A Collection: implement 4 members and you inherit ~100 methods
+      struct Matrix<Element>: RandomAccessCollection {
+        private var storage: [Element]
+        let columns: Int
+
+        var startIndex: Int { 0 }
+        var endIndex: Int { storage.count }
+        subscript(position: Int) -> Element { storage[position] }
+        // index(after:) / index(before:) are free for Int indices
+
+        subscript(row: Int, column: Int) -> Element { storage[row * columns + column] }
+      }
+      // Now you get: map, filter, first, count, sorted, reversed, max, indices...
+
+      // An AsyncSequence: the streaming equivalent
+      struct Ticks: AsyncSequence {
+        typealias Element = Date
+        func makeAsyncIterator() -> AsyncIterator { AsyncIterator() }
+        struct AsyncIterator: AsyncIteratorProtocol {
+          mutating func next() async throws -> Date? {
+            try await Task.sleep(for: .seconds(1))
+            return .now
+          }
+        }
+      }
+  - id: performance-levers
+    kind: code
+    title: Performance levers
+    note: ""
+    code: |-
+      // 1. Reserve when you know the size — the single biggest easy win
+      var out: [Result] = []
+      out.reserveCapacity(inputs.count)
+
+      // 2. reduce(into:) instead of reduce — no copy per element
+      let counts = words.reduce(into: [String: Int]()) { $0[$1, default: 0] += 1 }
+
+      // 3. keepingCapacity when you reuse a buffer in a loop
+      buffer.removeAll(keepingCapacity: true)
+
+      // 4. lazy to fuse a chain and skip intermediates
+      let firstBig = numbers.lazy.map(expensive).first { $0 > 1_000 }
+
+      // 5. Copy-on-write is per-buffer. This copies once, not n times:
+      var copy = original
+      copy.append(x)                  // the copy happens HERE, on first mutation
+
+      // 6. Custom CoW type
+      struct Buffer {
+        private var storage: Storage
+        mutating func mutate() {
+          if !isKnownUniquelyReferenced(&storage) { storage = storage.copy() }
+          storage.value += 1
+        }
+      }
+
+      // 7. Drop to a raw buffer for numeric hot loops
+      let total = values.withUnsafeBufferPointer { buffer -> Double in
+        var sum = 0.0
+        for v in buffer { sum += v }
+        return sum
+      }
+
+      // 8. Set/Dictionary beat Array.contains the moment you ask more than once
+      let banned = Set(bannedList)            // build once
+      items.filter { !banned.contains($0.id) }  // O(n), not O(n·m)
+  - id: collection-pitfalls
+    kind: rules
+    title: Collection pitfalls
+    note: ""
+    items:
+      - tone: bad
+        text: "`Array.removeFirst()` / `insert(at: 0)` are **O(n)**. In a loop that's O(n²) — use a `Deque` or a head index."
+      - tone: bad
+        text: "`slice[0]` traps: a slice inherits the parent's indices. Use `slice.first` or `slice.startIndex`."
+      - tone: bad
+        text: A slice keeps the parent's whole buffer alive. `Array(slice)` when you store it.
+      - tone: bad
+        text: "`enumerated()` yields **offsets, not indices**. On a slice or a `String` they're different things."
+      - tone: bad
+        text: "`Set` and `Dictionary` iteration order changes between launches. Never persist or diff it — `sorted()` first."
+      - tone: bad
+        text: "`hashValue` is not stable across launches or platforms. Never store it; use a real hash (SHA-256) if you need persistence."
+      - tone: bad
+        text: "`array.count == 0` instead of `isEmpty` — for `String` and lazy sequences `count` is O(n)."
+      - tone: bad
+        text: "`array.contains` inside a loop over another array is the classic accidental O(n²)."
+      - tone: neutral
+        text: Mutating a value-type collection inside its own `for` loop iterates the *original copy* — no crash, but usually not what you meant. Collect the changes, then apply.
+      - tone: good
+        text: "`first(where:)` short-circuits; `filter { }.first` does not."
+      - tone: good
+        text: "`sort()` is **not stable**. Sort by a tuple including the original offset when ties must keep their order."

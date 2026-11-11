@@ -1,0 +1,376 @@
+id: collection-ops
+concept: collections.operations
+scope: shared
+title: Collections — Operation Cookbook
+group: Design & Language
+subtitle: '"I want to ___" mapped to the exact call. Chain these instead of writing loops.'
+sources:
+  - title: Collection — Swift Standard Library
+    url: https://developer.apple.com/documentation/swift/collection
+cards:
+  - id: i-want-to
+    kind: table
+    title: I want to…
+    note: The lookup table. Package ops are marked.
+    headers:
+      - Goal
+      - Call
+    rows:
+      - - transform every element
+        - "`map { }` · `mapValues { }` for dictionaries"
+      - - transform and drop nils
+        - "`compactMap { }`"
+      - - flatten one level
+        - "`flatMap { }` · `joined()` · `joined(separator:)`"
+      - - fold to a single value
+        - "`reduce(0, +)` · `reduce(into: [:]) { }` (no copies)"
+      - - keep matching elements
+        - "`filter { }`"
+      - - find the first match
+        - "`first(where:)` · `firstIndex(where:)` (short-circuits)"
+      - - find the last match
+        - "`last(where:)` · `lastIndex(where:)`"
+      - - does any / do all match
+        - "`contains(where:)` · `allSatisfy { }`"
+      - - count matches
+        - "`count(where:)` (Swift 6) · `filter { }.count`"
+      - - biggest / smallest by field
+        - "`max(by:)` · `min(by:)` · `max { $0.x < $1.x }`"
+      - - sort
+        - "`sorted()` · `sorted(by:)` · `sorted(using: KeyPathComparator(\\.date))`"
+      - - reverse / shuffle / rotate
+        - "`reversed()` · `shuffled()` · `rotate(toStartAt:)`*"
+      - - group by a key
+        - "`Dictionary(grouping:by:)`"
+      - - take / drop from the ends
+        - "`prefix(n)` `suffix(n)` `dropFirst(n)` `dropLast(n)` `prefix(while:)`"
+      - - split on a separator
+        - "`split(separator:)` · `split(whereSeparator:)`"
+      - - fixed-size chunks
+        - "`chunks(ofCount: 3)`* · `stride` + `Array(slice)`"
+      - - sliding windows
+        - "`windows(ofCount: 3)`*"
+      - - consecutive pairs
+        - "`adjacentPairs()`* · `zip(xs, xs.dropFirst())`"
+      - - remove duplicates
+        - "`Set(xs)` (unordered) · `uniqued()`* (keeps order)"
+      - - walk two collections together
+        - "`zip(a, b)` · `Publishers.Zip` for streams"
+      - - cartesian product / combinations
+        - "`product(a, b)`* · `combinations(ofCount:)`* · `permutations()`*"
+      - - index and element together
+        - "`enumerated()` (offsets) · `zip(xs.indices, xs)` (indices)"
+      - - mutate in place
+        - "`removeAll(where:)` · `swapAt` · `replaceSubrange` · loop over `indices`"
+      - - diff two collections
+        - "`new.difference(from: old)` → `CollectionDifference`"
+      - - defer the work
+        - "`.lazy.map { }.filter { }.first { }`"
+  - id: transform-fold
+    kind: code
+    title: Transform & fold
+    note: ""
+    code: |-
+      let names = users.map(\.name)                       // key path as a function
+      let ages = users.map { $0.age }
+      let ids = rows.compactMap { Int($0.id) }            // drops the unparseable
+      let allTags = posts.flatMap(\.tags)                 // [[Tag]] -> [Tag]
+      let sentence = words.joined(separator: " ")
+
+      let total = orders.reduce(0) { $0 + $1.amount }
+      let sum = orders.map(\.amount).reduce(0, +)         // clearer, one extra array
+
+      // reduce(into:) — mutates an inout accumulator, so no copy per element
+      let byCountry = users.reduce(into: [String: [User]]()) { acc, user in
+        acc[user.country, default: []].append(user)
+      }
+      let counts = text.reduce(into: [Character: Int]()) { $0[$1, default: 0] += 1 }
+
+      // Running totals
+      let runningTotal = amounts.reduce(into: [Decimal]()) { $0.append(($0.last ?? 0) + $1) }
+
+      // Dictionaries
+      prices.mapValues { $0 * 1.21 }
+      prices.compactMapValues { $0 > 0 ? $0 : nil }
+  - id: search-test
+    kind: code
+    title: Search & test
+    note: ""
+    code: |-
+      users.first { $0.isAdmin }                  // Optional<User>, stops at the first hit
+      users.firstIndex { $0.id == target }        // Optional<Index>
+      users.last { $0.isActive }
+      users.contains { $0.age < 18 }              // any
+      users.allSatisfy { $0.email.contains("@") } // all
+      users.count { $0.isActive }                 // Swift 6; else filter { }.count
+
+      users.max { $0.score < $1.score }           // by a field
+      users.min(by: { $0.date < $1.date })
+      amounts.max();  amounts.min()               // Comparable elements
+
+      // Binary search on sorted data: lower bound via partitioningIndex (swift-algorithms)
+      let insertAt = sorted.partitioningIndex { $0 >= newValue }
+
+      // Short-circuit matters: this stops early…
+      if users.contains(where: \.isAdmin) { }
+      // …this walks everything and allocates
+      if !users.filter(\.isAdmin).isEmpty { }
+  - id: sort-order
+    kind: code
+    title: Sort & order
+    note: ""
+    code: |-
+      items.sorted()                                      // Comparable
+      items.sorted(by: >)                                 // descending
+      items.sorted { $0.date > $1.date }                  // by a field
+
+      // Multi-key sort with a tuple
+      items.sorted { ($0.priority, $0.title) < ($1.priority, $1.title) }
+
+      // Foundation comparators — composable and reversible
+      items.sorted(using: KeyPathComparator(\.date, order: .reverse))
+      items.sorted(using: [KeyPathComparator(\.group),
+                           KeyPathComparator(\.name)])
+
+      // sort() is NOT stable. Make it stable by including the original offset:
+      let stable = items.enumerated()
+        .sorted { ($0.element.priority, $0.offset) < ($1.element.priority, $1.offset) }
+        .map(\.element)
+
+      // In place (MutableCollection)
+      items.sort { $0.name < $1.name }
+      items.reverse()
+      items.shuffle()
+      let pivot = items.partition { $0.isDone }   // false's first, returns the boundary index
+
+      // Sorted top-K without sorting everything: O(n log k)
+      let top5 = scores.max(count: 5)             // swift-algorithms
+  - id: group-aggregate-index
+    kind: code
+    title: Group, aggregate, index
+    note: ""
+    code: |-
+      // Group
+      let byCountry = Dictionary(grouping: users, by: \.country)     // [String: [User]]
+      let byInitial = Dictionary(grouping: names) { $0.first! }
+
+      // Index by a unique key (build a lookup table once)
+      let byID = Dictionary(uniqueKeysWithValues: users.map { ($0.id, $0) })
+      let safeByID = Dictionary(users.map { ($0.id, $0) }) { first, _ in first }
+      let keyed = users.keyed(by: \.id)                              // swift-algorithms
+
+      // Aggregate per group
+      let totalPerCountry = orders.reduce(into: [String: Decimal]()) {
+        $0[$1.country, default: 0] += $1.amount
+      }
+
+      // Count occurrences, then rank
+      let ranked = Dictionary(grouping: events, by: \.type)
+        .mapValues(\.count)
+        .sorted { $0.value > $1.value }
+
+      // Sectioned list for SwiftUI
+      struct Section: Identifiable { let id: String; let items: [User] }
+      let sections = Dictionary(grouping: users, by: \.country)
+        .map { Section(id: $0.key, items: $0.value.sorted { $0.name < $1.name }) }
+        .sorted { $0.id < $1.id }
+  - id: slice-chunk-window
+    kind: code
+    title: Slice, chunk, window
+    note: ""
+    code: |-
+      xs.prefix(3);  xs.suffix(3)
+      xs.dropFirst();  xs.dropLast(2)
+      xs.prefix(while: { $0 < 10 });  xs.drop(while: { $0 < 10 })
+      xs[2...];  xs[..<5];  xs[1..<4]                 // all ArraySlice — no copy
+
+      "a,b,,c".split(separator: ",")                                  // 3 — empties dropped
+      "a,b,,c".split(separator: ",", omittingEmptySubsequences: false) // 4
+
+      // Fixed chunks — swift-algorithms
+      for page in items.chunks(ofCount: 50) { try await upload(Array(page)) }
+
+      // Without the package
+      let chunks = stride(from: 0, to: items.count, by: 50).map {
+        Array(items[$0 ..< min($0 + 50, items.count)])
+      }
+
+      // Sliding windows and pairs
+      for window in temperatures.windows(ofCount: 3) {                // [a,b,c], [b,c,d]…
+        moving.append(window.reduce(0, +) / 3)
+      }
+      for (previous, current) in readings.adjacentPairs() {           // deltas
+        deltas.append(current - previous)
+      }
+      // No package:  zip(readings, readings.dropFirst())
+
+      // Split on a changing key
+      let runs = items.chunked { $0.category == $1.category }         // swift-algorithms
+  - id: combine-dedupe
+    kind: code
+    title: Combine & dedupe
+    note: ""
+    code: |-
+      // Zip stops at the shorter one
+      for (name, score) in zip(names, scores) { }
+      let pairs = Array(zip(ids, names))
+
+      // Concatenate
+      let all = a + b
+      let flat = [[1, 2], [3]].joined()               // lazy FlattenSequence
+      Array([[1, 2], [3]].joined())                   // [1,2,3]
+
+      // Dedupe, order lost
+      let unique = Array(Set(items))
+
+      // Dedupe, order kept — no package
+      var seen = Set<Item.ID>()
+      let ordered = items.filter { seen.insert($0.id).inserted }
+
+      // Dedupe, order kept — swift-algorithms
+      let ordered2 = items.uniqued(on: \.id)
+
+      // Set algebra over model objects
+      let added = Set(new.map(\.id)).subtracting(Set(old.map(\.id)))
+
+      // Interleave / intersperse
+      Array([1, 2, 3].interspersed(with: 0))          // [1,0,2,0,3]
+  - id: diffing-for-ui-updates
+    kind: code
+    title: Diffing for UI updates
+    note: Let the stdlib compute the minimal change set.
+    code: |-
+      // CollectionDifference — the basis of animated table/collection updates
+      let diff = newItems.difference(from: oldItems)     // Element: Equatable
+
+      for change in diff {
+        switch change {
+        case let .insert(offset, element, _): rows.insert(element, at: offset)
+        case let .remove(offset, _, _):       rows.remove(at: offset)
+        }
+      }
+
+      // Or apply it wholesale
+      if let updated = oldItems.applying(diff) { rows = updated }
+
+      // Detect moves instead of remove+insert (nicer animations)
+      let moves = newItems.difference(from: oldItems).inferringMoves()
+
+      // UIKit
+      dataSource.apply(snapshot, animatingDifferences: true)
+
+      // SwiftUI does this for you — your job is just STABLE IDS
+      ForEach(items) { item in Row(item) }     // items: Identifiable
+  - id: mutate-in-place
+    kind: code
+    title: Mutate in place
+    note: ""
+    code: |-
+      // Filter in place, one pass, no new array
+      items.removeAll { $0.isExpired }
+
+      // Mutate every element — you need indices, not the elements
+      for index in items.indices { items[index].isRead = true }
+
+      // …or map to new values
+      items = items.map { var copy = $0; copy.isRead = true; return copy }
+
+      // …or a mutating helper on the element
+      extension MutableCollection {
+        mutating func mutateEach(_ body: (inout Element) -> Void) {
+          for index in indices { body(&self[index]) }
+        }
+      }
+      items.mutateEach { $0.isRead = true }
+
+      // inout parameters keep value semantics while allowing local mutation
+      func normalize(_ values: inout [Double]) {
+        guard let maximum = values.max(), maximum > 0 else { return }
+        for i in values.indices { values[i] /= maximum }
+      }
+
+      // Dictionaries: modify through the subscript, don't read-modify-write
+      counts["key", default: 0] += 1
+      users[id]?.name = "Ada"                    // no-op if the key is missing
+  - id: lazy-pipelines
+    kind: code
+    title: Lazy pipelines
+    note: Same syntax, no intermediate arrays.
+    code: |-
+      // Eager: builds TWO full arrays, runs expensive() on every element
+      let first = items.map(expensive).filter(\.isValid).first
+
+      // Lazy: runs expensive() until the first valid element, allocates nothing
+      let first = items.lazy.map(expensive).first(where: \.isValid)
+
+      // Infinite sequences are only possible lazily
+      let powers = sequence(first: 1) { $0 * 2 }        // 1,2,4,8…
+      Array(powers.prefix(10))
+
+      let evens = (1...).lazy.filter { $0.isMultiple(of: 2) }
+      Array(evens.prefix(5))                            // [2,4,6,8,10]
+
+      // Careful: a lazy chain is re-evaluated on every traversal
+      let lazyView = items.lazy.map(expensive)
+      _ = lazyView.count       // runs expensive() n times
+      _ = Array(lazyView)      // runs it n times AGAIN
+      // Materialise once if you'll use it twice.
+  - id: small-extensions-worth-having
+    kind: code
+    title: Small extensions worth having
+    note: ""
+    code: |-
+      extension Collection {
+        /// Non-trapping index access.
+        subscript(safe index: Index) -> Element? {
+          indices.contains(index) ? self[index] : nil
+        }
+        var nonEmpty: Self? { isEmpty ? nil : self }
+      }
+
+      extension Sequence {
+        func sorted<V: Comparable>(by keyPath: KeyPath<Element, V>,
+                                   _ order: (V, V) -> Bool = (<)) -> [Element] {
+          sorted { order($0[keyPath: keyPath], $1[keyPath: keyPath]) }
+        }
+        func grouped<K: Hashable>(by keyPath: KeyPath<Element, K>) -> [K: [Element]] {
+          Dictionary(grouping: self) { $0[keyPath: keyPath] }
+        }
+        func sum<V: AdditiveArithmetic>(of keyPath: KeyPath<Element, V>) -> V {
+          reduce(.zero) { $0 + $1[keyPath: keyPath] }
+        }
+      }
+
+      extension Array {
+        func chunked(into size: Int) -> [[Element]] {
+          stride(from: 0, to: count, by: size).map {
+            Array(self[$0 ..< Swift.min($0 + size, count)])
+          }
+        }
+      }
+
+      users[safe: 5]                       // nil instead of a crash
+      orders.sum(of: \.amount)
+      users.grouped(by: \.country)
+      users.sorted(by: \.name)
+  - id: choosing-the-operation
+    kind: rules
+    title: Choosing the operation
+    note: ""
+    items:
+      - tone: good
+        text: Reach for `first(where:)`, `contains(where:)`, `allSatisfy` — they short-circuit. `filter { }.first` doesn't.
+      - tone: good
+        text: Use `reduce(into:)` whenever the accumulator is a collection; plain `reduce` copies it every step.
+      - tone: good
+        text: Build a `Set` or a `Dictionary` **once** outside the loop instead of calling `contains` inside it.
+      - tone: good
+        text: "Key paths (`map(\\.name)`, `grouped(by: \\.id)`) read better than closures and can't capture the wrong thing."
+      - tone: good
+        text: "`lazy` pays off when the chain is long, the work per element is expensive, or you only need the first few results."
+      - tone: neutral
+        text: Prefer one clear chain over a clever one. If you need a comment to explain the chain, write the loop.
+      - tone: neutral
+        text: "`swift-algorithms` and `swift-collections` are first-party, dependency-free and small — adding them is not a design decision you'll regret."
+      - tone: bad
+        text: Don't chain more than about three operators without naming an intermediate value; compile times and readability both suffer.

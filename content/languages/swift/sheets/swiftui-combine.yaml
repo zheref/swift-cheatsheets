@@ -1,0 +1,297 @@
+id: swiftui-combine
+concept: ui.reactive-wiring
+scope: platform
+title: SwiftUI + Combine — Wiring Them Together
+group: Combine
+subtitle: Where Combine plugs into a SwiftUI view, and what replaced it in the Observation era.
+applies:
+  platforms:
+    - ios
+    - ipados
+    - macos
+    - tvos
+    - watchos
+    - visionos
+  requires:
+    - SwiftUI
+    - Combine
+sources:
+  - title: SwiftUI — Apple Developer Documentation
+    url: https://developer.apple.com/documentation/swiftui
+  - title: Combine — Apple Developer Documentation
+    url: https://developer.apple.com/documentation/combine
+  - title: Observation — Apple Developer Documentation
+    url: https://developer.apple.com/documentation/observation
+cards:
+  - id: the-connection-points
+    kind: rules
+    title: The connection points
+    note: There are only a handful. Know all of them.
+    items:
+      - tone: modern
+        text: "`ObservableObject` + `@Published` — the object *is* a publisher; SwiftUI subscribes to `objectWillChange`."
+      - tone: modern
+        text: "`.onReceive(publisher) { value in }` — subscribe to any publisher for the view's lifetime."
+      - tone: modern
+        text: "`assign(to: &$published)` — pipe a publisher straight into a `@Published` property (no cancellable needed)."
+      - tone: modern
+        text: "`objectWillChange.send()` — manual notification when you don't use `@Published`."
+      - tone: modern
+        text: "`.task { for await x in publisher.values { } }` — bridge Combine into structured concurrency."
+      - tone: legacy
+        text: With `@Observable` (iOS 17+) there is no `objectWillChange` and no `@Published`; Combine becomes an *input* only.
+  - id: the-classic-viewmodel
+    kind: code
+    title: The classic ViewModel
+    note: Combine-powered `ObservableObject`, driving a SwiftUI view.
+    code: |-
+      @MainActor
+      final class SearchViewModel: ObservableObject {
+        @Published var query = ""                       // input from the view
+        @Published private(set) var results: [Repo] = []
+        @Published private(set) var isLoading = false
+        @Published private(set) var errorMessage: String?
+
+        private var cancellables = Set<AnyCancellable>()
+
+        init(api: API = .live) {
+          $query
+            .debounce(for: .milliseconds(300), scheduler: RunLoop.main)
+            .removeDuplicates()
+            .filter { $0.count >= 2 }
+            .handleEvents(receiveOutput: { [weak self] _ in self?.isLoading = true })
+            .map { q in
+              api.search(q)
+                .catch { _ in Just<[Repo]>([]) }        // keep the OUTER stream alive
+            }
+            .switchToLatest()                            // cancels the previous request
+            .receive(on: RunLoop.main)
+            .handleEvents(receiveOutput: { [weak self] _ in self?.isLoading = false })
+            .assign(to: &$results)                       // no cancellable to store
+        }
+      }
+
+      struct SearchView: View {
+        @StateObject private var vm = SearchViewModel()
+
+        var body: some View {
+          List(vm.results) { RepoRow($0) }
+            .searchable(text: $vm.query)                 // two-way binding into @Published
+            .overlay { if vm.isLoading { ProgressView() } }
+        }
+      }
+  - id: derived-validated-state
+    kind: code
+    title: Derived / validated state
+    note: "`CombineLatest` is the idiomatic form-validation answer."
+    code: |-
+      final class SignUpViewModel: ObservableObject {
+        @Published var email = ""
+        @Published var password = ""
+        @Published var confirmation = ""
+        @Published private(set) var isValid = false
+        @Published private(set) var passwordHint: String?
+
+        private var bag = Set<AnyCancellable>()
+
+        init() {
+          let validEmail = $email.map { $0.contains("@") && $0.count > 5 }
+          let validPassword = Publishers.CombineLatest($password, $confirmation)
+            .map { pwd, confirm in pwd.count >= 8 && pwd == confirm }
+
+          Publishers.CombineLatest(validEmail, validPassword)
+            .map { $0 && $1 }
+            .removeDuplicates()
+            .assign(to: &$isValid)
+
+          $password
+            .map { $0.count >= 8 ? nil : "At least 8 characters" }
+            .assign(to: &$passwordHint)
+        }
+      }
+
+      // View
+      Button("Create account") { vm.submit() }
+        .disabled(!vm.isValid)
+  - id: onreceive-vs-a-viewmodel-pipeline
+    kind: compare
+    title: onReceive vs a ViewModel pipeline
+    note: Use `onReceive` for system publishers; use the VM for business logic.
+    columns:
+      - label: onReceive — view-local
+        tone: good
+        code: |-
+          struct ClockView: View {
+            @State private var now = Date()
+            private let timer = Timer
+              .publish(every: 1, on: .main, in: .common)
+              .autoconnect()
+
+            var body: some View {
+              Text(now, format: .dateTime.hour().minute().second())
+                .onReceive(timer) { now = $0 }
+            }
+          }
+
+          // Also great for system notifications:
+          .onReceive(NotificationCenter.default.publisher(
+              for: UIApplication.willEnterForegroundNotification)) { _ in
+            Task { await vm.refresh() }
+          }
+      - label: Don't put logic here
+        tone: bad
+        code: |-
+          struct FeedView: View {
+            @State private var items: [Item] = []
+
+            var body: some View {
+              List(items) { ... }
+                .onReceive(api.feed()
+                  .retry(3)
+                  .replaceError(with: [])
+                  .receive(on: RunLoop.main)) { items = $0 }
+            }
+          }
+          // The publisher is REBUILT on every body evaluation ->
+          // resubscribes, refires, and is impossible to unit test.
+  - id: manual-objectwillchange
+    kind: code
+    title: Manual objectWillChange
+    note: When your state isn't in `@Published` properties.
+    code: |-
+      final class Document: ObservableObject {
+        private(set) var text: String = "" {
+          willSet { objectWillChange.send() }    // must fire BEFORE the change
+        }
+
+        func append(_ s: String) { text += s }
+      }
+
+      // Republishing a child object's changes to the parent
+      final class Parent: ObservableObject {
+        @Published var child = Child()
+        private var bag = Set<AnyCancellable>()
+
+        init() {
+          child.objectWillChange
+            .sink { [weak self] in self?.objectWillChange.send() }
+            .store(in: &bag)                     // nested ObservableObjects are NOT automatic
+        }
+      }
+  - id: combine-vm-vs-observable-vm
+    kind: compare
+    title: Combine VM vs @Observable VM
+    note: Same screen, before and after iOS 17.
+    columns:
+      - label: Combine / ObservableObject
+        tone: legacy
+        code: |-
+          @MainActor
+          final class CartVM: ObservableObject {
+            @Published private(set) var items: [Item] = []
+            @Published private(set) var total: Decimal = 0
+            private var bag = Set<AnyCancellable>()
+
+            init() {
+              $items
+                .map { $0.reduce(0) { $0 + $1.price } }
+                .assign(to: &$total)
+            }
+          }
+
+          struct CartView: View {
+            @StateObject private var vm = CartVM()
+            var body: some View { Text("\(vm.total)") }
+          }
+          // Whole view re-renders when ANY @Published changes.
+      - label: Observation (iOS 17+)
+        tone: modern
+        code: |-
+          @MainActor @Observable
+          final class CartVM {
+            private(set) var items: [Item] = []
+            var total: Decimal {                       // just a computed property
+              items.reduce(0) { $0 + $1.price }
+            }
+            func load() async { items = await api.cart() }
+          }
+
+          struct CartView: View {
+            @State private var vm = CartVM()
+            var body: some View {
+              Text("\(vm.total)").task { await vm.load() }
+            }
+          }
+          // Re-renders only the views that actually READ `total`.
+  - id: bridging-both-ways-inside-a-view
+    kind: code
+    title: Bridging both ways inside a view
+    note: Combine in, async out — and vice versa.
+    code: |-
+      // Combine publisher -> async iteration, scoped to the view's lifetime
+      .task {
+        for await location in locationManager.publisher.values {
+          region = MKCoordinateRegion(center: location.coordinate, span: span)
+        }
+      }
+
+      // @Observable model that still consumes a legacy Combine API
+      @Observable
+      final class LocationModel {
+        private(set) var last: CLLocation?
+        @ObservationIgnored private var bag = Set<AnyCancellable>()
+
+        init(service: LegacyLocationService) {
+          service.publisher
+            .receive(on: RunLoop.main)
+            .sink { [weak self] in self?.last = $0 }   // plain assignment triggers Observation
+            .store(in: &bag)
+        }
+      }
+  - id: swiftui-combine-pitfalls
+    kind: rules
+    title: SwiftUI + Combine pitfalls
+    note: ""
+    items:
+      - tone: bad
+        text: Building a publisher inside `body` / `onReceive(...)` — it is recreated every render. Build it in `init` or store it in a `let`.
+      - tone: bad
+        text: "`@ObservedObject var vm = VM()` — recreated on each render. Use `@StateObject` (or `@State` with `@Observable`)."
+      - tone: bad
+        text: "Forgetting `.receive(on: RunLoop.main)` before touching UI state (or mark the VM `@MainActor`)."
+      - tone: bad
+        text: An error reaching the outer publisher kills the stream permanently — `catch` inside the `flatMap`/`map`+`switchToLatest`.
+      - tone: bad
+        text: "`assign(to: \\.x, on: self)` retains `self`. Prefer `assign(to: &$published)` or `sink { [weak self] }`."
+      - tone: bad
+        text: Nested `ObservableObject`s don't propagate; forward `objectWillChange` manually or flatten the model.
+      - tone: good
+        text: "`DispatchQueue.main` vs `RunLoop.main`: `RunLoop.main` pauses during scroll tracking (often what you want for search); `DispatchQueue.main` always delivers."
+      - tone: neutral
+        text: "New code: prefer `@Observable` + `async/await`; keep Combine for `debounce`/`throttle`/multi-source merges and legacy APIs."
+  - id: swiftui-publisher-connection-cheat-table
+    kind: table
+    title: SwiftUI ← publisher connection cheat table
+    note: ""
+    headers:
+      - Goal
+      - Code
+    rows:
+      - - React to a publisher in a view
+        - "`.onReceive(pub) { value in ... }`"
+      - - Drive a `@Published` from a publisher
+        - "`pub.assign(to: &$property)`"
+      - - Drive any property, manual lifetime
+        - "`pub.sink { [weak self] ... }.store(in: &bag)`"
+      - - Two-way binding to a VM property
+        - "`$vm.query` (needs `@Published var`, non-private setter)"
+      - - Timer in a view
+        - "`Timer.publish(...).autoconnect()` + `.onReceive`"
+      - - System notification
+        - "`NotificationCenter.default.publisher(for:)` + `.onReceive`"
+      - - Scene phase / lifecycle
+        - "`@Environment(\\.scenePhase)` + `.onChange(of:)`"
+      - - Publisher → async
+        - "`for await v in pub.values` inside `.task { }`"
+      - - Force a refresh without `@Published`
+        - "`objectWillChange.send()`"

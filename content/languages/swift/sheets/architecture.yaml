@@ -1,0 +1,225 @@
+id: architecture
+concept: architecture.approaches
+scope: shared
+title: Architectural Approaches
+group: iOS Practice
+subtitle: Draw the data flow, name the trade-off, and justify the choice for the team's size.
+cards:
+  - id: four-data-flows
+    kind: diagram
+    title: Four data flows
+    note: If you can draw these on a whiteboard you can answer almost any architecture question.
+    svg: architecture--four-data-flows.svg
+  - id: clean-architecture-layers
+    kind: diagram
+    title: Clean Architecture layers
+    note: "The only rule that matters: dependencies point inward. Everything else is naming."
+    svg: architecture--clean-architecture-layers.svg
+  - id: comparison
+    kind: table
+    title: Comparison
+    note: ""
+    headers:
+      - Pattern
+      - Strength
+      - Weakness
+      - Testability
+      - Best for
+    rows:
+      - - MVC (Apple)
+        - trivial to start, zero ceremony
+        - Massive View Controller
+        - low
+        - prototypes, tiny screens
+      - - MVP
+        - passive view, explicit contract
+        - protocol boilerplate
+        - high
+        - UIKit teams migrating off MVC
+      - - MVVM
+        - bindings, works natively with SwiftUI
+        - says nothing about navigation or side effects
+        - high
+        - most SwiftUI apps
+      - - VIPER
+        - strict boundaries, router for navigation
+        - 5 files per screen
+        - very high
+        - large UIKit codebases, many teams
+      - - Clean / Onion
+        - domain independent of frameworks
+        - mapping layers everywhere
+        - very high
+        - long-lived, multi-platform domains
+      - - Redux / TCA
+        - one state, replayable, exhaustive tests
+        - learning curve, ceremony for small screens
+        - very high
+        - complex state, deep navigation
+      - - Coordinator
+        - removes navigation from view controllers
+        - an extra object graph to own
+        - high
+        - any UIKit app, pairs with MVVM
+  - id: mvvm-done-properly
+    kind: code
+    title: MVVM done properly
+    note: The view is dumb, the view model is pure logic, the model is injected.
+    code: |-
+      @MainActor @Observable
+      final class ProfileViewModel {
+        enum State: Equatable { case idle, loading, loaded(User), failed(String) }
+
+        private(set) var state: State = .idle
+        private let repository: UserRepositing        // a protocol -> injectable
+        private let analytics: (String) -> Void
+
+        init(repository: UserRepositing, analytics: @escaping (String) -> Void = { _ in }) {
+          self.repository = repository
+          self.analytics = analytics
+        }
+
+        func onAppear() async {
+          state = .loading
+          do {
+            state = .loaded(try await repository.currentUser())
+            analytics("profile_loaded")
+          } catch {
+            state = .failed(error.localizedDescription)
+          }
+        }
+      }
+
+      struct ProfileView: View {
+        @State private var vm: ProfileViewModel
+        var body: some View {
+          Group {
+            switch vm.state {
+            case .idle, .loading: ProgressView()
+            case .loaded(let u):  ProfileDetail(user: u)
+            case .failed(let m):  ErrorView(message: m) { Task { await vm.onAppear() } }
+            }
+          }
+          .task { await vm.onAppear() }
+        }
+      }
+  - id: repository-use-case-the-clean-core
+    kind: code
+    title: Repository + Use Case (the Clean core)
+    note: Protocols live in the domain; implementations live outside.
+    code: |-
+      // ---- Domain (no UIKit, no URLSession, no CoreData) ----
+      struct Order: Equatable, Sendable { let id: UUID; let total: Decimal; var state: State }
+
+      protocol OrderRepositing: Sendable {                 // declared BY the domain
+        func order(id: UUID) async throws -> Order
+        func save(_ order: Order) async throws
+      }
+
+      struct CancelOrder: Sendable {                       // a use case = one verb
+        let repository: OrderRepositing
+        let now: @Sendable () -> Date
+
+        func callAsFunction(id: UUID) async throws -> Order {
+          var order = try await repository.order(id: id)
+          guard order.state == .placed else { throw OrderError.notCancellable }
+          order.state = .cancelled(at: now())
+          try await repository.save(order)
+          return order
+        }
+      }
+
+      // ---- Data layer (outer ring) satisfies the protocol ----
+      struct RemoteOrderRepository: OrderRepositing {
+        let api: APIClient
+        func order(id: UUID) async throws -> Order { try await api.get("/orders/\(id)").toDomain() }
+        func save(_ order: Order) async throws { try await api.put("/orders", order.toDTO()) }
+      }
+
+      // ---- Test ----
+      let sut = CancelOrder(repository: InMemoryOrderRepository(.placed), now: { .fixed })
+      #expect(try await sut(id: id).state == .cancelled(at: .fixed))
+  - id: coordinator-pattern-uikit-navigation
+    kind: code
+    title: Coordinator pattern (UIKit navigation)
+    note: Takes navigation out of the view controller.
+    code: |-
+      protocol Coordinator: AnyObject {
+        var children: [Coordinator] { get set }
+        func start()
+      }
+
+      final class CheckoutCoordinator: Coordinator {
+        var children: [Coordinator] = []
+        private let navigation: UINavigationController
+        private let onFinish: () -> Void
+
+        init(navigation: UINavigationController, onFinish: @escaping () -> Void) {
+          self.navigation = navigation
+          self.onFinish = onFinish
+        }
+
+        func start() {
+          let vm = CartViewModel(onCheckout: { [weak self] in self?.showPayment() })
+          navigation.pushViewController(CartViewController(viewModel: vm), animated: true)
+        }
+
+        private func showPayment() {
+          let vc = PaymentViewController(onSuccess: { [weak self] in
+            self?.navigation.popToRootViewController(animated: true)
+            self?.onFinish()
+          })
+          navigation.pushViewController(vc, animated: true)
+        }
+      }
+      // SwiftUI equivalent: a Router @Observable object holding `var path: [Route]`.
+  - id: unidirectional-flow-without-a-library
+    kind: code
+    title: Unidirectional flow without a library
+    note: Shows you understand *why* TCA looks the way it does.
+    code: |-
+      @MainActor @Observable
+      final class Store<State, Action> {
+        private(set) var state: State
+        private let reduce: (inout State, Action) -> Effect<Action>
+
+        init(initial: State, reduce: @escaping (inout State, Action) -> Effect<Action>) {
+          self.state = initial
+          self.reduce = reduce
+        }
+
+        func send(_ action: Action) {
+          let effect = reduce(&state, action)          // pure, synchronous
+          Task { for await next in effect.actions { send(next) } }   // side effects re-enter
+        }
+      }
+
+      enum CounterAction { case increment, factResponse(String) }
+
+      let reducer: (inout CounterState, CounterAction) -> Effect<CounterAction> = { state, action in
+        switch action {
+        case .increment:
+          state.count += 1
+          return .run { [n = state.count] in .factResponse(await api.fact(n)) }
+        case .factResponse(let fact):
+          state.fact = fact
+          return .none
+        }
+      }
+  - id: how-to-answer-which-architecture-would-you-use
+    kind: rules
+    title: How to answer "which architecture would you use?"
+    note: ""
+    items:
+      - tone: good
+        text: "Start with the **constraints**: team size, app lifetime, testing bar, SwiftUI vs UIKit, how much shared state there is."
+      - tone: good
+        text: "Name the invariants you want: one source of truth, no logic in views, navigation as data, framework-free domain."
+      - tone: good
+        text: Then pick the lightest pattern that gives them — usually MVVM + repositories for SwiftUI, TCA when state is genuinely complex.
+      - tone: neutral
+        text: "Say what you'd **not** do: no architecture astronautics on a 5-screen app; no VIPER for a prototype."
+      - tone: neutral
+        text: "Mention the seams that matter more than the acronym: DI, a testable domain, and navigation modelled as state."
+      - tone: bad
+        text: Avoid answering with a single acronym and no trade-off — that is the actual failure mode.

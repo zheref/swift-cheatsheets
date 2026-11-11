@@ -1,0 +1,60 @@
+id: fixture-collections
+concept: collections.types
+scope: shared
+title: Fixture — Collections
+group: Fixture Basics
+subtitle: Every card kind, once, with the optional metadata filled in.
+applies:
+  versions:
+    kotlin: ">=2.0"
+sources:
+  - title: Kotlin collections overview
+    url: https://kotlinlang.org/docs/collections-overview.html
+cards:
+  - id: read-only-list
+    concept: collections.types.list
+    kind: code
+    title: Read-only list
+    note: listOf returns a read-only view.
+    code: |-
+      val xs = listOf(1, 2, 3)
+      println(xs.sum())
+    expected: "6"
+    applies:
+      platforms: [jvm, android]
+    sources:
+      - title: List — Kotlin standard library
+        url: https://kotlinlang.org/api/core/kotlin-stdlib/kotlin.collections/-list/
+  - id: mutable-vs-read-only
+    kind: compare
+    title: Mutable vs read-only
+    note: ""
+    columns:
+      - label: Avoid
+        tone: bad
+        code: val xs = mutableListOf(1)
+      - label: Prefer
+        tone: good
+        code: val xs = listOf(1)
+  - id: rules-of-thumb
+    kind: rules
+    title: Rules of thumb
+    note: Inline `code` and **bold** render the same in every language.
+    items:
+      - tone: good
+        text: Prefer `listOf` for **values** you never mutate.
+      - tone: bad
+        text: Do not expose a `MutableList` from an API.
+  - id: costs
+    kind: table
+    title: Costs
+    note: ""
+    headers: [Type, Lookup]
+    rows:
+      - ["`List`", O(1) by index]
+      - ["`Set`", O(1) avg]
+  - id: pyramid
+    kind: diagram
+    title: A shared diagram
+    note: Diagrams are trusted SVG files named by the card.
+    svg: pyramid.svg

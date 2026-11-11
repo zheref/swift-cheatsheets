@@ -1,0 +1,274 @@
+id: async-patterns
+concept: reactive.timers-and-async
+scope: platform
+title: Timers & Async Patterns — Combine vs async/await
+group: Combine
+subtitle: Every periodic / concurrent case side by side. Grab and adapt.
+applies:
+  platforms:
+    - ios
+    - ipados
+    - macos
+    - tvos
+    - watchos
+    - visionos
+  requires:
+    - Combine
+sources:
+  - title: Combine — Apple Developer Documentation
+    url: https://developer.apple.com/documentation/combine
+  - title: Concurrency — The Swift Programming Language
+    url: https://docs.swift.org/swift-book/documentation/the-swift-programming-language/concurrency/
+cards:
+  - id: repeating-timer
+    kind: compare
+    title: Repeating timer
+    note: ""
+    columns:
+      - label: Combine
+        tone: neutral
+        code: |-
+          Timer.publish(every: 1, on: .main, in: .common)
+            .autoconnect()                       // ConnectablePublisher!
+            .scan(0) { n, _ in n + 1 }
+            .sink { self.seconds = $0 }
+            .store(in: &cancellables)
+
+          // stop:
+          cancellables.removeAll()
+      - label: async/await
+        tone: modern
+        code: |-
+          timerTask = Task { @MainActor in
+            var n = 0
+            while !Task.isCancelled {
+              try? await Task.sleep(for: .seconds(1))
+              n += 1
+              self.seconds = n
+            }
+          }
+          // stop:
+          timerTask?.cancel()
+
+          // swift-async-algorithms:
+          for await _ in AsyncTimerSequence(interval: .seconds(1),
+                                            clock: .continuous) { ... }
+  - id: one-shot-delay
+    kind: compare
+    title: One-shot delay
+    note: ""
+    columns:
+      - label: Combine
+        tone: neutral
+        code: |-
+          Just(())
+            .delay(for: .seconds(2), scheduler: RunLoop.main)
+            .sink { self.showToast = false }
+            .store(in: &cancellables)
+      - label: async/await
+        tone: modern
+        code: |-
+          Task {
+            try await Task.sleep(for: .seconds(2))
+            showToast = false
+          }
+          // cancellable, never blocks a thread
+  - id: countdown-polling-until-a-condition
+    kind: compare
+    title: Countdown / polling until a condition
+    note: ""
+    columns:
+      - label: Combine
+        tone: neutral
+        code: |-
+          Timer.publish(every: 1, on: .main, in: .common)
+            .autoconnect()
+            .scan(10) { n, _ in n - 1 }
+            .prefix(while: { $0 >= 0 })          // completes at 0
+            .sink(receiveCompletion: { _ in self.finish() },
+                  receiveValue: { self.remaining = $0 })
+            .store(in: &cancellables)
+      - label: async/await
+        tone: modern
+        code: |-
+          func countdown(from n: Int) async {
+            for i in stride(from: n, through: 0, by: -1) {
+              remaining = i
+              guard i > 0 else { break }
+              try? await Task.sleep(for: .seconds(1))
+            }
+            finish()
+          }
+
+          // Polling with backoff
+          while !Task.isCancelled {
+            if try await job.isDone() { break }
+            try await Task.sleep(for: .seconds(2))
+          }
+  - id: timeout-on-an-operation
+    kind: compare
+    title: Timeout on an operation
+    note: ""
+    columns:
+      - label: Combine
+        tone: neutral
+        code: |-
+          request
+            .timeout(.seconds(5), scheduler: DispatchQueue.main,
+                     customError: { APIError.timedOut })
+            .sink(...)
+            .store(in: &cancellables)
+      - label: async/await
+        tone: modern
+        code: |-
+          func withTimeout<T: Sendable>(
+            _ seconds: Double,
+            _ op: @escaping @Sendable () async throws -> T
+          ) async throws -> T {
+            try await withThrowingTaskGroup(of: T.self) { group in
+              group.addTask { try await op() }
+              group.addTask {
+                try await Task.sleep(for: .seconds(seconds))
+                throw TimeoutError()
+              }
+              let first = try await group.next()!
+              group.cancelAll()                    // cancel the loser
+              return first
+            }
+          }
+  - id: debounced-search-as-you-type
+    kind: compare
+    title: Debounced search-as-you-type
+    note: Classic live-coding exercise.
+    columns:
+      - label: Combine
+        tone: neutral
+        code: |-
+          final class SearchVM: ObservableObject {
+            @Published var query = ""
+            @Published private(set) var results: [Item] = []
+            private var bag = Set<AnyCancellable>()
+
+            init(api: API) {
+              $query
+                .debounce(for: .milliseconds(300), scheduler: RunLoop.main)
+                .removeDuplicates()
+                .map { q in
+                  api.search(q).replaceError(with: [])
+                }
+                .switchToLatest()
+                .receive(on: RunLoop.main)
+                .assign(to: &$results)
+            }
+          }
+      - label: async/await (Observation)
+        tone: modern
+        code: |-
+          @MainActor @Observable
+          final class SearchVM {
+            var query = "" { didSet { schedule() } }
+            private(set) var results: [Item] = []
+            private var task: Task<Void, Never>?
+
+            private func schedule() {
+              task?.cancel()
+              task = Task {
+                try? await Task.sleep(for: .milliseconds(300))
+                guard !Task.isCancelled else { return }
+                results = (try? await api.search(query)) ?? []
+              }
+            }
+          }
+
+          // SwiftUI-native alternative:
+          .task(id: query) {
+            try? await Task.sleep(for: .milliseconds(300))
+            results = await api.search(query)
+          }
+  - id: merge-two-sources-of-truth-cache-network
+    kind: compare
+    title: Merge two sources of truth (cache + network)
+    note: ""
+    columns:
+      - label: Combine
+        tone: neutral
+        code: |-
+          Publishers.Merge(
+            cache.publisher.setFailureType(to: Error.self),
+            network.publisher
+          )
+          .receive(on: DispatchQueue.main)
+          .sink(...)
+          .store(in: &cancellables)
+      - label: async/await
+        tone: modern
+        code: |-
+          // AsyncStream that yields cache first, then network
+          AsyncThrowingStream { continuation in
+            Task {
+              if let cached = await cache.load() { continuation.yield(cached) }
+              do {
+                continuation.yield(try await network.load())
+                continuation.finish()
+              } catch { continuation.finish(throwing: error) }
+            }
+          }
+  - id: serial-vs-parallel-execution-of-n-jobs
+    kind: compare
+    title: Serial vs parallel execution of N jobs
+    note: ""
+    columns:
+      - label: Combine
+        tone: neutral
+        code: |-
+          // Parallel
+          Publishers.MergeMany(jobs).collect()
+
+          // Serial (one at a time)
+          jobs.publisher
+            .flatMap(maxPublishers: .max(1)) { $0 }
+            .collect()
+      - label: async/await
+        tone: modern
+        code: |-
+          // Parallel
+          await withTaskGroup(of: Result.self) { g in
+            for j in jobs { g.addTask { await j() } }
+            return await g.reduce(into: []) { $0.append($1) }
+          }
+
+          // Serial
+          var out: [Result] = []
+          for j in jobs { out.append(await j()) }
+  - id: observing-uikit-system-events
+    kind: code
+    title: Observing UIKit/system events
+    note: Both worlds, same event.
+    code: |-
+      // Combine
+      NotificationCenter.default
+        .publisher(for: UIResponder.keyboardWillShowNotification)
+        .compactMap { $0.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect }
+        .map(\.height)
+        .assign(to: &$keyboardHeight)
+
+      // async/await
+      for await note in NotificationCenter.default.notifications(
+            named: UIResponder.keyboardWillShowNotification) {
+        guard let frame = note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect
+        else { continue }
+        keyboardHeight = frame.height
+      }
+  - id: which-do-i-reach-for
+    kind: rules
+    title: Which do I reach for?
+    note: ""
+    items:
+      - tone: modern
+        text: "**async/await** — request/response, sequential logic, anything new, anything you must unit test simply."
+      - tone: neutral
+        text: "**Combine** — `@Published` glue in UIKit/pre-Observation SwiftUI, complex multi-source operator chains, `debounce`/`throttle` for free."
+      - tone: legacy
+        text: "**GCD** — only when interoperating with old code, or for `DispatchSource`-level primitives."
+      - tone: good
+        text: "You can mix: expose `AsyncStream` from a Combine pipeline via `.values`, or wrap an async call in `Deferred { Future { } }`."

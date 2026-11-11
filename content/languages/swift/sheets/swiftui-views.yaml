@@ -1,0 +1,186 @@
+id: swiftui-views
+concept: ui.views-layout-animation
+scope: platform
+title: SwiftUI — Views, Layout & Animation
+group: SwiftUI
+subtitle: Layout system, lists, modifiers, animation, performance.
+applies:
+  platforms:
+    - ios
+    - ipados
+    - macos
+    - tvos
+    - watchos
+    - visionos
+  requires:
+    - SwiftUI
+sources:
+  - title: SwiftUI — Apple Developer Documentation
+    url: https://developer.apple.com/documentation/swiftui
+cards:
+  - id: layout-containers
+    kind: code
+    title: Layout containers
+    note: SwiftUI layout = parent proposes a size, child chooses, parent places.
+    code: |-
+      VStack(alignment: .leading, spacing: 8) { ... }
+      HStack(alignment: .firstTextBaseline) { ... }
+      ZStack(alignment: .bottomTrailing) { ... }
+
+      ScrollView { LazyVStack(pinnedViews: [.sectionHeaders]) { ... } }
+      ScrollView(.horizontal) { LazyHStack { ... } }
+
+      LazyVGrid(columns: [GridItem(.adaptive(minimum: 100), spacing: 8)]) { ... }
+
+      Grid {                                    // iOS 16+, true 2D alignment
+        GridRow { Text("A"); Text("B") }
+        GridRow { Text("C").gridCellColumns(2) }
+      }
+
+      ViewThatFits { WideLayout(); NarrowLayout() }
+      Spacer(); Divider()
+  - id: sizing-alignment
+    kind: code
+    title: Sizing & alignment
+    note: The order of modifiers matters — each one wraps the previous view.
+    code: |-
+      Text("Hi")
+        .padding(12)                 // pad first...
+        .background(.blue)           // ...then background covers the padding
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(height: 44)
+        .clipShape(.rect(cornerRadius: 12))
+
+      // .frame(width:height:) fixes a size
+      // .frame(maxWidth: .infinity) expands to fill the proposal
+      // .fixedSize() tells the child to use its ideal size (fixes truncated text)
+      // .layoutPriority(1) wins space in a stack
+
+      GeometryReader { proxy in                 // greedy: fills all offered space
+        Circle().frame(width: proxy.size.width * 0.5)
+      }
+  - id: lists-collections
+    kind: code
+    title: Lists & collections
+    note: ""
+    code: |-
+      List {
+        Section("Today") {
+          ForEach(items) { item in
+            NavigationLink(value: item) { ItemRow(item: item) }
+              .swipeActions { Button("Delete", role: .destructive) { delete(item) } }
+          }
+          .onDelete { indexSet in items.remove(atOffsets: indexSet) }
+          .onMove { from, to in items.move(fromOffsets: from, toOffset: to) }
+        }
+      }
+      .listStyle(.insetGrouped)
+      .searchable(text: $query, prompt: "Search")
+      .navigationDestination(for: Item.self) { ItemDetail(item: $0) }
+      .toolbar { ToolbarItem(placement: .topBarTrailing) { EditButton() } }
+
+      // Editable rows: bind directly into the collection (iOS 15+)
+      ForEach($items) { $item in TextField("Name", text: $item.name) }
+  - id: navigation-vanilla-swiftui
+    kind: code
+    title: Navigation (vanilla SwiftUI)
+    note: ""
+    code: |-
+      NavigationStack(path: $path) {                    // path: [Route] or NavigationPath
+        RootView()
+          .navigationDestination(for: Route.self) { route in
+            switch route {
+            case .detail(let id): DetailView(id: id)
+            case .settings:       SettingsView()
+            }
+          }
+      }
+      NavigationLink("Open", value: Route.detail(id))   // value-based, decoupled
+
+      path.append(Route.settings)      // programmatic push
+      path.removeLast()                // pop
+      path = NavigationPath()          // pop to root
+
+      NavigationSplitView { Sidebar() } detail: { Detail() }   // iPad / Mac
+  - id: animation-transitions
+    kind: code
+    title: Animation & transitions
+    note: ""
+    code: |-
+      // Implicit — animates any change to values this view depends on
+      Circle().scaleEffect(scale).animation(.spring(duration: 0.3), value: scale)
+
+      // Explicit — animate the state change itself
+      withAnimation(.easeInOut(duration: 0.25)) { isExpanded.toggle() }
+
+      // Transitions for insertion/removal
+      if isShown {
+        Banner().transition(.move(edge: .top).combined(with: .opacity))
+      }
+
+      // Matched geometry (hero animations)
+      @Namespace private var ns
+      Image(...).matchedGeometryEffect(id: "hero", in: ns)
+
+      // Phase / keyframe animation (iOS 17+)
+      .phaseAnimator([1.0, 1.2]) { view, phase in view.scaleEffect(phase) }
+      .sensoryFeedback(.success, trigger: didSave)
+  - id: reusable-building-blocks
+    kind: code
+    title: Reusable building blocks
+    note: ""
+    code: |-
+      // ViewModifier
+      struct CardStyle: ViewModifier {
+        func body(content: Content) -> some View {
+          content.padding(16)
+            .background(.background.secondary, in: .rect(cornerRadius: 14))
+            .shadow(radius: 2, y: 1)
+        }
+      }
+      extension View { func card() -> some View { modifier(CardStyle()) } }
+
+      // @ViewBuilder for conditional content
+      @ViewBuilder
+      func statusView(_ s: Status) -> some View {
+        switch s {
+        case .loading: ProgressView()
+        case .error(let e): Text(e.localizedDescription).foregroundStyle(.red)
+        case .loaded(let items): List(items) { ItemRow($0) }
+        }
+      }
+
+      // Generic container
+      struct Card<Content: View>: View {
+        @ViewBuilder let content: () -> Content
+        var body: some View { VStack { content() }.card() }
+      }
+
+      // PreferenceKey: child -> parent communication
+      struct HeightKey: PreferenceKey {
+        static var defaultValue: CGFloat = 0
+        static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+          value = max(value, nextValue())
+        }
+      }
+  - id: performance-rules
+    kind: rules
+    title: Performance rules
+    note: ""
+    items:
+      - tone: good
+        text: Keep `body` cheap and pure — it can run many times per frame.
+      - tone: good
+        text: Split big views into small `View` structs so re-render scope stays tiny.
+      - tone: good
+        text: Use `Lazy*` stacks/grids for long content; `List` already recycles.
+      - tone: bad
+        text: Avoid `AnyView` — it erases identity and defeats the diffing engine.
+      - tone: bad
+        text: Avoid heavy work or `Date()` inside `body`.
+      - tone: bad
+        text: "`GeometryReader` in a stack collapses siblings; prefer `.containerRelativeFrame` or `onGeometryChange` (iOS 18)."
+      - tone: neutral
+        text: "`Equatable` conformance + `.equatable()` can short-circuit expensive diffs."
+      - tone: neutral
+        text: Instruments → *SwiftUI* template shows view body counts and cause-of-update.

@@ -1,0 +1,53 @@
+{
+  "name": "swift-cheatsheets",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Dense, searchable reference cheat sheets \u2014 a Gatsby site built from language catalogs kept as data.",
+  "license": "UNLICENSED",
+  "engines": {
+    "node": "^22.22.2 || ^24.15.0"
+  },
+  "scripts": {
+    "develop": "gatsby develop",
+    "build": "npm run build:site && npm run build:offline",
+    "build:site": "gatsby build",
+    "build:offline": "node scripts/build-offline.mts",
+    "verify": "node scripts/verify.mts",
+    "lint": "tsc --noEmit && node scripts/verify.mts",
+    "serve": "node scripts/serve.mts",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
+    "check": "npm run typecheck && npm run test:coverage && npm run build && npm run verify",
+    "clean": "gatsby clean && rm -rf .offline-build"
+  },
+  "dependencies": {
+    "@chakra-ui/react": "3.38.0",
+    "@emotion/react": "11.14.0",
+    "gatsby": "5.16.1",
+    "react": "19.2.9",
+    "react-dom": "19.2.9",
+    "yaml": "2.9.1",
+    "zod": "4.6.7"
+  },
+  "devDependencies": {
+    "@types/jsdom": "30.0.0",
+    "@types/node": "24.19.2",
+    "@types/react": "19.2.18",
+    "@types/react-dom": "19.2.7",
+    "@vitest/coverage-v8": "5.1.0",
+    "esbuild": "0.28.2",
+    "jsdom": "31.0.0",
+    "typescript": "5.9.3",
+    "vite": "8.3.8",
+    "vitest": "5.1.0"
+  },
+  "overrides": {
+    "path-to-regexp@0.1.12": "0.1.13",
+    "immutable@3.7.6": "3.8.4",
+    "lodash@4.17.23": "4.18.1",
+    "external-editor": {
+      "tmp": "0.2.7"
+    }
+  }
+}

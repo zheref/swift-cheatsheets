@@ -10,9 +10,13 @@ cd "$(dirname "$0")" || exit 1
 PORT="${1:-8443}"
 CERT_DIR=".localcert"
 
-if [ ! -f index.html ]; then
-  echo "  index.html is missing - building it first..."
-  python3 src/build.py || exit 1
+if [ ! -d node_modules ]; then
+  echo "  Installing dependencies first..."
+  npm ci || exit 1
+fi
+if [ ! -f public/index.html ]; then
+  echo "  public/ is missing - building the site first..."
+  npm run build:site || exit 1
 fi
 
 # ---- find this Mac's LAN address -----------------------------------------
@@ -37,31 +41,8 @@ if [ ! -f "$CERT_DIR/cert.pem" ] || [ "$(cat "$CERT_DIR/ip" 2>/dev/null)" != "$I
   printf '%s' "$IP" > "$CERT_DIR/ip"
 fi
 
-echo ""
-echo "  Swift Interview Cheat Sheets  (HTTPS)"
-echo "  ---------------------------------------------------------"
-echo "  This Mac : https://localhost:$PORT/"
-echo "  iPad etc : https://$IP:$PORT/"
-echo "  ---------------------------------------------------------"
 echo "  The certificate is self-signed, so the first visit warns:"
 echo "    Safari : Show Details -> visit this website"
 echo "    Chrome : Advanced -> Proceed"
-echo "  Ctrl-C to stop."
-echo ""
 
-exec python3 - "$PORT" <<'PY'
-import http.server, ssl, sys
-
-port = int(sys.argv[1])
-
-context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-context.load_cert_chain(".localcert/cert.pem", ".localcert/key.pem")
-
-server = http.server.ThreadingHTTPServer(("0.0.0.0", port),
-                                         http.server.SimpleHTTPRequestHandler)
-server.socket = context.wrap_socket(server.socket, server_side=True)
-try:
-    server.serve_forever()
-except KeyboardInterrupt:
-    print("\n  stopped.")
-PY
+exec node scripts/serve.mts --port "$PORT" --lan "$IP" --cert "$CERT_DIR/cert.pem" --key "$CERT_DIR/key.pem"

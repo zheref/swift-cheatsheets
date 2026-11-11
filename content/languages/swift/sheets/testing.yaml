@@ -1,0 +1,251 @@
+id: testing
+concept: testing.approaches
+scope: shared
+title: Testing Approaches on iOS
+group: iOS Practice
+subtitle: What to test, at which layer, with which tool — and how to keep it fast.
+sources:
+  - title: Swift Testing — Apple Developer Documentation
+    url: https://developer.apple.com/documentation/testing
+  - title: XCTest — Apple Developer Documentation
+    url: https://developer.apple.com/documentation/xctest
+cards:
+  - id: the-pyramid-ios-edition
+    kind: diagram
+    title: The pyramid, iOS edition
+    note: Ratios are a heuristic, not a law — but be ready to defend the shape.
+    svg: testing--the-pyramid-ios-edition.svg
+  - id: test-doubles
+    kind: diagram
+    title: Test doubles
+    note: "Say the right name and show the Swift version: a struct of closures does all five."
+    svg: testing--test-doubles.svg
+  - id: tooling-matrix
+    kind: table
+    title: Tooling matrix
+    note: ""
+    headers:
+      - Tool
+      - Layer
+      - Use it for
+    rows:
+      - - Swift Testing (`@Test`, `#expect`)
+        - unit
+        - "default for new code: parallel, parameterised, clear failures"
+      - - XCTest
+        - unit / integration
+        - existing suites, performance tests, `XCTestExpectation`
+      - - XCUITest
+        - UI / E2E
+        - black-box journeys; `app.launchArguments` to inject a stub environment
+      - - "`URLProtocol` subclass"
+        - integration
+        - deterministic networking without a server
+      - - swift-snapshot-testing
+        - UI
+        - pixel/text snapshots of views, layouts, and even JSON
+      - - ViewInspector
+        - UI
+        - unit-testing SwiftUI view trees without rendering
+      - - TCA `TestStore`
+        - unit
+        - exhaustive state + effect assertions
+      - - "`XCTMetric` / `measure { }`"
+        - performance
+        - guard against regressions in hot paths
+      - - "`addTeardownBlock` + `weak`"
+        - unit
+        - memory-leak assertions
+      - - Xcode test plans
+        - all
+        - per-configuration runs, sanitizers, code coverage, retry-on-failure
+  - id: design-for-testability-inject-the-seam
+    kind: code
+    title: "Design for testability: inject the seam"
+    note: The single most valuable answer to "how would you test this?"
+    code: |-
+      // 1. Wrap the untestable thing in a value you can substitute.
+      struct WeatherClient: Sendable {
+        var current: @Sendable (String) async throws -> Weather
+      }
+
+      extension WeatherClient {
+        static let live = Self { city in
+          let (data, _) = try await URLSession.shared.data(from: .weather(city))
+          return try JSONDecoder().decode(Weather.self, from: data)
+        }
+        static func stub(_ weather: Weather) -> Self { Self { _ in weather } }
+        static let failing = Self { _ in throw URLError(.notConnectedToInternet) }
+      }
+
+      // 2. The system under test only knows the seam.
+      @MainActor @Observable
+      final class WeatherViewModel {
+        private let client: WeatherClient
+        private(set) var state: ViewState = .idle
+        init(client: WeatherClient = .live) { self.client = client }
+
+        func load(_ city: String) async {
+          state = .loading
+          do    { state = .loaded(try await client.current(city)) }
+          catch { state = .failed(error) }
+        }
+      }
+
+      // 3. Tests are now trivial, fast and deterministic.
+      @Test func showsFailure_whenTheNetworkIsDown() async {
+        let sut = WeatherViewModel(client: .failing)
+        await sut.load("Bogotá")
+        #expect(sut.state.isFailed)
+      }
+  - id: swift-testing-vs-xctest
+    kind: compare
+    title: Swift Testing vs XCTest
+    note: Know both; new projects default to Swift Testing.
+    columns:
+      - label: Swift Testing (Xcode 16+)
+        tone: modern
+        code: |-
+          import Testing
+
+          @Suite("Cart")
+          struct CartTests {
+            let sut = Cart()                       // fresh per test, runs in parallel
+
+            @Test("adds an item")
+            func add() {
+              sut.add(.mock)
+              #expect(sut.items.count == 1)
+            }
+
+            @Test(arguments: [0, -1, -99])
+            func rejectsNonPositive(_ qty: Int) {
+              #expect(throws: CartError.self) { try sut.add(.mock, qty: qty) }
+            }
+
+            @Test func unwraps() throws {
+              let item = try #require(sut.items.first)
+              #expect(item.price > 0)
+            }
+
+            @Test(.disabled("flaky on CI"), .tags(.network))
+            func slow() async { }
+          }
+      - label: XCTest
+        tone: legacy
+        code: |-
+          import XCTest
+
+          final class CartTests: XCTestCase {
+            var sut: Cart!
+            override func setUp() { super.setUp(); sut = Cart() }
+            override func tearDown() { sut = nil; super.tearDown() }
+
+            func test_add_appendsItem() {
+              sut.add(.mock)
+              XCTAssertEqual(sut.items.count, 1)
+            }
+
+            func test_throwsOnZeroQuantity() {
+              XCTAssertThrowsError(try sut.add(.mock, qty: 0))
+            }
+
+            func test_asyncLoad() async throws {
+              let item = try XCTUnwrap(sut.items.first)
+              XCTAssertGreaterThan(item.price, 0)
+            }
+          }
+  - id: deterministic-networking-with-urlprotocol
+    kind: code
+    title: Deterministic networking with URLProtocol
+    note: No server, no waiting, no flakes.
+    code: |-
+      final class StubURLProtocol: URLProtocol {
+        nonisolated(unsafe) static var handler: ((URLRequest) throws -> (HTTPURLResponse, Data))?
+
+        override class func canInit(with request: URLRequest) -> Bool { true }
+        override class func canonicalRequest(for r: URLRequest) -> URLRequest { r }
+
+        override func startLoading() {
+          guard let handler = Self.handler else { return }
+          do {
+            let (response, data) = try handler(request)
+            client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+            client?.urlProtocol(self, didLoad: data)
+            client?.urlProtocolDidFinishLoading(self)
+          } catch {
+            client?.urlProtocol(self, didFailWithError: error)
+          }
+        }
+        override func stopLoading() { }
+      }
+
+      // In the test
+      let config = URLSessionConfiguration.ephemeral
+      config.protocolClasses = [StubURLProtocol.self]
+      let session = URLSession(configuration: config)
+
+      StubURLProtocol.handler = { request in
+        #expect(request.url?.path == "/v1/weather")
+        return (HTTPURLResponse(url: request.url!, statusCode: 200,
+                                httpVersion: nil, headerFields: nil)!,
+                Data(#"{"temp": 21}"#.utf8))
+      }
+  - id: async-ui-and-leak-tests
+    kind: code
+    title: Async, UI and leak tests
+    note: ""
+    code: |-
+      // Async without expectations
+      @Test func loadsFeed() async throws {
+        let items = try await sut.loadFeed()
+        #expect(items.count == 3)
+      }
+
+      // XCTest expectation (callback APIs, notifications)
+      func test_notifiesOnSave() {
+        let exp = expectation(description: "saved")
+        sut.onSave = { exp.fulfill() }
+        sut.save()
+        wait(for: [exp], timeout: 1.0)
+      }
+
+      // UI test with an injected stub backend
+      func test_checkoutJourney() {
+        let app = XCUIApplication()
+        app.launchArguments = ["-UITest", "-StubScenario", "happyPath"]
+        app.launch()
+        app.buttons["addToCart"].tap()
+        app.buttons["checkout"].tap()
+        XCTAssertTrue(app.staticTexts["Order confirmed"].waitForExistence(timeout: 5))
+      }
+
+      // Memory-leak assertion, reusable in every test
+      func assertNoLeak(_ instance: AnyObject, file: StaticString = #filePath, line: UInt = #line) {
+        addTeardownBlock { [weak instance] in
+          XCTAssertNil(instance, "Potential retain cycle", file: file, line: line)
+        }
+      }
+  - id: principles-worth-stating-out-loud
+    kind: rules
+    title: Principles worth stating out loud
+    note: ""
+    items:
+      - tone: good
+        text: Test **behaviour through the public API**, not private implementation — otherwise every refactor breaks the suite.
+      - tone: good
+        text: Inject `Date`, `UUID`, randomness, the clock and the network. Anything else is a flake waiting to happen.
+      - tone: good
+        text: "One reason to fail per test; the name should read as a specification: `test_whenOffline_showsCachedResults`."
+      - tone: good
+        text: "Prefer **fakes over mocks**: an in-memory repository survives refactors, a strict mock does not."
+      - tone: good
+        text: Snapshot tests are great for design systems, painful for whole screens — scope them tightly.
+      - tone: bad
+        text: Sleeping in tests (`Thread.sleep`, `wait(for:timeout:5)`) — use a `TestClock` or an injected scheduler.
+      - tone: bad
+        text: Shared singletons/`UserDefaults.standard` between tests — parallel execution will find you.
+      - tone: bad
+        text: Chasing 100% coverage; coverage is a smoke detector, not a goal.
+      - tone: neutral
+        text: "TDD in an interview: state the cycle (red → green → refactor) and *actually* write the failing test first if asked."
