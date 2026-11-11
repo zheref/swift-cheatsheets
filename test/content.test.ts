@@ -75,7 +75,7 @@ describe("inline markup", () => {
   });
 });
 
-describe("search", () => {
+describe("search parity with the pre-migration page (AC-3)", () => {
   const legacy = JSON.parse(fs.readFileSync(path.join(ROOT, "test/fixtures/legacy-search.json"), "utf8")) as {
     queries: Record<string, { hits: string; sheets: string[]; cards: number }>;
   };
@@ -102,6 +102,12 @@ describe("loader", () => {
     expect(loadCatalogs(FIXTURE_ROOT, ["fixture"]).map((c) => c.language.id)).toEqual(["kotlin-fixture"]);
   });
 
+  it("accepts every committed diagram under the allowlist", () => {
+    const diagrams = swiftCatalog().sheets.flatMap((s) => s.cards).filter((c) => c.kind === "diagram");
+    expect(diagrams).toHaveLength(17);
+    for (const d of diagrams) expect(diagramProblems(d.kind === "diagram" ? d.svg : ""), d.id).toEqual([]);
+  });
+
   it("resolves diagram files into markup", () => {
     const c = loadCatalog(FIXTURE_DIR).sheets[0]!.cards.find((k) => k.kind === "diagram");
     expect(c?.kind === "diagram" && c.svg.startsWith('<svg class="dg"')).toBe(true);
@@ -123,6 +129,40 @@ describe("loader", () => {
     const p = path.join(dir, file);
     fs.writeFileSync(p, fs.readFileSync(p, "utf8").replace(from, to));
   };
+
+  it("refuses a YAML syntax error, naming the file, and keeps collecting", () => {
+    const msg = broken((d) => {
+      fs.appendFileSync(path.join(d, "sheets/fixture-concurrency.yaml"), "  - {id: x, kind: [\n");
+      edit(d, "sheets/fixture-collections.yaml", "id: costs", "id: rules-of-thumb");
+    });
+    expect(msg).toMatch(/fixture-concurrency\.yaml: /);
+    expect(msg).toMatch(/duplicate card ids rules-of-thumb/);
+    expect(broken((d) => fs.appendFileSync(path.join(d, "language.yaml"), "sheets: [\n"))).toMatch(/language\.yaml: /);
+  });
+  it("refuses a diagram path that leaves diagrams/, and a missing diagram", () => {
+    expect(broken((d) => edit(d, "sheets/fixture-collections.yaml", "svg: pyramid.svg", "svg: ../language.yaml"))).toMatch(
+      /svg must name a file directly inside diagrams\//,
+    );
+    expect(broken((d) => edit(d, "sheets/fixture-collections.yaml", "svg: pyramid.svg", "svg: gone.svg"))).toMatch(/names missing diagram gone\.svg/);
+  });
+  it("refuses ids that disagree with their folder or file, and duplicate sheet ids", () => {
+    expect(broken((d) => edit(d, "language.yaml", "id: kotlin-fixture", "id: kotlin-other"))).toMatch(/must match its folder name/);
+    expect(broken((d) => edit(d, "sheets/fixture-concurrency.yaml", "id: fixture-concurrency", "id: fixture-other"))).toMatch(
+      /must match its file name/,
+    );
+    expect(
+      broken((d) => edit(d, "language.yaml", "sheets: [fixture-collections, fixture-concurrency]", "sheets: [fixture-collections, fixture-concurrency, fixture-collections]")),
+    ).toMatch(/duplicate sheet ids fixture-collections/);
+  });
+  it("refuses two catalogs published at one route", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "catalogs-"));
+    for (const id of ["kotlin-fixture", "kotlin-twin"]) {
+      const dir = path.join(root, "languages", id);
+      fs.cpSync(FIXTURE_DIR, dir, { recursive: true });
+      if (id !== "kotlin-fixture") edit(dir, "language.yaml", "id: kotlin-fixture", `id: ${id}`);
+    }
+    expect(() => loadCatalogs(root, ["fixture"])).toThrow(/two catalogs publish at \/kotlin-fixture\//);
+  });
 
   it("refuses a duplicate card id", () => {
     expect(broken((d) => edit(d, "sheets/fixture-collections.yaml", "id: costs", "id: rules-of-thumb"))).toMatch(/duplicate card ids rules-of-thumb/);
@@ -152,12 +192,27 @@ describe("loader", () => {
     );
   });
   it("refuses a diagram that is not inert", () => {
-    expect(diagramProblems('<svg class="dg" viewBox="0 0 940 10"><script>x()</script></svg>')).toContain(
-      "contains script, an event handler or foreignObject",
+    const wrap = (inner: string) => `<svg class="dg" viewBox="0 0 940 10">${inner}</svg>`;
+    expect(diagramProblems(wrap("<script>x()</script>"))).toContain("element <script> is not allowed");
+    expect(diagramProblems(wrap('<image href="https://x.test/a.png"/>'))).toEqual(
+      expect.arrayContaining(["element <image> is not allowed", "attribute href is not allowed"]),
     );
-    expect(diagramProblems('<svg class="dg" viewBox="0 0 940 10"><image href="https://x.test/a.png"/></svg>')).toContain(
-      "references an external resource",
-    );
+    // Bypasses of a regex denylist found in security review: every one must be refused.
+    for (const payload of [
+      '<rect/onclick="alert(1)"/>',
+      "<image href='https://example.invalid/p.png'/>",
+      "<image href=https://example.invalid/p.png />",
+      "<a xlink:href='&#106;avascript:alert(1)'><text>x</text></a>",
+      '<rect style="fill:url(https://example.invalid/t)"/>',
+      "<style>@import url(https://example.invalid/x.css)</style>",
+      '<set attributeName="href" to="&#x6a;avascript:alert(1)"/>',
+      '<rect fill="url(https://example.invalid/t)"/>',
+      "<!-- comment --><rect/>",
+      '<text x="1">&#106;</text>',
+    ]) {
+      expect(diagramProblems(wrap(payload)), payload).not.toEqual([]);
+    }
+    expect(diagramProblems(`${wrap("")}<script>x()</script>`)).not.toEqual([]);
     expect(diagramProblems('<svg class="dg" viewBox="0 0 940 10"><text font-size="good">a</text></svg>')).toContain(
       "non-numeric font-size: good",
     );

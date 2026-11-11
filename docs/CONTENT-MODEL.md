@@ -48,7 +48,7 @@ Common fields: `id` (stable, unique in its sheet; the card's global id and DOM a
 | `compare` | `columns: [{label, tone, code}]`, optional `expected` | before/after, legacy/modern, wrong/right |
 | `rules` | `items: [{tone, text}]` | colour-coded guidance; text supports `` `code` `` and `**bold**` |
 | `table` | `headers`, `rows` (one cell per header) | comparisons; cells support the same inline markup |
-| `diagram` | `svg`: a file in `diagrams/` | an infographic; inert, 940 units wide, coloured by theme variables |
+| `diagram` | `svg`: a file in `diagrams/` | an infographic, 940 units wide, coloured by theme variables; checked against an element/attribute allowlist, referencing only `url(#id)` inside itself |
 
 `tone` is one of `good`, `bad`, `modern`, `legacy`, `neutral`.
 

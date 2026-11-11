@@ -16,27 +16,87 @@ export class CatalogError extends Error {
   }
 }
 
-const readYaml = (file: string): unknown => YAML.parse(fs.readFileSync(file, "utf8"));
+/** Parses one YAML file; a syntax error becomes a problem that names the file, never a bare throw. */
+function readYaml(file: string, problems: string[]): { ok: true; value: unknown } | { ok: false } {
+  try {
+    return { ok: true, value: YAML.parse(fs.readFileSync(file, "utf8")) };
+  } catch (err) {
+    problems.push(`${file}: ${err instanceof Error ? err.message.split("\n")[0] : String(err)}`);
+    return { ok: false };
+  }
+}
 
 const issues = (file: string, err: z.ZodError) =>
   err.issues.map((i) => `${file}: ${i.path.join(".") || "(root)"}: ${i.message}`);
 
-/** Trusted diagram markup must stay inert: no scripts, handlers, external references or foreign objects. */
+/**
+ * Diagrams are injected as raw markup, so they are validated against an
+ * ALLOWLIST over a strict tokenisation, never a denylist: only these drawing
+ * elements and presentation attributes, double-quoted values, the four named
+ * entities, and references only to fragments in the same file (`url(#id)`).
+ * Anything the tokenizer does not recognise — comments, CDATA, single-quoted or
+ * unquoted values, `&#` references, `style`, handlers, `href`, animation — is refused.
+ */
+const SVG_ELEMENTS = new Set(["svg", "g", "defs", "marker", "path", "rect", "line", "polyline", "polygon", "circle", "ellipse", "text", "tspan", "title", "desc"]);
+const SVG_ATTRIBUTES = new Set([
+  "xmlns", "class", "id", "role", "viewBox", "transform", "opacity",
+  "x", "y", "x1", "y1", "x2", "y2", "cx", "cy", "r", "rx", "ry", "dx", "dy", "width", "height", "d", "points",
+  "fill", "fill-opacity", "stroke", "stroke-width", "stroke-opacity", "stroke-dasharray", "stroke-linecap", "stroke-linejoin",
+  "font-size", "font-weight", "text-anchor", "dominant-baseline", "letter-spacing",
+  "marker-start", "marker-mid", "marker-end", "markerWidth", "markerHeight", "refX", "refY", "orient",
+]);
+const TAG = /<(\/?)([A-Za-z][A-Za-z0-9-]*)((?:\s+[A-Za-z][A-Za-z0-9-]*="[^"<>&]*")*)\s*(\/?)>/y;
+const ATTR = /([A-Za-z][A-Za-z0-9-]*)="([^"]*)"/g;
+const TEXT = /(?:[^<&]+|&(?:amp|lt|gt|quot);)+/y;
+
 export function diagramProblems(svg: string): string[] {
-  const out: string[] = [];
-  if (!/^<svg\b[^>]*\bclass="dg"/.test(svg)) out.push('must be a single <svg class="dg"> element');
-  if (!/viewBox="0 0 940 \d+(?:\.\d+)?"/.test(svg)) out.push("viewBox must be 940 units wide");
-  if (/<script\b|<foreignObject\b|\son[a-z]+\s*=|javascript:/i.test(svg)) out.push("contains script, an event handler or foreignObject");
-  if (/\b(?:href|xlink:href|src)\s*=\s*"(?!#)/i.test(svg)) out.push("references an external resource");
-  const bogus = [...svg.matchAll(/font-size="([^"]*)"/g)].map((m) => m[1]).filter((v) => !/^\d+(?:\.\d+)?$/.test(v ?? ""));
-  if (bogus.length) out.push(`non-numeric font-size: ${[...new Set(bogus)].join(", ")}`);
-  return out;
+  const out = new Set<string>();
+  const stack: string[] = [];
+  let pos = 0;
+  let roots = 0;
+  while (pos < svg.length) {
+    TAG.lastIndex = pos;
+    const tag = TAG.exec(svg);
+    if (tag) {
+      const [, closing, name = "", attrs = "", selfClosing] = tag;
+      if (!SVG_ELEMENTS.has(name)) out.add(`element <${name}> is not allowed`);
+      if (closing) {
+        if (stack.pop() !== name) out.add(`unbalanced </${name}>`);
+      } else {
+        if (!stack.length) roots++;
+        for (const [, attr = "", value = ""] of attrs.matchAll(ATTR)) {
+          if (!SVG_ATTRIBUTES.has(attr)) out.add(`attribute ${attr} is not allowed`);
+          if (/url\(/i.test(value) && !/^url\(#[A-Za-z0-9_-]+\)$/.test(value)) out.add(`${attr} references something outside the file`);
+          if (attr === "font-size" && !/^\d+(?:\.\d+)?$/.test(value)) out.add(`non-numeric font-size: ${value}`);
+        }
+        if (name === "svg" && !stack.length) {
+          if (!/\sclass="dg"/.test(attrs)) out.add('must be a single <svg class="dg"> element');
+          if (!/\sviewBox="0 0 940 \d+(?:\.\d+)?"/.test(attrs)) out.add("viewBox must be 940 units wide");
+        }
+        if (!selfClosing) stack.push(name);
+      }
+      pos = TAG.lastIndex;
+      continue;
+    }
+    TEXT.lastIndex = pos;
+    if (TEXT.exec(svg) && stack.length) {
+      pos = TEXT.lastIndex;
+      continue;
+    }
+    out.add(`unrecognised markup at offset ${pos}: ${JSON.stringify(svg.slice(pos, pos + 24))}`);
+    break;
+  }
+  if (stack.length) out.add(`unclosed <${stack.join("> <")}>`);
+  if (roots !== 1 || !svg.startsWith("<svg")) out.add('must be a single <svg class="dg"> element');
+  return [...out];
 }
 
 export function loadCatalog(dir: string): Catalog {
   const problems: string[] = [];
   const langFile = path.join(dir, "language.yaml");
-  const parsed = languageSchema.safeParse(readYaml(langFile));
+  const raw = readYaml(langFile, problems);
+  if (!raw.ok) throw new CatalogError(problems);
+  const parsed = languageSchema.safeParse(raw.value);
   if (!parsed.success) throw new CatalogError(issues(langFile, parsed.error));
   const { sheets: order, ...language } = parsed.data;
   if (path.basename(dir) !== language.id) problems.push(`${langFile}: id '${language.id}' must match its folder name`);
@@ -56,7 +116,9 @@ export function loadCatalog(dir: string): Catalog {
       problems.push(`${file}: listed in language.yaml but missing`);
       continue;
     }
-    const res = sheetSchema.safeParse(readYaml(file));
+    const raw = readYaml(file, problems);
+    if (!raw.ok) continue;
+    const res = sheetSchema.safeParse(raw.value);
     if (!res.success) {
       problems.push(...issues(file, res.error));
       continue;

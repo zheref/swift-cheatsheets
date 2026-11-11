@@ -23,7 +23,7 @@ kept as data** (YAML), so another language is a new catalog folder, not a new pa
 ## Quick start
 
 ```bash
-npm ci                 # Node 22.22+ or 24 (see .nvmrc)
+npm ci                 # Node 22.22+ or 24.15+ (see .nvmrc)
 
 open index.html        # just read it — the committed offline file
 
@@ -108,7 +108,7 @@ npm run develop   # live-reloading dev server on http://localhost:8000
 npm run build     # Gatsby site into public/, offline file into index.html
 npm run verify    # structural checks on both built pages
 npm test          # parity, rendering, hydration and offline tests
-npm run check     # everything CI runs
+npm run check     # what CI runs, except its committed-index.html staleness check
 ```
 
 The `Makefile` keeps the familiar shortcuts (`make`, `make build`, `make verify`,
@@ -164,8 +164,12 @@ depend on it.
 Diagrams are plain SVG files in `content/languages/<lang>/diagrams/`, 940 units wide
 (`viewBox="0 0 940 H"`, `class="dg"`), coloured only through the theme's CSS custom
 properties (`fill="var(--modern)"`, `stroke="var(--good)"`…) so they follow light and dark
-mode. The loader refuses a diagram with a script, an event handler, an external
-reference, a non-numeric `font-size` or a different width.
+mode. Diagrams are injected as raw markup, so the loader checks them against an
+**allowlist**: plain drawing elements (`svg g defs marker path rect line polyline polygon
+circle ellipse text tspan title desc`), presentation attributes only, double-quoted values,
+no `style`, no `href`, no numeric entities, and `url(#id)` as the only reference. Anything
+else — a script, a handler, an external reference, a non-numeric `font-size`, a different
+width — fails the build with the file named.
 
 ### Adding a language
 
@@ -213,7 +217,8 @@ external resource at all.
 
 ## Requirements
 
-- **Node.js 22.22+ or 24** (`.nvmrc` says 24) and npm. Dependencies are pinned exactly in
+- **Node.js 22.22+ or 24.15+** (`.nvmrc` says 24; Gatsby 5.16 supports up to 25, jsdom 31 needs
+  22.22+/24.15+) and npm. Dependencies are pinned exactly in
   `package-lock.json`: Gatsby 5.16.1, React 19.2.9, Chakra UI 3.38.0.
 - **openssl** — preinstalled on macOS; only used by `serve-https.command`.
 - Any modern browser. Rendering uses `color-mix()` and CSS cascade layers —

@@ -5,7 +5,7 @@ HTTPS_PORT ?= 8443
 
 all: build verify
 
-## Install the pinned dependencies (Node 22.22+ or 24)
+## Install the pinned dependencies (Node 22.22+ or 24.15+)
 install:
 	npm ci
 
@@ -21,7 +21,7 @@ verify:
 test:
 	npm test
 
-## Everything CI runs: typecheck, tests, build, verify
+## What CI runs (typecheck, tests, build, verify), except its offline-file staleness check
 check:
 	npm run check
 

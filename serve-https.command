@@ -45,4 +45,4 @@ echo "  The certificate is self-signed, so the first visit warns:"
 echo "    Safari : Show Details -> visit this website"
 echo "    Chrome : Advanced -> Proceed"
 
-exec node scripts/serve.mts --port "$PORT" --cert "$CERT_DIR/cert.pem" --key "$CERT_DIR/key.pem"
+exec node scripts/serve.mts --port "$PORT" --lan "$IP" --cert "$CERT_DIR/cert.pem" --key "$CERT_DIR/key.pem"

@@ -13,17 +13,19 @@ export type ThemeMode = "dark" | "light";
 export const THEME_STORAGE_KEY = "cheat-theme";
 export const DEFAULT_THEME: ThemeMode = "dark";
 
+// --faint and --com were lifted from the legacy #6b7a90 / #79879b so every text use clears
+// WCAG 1.4.3's 4.5:1 on all three surfaces in both themes (hanten, UX-1).
 const dark = {
   "--bg": "#0e1117", "--bg2": "#151a23", "--card": "#161b25", "--line": "#262d3a",
-  "--fg": "#e6edf3", "--dim": "#93a1b5", "--faint": "#6b7a90",
-  "--kw": "#ff79c6", "--str": "#7ee787", "--typ": "#7dd3fc", "--num": "#ffab70", "--com": "#6b7a90", "--attr": "#d2a8ff", "--mem": "#ffd580",
+  "--fg": "#e6edf3", "--dim": "#93a1b5", "--faint": "#8493a8",
+  "--kw": "#ff79c6", "--str": "#7ee787", "--typ": "#7dd3fc", "--num": "#ffab70", "--com": "#8493a8", "--attr": "#d2a8ff", "--mem": "#ffd580",
   "--good": "#3fb950", "--bad": "#f85149", "--modern": "#58a6ff", "--legacy": "#d29922",
   "--accent": "#58a6ff",
 };
 const light = {
   "--bg": "#ffffff", "--bg2": "#f4f6fa", "--card": "#ffffff", "--line": "#dfe4ec",
-  "--fg": "#161b22", "--dim": "#4c5a6e", "--faint": "#79879b",
-  "--kw": "#b3319b", "--str": "#0a7d34", "--typ": "#0666b8", "--num": "#a04b00", "--com": "#79879b", "--attr": "#7a3ecb", "--mem": "#8a5a00",
+  "--fg": "#161b22", "--dim": "#4c5a6e", "--faint": "#5f6d80",
+  "--kw": "#b3319b", "--str": "#0a7d34", "--typ": "#0666b8", "--num": "#a04b00", "--com": "#5f6d80", "--attr": "#7a3ecb", "--mem": "#8a5a00",
   "--good": "#137a2b", "--bad": "#c1272d", "--modern": "#0666b8", "--legacy": "#8a5a00",
   "--accent": "#0666b8",
 };
@@ -89,7 +91,7 @@ const config = defineConfig({
     ".collabel": {
       display: "inline-block", fontSize: "10.8px", fontWeight: 800, letterSpacing: ".06em", textTransform: "uppercase",
       marginBottom: "4px", padding: "2px 7px", borderRadius: "20px",
-      color: "var(--tc)", background: "color-mix(in srgb,var(--tc) 16%,transparent)",
+      color: "var(--tc)", background: "color-mix(in srgb,var(--tc) 10%,transparent)",
     },
     ".tone-good": tone("--good"), ".tone-bad": tone("--bad"), ".tone-modern": tone("--modern"),
     ".tone-legacy": tone("--legacy"), ".tone-neutral": tone("--faint"),
@@ -106,7 +108,7 @@ const config = defineConfig({
     "li.tone-bad .bullet": { borderRadius: "1px" },
     // ---------- diagrams ----------
     ".dgwrap": { overflowX: "auto", WebkitOverflowScrolling: "touch" },
-    "svg.dg": { display: "block", width: "100%", minWidth: "720px", height: "auto" },
+    "svg.dg": { display: "block", width: "100%", minWidth: "720px", height: "auto", "@media (max-width: 900px)": { minWidth: "820px" } },
     "svg.dg text": { fontFamily: SANS, fill: "var(--dim)" },
     "svg.dg text.mono": { fontFamily: MONO, fill: "var(--dim)" },
     // ---------- tables ----------

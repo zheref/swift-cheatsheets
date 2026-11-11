@@ -63,7 +63,7 @@ const typeQuery = async (value: string) => {
 };
 const visible = (sel: string) => [...document.querySelectorAll<HTMLElement>(sel)].filter((e) => !e.hidden);
 
-describe("Swift page: static render then hydration", () => {
+describe("Swift page: static render then hydration (AC-3)", () => {
   it("hydrates with no mismatch or recoverable error", async () => {
     const { errors, consoleErrors } = await hydrate(swiftCatalog());
     expect(errors).toEqual([]);
@@ -102,12 +102,38 @@ describe("Swift page: static render then hydration", () => {
   it("opens and closes the narrow-screen navigation from the menu button", async () => {
     await hydrate(swiftCatalog());
     const menu = document.getElementById("menu")!;
+    // jsdom evaluates no media queries: show the button as the ≤900px layout does, so it can take focus.
+    menu.style.display = "inline-flex";
     expect(menu.getAttribute("aria-expanded")).toBe("false");
     await act(async () => menu.click());
     expect(menu.getAttribute("aria-expanded")).toBe("true");
     expect(document.getElementById("shell")!.hasAttribute("data-nav-open")).toBe(true);
+    // Focus moves into the drawer and the page behind it is inert.
+    expect(document.activeElement).toBe(document.querySelector("#side a"));
+    expect(document.getElementById("main")!.hasAttribute("inert")).toBe(true);
     await act(async () => (document.querySelector("#side a[data-target='files']") as HTMLElement).click());
     expect(menu.getAttribute("aria-expanded")).toBe("false");
+    expect(document.getElementById("main")!.hasAttribute("inert")).toBe(false);
+    expect(document.activeElement).toBe(menu);
+
+    // Escape closes an open drawer and hands focus back to the menu button.
+    await act(async () => menu.click());
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    });
+    expect(menu.getAttribute("aria-expanded")).toBe("false");
+    expect(document.activeElement).toBe(menu);
+  });
+
+  it("names every diagram by its card heading", async () => {
+    await hydrate(swiftCatalog());
+    const svgs = [...document.querySelectorAll("svg.dg")];
+    expect(svgs).toHaveLength(17);
+    for (const svg of svgs) {
+      const title = document.getElementById(svg.getAttribute("aria-labelledby") ?? "");
+      expect(title?.tagName).toBe("H3");
+      expect(svg.closest("article")!.contains(title)).toBe(true);
+    }
   });
 });
 

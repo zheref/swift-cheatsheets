@@ -33,7 +33,7 @@ const legacy = JSON.parse(fs.readFileSync(path.join(ROOT, "test/fixtures/legacy-
 const LEGACY_KIND: Record<Card["kind"], string> = { code: "code", compare: "cmp", rules: "rules", table: "table", diagram: "svg" };
 const codeBlocks = (c: Card) => (c.kind === "code" ? [c.code] : c.kind === "compare" ? c.columns.map((k) => k.code) : []);
 
-describe("Swift catalog parity with the pre-migration page", () => {
+describe("Swift catalog parity with the pre-migration page (AC-1, AC-2, SC-1)", () => {
   const catalog = swiftCatalog();
 
   it("keeps the inventory totals: 29 sheets, 289 cards, 17 diagrams, 256 code blocks", () => {

@@ -23,7 +23,7 @@ export function AppliesLine({ applies, runtimeless }: { applies?: Applicability;
         <chakra.li
           key={c.k}
           title={c.title}
-          fontSize="10.8px"
+          fontSize="12px"
           lineHeight="1.4"
           px="7px"
           py="1px"
@@ -43,7 +43,7 @@ export function AppliesLine({ applies, runtimeless }: { applies?: Applicability;
 export function SourcesLine({ sources }: { sources?: Source[] }) {
   if (!sources?.length) return null;
   return (
-    <Text className="sources" m="6px 0 0" fontSize="11.6px" color="cs.faint">
+    <Text className="sources" m="6px 0 0" fontSize="12px" color="cs.faint">
       Sources:{" "}
       {sources.map((s, i) => (
         <span key={s.url}>
@@ -67,7 +67,7 @@ function Expected({ text, highlight, lang }: { text?: string; highlight: Highlig
   );
 }
 
-function body(card: Card, highlight: Highlight, lang: string): ReactNode {
+function body(card: Card, highlight: Highlight, lang: string, titleId: string): ReactNode {
   switch (card.kind) {
     case "code":
       return (
@@ -127,8 +127,14 @@ function body(card: Card, highlight: Highlight, lang: string): ReactNode {
         </div>
       );
     case "diagram":
-      // Repository-owned SVG, validated inert at load time (src/content/load.ts).
-      return <div className="dgwrap" dangerouslySetInnerHTML={{ __html: card.svg }} />;
+      // Repository-owned SVG, validated inert at load time (src/content/load.ts); the
+      // card's heading names the image for assistive technology (ids are schema slugs).
+      return (
+        <div
+          className="dgwrap"
+          dangerouslySetInnerHTML={{ __html: card.svg.replace(/^<svg\b/, `<svg aria-labelledby="${titleId}"`) }}
+        />
+      );
   }
 }
 
@@ -146,10 +152,12 @@ export const CardView = memo(function CardView({
   hidden: boolean;
 }) {
   const wide = isWide(card);
+  const anchor = `${sheetId}--${card.id}`;
   return (
     <chakra.article
       className={`card${wide ? " wide" : ""}${card.kind === "diagram" ? " diagram" : ""}`}
-      id={`${sheetId}--${card.id}`}
+      id={anchor}
+      scrollMarginTop="64px"
       data-kind={card.kind}
       data-concept={card.concept}
       hidden={hidden}
@@ -162,11 +170,11 @@ export const CardView = memo(function CardView({
       gridColumn={wide ? "1 / -1" : undefined}
       minW={0}
     >
-      <Heading as="h3" m="0 0 3px" fontSize="14.2px" lineHeight="1.5" fontWeight={700} color="cs.fg" letterSpacing="-.005em">
+      <Heading as="h3" id={`${anchor}-title`} m="0 0 3px" fontSize="14.2px" lineHeight="1.5" fontWeight={700} color="cs.fg" letterSpacing="-.005em">
         {card.title}
       </Heading>
       {card.note ? <p className="note">{card.note}</p> : null}
-      {body(card, highlight, lang)}
+      {body(card, highlight, lang, `${anchor}-title`)}
       <AppliesLine applies={card.applies} />
       <SourcesLine sources={card.sources} />
     </chakra.article>

@@ -25,12 +25,12 @@ jobs:
       GATSBY_TELEMETRY_DISABLED: "1"
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Set up Node
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: .nvmrc
           cache: npm
@@ -52,8 +52,10 @@ jobs:
 
       - name: Offline file is current
         run: |
-          if ! git diff --quiet -- index.html offline; then
-            echo "::error::index.html is stale — run 'npm run build' and commit the result."
-            git diff --stat -- index.html offline
+          # Tracked changes AND never-committed files (a newly published catalog's offline/<id>.html).
+          stale="$(git status --porcelain -- index.html offline)"
+          if [ -n "$stale" ]; then
+            echo "::error::the offline files are stale or uncommitted — run 'npm run build' and commit the result."
+            echo "$stale"
             exit 1
           fi

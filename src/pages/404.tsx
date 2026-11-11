@@ -18,4 +18,9 @@ export default function NotFound() {
   );
 }
 
-export const Head: HeadFC = () => <title>Page not found</title>;
+export const Head: HeadFC = () => (
+  <>
+    <html lang="en" />
+    <title>Page not found</title>
+  </>
+);

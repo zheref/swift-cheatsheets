@@ -8,7 +8,7 @@ export default defineConfig({
     testTimeout: 30_000,
     coverage: {
       provider: "v8",
-      include: ["src/**/*.{ts,tsx}", "gatsby-*.{ts,tsx}"],
+      include: ["src/**/*.{ts,tsx}", "gatsby-*.{ts,tsx}", "scripts/verify.mts", "scripts/serve.mts"],
       reporter: ["text-summary", "lcov"],
       reportsDirectory: "coverage",
     },

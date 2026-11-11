@@ -57,7 +57,7 @@
           "artifacts": [
             "coverage/lcov.info"
           ],
-          "$comment": "The whole suite (66 tests, a few seconds): content and anchor parity with the pre-migration page, highlighter and search parity, loader refusals, static render + hydration, both adapters, the offline file from disk. Writes the lcov capture the coverage row reads."
+          "$comment": "The whole suite (a few seconds): content and anchor parity with the pre-migration page, highlighter and search parity, loader refusals, static render + hydration, both adapters, the offline file from disk. Writes the lcov capture the coverage row reads."
         },
         "coverage": {
           "exe": "test",
@@ -112,7 +112,7 @@
         ],
         "versionFrom": "first-semver-on-stdout",
         "installer": "verify-only",
-        "why": "Gatsby 5.16 supports Node 18-25 (package.json engines caps it below 26); jsdom 31 and vitest 5 need 22.22+/24.15+. .nvmrc pins 24. nen never installs a host toolchain."
+        "why": "Gatsby 5.16 supports Node 18-25 (package.json engines caps it below 26); jsdom 31 and vitest 5 need 22.22+ on the 22 line or 24.15+ on the 24 line (package.json engines: ^22.22.2 || ^24.15.0; nen reads a floor only). .nvmrc pins 24. nen never installs a host toolchain."
       }
     }
   }

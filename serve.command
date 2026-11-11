@@ -18,4 +18,12 @@ if [ ! -f public/index.html ]; then
   npm run build:site || exit 1
 fi
 
-exec node scripts/serve.mts --port "$PORT"
+# First non-loopback IPv4 address across the usual interfaces, printed for other devices.
+IP=""
+for iface in en0 en1 en2 bridge100; do
+  candidate="$(ipconfig getifaddr "$iface" 2>/dev/null)"
+  if [ -n "$candidate" ]; then IP="$candidate"; break; fi
+done
+[ -z "$IP" ] && IP="$(ifconfig 2>/dev/null | awk '/inet /&&$2!="127.0.0.1"{print $2; exit}')"
+
+exec node scripts/serve.mts --port "$PORT" ${IP:+--lan "$IP"}

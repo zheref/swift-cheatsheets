@@ -114,7 +114,14 @@ function Sidebar({ catalog, active, onNavigate }: { catalog: Catalog; active: st
         color="cs.dim"
         _hover={{ bg: "rgba(127,150,190,.12)", color: "cs.fg" }}
         css={{
-          "&.active": { background: "rgba(88,166,255,.14)", color: "var(--fg)", borderLeftColor: "var(--accent)", fontWeight: 600 },
+          "&.active": {
+            background: "color-mix(in srgb, var(--accent) 14%, transparent)",
+            color: "var(--fg)",
+            borderLeftColor: "var(--accent)",
+            fontWeight: 600,
+          },
+          // A comfortable touch target inside the narrow-screen drawer (UX-3).
+          [NARROW]: { display: "flex", alignItems: "center", minHeight: "44px" },
         }}
       >
         {s.title}
@@ -143,11 +150,14 @@ function Sidebar({ catalog, active, onNavigate }: { catalog: Catalog; active: st
           top: 0,
           zIndex: 60,
           transform: "translateX(-100%)",
-          transition: "transform .18s ease",
+          // Closed, the drawer is also invisible, so its links leave the tab order. Visibility
+          // flips instantly on open (so focus can move in) and only after the slide on close.
+          visibility: "hidden",
+          transition: "transform .18s ease, visibility 0s linear .18s",
           boxShadow: "0 0 40px rgba(0,0,0,.5)",
         },
-        "[data-nav-open] &": { [NARROW]: { transform: "none" } },
-        "@media (prefers-reduced-motion: reduce)": { transition: "none" },
+        "[data-nav-open] &": { [NARROW]: { transform: "none", visibility: "visible", transition: "transform .18s ease, visibility 0s" } },
+        "@media (prefers-reduced-motion: reduce)": { transition: "none !important" },
       }}
     >
       <Heading as="h1" fontSize="14px" lineHeight="1.4" m="4px 8px 12px" letterSpacing=".02em" fontWeight={700} color="cs.fg">
@@ -172,6 +182,8 @@ const barButton = {
   fontSize: "15px",
   _hover: { color: "cs.fg", bg: "cs.bg2" },
 };
+/** Touch-sized controls on narrow screens (UX-3). */
+const narrowTarget = { height: "44px", minWidth: "44px" };
 
 export function CatalogPage({ catalog }: { catalog: Catalog }) {
   const { language, sheets } = catalog;
@@ -184,6 +196,24 @@ export function CatalogPage({ catalog }: { catalog: Catalog }) {
   const active = useActiveSection(ids);
   const [mode, toggleTheme] = useThemeMode();
   const input = useRef<HTMLInputElement>(null);
+  const menu = useRef<HTMLButtonElement>(null);
+  const wasOpen = useRef(false);
+
+  // Opening the drawer moves focus into it; closing it returns focus to the menu button.
+  useEffect(() => {
+    if (navOpen) document.querySelector<HTMLElement>("#side a")?.focus({ preventScroll: true });
+    else if (wasOpen.current) menu.current?.focus({ preventScroll: true });
+    wasOpen.current = navOpen;
+  }, [navOpen]);
+
+  // The drawer only exists on narrow screens: widening the window closes it.
+  useEffect(() => {
+    if (typeof window.matchMedia !== "function") return;
+    const wide = window.matchMedia("(min-width: 901px)");
+    const onChange = () => wide.matches && setNavOpen(false);
+    wide.addEventListener("change", onChange);
+    return () => wide.removeEventListener("change", onChange);
+  }, []);
 
   useEffect(() => {
     const onKey = (ev: KeyboardEvent) => {
@@ -216,7 +246,7 @@ export function CatalogPage({ catalog }: { catalog: Catalog }) {
         css={{ [NARROW]: { "[data-nav-open] &": { display: "block", position: "fixed", inset: 0, background: "rgba(0,0,0,.45)", zIndex: 50 } } }}
       />
       <Sidebar catalog={catalog} active={active} onNavigate={() => setNavOpen(false)} />
-      <Box as="main" id="main" flex="1" minW={0} p="0 20px 120px" css={{ [NARROW]: { padding: "0 12px 120px" } }}>
+      <Box as="main" id="main" flex="1" minW={0} p="0 20px 120px" inert={navOpen} css={{ [NARROW]: { padding: "0 12px 120px" } }}>
         <Flex
           id="topbar"
           role="search"
@@ -232,13 +262,14 @@ export function CatalogPage({ catalog }: { catalog: Catalog }) {
         >
           <IconButton
             id="menu"
+            ref={menu}
             aria-label="Show sheet navigation"
             aria-controls="side"
             aria-expanded={navOpen}
             onClick={() => setNavOpen((o) => !o)}
             display="none"
-            css={{ [NARROW]: { display: "inline-flex" } }}
             {...barButton}
+            css={{ [NARROW]: { display: "inline-flex", ...narrowTarget } }}
           >
             <span aria-hidden="true">☰</span>
           </IconButton>
@@ -262,13 +293,15 @@ export function CatalogPage({ catalog }: { catalog: Catalog }) {
             px="12px"
             fontSize="14px"
             _placeholder={{ color: "cs.faint" }}
-            _focusVisible={{ borderColor: "cs.accent", outline: "none", boxShadow: "none" }}
+            _focusVisible={{ borderColor: "cs.accent", outline: "2px solid var(--accent)", outlineOffset: "1px", boxShadow: "none" }}
+            css={{ [NARROW]: { height: "44px" } }}
           />
           <IconButton
             id="theme"
             aria-label={mode === "dark" ? "Switch to light theme" : "Switch to dark theme"}
             onClick={toggleTheme}
             {...barButton}
+            css={{ [NARROW]: narrowTarget }}
           >
             <span aria-hidden="true">☼</span>
           </IconButton>
