@@ -20,7 +20,7 @@
     "$kind": "one of: product | process | library",
     "lanes": {
       "site": {
-        "stack": "gatsby-site",
+        "stack": "gatsby",
         "cwd": "."
       }
     },
