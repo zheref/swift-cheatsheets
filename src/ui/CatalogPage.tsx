@@ -195,6 +195,9 @@ export function CatalogPage({ catalog, languages: given }: { catalog: Catalog; l
   const index = useMemo(() => buildIndex(catalog), [catalog]);
   const [query, setQuery] = useState("");
   const deferred = useDeferredValue(query);
+  // A topic chosen from the absence notice: the search is cleared first, and the address
+  // moves to the sheet only once it is shown again (a hidden section cannot be scrolled to).
+  const [chosen, setChosen] = useState<string | null>(null);
   const result = useMemo(() => search(index, deferred), [index, deferred]);
   const [navOpen, setNavOpen] = useState(false);
   const ids = useMemo(() => sheets.map((s) => s.id), [sheets]);
@@ -204,8 +207,21 @@ export function CatalogPage({ catalog, languages: given }: { catalog: Catalog; l
     return sheets.find((s) => s.id === topic)?.concept ?? null;
   }, [ids, sheets]);
   const [arrival, dismissArrival] = useArrival();
+  const chooseTopic = useCallback(
+    (sheet: string) => {
+      setQuery("");
+      dismissArrival();
+      setChosen(sheet);
+    },
+    [dismissArrival],
+  );
   // A switch whose concept this catalog DOES have (a hand-made `?concept=` link) lands on it.
   const arrivedAt = arrival ? sheets.find((s) => s.concept === arrival.concept) : undefined;
+  useEffect(() => {
+    if (chosen === null || deferred !== "") return;
+    window.location.hash = chosen;
+    setChosen(null);
+  }, [chosen, deferred]);
   useEffect(() => {
     if (!arrivedAt) return;
     window.history.replaceState(window.history.state, "", `${window.location.pathname}#${arrivedAt.id}`);
@@ -331,7 +347,9 @@ export function CatalogPage({ catalog, languages: given }: { catalog: Catalog; l
             Fixture catalog — test data that proves the page renders any language. It is not reference material.
           </Text>
         ) : null}
-        {arrival && !arrivedAt ? <AbsenceNotice arrival={arrival} catalog={catalog} languages={languages} onDismiss={dismissArrival} /> : null}
+        {arrival && !arrivedAt ? (
+          <AbsenceNotice arrival={arrival} catalog={catalog} languages={languages} onDismiss={dismissArrival} onChoose={chooseTopic} />
+        ) : null}
         <Text id="hits" aria-live="polite" color="cs.faint" fontSize="12.5px" m={0} p="8px 2px 0" minH="1px">
           {deferred.trim() ? hitsLabel(result.count, deferred) : ""}
         </Text>

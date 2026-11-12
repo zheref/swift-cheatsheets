@@ -169,6 +169,15 @@ describe("loader", () => {
     expect(() => loadCatalogs(root, ["fixture"])).toThrow(/two catalogs publish at \/kotlin-fixture\//);
   });
 
+  it("refuses a sheet id the page itself uses, which would shadow its anchor", () => {
+    const msg = broken((d) => {
+      edit(d, "language.yaml", "sheets: [fixture-collections, fixture-concurrency]", "sheets: [fixture-collections, langmenu]");
+      fs.renameSync(path.join(d, "sheets/fixture-concurrency.yaml"), path.join(d, "sheets/langmenu.yaml"));
+      edit(d, "sheets/langmenu.yaml", "id: fixture-concurrency", "id: langmenu");
+    });
+    expect(msg).toMatch(/langmenu\.yaml: id 'langmenu' is reserved by the page itself/);
+  });
+
   it("refuses a duplicate card id", () => {
     expect(broken((d) => edit(d, "sheets/fixture-collections.yaml", "id: costs", "id: rules-of-thumb"))).toMatch(/duplicate card ids rules-of-thumb/);
   });

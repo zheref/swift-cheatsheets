@@ -227,7 +227,7 @@ describe("offline artifact opened from disk (AC-5)", () => {
     const toggle = d.getElementById("lang-toggle")!;
     toggle.click();
     await new Promise((r) => setTimeout(r, 20));
-    expect((d.getElementById("lang") as HTMLDetailsElement).open).toBe(true);
+    expect((d.getElementById("langmenu") as HTMLDetailsElement).open).toBe(true);
 
     const q = d.getElementById("q") as HTMLInputElement;
     const setter = Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype, "value")!.set!;

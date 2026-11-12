@@ -9,7 +9,8 @@
  *  - sheets sharing a group are adjacent (a split group repeats its sidebar heading);
  *  - code blocks hold only text and highlight spans (no raw markup leaked);
  *  - every diagram's font-size is numeric;
- *  - no template or serialisation artefacts leaked into the text;
+ *  - no template or serialisation artefacts leaked into the text, and no page element id (outside
+ *    the diagrams' own SVG ids) is used twice;
  *  - the language selector lists the registry's languages in order, marks exactly this one
  *    current, and every language link it holds lands on a page that was built;
  *  - the site requests resources only from itself, and the offline file requests nothing at all:
@@ -95,6 +96,11 @@ export function checkPage(
     const current = options.filter((o) => o.querySelector("[aria-current]")).map((o) => o.getAttribute("data-lang-option"));
     if (JSON.stringify(current) !== JSON.stringify([languages.current])) problems.push(`language selector marks [${current.join(", ")}] current, not ${languages.current}`);
   }
+  // A sheet anchor shadowed by another element (a control sharing its id) breaks saved `#links`.
+  // Ids inside diagrams are each SVG's own marker/gradient names, outside this check.
+  const allIds = [...d.querySelectorAll("[id]")].filter((e) => !e.closest("svg.dg")).map((e) => e.id);
+  const dupIds = allIds.filter((id, i) => allIds.indexOf(id) !== i);
+  if (dupIds.length) problems.push(`duplicate element ids: ${[...new Set(dupIds)].join(", ")}`);
   const languageLinks = options.flatMap((o) => [...o.querySelectorAll("a[href]")].map((a) => a.getAttribute("href")!));
 
   const sections = [...d.querySelectorAll("section.sheet")];

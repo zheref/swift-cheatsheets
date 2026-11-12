@@ -16,6 +16,7 @@ import { renderToString } from "react-dom/server";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { createPages } from "../gatsby-node";
 import { offlineFile, offlineLanguages } from "../src/adapters/offline/paths";
+import { PAGE_IDS } from "../src/content/ids";
 import { readArrival, relatedTopics, sheetOfHash, soleLanguage, switchLink } from "../src/content/languages";
 import { CatalogError, loadRegistry, loadSite } from "../src/content/load";
 import type { Catalog, SiteLanguage } from "../src/content/schema";
@@ -83,7 +84,7 @@ const openSelector = async () => {
   if (details().open) await act(async () => toggle().click());
   await act(async () => toggle().click());
 };
-const details = () => document.getElementById("lang") as HTMLDetailsElement;
+const details = () => document.getElementById("langmenu") as HTMLDetailsElement;
 const typeQuery = async (value: string) => {
   const q = document.getElementById("q") as HTMLInputElement;
   const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
@@ -371,10 +372,30 @@ describe("the selected concept survives a switch (AC-2) or its absence is explai
     expect(notice.textContent).not.toContain("You switched from Swift (fixture)");
   });
 
-  it("choosing an offered topic also retires the notice", async () => {
+  it("choosing an offered topic retires the notice and goes to the topic", async () => {
     await open(catalogOf("csharp-fixture"), fixtures.languages, "/csharp-fixture/?from=kotlin-fixture&concept=concurrency.async-await");
-    await act(async () => (document.querySelector("#absence a") as HTMLElement).click());
+    await act(async () => (document.querySelector("#absence a[href='#cs-patterns']") as HTMLElement).click());
     expect(document.getElementById("absence")).toBeNull();
+    expect(window.location.search).toBe("");
+    expect(window.location.hash).toBe("#cs-patterns");
+  });
+
+  it("choosing an offered topic that the current search hides clears the search first, then navigates", async () => {
+    await open(catalogOf("csharp-fixture"), fixtures.languages, "/csharp-fixture/?from=kotlin-fixture&concept=concurrency.async-await");
+    await typeQuery("zzz-nothing");
+    expect(document.getElementById("cs-patterns")!.hidden).toBe(true);
+    await act(async () => (document.querySelector("#absence a[href='#cs-patterns']") as HTMLElement).click());
+    expect((document.getElementById("q") as HTMLInputElement).value).toBe("");
+    expect(document.getElementById("cs-patterns")!.hidden).toBe(false);
+    expect(window.location.hash).toBe("#cs-patterns");
+    expect(document.getElementById("absence")).toBeNull();
+  });
+
+  it("Dismiss leaves the search alone", async () => {
+    await open(catalogOf("csharp-fixture"), fixtures.languages, "/csharp-fixture/?from=kotlin-fixture&concept=concurrency.async-await");
+    await typeQuery("list");
+    await act(async () => document.getElementById("absence-dismiss")!.click());
+    expect((document.getElementById("q") as HTMLInputElement).value).toBe("list");
   });
 
   it("lands on the sheet when a ?concept= link names one this catalog has", async () => {
@@ -382,6 +403,30 @@ describe("the selected concept survives a switch (AC-2) or its absence is explai
     expect(document.getElementById("absence")).toBeNull();
     expect(window.location.search).toBe("");
     expect(window.location.hash).toBe("#fixture-concurrency");
+  });
+});
+
+describe("page ids never shadow a sheet anchor", () => {
+  it("renders only reserved page ids besides sheet and card anchors, each once", async () => {
+    const swift = published.catalogs[0]!;
+    const pages: [Catalog, SiteLanguage[], string][] = [
+      [swift, published.languages, "/#lang"],
+      [catalogOf("csharp-fixture"), fixtures.languages, "/csharp-fixture/?from=kotlin-fixture&concept=concurrency.async-await"],
+    ];
+    for (const [catalog, languages, url] of pages) {
+      await open(catalog, languages, url);
+      await typeQuery("zzz-nothing"); // the empty state renders too
+      // Diagram-internal SVG ids (markers) are each diagram's own and out of scope here.
+      const ids = [...document.querySelectorAll("[id]")].filter((e) => !e.closest("svg.dg")).map((e) => e.id).filter((id) => id !== "root");
+      expect(ids.filter((id, i) => ids.indexOf(id) !== i), catalog.language.id).toEqual([]);
+      const sheets = new Set(catalog.sheets.map((s) => s.id));
+      const chrome = ids.filter((id) => !sheets.has(id) && !id.includes("--"));
+      expect(chrome.filter((id) => !(PAGE_IDS as readonly string[]).includes(id)), catalog.language.id).toEqual([]);
+    }
+    // Swift's own `lang` sheet keeps its anchor: the saved #lang link lands on the section.
+    await open(swift, published.languages, "/#lang");
+    expect(document.getElementById("lang")!.tagName).toBe("SECTION");
+    expect(published.catalogs.flatMap((c) => c.sheets).filter((s) => (PAGE_IDS as readonly string[]).includes(s.id))).toEqual([]);
   });
 });
 

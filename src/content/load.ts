@@ -7,6 +7,7 @@ import fs from "node:fs";
 import path from "node:path";
 import YAML from "yaml";
 import { z } from "zod";
+import { PAGE_IDS } from "./ids";
 import { topicsOf } from "./languages";
 import {
   type Catalog,
@@ -134,6 +135,7 @@ export function loadCatalog(dir: string): Catalog {
     }
     const s = res.data;
     if (s.id !== id) problems.push(`${file}: id '${s.id}' must match its file name`);
+    if ((PAGE_IDS as readonly string[]).includes(s.id)) problems.push(`${file}: id '${s.id}' is reserved by the page itself (src/content/ids.ts PAGE_IDS)`);
     const cardIds = s.cards.map((c) => c.id);
     const dupCards = cardIds.filter((c, i) => cardIds.indexOf(c) !== i);
     if (dupCards.length) problems.push(`${file}: duplicate card ids ${[...new Set(dupCards)].join(", ")}`);

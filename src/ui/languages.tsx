@@ -84,7 +84,7 @@ export const LanguageSelector = memo(function LanguageSelector({
   return (
     <chakra.nav id="langnav" aria-label="Language" flex="0 0 auto">
       <chakra.details
-        id="lang"
+        id="langmenu"
         ref={root}
         open={open}
         onToggle={(ev) => {
@@ -203,11 +203,14 @@ export function AbsenceNotice({
   catalog,
   languages,
   onDismiss,
+  onChoose,
 }: {
   arrival: Arrival;
   catalog: Catalog;
   languages: SiteLanguage[];
   onDismiss: () => void;
+  /** Takes the reader to an offered topic: clears whatever hides it, then navigates. */
+  onChoose: (sheet: string) => void;
 }) {
   const box = useRef<HTMLElement>(null);
   // Keyed on the values, not the object: history steps that re-read the same arrival
@@ -248,7 +251,12 @@ export function AbsenceNotice({
           <li key={t.sheet}>
             <chakra.a
               href={`#${t.sheet}`}
-              onClick={onDismiss}
+              onClick={(ev) => {
+                // A search may be hiding the topic, and a hidden section cannot be scrolled to:
+                // let the page clear the filter and navigate once the section is shown.
+                ev.preventDefault();
+                onChoose(t.sheet);
+              }}
               display="inline-flex"
               alignItems="center"
               minH="32px"

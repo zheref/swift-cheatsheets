@@ -64,6 +64,9 @@ describe("verify: built-page checks", () => {
     expect(checkPage(split, ["a", "b", "c"], true).problems.join()).toMatch(/group 'g' is split/);
     expect(checkPage(page("").replace("<span class=\"t-kw\">let</span>", "<b>let</b>"), ["a"], true).problems.join()).toMatch(/raw markup/);
     expect(checkPage(page("<p>[object Object]</p>"), ["a"], true).problems.join()).toMatch(/artefact/);
+    expect(checkPage(page('<details id="a"></details>'), ["a"], true).problems.join()).toMatch(/duplicate element ids: a/);
+    const twoDiagrams = '<svg class="dg"><marker id="m"></marker></svg><svg class="dg"><marker id="m"></marker></svg>';
+    expect(checkPage(page(twoDiagrams), ["a"], true).problems).toEqual([]);
     expect(checkPage(page('<svg class="dg"><text font-size="good">x</text></svg>'), ["a"], true).problems.join()).toMatch(/font-size/);
   });
 
