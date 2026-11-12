@@ -20,11 +20,11 @@ export function cardText(card: Card): string {
   const parts = [card.title, card.note];
   switch (card.kind) {
     case "code":
-      parts.push(card.code, card.expected ?? "");
+      parts.push(card.code, card.expected ?? "", ...(card.prerequisites ?? []).map(plainInline));
       break;
     case "compare":
       for (const c of card.columns) parts.push(c.label, c.code);
-      parts.push(card.expected ?? "");
+      parts.push(card.expected ?? "", ...(card.prerequisites ?? []).map(plainInline));
       break;
     case "rules":
       for (const i of card.items) parts.push(plainInline(i.text));

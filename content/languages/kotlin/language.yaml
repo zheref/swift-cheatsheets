@@ -1,0 +1,30 @@
+id: kotlin
+name: Kotlin
+title: Kotlin Cheat Sheets
+route: /kotlin/
+status: published
+description: Dense Kotlin reference — collections, coroutines and cancellation, Flow, shared state, the language essentials, testing, algorithm costs, JVM files and Jetpack Compose state — with every example's setup, versions and validation stated.
+locale: en
+codeLanguage: kotlin
+requireExampleMetadata: true
+highlight:
+  keywords: [fun, val, var, class, object, interface, data, sealed, enum, when, if, else, for, in, while, do, return, break, continue, is, as, "null", "true", "false", this, super, import, package, typealias, suspend, override, open, abstract, private, protected, public, internal, companion, init, try, catch, finally, throw, by, inline, reified, out, vararg, lateinit, const, operator, infix]
+  lineComment: //
+  blockComment: [/*, "*/"]
+  attributePrefix: "@"
+  capitalisedTypes: true
+  members: true
+applies:
+  runtime: Kotlin/JVM
+sheets:
+  - kt-collections
+  - kt-collection-ops
+  - kt-coroutines
+  - kt-algorithms
+  - kt-testing
+  - kt-essentials
+  - kt-flow
+  - kt-shared-state
+  - kt-jvm-files
+  - kt-compose-state
+  - kt-coverage

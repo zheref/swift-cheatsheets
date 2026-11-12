@@ -1,0 +1,192 @@
+id: ts-algorithms
+concept: algorithms.patterns
+scope: shared
+title: Algorithmic Patterns & Complexity
+group: Shared concepts
+subtitle: The built-ins' costs, then the patterns that solve most problems — with no standard heap or deque.
+applies:
+  platforms: [node, browser]
+  runtime: any ES2023+ engine; the examples run on Node.js
+  versions: { typescript: ">=5.0", node: ">=22.18" }
+sources:
+  - title: Getting things sorted in V8 — v8.dev
+    url: https://v8.dev/blog/array-sort
+  - title: Array — MDN
+    url: https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Array
+cards:
+  - id: builtin-costs
+    kind: table
+    title: Built-in costs
+    note: Engine behaviour, not a specification guarantee — measure when it matters.
+    headers: [Need, Built-in, Cost, Instead]
+    rows:
+      - ["stack", "`push` / `pop`", "O(1) amortised", "—"]
+      - ["queue", "`push` / `shift`", "O(n) per `shift`", "array + head index"]
+      - ["priority queue", "none", "—", "a binary heap (below): O(log n)"]
+      - ["membership", "`includes`", "O(n)", "`Set#has`: O(1) average"]
+      - ["sort", "`toSorted` (TimSort in V8)", "O(n log n), stable", "—"]
+      - ["build a string", "`+=` in a loop", "usually fine (ropes in V8)", "`parts.join(\"\")` when in doubt"]
+      - ["big integers", "`bigint`", "arbitrary precision", "`number` is exact only to 2^53 − 1"]
+  - id: two-pointers
+    kind: code
+    title: Two pointers
+    note: On sorted input, move the pointer that brings the sum closer. O(n), O(1) space.
+    prerequisites: &run
+      - Node.js 22.18 or later (it runs `.mts` files directly by stripping the types)
+      - "Save as `main.mts` and run `node main.mts`"
+      - "Optional type-check: `npm i -D typescript @types/node`, then `npx tsc --noEmit --strict --target esnext --module nodenext main.mts`"
+    code: |-
+      function pairWithSum(sorted: readonly number[], target: number): [number, number] | null {
+        let lo = 0;
+        let hi = sorted.length - 1;
+        while (lo < hi) {
+          const sum = sorted[lo]! + sorted[hi]!;
+          if (sum === target) return [lo, hi];
+          if (sum < target) lo++;
+          else hi--;
+        }
+        return null;
+      }
+      console.log(pairWithSum([1, 3, 4, 6, 9], 10), pairWithSum([1, 2], 7));
+    expected: "[ 0, 4 ] null"
+    validation: &ran
+      status: ran
+      toolchain: Node 24.16.0, TypeScript 5.9.3
+      date: "2026-11-11"
+  - id: sliding-window
+    kind: code
+    title: Sliding window
+    note: Longest substring without repeats — grow the right edge, jump the left past the last repeat. O(n).
+    prerequisites: *run
+    code: |-
+      function longestUnique(s: string): number {
+        const lastSeen = new Map<string, number>();
+        let start = 0;
+        let best = 0;
+        for (let i = 0; i < s.length; i++) {
+          const prev = lastSeen.get(s[i]!);
+          if (prev !== undefined && prev >= start) start = prev + 1;
+          lastSeen.set(s[i]!, i);
+          best = Math.max(best, i - start + 1);
+        }
+        return best;
+      }
+      console.log(longestUnique("abcabcbb"), longestUnique("pwwkew"));
+    expected: "3 3"
+    validation: *ran
+  - id: binary-search
+    kind: code
+    title: Binary search — lower bound
+    note: The first index whose value is not less than the target; `>>> 1` halves without overflow concerns.
+    prerequisites: *run
+    code: |-
+      function lowerBound(xs: readonly number[], target: number): number {
+        let lo = 0;
+        let hi = xs.length;                        // the answer lies in [lo, hi]
+        while (lo < hi) {
+          const mid = (lo + hi) >>> 1;
+          if (xs[mid]! < target) lo = mid + 1;
+          else hi = mid;
+        }
+        return lo;
+      }
+      const xs = [1, 3, 3, 5, 8];
+      console.log(lowerBound(xs, 3), lowerBound(xs, 4), lowerBound(xs, 9));
+    expected: "1 3 5"
+    validation: *ran
+  - id: heap-top-k
+    kind: code
+    title: Heap — top k
+    note: Keep a min-heap of size k; its root is the smallest of the k largest. O(n log k).
+    prerequisites: *run
+    code: |-
+      class MinHeap {
+        private items: number[] = [];
+        get size() { return this.items.length; }
+        push(x: number) {
+          const a = this.items;
+          a.push(x);
+          for (let i = a.length - 1; i > 0; ) {
+            const p = (i - 1) >> 1;
+            if (a[p]! <= a[i]!) break;
+            [a[p], a[i]] = [a[i]!, a[p]!];
+            i = p;
+          }
+        }
+        pop(): number | undefined {
+          const a = this.items;
+          const top = a[0];
+          const last = a.pop();
+          if (a.length && last !== undefined) {
+            a[0] = last;
+            for (let i = 0; ; ) {
+              const l = 2 * i + 1;
+              const r = l + 1;
+              let m = i;
+              if (l < a.length && a[l]! < a[m]!) m = l;
+              if (r < a.length && a[r]! < a[m]!) m = r;
+              if (m === i) break;
+              [a[m], a[i]] = [a[i]!, a[m]!];
+              i = m;
+            }
+          }
+          return top;
+        }
+      }
+
+      function topK(xs: readonly number[], k: number): number[] {
+        const heap = new MinHeap();
+        for (const x of xs) {
+          heap.push(x);
+          if (heap.size > k) heap.pop();
+        }
+        const out: number[] = [];
+        while (heap.size) out.push(heap.pop()!);
+        return out.reverse();
+      }
+      console.log(topK([5, 1, 9, 3, 7, 9, 2], 3));
+    expected: "[ 9, 9, 7 ]"
+    validation: *ran
+  - id: bfs-grid
+    kind: code
+    title: Breadth-first search on a grid
+    note: BFS finds shortest paths in unweighted graphs. Dequeue by index — `shift()` would make it O(n²).
+    prerequisites: *run
+    code: |-
+      function shortestPath(grid: string[], from: [number, number], to: [number, number]): number {
+        const rows = grid.length;
+        const cols = grid[0]!.length;
+        const dist = new Map<string, number>([[from.join(","), 0]]);
+        const queue: [number, number][] = [from];
+        for (let head = 0; head < queue.length; head++) {
+          const [r, c] = queue[head]!;
+          const here = dist.get(`${r},${c}`)!;
+          if (r === to[0] && c === to[1]) return here;
+          for (const [dr, dc] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as const) {
+            const nr = r + dr;
+            const nc = c + dc;
+            const key = `${nr},${nc}`;
+            if (nr < 0 || nc < 0 || nr >= rows || nc >= cols || grid[nr]![nc] === "#" || dist.has(key)) continue;
+            dist.set(key, here + 1);
+            queue.push([nr, nc]);
+          }
+        }
+        return -1;
+      }
+      const maze = ["..#.", ".##.", "...."];
+      console.log(shortestPath(maze, [0, 0], [0, 3]));
+    expected: "7"
+    validation: *ran
+  - id: working-it-out
+    kind: rules
+    title: Working a problem out loud
+    note: The habits that matter more than the language.
+    items:
+      - tone: good
+        text: "State the brute force and its cost first, then the bottleneck the better pattern removes."
+      - tone: good
+        text: "Name the edge cases before coding: empty input, one element, duplicates, negative numbers, `NaN`."
+      - tone: bad
+        text: "Comparing with `sort()` without a comparator, or summing money in floating point."
+      - tone: neutral
+        text: "Say the complexity of the built-ins you lean on (`includes` is O(n), `shift` is O(n))."

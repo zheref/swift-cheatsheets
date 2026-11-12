@@ -1,0 +1,123 @@
+id: cs-shared-state
+concept: concurrency.shared-state
+scope: language
+title: Shared State — lock, Interlocked, SemaphoreSlim, Channels
+group: C# language
+subtitle: Keeping threads and tasks from racing on shared data — none of it checked by the compiler.
+applies:
+  platforms: [dotnet]
+  runtime: .NET (System.Threading)
+  versions: { csharp: ">=12", dotnet: ">=8" }
+sources:
+  - title: Overview of synchronization primitives — .NET
+    url: https://learn.microsoft.com/en-us/dotnet/standard/threading/overview-of-synchronization-primitives
+cards:
+  - id: swift-isolation-to-csharp
+    kind: table
+    title: Swift isolation → C#
+    note: Swift proves data-race freedom at compile time; C# leaves it to these tools and to discipline.
+    headers: [Swift, C#, Difference]
+    rows:
+      - ["`actor`", "state owned by one consumer of a `Channel<T>`", "no reentrancy unless you write it"]
+      - ["actor-isolated mutation", "`lock` (sync code), `SemaphoreSlim.WaitAsync` (async code)", "`lock` cannot contain an `await`"]
+      - ["`Sendable`", "—", "no compiler check: immutable records and `ImmutableArray` by convention"]
+      - ["`@MainActor`", "the UI thread's `SynchronizationContext` / `Dispatcher`", "a runtime mechanism"]
+      - ["atomic counters", "`Interlocked`", "—"]
+  - id: lock-and-interlocked
+    kind: code
+    title: lock and Interlocked
+    note: "100,000 increments from the thread pool. A plain `count++` would lose updates; both of these do not."
+    prerequisites:
+      - .NET 9 SDK or later (the `Lock` type; on .NET 8 lock a `new object()` instead)
+      - "`dotnet new console -o Demo`, replace `Demo/Program.cs` with the example, then `dotnet run --project Demo`"
+    code: |-
+      var gate = new Lock();
+      var guarded = 0;
+      var atomic = 0;
+      Parallel.For(0, 100_000, _ =>
+      {
+          lock (gate) { guarded++; }
+          Interlocked.Increment(ref atomic);
+      });
+      Console.WriteLine($"guarded={guarded} atomic={atomic}");
+    expected: "guarded=100000 atomic=100000"
+    applies:
+      versions: { csharp: ">=13", dotnet: ">=9" }
+    sources:
+      - title: System.Threading.Lock — .NET API
+        url: https://learn.microsoft.com/en-us/dotnet/api/system.threading.lock
+    validation: &ran
+      status: ran
+      toolchain: .NET SDK 9.0.304 (net9.0, C# 13)
+      date: "2026-11-11"
+  - id: async-mutex
+    kind: code
+    title: An async mutex with SemaphoreSlim
+    note: A read-modify-write that spans an `await` needs an async-aware lock.
+    prerequisites: &run
+      - .NET 8 SDK or later
+      - "`dotnet new console -o Demo`, replace `Demo/Program.cs` with the example, then `dotnet run --project Demo`"
+    code: |-
+      var gate = new SemaphoreSlim(1, 1);
+      var balance = 0;
+
+      async Task Deposit(int amount)
+      {
+          await gate.WaitAsync();
+          try
+          {
+              var read = balance;
+              await Task.Yield();                    // an await inside the critical section
+              balance = read + amount;
+          }
+          finally
+          {
+              gate.Release();
+          }
+      }
+
+      await Task.WhenAll(Enumerable.Range(0, 100).Select(_ => Deposit(10)));
+      Console.WriteLine(balance);
+    expected: "1000"
+    sources:
+      - title: SemaphoreSlim — .NET API
+        url: https://learn.microsoft.com/en-us/dotnet/api/system.threading.semaphoreslim
+    validation: *ran
+  - id: channel-owner
+    kind: code
+    title: One owner behind a Channel
+    note: Producers write messages; a single consumer owns the state — the actor shape, without a compiler check.
+    prerequisites: *run
+    code: |-
+      using System.Threading.Channels;
+
+      var inbox = Channel.CreateUnbounded<int>();
+      var total = 0;
+      var owner = Task.Run(async () =>
+      {
+          await foreach (var amount in inbox.Reader.ReadAllAsync())
+              total += amount;                       // only the owner touches total
+      });
+
+      await Task.WhenAll(Enumerable.Range(0, 100).Select(_ => inbox.Writer.WriteAsync(10).AsTask()));
+      inbox.Writer.Complete();
+      await owner;
+      Console.WriteLine(total);
+    expected: "1000"
+    sources:
+      - title: Channels — .NET
+        url: https://learn.microsoft.com/en-us/dotnet/core/extensions/channels
+    validation: *ran
+  - id: shared-state-rules
+    kind: rules
+    title: Rules
+    note: Without a compiler check, the design has to make races impossible.
+    items:
+      - tone: good
+        text: "Prefer immutable messages: `record` types with `init` properties, `ImmutableArray<T>`."
+      - tone: good
+        text: "`ConcurrentDictionary` for a shared cache; `GetOrAdd` may run the factory more than once."
+      - tone: bad
+        text: "`lock (this)` or `lock (typeof(X))`: anyone can take the same lock. Lock a private object (or a `Lock`)."
+      - tone: neutral
+        text: "`volatile` makes writes visible, not compound updates atomic: `x++` still races."

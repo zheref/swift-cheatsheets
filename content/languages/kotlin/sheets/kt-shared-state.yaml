@@ -1,0 +1,134 @@
+id: kt-shared-state
+concept: concurrency.shared-state
+scope: language
+title: Shared Mutable State — Mutex, Confinement, Actors
+group: Kotlin language
+subtitle: Three ways to keep coroutines on many threads from racing — none of them checked by the compiler.
+applies:
+  platforms: [jvm, android]
+  runtime: Kotlin/JVM with kotlinx.coroutines
+  requires: [kotlinx-coroutines-core]
+  versions: { kotlin: ">=2.0", kotlinx-coroutines: ">=1.10", jvm: ">=17" }
+sources:
+  - title: Shared mutable state and concurrency — Kotlin docs
+    url: https://kotlinlang.org/docs/shared-mutable-state-and-concurrency.html
+cards:
+  - id: swift-isolation-to-kotlin
+    kind: table
+    title: Swift isolation → Kotlin
+    note: Swift proves data-race freedom at compile time; Kotlin leaves it to discipline and these tools.
+    headers: [Swift, Kotlin, Difference]
+    rows:
+      - ["`actor`", "state confined to one coroutine or a `limitedParallelism(1)` dispatcher", "no reentrancy at suspension points unless you write it"]
+      - ["actor-isolated mutation", "`Mutex.withLock { }`", "suspends while waiting, never blocks a thread"]
+      - ["`Sendable`", "—", "no compiler check: immutable data (`val`, read-only collections) by convention"]
+      - ["`@MainActor`", "`Dispatchers.Main`", "a dispatcher choice, not a type-system guarantee"]
+      - ["atomic counters", "`java.util.concurrent.atomic.*`", "same as `Synchronization.Atomic`"]
+  - id: mutex-and-atomics
+    kind: code
+    title: Mutex and atomics
+    note: "100,000 increments from many threads. A plain `count++` would lose updates; both of these do not."
+    prerequisites: &run
+      - A Kotlin 2.x compiler (`kotlinc`), JDK 17 or later, and `kotlinx-coroutines-core-jvm-1.10.2.jar`
+      - "Save as `main.kt`; run `kotlinc -cp kotlinx-coroutines-core-jvm-1.10.2.jar main.kt -d out && kotlin -cp out:kotlinx-coroutines-core-jvm-1.10.2.jar MainKt`"
+      - "Or, in a Gradle project: `implementation(\"org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.2\")`"
+    code: |-
+      import kotlinx.coroutines.*
+      import kotlinx.coroutines.sync.Mutex
+      import kotlinx.coroutines.sync.withLock
+      import java.util.concurrent.atomic.AtomicInteger
+
+      fun main() = runBlocking {
+          val mutex = Mutex()
+          var guarded = 0
+          val atomic = AtomicInteger()
+          withContext(Dispatchers.Default) {         // a pool of threads
+              repeat(1_000) {
+                  launch {
+                      repeat(100) {
+                          mutex.withLock { guarded++ }
+                          atomic.incrementAndGet()
+                      }
+                  }
+              }
+          }
+          println("guarded=$guarded atomic=${atomic.get()}")
+      }
+    expected: "guarded=100000 atomic=100000"
+    validation: &ran
+      status: ran
+      toolchain: kotlinc 2.2.20, JVM 17.0.15, kotlinx-coroutines-core 1.10.2
+      date: "2026-11-11"
+  - id: thread-confinement
+    kind: code
+    title: Confinement to one-at-a-time
+    note: "`limitedParallelism(1)` gives a serial view of a shared pool — the closest thing to a serial executor."
+    prerequisites: *run
+    code: |-
+      import kotlinx.coroutines.*
+
+      val counterContext = Dispatchers.Default.limitedParallelism(1)
+
+      fun main() = runBlocking {
+          var count = 0                               // only ever touched on counterContext
+          withContext(Dispatchers.Default) {
+              repeat(1_000) { launch { withContext(counterContext) { count++ } } }
+          }
+          println(count)
+      }
+    expected: "1000"
+    validation: *ran
+  - id: channel-actor
+    kind: code
+    title: An actor from a channel
+    note: One coroutine owns the state and handles one message at a time; replies come back through `CompletableDeferred`.
+    prerequisites: *run
+    code: |-
+      import kotlinx.coroutines.*
+      import kotlinx.coroutines.channels.Channel
+
+      sealed interface AccountMsg {
+          data class Deposit(val amount: Int) : AccountMsg
+          data class Balance(val reply: CompletableDeferred<Int>) : AccountMsg
+      }
+
+      fun CoroutineScope.account(): Channel<AccountMsg> {
+          val inbox = Channel<AccountMsg>(Channel.UNLIMITED)
+          launch {
+              var balance = 0
+              for (msg in inbox) when (msg) {
+                  is AccountMsg.Deposit -> balance += msg.amount
+                  is AccountMsg.Balance -> msg.reply.complete(balance)
+              }
+          }
+          return inbox
+      }
+
+      fun main() = runBlocking {
+          val account = account()
+          coroutineScope {
+              repeat(100) { launch(Dispatchers.Default) { account.send(AccountMsg.Deposit(10)) } }
+          }
+          val reply = CompletableDeferred<Int>()
+          account.send(AccountMsg.Balance(reply))
+          account.close()                             // the actor drains its inbox, then stops
+          println(reply.await())
+      }
+    expected: "1000"
+    sources:
+      - title: Channels — Kotlin docs
+        url: https://kotlinlang.org/docs/channels.html
+    validation: *ran
+  - id: shared-state-rules
+    kind: rules
+    title: Rules
+    note: Without a compiler check, the design has to make races impossible.
+    items:
+      - tone: good
+        text: "Prefer immutable data passed between coroutines: `val` properties, read-only collections, `data class` copies."
+      - tone: good
+        text: "Expose state as `StateFlow` and mutate it only with `update { }` — an atomic compare-and-set."
+      - tone: bad
+        text: "`synchronized` or `ReentrantLock` around a suspension point: the lock is held while the coroutine is parked."
+      - tone: neutral
+        text: "`@Volatile` makes writes visible, not compound updates atomic: `x++` still races."

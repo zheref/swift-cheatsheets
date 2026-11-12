@@ -1,0 +1,149 @@
+id: ts-collections
+concept: collections.types
+scope: shared
+title: Collections — Array, Map, Set & Friends
+group: Shared concepts
+subtitle: Which container, what each operation costs, and the traps that differ from Swift.
+applies:
+  platforms: [node, browser]
+  runtime: any ES2023+ engine; the examples run on Node.js
+  versions: { typescript: ">=5.6", node: ">=22.18" }
+sources:
+  - title: Keyed collections — MDN JavaScript Guide
+    url: https://developer.mozilla.org/en-US/docs/Web/JavaScript/Guide/Keyed_collections
+  - title: Indexed collections — MDN JavaScript Guide
+    url: https://developer.mozilla.org/en-US/docs/Web/JavaScript/Guide/Indexed_collections
+cards:
+  - id: pick-the-container
+    kind: table
+    title: Pick the container
+    note: The need decides the type. Plain objects are records, not dictionaries.
+    headers: [Need, Use, Why]
+    rows:
+      - ["Ordered list, index access", "`T[]` / `readonly T[]`", "contiguous in practice; `readonly` removes the mutating methods from the type"]
+      - ["Key → value, any key type", "`Map<K, V>`", "keeps insertion order, no prototype keys, `size` is O(1)"]
+      - ["Fixed record shape", "object / `interface`", "known keys checked by the compiler; not a dictionary"]
+      - ["Membership, dedupe", "`Set<T>`", "O(1) `has`; compares objects by identity"]
+      - ["Numbers in bulk", "`Float64Array`, `Int32Array`…", "fixed length, unboxed, no holes"]
+      - ["Cache keyed by an object", "`WeakMap<object, V>`", "entries vanish with their key; not iterable"]
+      - ["FIFO queue", "array + head index, or a ring buffer", "`shift()` re-indexes the whole array: O(n)"]
+  - id: costs
+    kind: table
+    title: What operations cost
+    note: The language specification does not mandate complexities; these are what V8, SpiderMonkey and JavaScriptCore deliver.
+    headers: [Operation, Array, "Map / Set"]
+    rows:
+      - ["read by index / key", "O(1)", "O(1) average"]
+      - ["`push` / `pop` / `set` / `add`", "O(1) amortised", "O(1) average"]
+      - ["`shift` / `unshift` / `splice` in the middle", "O(n)", "—"]
+      - ["`includes` / `indexOf` / `has`", "O(n)", "O(1) average"]
+      - ["`sort` / `toSorted`", "O(n log n), stable since ES2019", "sort `[...map]` then rebuild"]
+      - ["`delete`", "leaves a hole — use `splice`", "O(1) average"]
+  - id: map-vs-object
+    kind: code
+    title: Map for dictionaries, objects for records
+    note: A plain object inherits keys like `__proto__`; a Map has none and keeps insertion order.
+    prerequisites: &run
+      - Node.js 22.18 or later (it runs `.mts` files directly by stripping the types)
+      - "Save as `main.mts` and run `node main.mts`"
+      - "Optional type-check: `npm i -D typescript @types/node`, then `npx tsc --noEmit --strict --target esnext --module nodenext main.mts`"
+    code: |-
+      const counts = new Map<string, number>();
+      for (const word of "the cat and the hat".split(" ")) {
+        counts.set(word, (counts.get(word) ?? 0) + 1);
+      }
+      console.log([...counts]);                    // insertion order
+      console.log(counts.get("the"), counts.has("dog"));
+
+      const record: Record<string, number> = {};
+      record["__proto__"] = 1;                     // hits the inherited __proto__ setter: no key is added
+      console.log(Object.keys(record).length);
+    expected: |-
+      [ [ 'the', 2 ], [ 'cat', 1 ], [ 'and', 1 ], [ 'hat', 1 ] ]
+      2 false
+      0
+    sources:
+      - title: Map — MDN
+        url: https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Map
+    validation: &ran
+      status: ran
+      toolchain: Node 24.16.0, TypeScript 5.9.3
+      date: "2026-11-11"
+  - id: set-algebra
+    kind: code
+    title: Set algebra, and identity
+    note: The ES2025 set methods return new sets. Two equal-looking objects are two members.
+    prerequisites: *run
+    code: |-
+      const a = new Set([1, 2, 3]);
+      const b = new Set([2, 3, 4]);
+      console.log([...a.union(b)], [...a.intersection(b)], [...a.difference(b)]);
+      console.log(a.isSubsetOf(new Set([1, 2, 3, 4])));
+
+      const points = new Set([{ x: 1 }, { x: 1 }]);   // compared by reference, not by value
+      console.log(points.size);
+    expected: |-
+      [ 1, 2, 3, 4 ] [ 2, 3 ] [ 1 ]
+      true
+      2
+    applies:
+      versions: { ecmascript: "2025 (Set methods)", typescript: ">=5.5", node: ">=22" }
+    sources:
+      - title: Set — MDN
+        url: https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Set
+    validation: *ran
+  - id: sort-pitfall
+    kind: code
+    title: The default sort compares strings
+    note: Always pass a comparator for numbers. `toSorted` copies; `sort` mutates in place.
+    prerequisites: *run
+    code: |-
+      const nums = [10, 9, 1, 100];
+      console.log(nums.toSorted());                // [1, 10, 100, 9]: compared as text
+      console.log(nums.toSorted((a, b) => a - b));
+      console.log(nums);                           // unchanged
+    expected: |-
+      [ 1, 10, 100, 9 ]
+      [ 1, 9, 10, 100 ]
+      [ 10, 9, 1, 100 ]
+    sources:
+      - title: Array.prototype.toSorted — MDN
+        url: https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Array/toSorted
+    validation: *ran
+  - id: readonly-and-typed-arrays
+    kind: code
+    title: Read-only arrays and typed arrays
+    note: "`readonly T[]` is a compile-time promise; a typed array is a runtime container of fixed length."
+    prerequisites: *run
+    code: |-
+      function total(xs: readonly number[]): number {
+        // xs.push(1);   // error TS2339: Property 'push' does not exist on type 'readonly number[]'
+        return xs.reduce((sum, x) => sum + x, 0);
+      }
+
+      const samples = new Float64Array([0.5, 1.5, 2]);
+      console.log(total([1, 2, 3]), total(Array.from(samples)), samples.length);
+    expected: 6 4 3
+    sources:
+      - title: TypedArray — MDN
+        url: https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/TypedArray
+      - title: ReadonlyArray — TypeScript Handbook
+        url: https://www.typescriptlang.org/docs/handbook/2/objects.html#the-readonlyarray-type
+    validation: *ran
+  - id: collection-pitfalls
+    kind: rules
+    title: Pitfalls
+    note: Where code that reads like Swift behaves differently.
+    items:
+      - tone: bad
+        text: "`queue.shift()` in a loop is O(n²) overall — keep a head index or use a ring buffer."
+      - tone: bad
+        text: "`delete xs[i]` leaves a hole (`length` unchanged); `splice(i, 1)` removes."
+      - tone: bad
+        text: "`[1, 2] === [1, 2]` is `false`: arrays and objects compare by reference, also as `Set`/`Map` keys."
+      - tone: legacy
+        text: "`JSON.stringify(new Map())` is `{}` — serialise `[...map]` or `Object.fromEntries(map)`."
+      - tone: good
+        text: "Use `Map` for anything keyed at runtime, `Set` for membership, and `readonly` in signatures."
+      - tone: neutral
+        text: "Arrays have no value semantics: `const ys = xs` aliases. Copy with `[...xs]` or `structuredClone(xs)`."

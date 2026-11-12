@@ -1,0 +1,168 @@
+id: ts-collection-ops
+concept: collections.operations
+scope: shared
+title: Collections — Operation Cookbook
+group: Shared concepts
+subtitle: Transform, fold, search, sort, group, slice and dedupe — copy or mutate, eager or lazy.
+applies:
+  platforms: [node, browser]
+  runtime: any ES2023+ engine; the examples run on Node.js
+  versions: { typescript: ">=5.6", node: ">=22.18" }
+sources:
+  - title: Array — MDN
+    url: https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Array
+cards:
+  - id: i-want-to
+    kind: table
+    title: I want to…
+    note: The method that says what you mean.
+    headers: [Goal, Method, Copies?]
+    rows:
+      - ["transform each", "`map`, `flatMap`", "yes"]
+      - ["keep some", "`filter`", "yes"]
+      - ["fold to one value", "`reduce`", "—"]
+      - ["first / last match", "`find`, `findLast`, `findIndex`", "—"]
+      - ["test", "`some`, `every`, `includes`", "—"]
+      - ["sort / reverse / replace one", "`toSorted`, `toReversed`, `with`, `toSpliced`", "yes (ES2023)"]
+      - ["… in place", "`sort`, `reverse`, `splice`", "**no** — mutates"]
+      - ["group", "`Object.groupBy`, `Map.groupBy`", "yes (ES2024)"]
+      - ["dedupe", "`[...new Set(xs)]`", "yes"]
+      - ["index by key", "`new Map(xs.map((x) => [x.id, x]))`", "yes"]
+  - id: transform-fold
+    kind: code
+    title: Transform and fold
+    note: Chains read top to bottom; each step allocates a new array.
+    prerequisites: &run
+      - Node.js 22.18 or later (it runs `.mts` files directly by stripping the types)
+      - "Save as `main.mts` and run `node main.mts`"
+      - "Optional type-check: `npm i -D typescript @types/node`, then `npx tsc --noEmit --strict --target esnext --module nodenext main.mts`"
+    code: |-
+      const orders = [
+        { id: 1, customer: "ana", total: 30 },
+        { id: 2, customer: "bo", total: 12 },
+        { id: 3, customer: "ana", total: 8 },
+      ];
+      const big = orders.filter((o) => o.total >= 10).map((o) => o.id);
+      const revenue = orders.reduce((sum, o) => sum + o.total, 0);
+      console.log(big, revenue);
+    expected: "[ 1, 2 ] 50"
+    validation: &ran
+      status: ran
+      toolchain: Node 24.16.0, TypeScript 5.9.3
+      date: "2026-11-11"
+  - id: group-and-index
+    kind: code
+    title: Group and index
+    note: "`Object.groupBy` returns a null-prototype object whose values may be `undefined` to the type checker."
+    prerequisites: *run
+    code: |-
+      const people = [
+        { name: "Ana", team: "web" },
+        { name: "Bo", team: "data" },
+        { name: "Cy", team: "web" },
+      ];
+      const byTeam = Object.groupBy(people, (p) => p.team);
+      console.log(Object.keys(byTeam), byTeam.web?.map((p) => p.name));
+
+      const byName = new Map(people.map((p) => [p.name, p]));
+      console.log(byName.get("Bo")?.team);
+    expected: |-
+      [ 'web', 'data' ] [ 'Ana', 'Cy' ]
+      data
+    applies:
+      versions: { ecmascript: "2024 (groupBy)", typescript: ">=5.4", node: ">=21" }
+    sources:
+      - title: Object.groupBy — MDN
+        url: https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Object/groupBy
+    validation: *ran
+  - id: search-and-test
+    kind: code
+    title: Search and test
+    note: "`find` returns `undefined` on a miss, `findIndex` returns `-1`."
+    prerequisites: *run
+    code: |-
+      const xs = [3, 8, 12, 5, 20];
+      console.log(xs.find((x) => x > 10), xs.findLast((x) => x > 10), xs.findIndex((x) => x > 100));
+      console.log(xs.some((x) => x % 2 === 0), xs.every((x) => x > 0), xs.includes(5));
+    expected: |-
+      12 20 -1
+      true true true
+    validation: *ran
+  - id: sort-by-keys
+    kind: code
+    title: Sort by several keys
+    note: The sort is stable; chain keys with `||`, and use `localeCompare` for text.
+    prerequisites: *run
+    code: |-
+      type Player = { name: string; score: number };
+      const players: Player[] = [
+        { name: "cy", score: 7 },
+        { name: "ana", score: 9 },
+        { name: "bo", score: 7 },
+      ];
+      const ranked = players.toSorted((a, b) => b.score - a.score || a.name.localeCompare(b.name));
+      console.log(ranked.map((p) => `${p.name}:${p.score}`).join(" "));
+    expected: "ana:9 bo:7 cy:7"
+    validation: *ran
+  - id: chunk-window-dedupe
+    kind: code
+    title: Chunk, window and dedupe
+    note: Not built in — two small generic helpers cover both.
+    prerequisites: *run
+    code: |-
+      function chunk<T>(xs: readonly T[], size: number): T[][] {
+        return Array.from({ length: Math.ceil(xs.length / size) }, (_, i) => xs.slice(i * size, i * size + size));
+      }
+      function windows<T>(xs: readonly T[], size: number): T[][] {
+        return xs.slice(0, Math.max(0, xs.length - size + 1)).map((_, i) => xs.slice(i, i + size));
+      }
+
+      console.log(chunk([1, 2, 3, 4, 5], 2));
+      console.log(windows([1, 2, 3, 4], 3));
+      console.log([...new Set(["b", "a", "b", "c", "a"])]);   // first occurrence wins
+    expected: |-
+      [ [ 1, 2 ], [ 3, 4 ], [ 5 ] ]
+      [ [ 1, 2, 3 ], [ 2, 3, 4 ] ]
+      [ 'b', 'a', 'c' ]
+    validation: *ran
+  - id: copy-vs-mutate
+    kind: code
+    title: Copy or mutate
+    note: The ES2023 copying methods leave the source alone; `splice` and `sort` do not.
+    prerequisites: *run
+    code: |-
+      const xs = [3, 1, 2];
+      const ys = xs.toSorted().toReversed().with(0, 99);
+      console.log(xs, ys);
+      xs.splice(1, 1);                             // removes 1 element at index 1, in place
+      console.log(xs);
+    expected: |-
+      [ 3, 1, 2 ] [ 99, 2, 1 ]
+      [ 3, 2 ]
+    sources:
+      - title: Copying methods and mutating methods — MDN
+        url: https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Array#copying_methods_and_mutating_methods
+    validation: *ran
+  - id: lazy-iterator-helpers
+    kind: code
+    title: Lazy pipelines with iterator helpers
+    note: Iterator helpers pull one value at a time, so an infinite generator is fine.
+    prerequisites: *run
+    code: |-
+      function* naturals() {
+        let n = 1;
+        while (true) yield n++;
+      }
+      const firstOddSquares = naturals()
+        .map((n) => n * n)
+        .filter((n) => n % 2 === 1)
+        .take(3)
+        .toArray();
+      console.log(firstOddSquares);
+    expected: "[ 1, 9, 25 ]"
+    applies:
+      versions: { ecmascript: "2025 (iterator helpers)", typescript: ">=5.6", node: ">=22" }
+    sources:
+      - title: Iterator — MDN
+        url: https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Iterator
+    validation: *ran

@@ -1,0 +1,151 @@
+id: ts-testing
+concept: testing.approaches
+scope: shared
+title: Testing Approaches in TypeScript
+group: Shared concepts
+subtitle: Node's built-in runner and assertions, seams for time and I/O, fakes over mocks.
+applies:
+  platforms: [node]
+  runtime: Node.js test runner (node:test)
+  versions: { typescript: ">=5.0", node: ">=22.18" }
+sources:
+  - title: Test runner — Node.js
+    url: https://nodejs.org/api/test.html
+  - title: Assert — Node.js
+    url: https://nodejs.org/api/assert.html
+cards:
+  - id: tooling
+    kind: table
+    title: Tooling matrix
+    note: Node ships a runner, assertions, mocks and fake timers; the rest is a choice.
+    headers: [Need, Built into Node, Common alternative]
+    rows:
+      - ["runner", "`node --test`, `node:test`", "Vitest, Jest"]
+      - ["assertions", "`node:assert/strict`", "`expect` (Vitest, Jest)"]
+      - ["spies and mocks", "`mock.fn`, `mock.method`", "`vi.fn`, `jest.fn`"]
+      - ["fake timers", "`mock.timers`", "`vi.useFakeTimers()`"]
+      - ["DOM", "—", "jsdom or happy-dom; Playwright for real browsers"]
+      - ["coverage", "`--experimental-test-coverage`", "`@vitest/coverage-v8`, c8"]
+  - id: node-test-basics
+    kind: code
+    title: node:test basics
+    note: Running the file runs its tests; any failure makes the process exit 1.
+    prerequisites: &run
+      - Node.js 22.18 or later (it runs `.mts` files directly by stripping the types)
+      - "Save as `main.mts` and run `node main.mts` (or every test file: `node --test`)"
+      - "Optional type-check: `npm i -D typescript @types/node`, then `npx tsc --noEmit --strict --target esnext --module nodenext main.mts`"
+    code: |-
+      import assert from "node:assert/strict";
+      import { test } from "node:test";
+
+      function slugify(title: string): string {
+        return title.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+      }
+
+      test("joins words with single hyphens", () => {
+        assert.equal(slugify("  Hello, World!  "), "hello-world");
+      });
+
+      test("deep equality compares structure", () => {
+        assert.deepEqual([slugify("A b"), slugify("--x--")], ["a-b", "x"]);
+      });
+    expected: "Both tests pass — `✔ joins words with single hyphens`, `✔ deep equality compares structure`, then `tests 2`, `pass 2`, `fail 0` — and the process exits 0 (the timings vary)."
+    validation: &ran
+      status: ran
+      toolchain: Node 24.16.0, TypeScript 5.9.3
+      date: "2026-11-11"
+      check: exit-code
+  - id: inject-the-seam
+    kind: code
+    title: Design for testability — inject the clock
+    note: Code that reads time through a parameter can be tested without sleeping.
+    prerequisites: *run
+    code: |-
+      import assert from "node:assert/strict";
+      import { test } from "node:test";
+
+      type Clock = () => number;
+
+      function makeSession(clock: Clock, ttlMs: number) {
+        const started = clock();
+        return { expired: () => clock() - started >= ttlMs };
+      }
+
+      test("expires after its time to live", () => {
+        let now = 1_000;
+        const session = makeSession(() => now, 500);
+        assert.equal(session.expired(), false);
+        now += 500;                                // the test owns time
+        assert.equal(session.expired(), true);
+      });
+    expected: "`✔ expires after its time to live`, `pass 1`, exit status 0."
+    validation: *ran
+  - id: mocks-and-fake-timers
+    kind: code
+    title: Spies and fake timers
+    note: "`mock.timers` replaces `setTimeout`, so a 300 ms debounce is tested in microseconds."
+    prerequisites: *run
+    code: |-
+      import assert from "node:assert/strict";
+      import { mock, test } from "node:test";
+
+      function debounce<A extends unknown[]>(fn: (...args: A) => void, ms: number) {
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        return (...args: A) => {
+          clearTimeout(timer);
+          timer = setTimeout(() => fn(...args), ms);
+        };
+      }
+
+      test("debounce calls once, with the last arguments", () => {
+        mock.timers.enable({ apis: ["setTimeout"] });
+        const save = mock.fn((_text: string) => {});
+        const onInput = debounce(save, 300);
+        onInput("h");
+        onInput("he");
+        onInput("hey");
+        mock.timers.tick(299);
+        assert.equal(save.mock.callCount(), 0);
+        mock.timers.tick(1);
+        assert.deepEqual(save.mock.calls.map((c) => c.arguments), [["hey"]]);
+        mock.timers.reset();
+      });
+    expected: "`✔ debounce calls once, with the last arguments`, `pass 1`, exit status 0."
+    sources:
+      - title: Mocking timers — Node.js test runner
+        url: https://nodejs.org/api/test.html#mocking-timers
+    validation: *ran
+  - id: async-errors
+    kind: code
+    title: Asserting on async failures
+    note: "`assert.rejects` awaits the promise; a test function that returns a promise is awaited too."
+    prerequisites: *run
+    code: |-
+      import assert from "node:assert/strict";
+      import { test } from "node:test";
+
+      async function parsePort(text: string): Promise<number> {
+        const n = Number(text);
+        if (!Number.isInteger(n) || n < 1 || n > 65535) throw new RangeError(`not a port: ${text}`);
+        return n;
+      }
+
+      test("accepts a port and rejects text", async () => {
+        assert.equal(await parsePort("8080"), 8080);
+        await assert.rejects(parsePort("http"), { name: "RangeError", message: "not a port: http" });
+      });
+    expected: "`✔ accepts a port and rejects text`, `pass 1`, exit status 0."
+    validation: *ran
+  - id: testing-principles
+    kind: rules
+    title: Principles worth stating
+    note: The same in every language.
+    items:
+      - tone: good
+        text: "Fakes you own (an in-memory repository, a clock function) over mocks of code you do not."
+      - tone: good
+        text: "Test behaviour through the public surface; a refactor should not break a test."
+      - tone: bad
+        text: "Real timers, real network and shared state between tests — the three sources of flakiness."
+      - tone: neutral
+        text: "Type-check the tests as strictly as the code: `tsc --noEmit` catches a wrong mock shape."

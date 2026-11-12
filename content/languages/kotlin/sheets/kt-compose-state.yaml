@@ -1,0 +1,127 @@
+id: kt-compose-state
+concept: ui.state-and-data-flow
+scope: platform
+title: Jetpack Compose — State & Data Flow
+group: Android
+subtitle: remember and rememberSaveable, state hoisting, ViewModel + StateFlow, lifecycle-aware collection, effects.
+applies:
+  platforms: [android]
+  runtime: an Android app with Jetpack Compose
+  requires: [Jetpack Compose, androidx.lifecycle]
+  versions: { kotlin: ">=2.0", compose-bom: ">=2024.09.00", lifecycle: ">=2.8", android: "API 21+" }
+sources:
+  - title: State and Jetpack Compose — Android Developers
+    url: https://developer.android.com/develop/ui/compose/state
+  - title: ViewModel overview — Android Developers
+    url: https://developer.android.com/topic/libraries/architecture/viewmodel
+cards:
+  - id: swiftui-to-compose
+    kind: table
+    title: SwiftUI → Compose
+    note: The decision table, translated.
+    headers: [SwiftUI, Compose, Lives until]
+    rows:
+      - ["`@State`", "`remember { mutableStateOf(x) }`", "the composable leaves the composition"]
+      - ["`@SceneStorage` (survives recreation)", "`rememberSaveable { … }`", "the saved-state registry is cleared (also survives rotation)"]
+      - ["`@Binding`", "state hoisting: `value` + `onValueChange`", "—"]
+      - ["`@Observable` model", "`ViewModel` exposing `StateFlow`", "the screen's back-stack entry is destroyed"]
+      - ["`@Environment`", "`CompositionLocal`", "—"]
+      - ["`.task(id:)`", "`LaunchedEffect(key)`", "the key changes or the composable leaves"]
+      - ["`.onDisappear`", "`DisposableEffect { onDispose { } }`", "—"]
+  - id: remember-and-hoisting
+    kind: code
+    title: remember, rememberSaveable and hoisting
+    note: A stateless composable takes the value and an event; the caller owns the state.
+    prerequisites: &app
+      - "An Android Studio project with the Compose template (Kotlin 2.x, the Compose BOM and `androidx.activity:activity-compose`)"
+      - "Call the screen from `setContent { }` in your `ComponentActivity`, then run the app on a device or emulator"
+    code: |-
+      @Composable
+      fun Counter(count: Int, onIncrement: () -> Unit) {        // stateless: easy to preview and test
+          Button(onClick = onIncrement) { Text("Clicked $count times") }
+      }
+
+      @Composable
+      fun CounterScreen() {
+          var count by rememberSaveable { mutableIntStateOf(0) }   // survives recomposition and rotation
+          Counter(count = count, onIncrement = { count++ })
+      }
+    expected: The button's label counts up on each tap and keeps its value when the device rotates.
+    validation: &excerpt
+      status: excerpt
+      host: an Android app with Jetpack Compose (needs the Android SDK and the Compose compiler plugin)
+  - id: viewmodel-stateflow
+    kind: code
+    title: ViewModel + StateFlow, collected with the lifecycle
+    note: One immutable UI state, updated atomically; the screen collects it only while it is at least STARTED.
+    prerequisites:
+      - "An Android Studio project with the Compose template, plus `androidx.lifecycle:lifecycle-viewmodel-compose` and `lifecycle-runtime-compose`"
+      - "A `SearchRepository` with `suspend fun search(query: String): List<String>`, passed to the ViewModel through a factory or your DI container"
+    code: |-
+      data class SearchUiState(val query: String = "", val results: List<String> = emptyList(), val loading: Boolean = false)
+
+      class SearchViewModel(private val repo: SearchRepository) : ViewModel() {
+          private val _state = MutableStateFlow(SearchUiState())
+          val state: StateFlow<SearchUiState> = _state.asStateFlow()
+          private var searchJob: Job? = null
+
+          fun onQueryChange(query: String) {
+              _state.update { it.copy(query = query, loading = true) }
+              searchJob?.cancel()                                  // a newer query supersedes the old one
+              searchJob = viewModelScope.launch {                  // cancelled when the ViewModel is cleared
+                  val results = repo.search(query)
+                  _state.update { it.copy(results = results, loading = false) }
+              }
+          }
+      }
+
+      @Composable
+      fun SearchScreen(vm: SearchViewModel) {
+          val state by vm.state.collectAsStateWithLifecycle()
+          Column {
+              TextField(value = state.query, onValueChange = vm::onQueryChange)
+              if (state.loading) CircularProgressIndicator()
+              state.results.forEach { Text(it) }
+          }
+      }
+    expected: Typing updates the field at once, shows a spinner, then the results of the latest query only.
+    sources:
+      - title: StateFlow and SharedFlow — Android Developers
+        url: https://developer.android.com/kotlin/flow/stateflow-and-sharedflow
+      - title: collectAsStateWithLifecycle — Android Developers
+        url: https://developer.android.com/develop/ui/compose/state#use-other-types-of-state-in-jetpack-compose
+    validation: *excerpt
+  - id: launched-effect
+    kind: code
+    title: Async work tied to the screen
+    note: "`LaunchedEffect(key)` starts when the composable enters, restarts when the key changes and is cancelled when it leaves — `.task(id:)`."
+    prerequisites: *app
+    code: |-
+      @Composable
+      fun Profile(userId: String, load: suspend (String) -> String) {
+          var name by remember(userId) { mutableStateOf<String?>(null) }   // reset for a new user
+          LaunchedEffect(userId) {
+              name = load(userId)
+          }
+          Text(name ?: "Loading…")
+      }
+    expected: Shows "Loading…", then the name; switching `userId` cancels the old load and starts a new one.
+    sources:
+      - title: Side-effects in Compose — Android Developers
+        url: https://developer.android.com/develop/ui/compose/side-effects
+    validation: *excerpt
+  - id: identity-and-lifetime
+    kind: rules
+    title: Identity and lifetime rules
+    note: Most Compose state bugs are one of these.
+    items:
+      - tone: bad
+        text: "Mutating a list inside `mutableStateOf(list)` — Compose sees the same object and does not recompose. Assign a new list, or use `mutableStateListOf`."
+      - tone: bad
+        text: "Side effects (network, logging, writes) directly in a composable body: it runs on every recomposition."
+      - tone: good
+        text: "Give `items(…, key = { it.id })` stable keys so state follows the item, not the position."
+      - tone: good
+        text: "`derivedStateOf { }` for values computed from state that changes more often than the result."
+      - tone: neutral
+        text: "Configuration changes recreate the activity: `remember` resets, `rememberSaveable` and the ViewModel survive."

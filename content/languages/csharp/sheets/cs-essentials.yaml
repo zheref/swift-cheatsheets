@@ -1,0 +1,156 @@
+id: cs-essentials
+concept: language.essentials
+scope: language
+title: C# Language Essentials
+group: C# language
+subtitle: Nullable references, records and pattern matching, generics and generic math, exceptions, value vs reference.
+applies:
+  platforms: [dotnet]
+  runtime: .NET
+  versions: { csharp: ">=12", dotnet: ">=8" }
+sources:
+  - title: A tour of the C# language
+    url: https://learn.microsoft.com/en-us/dotnet/csharp/tour-of-csharp/
+cards:
+  - id: swift-to-csharp
+    kind: table
+    title: Swift idea → C#
+    note: Close in shape; C# nullability for references is a compiler analysis, not a type.
+    headers: [Swift, C#, Watch out]
+    rows:
+      - ["`Optional<T>`, `?.`, `??`", "`T?`, `?.`, `??`, `is { } x`", "for references `T?` is an annotation: warnings, not a different type"]
+      - ["`enum` with associated values", "a `record` hierarchy + `switch` expression", "the compiler cannot prove a hierarchy closed: keep a `_` arm"]
+      - ["`struct`", "`struct`, `readonly record struct`", "large structs copy on every assignment"]
+      - ["`final class`", "`sealed class`", "classes are open by default"]
+      - ["`protocol` + extension", "`interface` (default members), extension methods", "—"]
+      - ["`throws`", "unchecked exceptions", "nothing in a signature says it throws"]
+      - ["`defer`", "`try { } finally { }`, `using`", "`using var` disposes at the end of the scope"]
+  - id: nullable-references
+    kind: code
+    title: Nullable references
+    note: With `<Nullable>enable</Nullable>` (the template's default), dereferencing a maybe-null reference is a warning.
+    prerequisites: &run
+      - .NET 8 SDK or later
+      - "`dotnet new console -o Demo`, replace `Demo/Program.cs` with the example, then `dotnet run --project Demo`"
+    code: |-
+      var user = new User("Ana", Address: null);
+      Console.WriteLine(user.Address?.City ?? "unknown city");
+      string name = user.Name;                       // non-nullable: no check needed
+      if (user.Address is { City: { } city }) Console.WriteLine(city);
+      else Console.WriteLine($"no city for {name}");
+
+      record Address(string? City);
+      record User(string Name, Address? Address);
+    expected: |-
+      unknown city
+      no city for Ana
+    sources:
+      - title: Nullable reference types — C#
+        url: https://learn.microsoft.com/en-us/dotnet/csharp/nullable-references
+    validation: &ran
+      status: ran
+      toolchain: .NET SDK 9.0.304 (net9.0, C# 13)
+      date: "2026-11-11"
+  - id: records-and-patterns
+    kind: code
+    title: Records and pattern matching
+    note: Type, positional, property and list patterns in a `switch` expression.
+    prerequisites: *run
+    code: |-
+      using System.Globalization;
+
+      static double Area(Shape s) => s switch
+      {
+          Circle c => Math.PI * c.Radius * c.Radius,
+          Rect(var w, var h) => w * h,
+          _ => throw new ArgumentOutOfRangeException(nameof(s)),
+      };
+
+      Console.WriteLine(Area(new Rect(2, 3)));
+      Console.WriteLine(Area(new Circle(1)).ToString("F2", CultureInfo.InvariantCulture));
+      Console.WriteLine(new[] { 1, 2, 3 } is [1, .., 3] ? "list pattern matched" : "no match");
+
+      abstract record Shape;
+      record Circle(double Radius) : Shape;
+      record Rect(double Width, double Height) : Shape;
+    expected: |-
+      6
+      3.14
+      list pattern matched
+    sources:
+      - title: Pattern matching overview — C#
+        url: https://learn.microsoft.com/en-us/dotnet/csharp/fundamentals/functional/pattern-matching
+    validation: *ran
+  - id: generics-and-generic-math
+    kind: code
+    title: Generics and generic math
+    note: Constraints with `where`; static abstract interface members make `T.Zero` and `+` generic (.NET 7).
+    prerequisites: *run
+    code: |-
+      using System.Numerics;
+
+      static T Clamp<T>(T value, T low, T high) where T : IComparable<T> =>
+          value.CompareTo(low) < 0 ? low : value.CompareTo(high) > 0 ? high : value;
+
+      static T Sum<T>(IEnumerable<T> xs) where T : INumber<T> =>
+          xs.Aggregate(T.Zero, (acc, x) => acc + x);
+
+      Console.WriteLine($"{Clamp(15, 0, 10)} {Clamp("m", "a", "f")} {Sum(new[] { 1, 2, 3 })} {Sum(new[] { 10L, 20L })}");
+    expected: "10 f 6 30"
+    sources:
+      - title: Generic math — .NET
+        url: https://learn.microsoft.com/en-us/dotnet/standard/generics/math
+    validation: *ran
+  - id: exceptions
+    kind: code
+    title: Exceptions, Try-methods and filters
+    note: "`TryParse` for expected failures, `throw` expressions for guards, `when` filters to catch only what you handle."
+    prerequisites: *run
+    code: |-
+      using System.Globalization;
+
+      static int ParsePort(string text) =>
+          int.TryParse(text, NumberStyles.None, CultureInfo.InvariantCulture, out var n) && n is > 0 and < 65536
+              ? n
+              : throw new FormatException($"not a port: {text}");
+
+      foreach (var input in new[] { "8080", "http", "70000" })
+      {
+          try
+          {
+              Console.WriteLine($"port {ParsePort(input)}");
+          }
+          catch (FormatException e) when (e.Message.StartsWith("not a port", StringComparison.Ordinal))
+          {
+              Console.WriteLine(e.Message);
+          }
+      }
+    expected: |-
+      port 8080
+      not a port: http
+      not a port: 70000
+    sources:
+      - title: Best practices for exceptions — .NET
+        url: https://learn.microsoft.com/en-us/dotnet/standard/exceptions/best-practices-for-exceptions
+    validation: *ran
+  - id: value-vs-reference
+    kind: code
+    title: Value vs reference, and `with`
+    note: A struct copies on assignment, a class aliases; `with` makes a shallow non-destructive copy of a record.
+    prerequisites: *run
+    code: |-
+      var p1 = new PointStruct { X = 1 };
+      var p2 = p1;                                   // copied
+      p2.X = 99;
+      var b1 = new Box { X = 1 };
+      var b2 = b1;                                   // the same object
+      b2.X = 99;
+      var r1 = new Settings("dark", ["x"]);
+      var r2 = r1 with { Theme = "light" };
+      Console.WriteLine($"{p1.X} {b1.X} {r1 == (r1 with { })} {ReferenceEquals(r1.Tags, r2.Tags)} {r2.Theme}");
+
+      struct PointStruct { public int X; }
+      class Box { public int X; }
+      record Settings(string Theme, List<string> Tags);
+    expected: "1 99 True True light"
+    validation: *ran

@@ -1,0 +1,177 @@
+id: ts-essentials
+concept: language.essentials
+scope: language
+title: TypeScript Language Essentials
+group: TypeScript language
+subtitle: Structural types, unions and narrowing, null and undefined, generics, errors, exhaustiveness.
+applies:
+  platforms: [node, browser]
+  runtime: TypeScript compiler; the examples run on Node.js
+  versions: { typescript: ">=5.0", node: ">=22.18" }
+sources:
+  - title: The TypeScript Handbook
+    url: https://www.typescriptlang.org/docs/handbook/intro.html
+  - title: Narrowing — TypeScript Handbook
+    url: https://www.typescriptlang.org/docs/handbook/2/narrowing.html
+cards:
+  - id: swift-to-typescript
+    kind: table
+    title: Swift idea → TypeScript
+    note: Types are erased at runtime — they check, they never convert.
+    headers: [Swift, TypeScript, Watch out]
+    rows:
+      - ["`protocol`", "`interface` / `type`", "structural: any value of the right shape fits"]
+      - ["`enum` with associated values", "discriminated union", "switch on the tag; `never` proves exhaustiveness"]
+      - ["`Optional<T>`, `?.`, `??`", "`T | undefined`, `?.`, `??`", "there are two empties: `null` and `undefined`"]
+      - ["generics with `where`", "generics with `extends`", "constraints are structural too"]
+      - ["`struct` value semantics", "none — objects are references", "copy with spread or `structuredClone`"]
+      - ["`throws` / `do-catch`", "`throw` anything / `catch (e: unknown)`", "the type system does not track throws"]
+      - ["`some P` / `any P`", "—", "no existential distinction; inference does the work"]
+  - id: structural-typing
+    kind: code
+    title: Structural typing
+    note: A value fits a type when it has the members — no declaration of conformance needed.
+    prerequisites: &run
+      - Node.js 22.18 or later (it runs `.mts` files directly by stripping the types)
+      - "Save as `main.mts` and run `node main.mts`"
+      - "Optional type-check: `npm i -D typescript @types/node`, then `npx tsc --noEmit --strict --target esnext --module nodenext main.mts`"
+    code: |-
+      interface Point { x: number; y: number }
+      function length(p: Point): number {
+        return Math.hypot(p.x, p.y);
+      }
+
+      const reading = { x: 3, y: 4, label: "sensor" };
+      console.log(length(reading));                 // extra members are fine on a variable…
+      // length({ x: 3, y: 4, label: "s" });        // …but an object literal with them is error TS2353
+    expected: "5"
+    validation: &ran
+      status: ran
+      toolchain: Node 24.16.0, TypeScript 5.9.3
+      date: "2026-11-11"
+  - id: narrowing-and-nullish
+    kind: code
+    title: Narrowing, null and undefined
+    note: "`typeof`, `in`, `instanceof` and `== null` narrow a union; `?.` and `??` handle both empties."
+    prerequisites: *run
+    code: |-
+      function describe(value: string | number | null | undefined): string {
+        if (value == null) return "nothing";       // == null matches null and undefined
+        if (typeof value === "string") return `text of ${value.length}`;
+        return `number ${value.toFixed(1)}`;
+      }
+      console.log(describe("hey"), "|", describe(2), "|", describe(undefined));
+
+      const user: { name?: string; address?: { city?: string } } = {};
+      console.log(user.address?.city ?? "unknown city", user.name?.toUpperCase());
+    expected: |-
+      text of 3 | number 2.0 | nothing
+      unknown city undefined
+    validation: *ran
+  - id: generics-and-constraints
+    kind: code
+    title: Generics and constraints
+    note: "`K extends keyof T` ties a key to its object; the compiler rejects a key that does not exist."
+    prerequisites: *run
+    code: |-
+      function maxBy<T>(items: readonly T[], key: (item: T) => number): T | undefined {
+        let best: T | undefined;
+        let bestKey = -Infinity;
+        for (const item of items) {
+          const k = key(item);
+          if (k > bestKey) {
+            best = item;
+            bestKey = k;
+          }
+        }
+        return best;
+      }
+      function pluck<T, K extends keyof T>(items: readonly T[], key: K): T[K][] {
+        return items.map((item) => item[key]);
+      }
+
+      const files = [{ name: "a.txt", size: 10 }, { name: "b.png", size: 2048 }];
+      console.log(maxBy(files, (f) => f.size)?.name, pluck(files, "name"));
+      // pluck(files, "owner");   // error TS2345: '"owner"' is not assignable to '"name" | "size"'
+    expected: "b.png [ 'a.txt', 'b.png' ]"
+    sources:
+      - title: Generics — TypeScript Handbook
+        url: https://www.typescriptlang.org/docs/handbook/2/generics.html
+    validation: *ran
+  - id: errors
+    kind: code
+    title: Errors — thrown, or returned as values
+    note: A catch variable is `unknown`; a Result union makes failure part of the signature.
+    prerequisites: *run
+    code: |-
+      type Result<T, E = Error> = { ok: true; value: T } | { ok: false; error: E };
+
+      function parsePort(text: string): Result<number> {
+        const n = Number(text);
+        return Number.isInteger(n) && n > 0 && n < 65536
+          ? { ok: true, value: n }
+          : { ok: false, error: new RangeError(`not a port: ${text}`) };
+      }
+
+      for (const input of ["8080", "http"]) {
+        const r = parsePort(input);
+        console.log(r.ok ? `port ${r.value}` : r.error.message);
+      }
+
+      try {
+        JSON.parse("{bad");
+      } catch (e: unknown) {                       // narrow before use
+        console.log(e instanceof SyntaxError ? "SyntaxError" : "something else");
+      }
+    expected: |-
+      port 8080
+      not a port: http
+      SyntaxError
+    validation: *ran
+  - id: exhaustive-switch
+    kind: code
+    title: Exhaustive switch with never
+    note: Assigning the leftover to `never` turns a forgotten case into a compile error.
+    prerequisites: *run
+    code: |-
+      type Shape =
+        | { kind: "circle"; radius: number }
+        | { kind: "rect"; width: number; height: number };
+
+      function area(s: Shape): number {
+        switch (s.kind) {
+          case "circle":
+            return Math.PI * s.radius ** 2;
+          case "rect":
+            return s.width * s.height;
+          default: {
+            const unreachable: never = s;          // a new Shape without a case fails here
+            return unreachable;
+          }
+        }
+      }
+      console.log(area({ kind: "rect", width: 2, height: 3 }), area({ kind: "circle", radius: 1 }).toFixed(2));
+    expected: "6 3.14"
+    validation: *ran
+  - id: references-and-copies
+    kind: code
+    title: References and copies
+    note: Spread copies one level; `structuredClone` copies deeply; `Object.freeze` is shallow too.
+    prerequisites: *run
+    code: |-
+      const a = { tags: ["x"] };
+      const shallow = { ...a };
+      const deep = structuredClone(a);
+      a.tags.push("y");
+      console.log(shallow.tags, deep.tags, a === shallow);
+
+      const frozen = Object.freeze({ n: 1 });
+      // frozen.n = 2;   // error TS2540: Cannot assign to 'n' because it is a read-only property
+      console.log(Object.isFrozen(frozen));
+    expected: |-
+      [ 'x', 'y' ] [ 'x' ] false
+      true
+    sources:
+      - title: structuredClone — MDN
+        url: https://developer.mozilla.org/en-US/docs/Web/API/Window/structuredClone
+    validation: *ran

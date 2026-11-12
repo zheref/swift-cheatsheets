@@ -101,6 +101,26 @@ export function diagramProblems(svg: string): string[] {
   return [...out];
 }
 
+/**
+ * What an example (a `code` or `compare` card) lacks for a reader to reproduce it, under a
+ * language's `requireExampleMetadata`. Applicability and sources count where the page shows
+ * them — on the card or its sheet header — so a field set only on the language does not.
+ */
+export function exampleProblems(sheet: Sheet, card: Sheet["cards"][number]): string[] {
+  if (card.kind !== "code" && card.kind !== "compare") return [];
+  const applies = { ...sheet.applies, ...card.applies };
+  const missing = [
+    !applies.platforms && "applies.platforms",
+    !applies.runtime && "applies.runtime",
+    !applies.versions && "applies.versions",
+    !(card.sources ?? sheet.sources) && "sources",
+    !card.prerequisites && "prerequisites",
+    !card.validation && "validation",
+    card.expected === undefined && "expected",
+  ].filter((m): m is string => Boolean(m));
+  return missing.length ? [`card '${card.id}' is an example without ${missing.join(", ")}`] : [];
+}
+
 export function loadCatalog(dir: string): Catalog {
   const problems: string[] = [];
   const langFile = path.join(dir, "language.yaml");
@@ -139,6 +159,7 @@ export function loadCatalog(dir: string): Catalog {
     const cardIds = s.cards.map((c) => c.id);
     const dupCards = cardIds.filter((c, i) => cardIds.indexOf(c) !== i);
     if (dupCards.length) problems.push(`${file}: duplicate card ids ${[...new Set(dupCards)].join(", ")}`);
+    if (language.requireExampleMetadata) for (const c of s.cards) problems.push(...exampleProblems(s, c).map((p) => `${file}: ${p}`));
     for (const c of s.cards) {
       if (c.kind !== "diagram") continue;
       const svgFile = path.join(dir, "diagrams", c.svg);

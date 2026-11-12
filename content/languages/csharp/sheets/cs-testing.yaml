@@ -1,0 +1,116 @@
+id: cs-testing
+concept: testing.approaches
+scope: shared
+title: Testing Approaches in .NET
+group: Shared concepts
+subtitle: xUnit, NUnit or MSTest; TimeProvider and hand-written fakes for deterministic tests.
+applies:
+  platforms: [dotnet]
+  runtime: .NET with a test project
+  versions: { csharp: ">=12", dotnet: ">=8" }
+sources:
+  - title: Testing in .NET
+    url: https://learn.microsoft.com/en-us/dotnet/core/testing/
+cards:
+  - id: tooling
+    kind: table
+    title: Tooling matrix
+    note: The common .NET choices.
+    headers: [Need, Tool]
+    rows:
+      - ["runner and assertions", "xUnit, NUnit or MSTest (`dotnet new xunit`, `nunit`, `mstest`)"]
+      - ["time", "`TimeProvider` (.NET 8) + `FakeTimeProvider` (Microsoft.Extensions.TimeProvider.Testing)"]
+      - ["test doubles", "hand-written fakes; NSubstitute or Moq when a fake is impractical"]
+      - ["HTTP", "a fake `HttpMessageHandler`; `WebApplicationFactory` for ASP.NET Core"]
+      - ["coverage", "`dotnet test --collect:\"XPlat Code Coverage\"` (coverlet)"]
+  - id: timeprovider-seam
+    kind: code
+    title: Design for testability — inject TimeProvider
+    note: Code that asks a `TimeProvider` for the time can be tested without sleeping.
+    prerequisites:
+      - .NET 8 SDK or later
+      - "`dotnet new console -o Demo`, replace `Demo/Program.cs` with the example, then `dotnet run --project Demo`"
+    code: |-
+      var clock = new ManualClock(new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero));
+      var session = new Session(clock, TimeSpan.FromMinutes(30));
+      Console.WriteLine(session.Expired);
+      clock.Advance(TimeSpan.FromMinutes(30));       // the test owns time
+      Console.WriteLine(session.Expired);
+
+      class Session(TimeProvider time, TimeSpan ttl)
+      {
+          private readonly DateTimeOffset started = time.GetUtcNow();
+          public bool Expired => time.GetUtcNow() - started >= ttl;
+      }
+
+      // FakeTimeProvider (Microsoft.Extensions.TimeProvider.Testing) does this, plus timers
+      class ManualClock(DateTimeOffset start) : TimeProvider
+      {
+          private DateTimeOffset now = start;
+          public override DateTimeOffset GetUtcNow() => now;
+          public void Advance(TimeSpan by) => now += by;
+      }
+    expected: |-
+      False
+      True
+    sources:
+      - title: What is TimeProvider? — .NET
+        url: https://learn.microsoft.com/en-us/dotnet/standard/datetime/timeprovider-overview
+    validation:
+      status: ran
+      toolchain: .NET SDK 9.0.304 (net9.0, C# 13)
+      date: "2026-11-11"
+  - id: xunit
+    kind: code
+    title: An xUnit test class
+    note: "`[Theory]` runs once per `[InlineData]` row; `Assert.Throws` checks the exception type exactly."
+    prerequisites:
+      - "`dotnet new xunit -o Demo.Tests` (it references xunit, the test SDK and the runner)"
+      - "Add the class to the project and run `dotnet test Demo.Tests`"
+    code: |-
+      using System.Text.RegularExpressions;
+      using Xunit;
+
+      public static class Slug
+      {
+          public static string From(string title)
+          {
+              ArgumentException.ThrowIfNullOrWhiteSpace(title);
+              return Regex.Replace(title.Trim().ToLowerInvariant(), "[^a-z0-9]+", "-").Trim('-');
+          }
+      }
+
+      public class SlugTests
+      {
+          [Theory]
+          [InlineData("  Hello, World!  ", "hello-world")]
+          [InlineData("--x--", "x")]
+          public void JoinsWordsWithSingleHyphens(string title, string expected) =>
+              Assert.Equal(expected, Slug.From(title));
+
+          [Fact]
+          public void RejectsBlankTitles() => Assert.Throws<ArgumentException>(() => Slug.From("   "));
+      }
+    expected: "`dotnet test` reports 3 tests passed: two `InlineData` rows and one `Fact`."
+    applies:
+      requires: [xunit]
+      versions: { csharp: ">=12", dotnet: ">=8", xunit: ">=2.5" }
+    sources:
+      - title: Unit testing C# with xUnit — .NET
+        url: https://learn.microsoft.com/en-us/dotnet/core/testing/unit-testing-csharp-with-xunit
+    validation:
+      status: excerpt
+      host: an xUnit test project; its NuGet packages were not available offline on this machine
+  - id: testing-principles
+    kind: rules
+    title: Principles worth stating
+    note: The same in every language.
+    items:
+      - tone: good
+        text: "Fakes you own (an in-memory repository, a `TimeProvider`) over mocks of code you do not."
+      - tone: good
+        text: "Pass `CancellationToken` and `TimeProvider` in — both make async tests deterministic."
+      - tone: bad
+        text: "`Thread.Sleep` / `Task.Delay` in tests, and tests that share static state."
+      - tone: neutral
+        text: "`ArgumentException.ThrowIfNullOrWhiteSpace` (.NET 8) is the one-line guard clause."

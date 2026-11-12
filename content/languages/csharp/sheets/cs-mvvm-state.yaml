@@ -1,0 +1,139 @@
+id: cs-mvvm-state
+concept: ui.mvvm-state
+scope: platform
+title: MVVM State — INotifyPropertyChanged & Observable Collections
+group: .NET
+subtitle: The change notifications XAML bindings listen to, written by hand and with the MVVM Toolkit's source generators.
+applies:
+  platforms: [dotnet]
+  runtime: .NET (System.ComponentModel); bound from WinUI, WPF or .NET MAUI
+  versions: { csharp: ">=12", dotnet: ">=8" }
+sources:
+  - title: How to implement property change notification — WPF
+    url: https://learn.microsoft.com/en-us/dotnet/desktop/wpf/data/how-to-implement-property-change-notification
+  - title: Introduction to the MVVM Toolkit — .NET Community Toolkit
+    url: https://learn.microsoft.com/en-us/dotnet/communitytoolkit/mvvm/
+cards:
+  - id: swiftui-to-mvvm
+    kind: table
+    title: SwiftUI → .NET MVVM
+    note: The view model is the observable object; the XAML binding is the view's subscription.
+    headers: [SwiftUI, .NET MVVM]
+    rows:
+      - ["`@Observable` / `ObservableObject`", "`INotifyPropertyChanged` (or the Toolkit's `ObservableObject`)"]
+      - ["`@Published` property", "a property that raises `PropertyChanged`"]
+      - ["a button action", "`ICommand` (the Toolkit's `[RelayCommand]`)"]
+      - ["`ForEach` over an array", "`ObservableCollection<T>` raising `CollectionChanged`"]
+      - ["`@Binding`", "`{Binding Path, Mode=TwoWay}` in XAML"]
+  - id: property-changed
+    kind: code
+    title: INotifyPropertyChanged by hand
+    note: Raise the event for the property and for anything derived from it; skip equal values.
+    prerequisites: &run
+      - .NET 8 SDK or later
+      - "`dotnet new console -o Demo`, replace `Demo/Program.cs` with the example, then `dotnet run --project Demo` (the binding engine itself needs a XAML UI)"
+    code: |-
+      using System.ComponentModel;
+      using System.Runtime.CompilerServices;
+
+      var vm = new CounterViewModel();
+      vm.PropertyChanged += (_, e) => Console.WriteLine($"{e.PropertyName} changed");   // what a binding listens to
+      vm.Increment();
+      vm.Count = 1;                                  // the same value: no notification
+      Console.WriteLine(vm.Label);
+
+      class CounterViewModel : INotifyPropertyChanged
+      {
+          public event PropertyChangedEventHandler? PropertyChanged;
+          private int count;
+
+          public int Count
+          {
+              get => count;
+              set
+              {
+                  if (count == value) return;
+                  count = value;
+                  OnPropertyChanged();
+                  OnPropertyChanged(nameof(Label));
+              }
+          }
+
+          public string Label => $"Clicked {Count} times";
+          public void Increment() => Count++;
+
+          private void OnPropertyChanged([CallerMemberName] string? name = null) =>
+              PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
+      }
+    expected: |-
+      Count changed
+      Label changed
+      Clicked 1 times
+    validation: &ran
+      status: ran
+      toolchain: .NET SDK 9.0.304 (net9.0, C# 13)
+      date: "2026-11-11"
+  - id: observable-collection
+    kind: code
+    title: ObservableCollection
+    note: A list control re-renders from `CollectionChanged`; replacing the whole list would rebuild every row.
+    prerequisites: *run
+    code: |-
+      using System.Collections.ObjectModel;
+
+      var items = new ObservableCollection<string>();
+      items.CollectionChanged += (_, e) =>
+          Console.WriteLine($"{e.Action} {string.Join(",", (e.NewItems ?? e.OldItems)!.Cast<string>())}");
+      items.Add("milk");
+      items.Add("eggs");
+      items.RemoveAt(0);
+    expected: |-
+      Add milk
+      Add eggs
+      Remove milk
+    sources:
+      - title: ObservableCollection<T> — .NET API
+        url: https://learn.microsoft.com/en-us/dotnet/api/system.collections.objectmodel.observablecollection-1
+    validation: *ran
+  - id: mvvm-toolkit
+    kind: code
+    title: The same view model with the MVVM Toolkit
+    note: Source generators write the property, the notifications and the command from attributes.
+    prerequisites:
+      - "A WinUI, WPF or .NET MAUI app project with the `CommunityToolkit.Mvvm` NuGet package (8.x)"
+      - "Bind it from XAML: `<TextBlock Text=\"{Binding Label}\"/>` and `<Button Command=\"{Binding IncrementCommand}\"/>`"
+    code: |-
+      using CommunityToolkit.Mvvm.ComponentModel;
+      using CommunityToolkit.Mvvm.Input;
+
+      public partial class CounterViewModel : ObservableObject
+      {
+          [ObservableProperty]
+          [NotifyPropertyChangedFor(nameof(Label))]
+          private int count;                         // generates Count, with change notification
+
+          public string Label => $"Clicked {Count} times";
+
+          [RelayCommand]
+          private void Increment() => Count++;       // generates IncrementCommand
+      }
+    expected: The label reads "Clicked 0 times" and counts up each time the bound button is pressed.
+    applies:
+      requires: [CommunityToolkit.Mvvm]
+      versions: { csharp: ">=12", dotnet: ">=8", communitytoolkit-mvvm: ">=8.0" }
+    validation:
+      status: excerpt
+      host: a XAML app project referencing CommunityToolkit.Mvvm (its source generators run at build time)
+  - id: mvvm-rules
+    kind: rules
+    title: Rules
+    note: Most binding bugs are one of these.
+    items:
+      - tone: bad
+        text: "Raising `PropertyChanged` off the UI thread in WPF or WinUI — marshal to the dispatcher first."
+      - tone: bad
+        text: "Replacing an `ObservableCollection` instance without raising `PropertyChanged` for it: the bound list keeps the old one."
+      - tone: good
+        text: "Derived properties raise their own notification when a source changes (`NotifyPropertyChangedFor`)."
+      - tone: neutral
+        text: "View models stay UI-free, so they run and are tested in a plain console or test project — as above."

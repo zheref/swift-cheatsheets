@@ -1,0 +1,163 @@
+id: ts-node-files
+concept: io.files-and-text
+scope: platform
+title: Node.js — Files, Text & Atomic I/O
+group: Node.js
+subtitle: fs/promises, atomic replace, streaming lines, pipelines with backpressure, append-only journals.
+applies:
+  platforms: [node]
+  runtime: Node.js
+  versions: { node: ">=22.18", typescript: ">=5.0" }
+sources:
+  - title: File system — Node.js
+    url: https://nodejs.org/api/fs.html
+  - title: Stream — Node.js
+    url: https://nodejs.org/api/stream.html
+cards:
+  - id: read-write-text
+    kind: code
+    title: Read and write a small text file
+    note: Whole-file reads are right for small files; say the encoding or you get a Buffer.
+    prerequisites: &run
+      - Node.js 22.18 or later (it runs `.mts` files directly by stripping the types)
+      - "Save as `main.mts` and run `node main.mts` — it works in a fresh temporary directory and removes it"
+      - "Optional type-check: `npm i -D typescript @types/node`, then `npx tsc --noEmit --strict --target esnext --module nodenext main.mts`"
+    code: |-
+      import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+      import { tmpdir } from "node:os";
+      import { join } from "node:path";
+
+      const dir = await mkdtemp(join(tmpdir(), "demo-"));
+      const file = join(dir, "notes.txt");
+      await writeFile(file, "first line\nsecond line\n", "utf8");
+      const text = await readFile(file, "utf8");
+      console.log(text.split("\n").filter(Boolean).length, "lines");
+      await rm(dir, { recursive: true });
+    expected: "2 lines"
+    validation: &ran
+      status: ran
+      toolchain: Node 24.16.0, TypeScript 5.9.3
+      date: "2026-11-11"
+  - id: atomic-write
+    kind: code
+    title: Writing atomically
+    note: "Write a temporary file in the same directory, flush it, then rename over the target: readers see the old file or the new one, never half."
+    prerequisites: *run
+    code: |-
+      import { mkdtemp, open, readFile, rename, rm } from "node:fs/promises";
+      import { tmpdir } from "node:os";
+      import { dirname, join } from "node:path";
+
+      async function writeFileAtomic(path: string, data: string): Promise<void> {
+        const temp = join(dirname(path), `.${process.pid}.${Date.now()}.tmp`);   // same file system
+        const handle = await open(temp, "w");
+        try {
+          await handle.writeFile(data, "utf8");
+          await handle.sync();                     // on the device before the rename publishes it
+        } finally {
+          await handle.close();
+        }
+        await rename(temp, path);                  // atomic replace on POSIX file systems
+      }
+
+      const dir = await mkdtemp(join(tmpdir(), "atomic-"));
+      const settings = join(dir, "settings.json");
+      await writeFileAtomic(settings, JSON.stringify({ theme: "dark" }));
+      await writeFileAtomic(settings, JSON.stringify({ theme: "light" }));
+      console.log(JSON.parse(await readFile(settings, "utf8")).theme);
+      await rm(dir, { recursive: true });
+    expected: "light"
+    sources:
+      - title: fsPromises.rename — Node.js
+        url: https://nodejs.org/api/fs.html#fspromisesrenameoldpath-newpath
+      - title: filehandle.sync — Node.js
+        url: https://nodejs.org/api/fs.html#filehandlesync
+    validation: *ran
+  - id: stream-lines
+    kind: code
+    title: Streaming a large file line by line
+    note: "`readline` over a read stream holds one line at a time, whatever the file size."
+    prerequisites: *run
+    code: |-
+      import { createReadStream } from "node:fs";
+      import { mkdtemp, rm, writeFile } from "node:fs/promises";
+      import { tmpdir } from "node:os";
+      import { join } from "node:path";
+      import { createInterface } from "node:readline";
+
+      const dir = await mkdtemp(join(tmpdir(), "lines-"));
+      const log = join(dir, "app.log");
+      await writeFile(log, Array.from({ length: 10_000 }, (_, i) => `${i % 10 === 0 ? "ERROR" : "INFO"} event ${i}`).join("\n"));
+
+      let errors = 0;
+      const lines = createInterface({ input: createReadStream(log, "utf8"), crlfDelay: Infinity });
+      for await (const line of lines) {
+        if (line.startsWith("ERROR")) errors++;
+      }
+      console.log(errors, "errors");
+      await rm(dir, { recursive: true });
+    expected: "1000 errors"
+    sources:
+      - title: Readline — Node.js
+        url: https://nodejs.org/api/readline.html
+    validation: *ran
+  - id: pipeline-backpressure
+    kind: code
+    title: Pipelines and backpressure
+    note: "`pipeline` pauses a fast reader for a slow writer, and destroys every stream if one fails."
+    prerequisites: *run
+    code: |-
+      import { createReadStream, createWriteStream } from "node:fs";
+      import { mkdtemp, rm, stat, writeFile } from "node:fs/promises";
+      import { tmpdir } from "node:os";
+      import { join } from "node:path";
+      import { pipeline } from "node:stream/promises";
+      import { createGzip } from "node:zlib";
+
+      const dir = await mkdtemp(join(tmpdir(), "gzip-"));
+      const src = join(dir, "data.csv");
+      await writeFile(src, "id,value\n".repeat(50_000));
+      await pipeline(createReadStream(src), createGzip(), createWriteStream(`${src}.gz`));
+      const [before, after] = await Promise.all([stat(src), stat(`${src}.gz`)]);
+      console.log(after.size * 100 < before.size ? "compressed over 100x" : "barely compressed");
+      await rm(dir, { recursive: true });
+    expected: "compressed over 100x"
+    sources:
+      - title: stream.pipeline — Node.js
+        url: https://nodejs.org/api/stream.html#streampipelinesource-transforms-destination-options
+    validation: *ran
+  - id: append-journal
+    kind: code
+    title: An append-only journal
+    note: One JSON object per line (JSON Lines) — appends never rewrite what is already there.
+    prerequisites: *run
+    code: |-
+      import { appendFile, mkdtemp, readFile, rm } from "node:fs/promises";
+      import { tmpdir } from "node:os";
+      import { join } from "node:path";
+
+      const dir = await mkdtemp(join(tmpdir(), "journal-"));
+      const journal = join(dir, "events.jsonl");
+      for (const event of ["start", "save", "stop"]) {
+        await appendFile(journal, `${JSON.stringify({ event })}\n`);
+      }
+      const events = (await readFile(journal, "utf8")).trim().split("\n").map((l) => JSON.parse(l).event);
+      console.log(events);
+      await rm(dir, { recursive: true });
+    expected: "[ 'start', 'save', 'stop' ]"
+    validation: *ran
+  - id: data-loss-rules
+    kind: rules
+    title: Rules that prevent data loss
+    note: Most file bugs are about the moment between two writes.
+    items:
+      - tone: good
+        text: "Replace a file by writing a temporary sibling and `rename`-ing it; never truncate the original first."
+      - tone: good
+        text: "`await` every write and close handles in `finally`; a crash between writes is the case to design for."
+      - tone: bad
+        text: "`readFileSync` on a request path blocks every other client of the process."
+      - tone: legacy
+        text: "On Windows `rename` over an open file can fail with `EPERM`/`EBUSY` — retry, or keep readers short-lived."
+      - tone: neutral
+        text: "`fs.watch` events are hints, not a log: re-read the file instead of trusting the event payload."

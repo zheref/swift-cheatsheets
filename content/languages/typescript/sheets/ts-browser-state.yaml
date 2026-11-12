@@ -1,0 +1,173 @@
+id: ts-browser-state
+concept: ui.browser-state
+scope: platform
+title: Browser — State, Events & Requests
+group: Browser
+subtitle: Framework-free state with EventTarget, rendering from state, cancelling superseded requests, persisting preferences.
+applies:
+  platforms: [browser]
+  runtime: a browser page (the DOM)
+  versions: { typescript: ">=5.5", ecmascript: "2024", browsers: "Baseline 2024" }
+sources:
+  - title: EventTarget — MDN
+    url: https://developer.mozilla.org/en-US/docs/Web/API/EventTarget
+  - title: Using the Fetch API — MDN
+    url: https://developer.mozilla.org/en-US/docs/Web/API/Fetch_API/Using_Fetch
+cards:
+  - id: store-with-eventtarget
+    kind: code
+    title: A store with EventTarget
+    note: One owner of the state, replaced (never mutated) on every update, and a change event to re-render from. `EventTarget` exists in Node too, so this one runs there.
+    prerequisites:
+      - Node.js 22.18 or later (it runs `.mts` files directly by stripping the types), or any modern browser
+      - "Save as `main.mts` and run `node main.mts`"
+      - "Optional type-check: `npm i -D typescript @types/node`, then `npx tsc --noEmit --strict --target esnext --module nodenext main.mts`"
+    code: |-
+      type State = { items: string[]; filter: string };
+
+      class Store extends EventTarget {
+        #state: State = { items: [], filter: "" };
+        get state(): Readonly<State> {
+          return this.#state;
+        }
+        update(change: Partial<State>) {
+          this.#state = { ...this.#state, ...change };   // a new object: `old !== new` detects change
+          this.dispatchEvent(new Event("change"));
+        }
+      }
+
+      const store = new Store();
+      store.addEventListener("change", () => {
+        const { items, filter } = store.state;
+        console.log(items.filter((i) => i.includes(filter)).join(", ") || "(none)");
+      });
+      store.update({ items: ["apples", "pears", "plums"] });
+      store.update({ filter: "um" });
+      store.update({ filter: "x" });
+    expected: |-
+      apples, pears, plums
+      plums
+      (none)
+    applies:
+      platforms: [browser, node]
+      versions: { typescript: ">=5.0", node: ">=22.18" }
+    validation:
+      status: ran
+      toolchain: Node 24.16.0, TypeScript 5.9.3
+      date: "2026-11-11"
+  - id: render-from-state
+    kind: code
+    title: Render from state
+    note: Rebuild the list from data on every change; `textContent`, never `innerHTML`, for anything a user typed.
+    prerequisites: &page
+      - "A page containing `<input id=\"filter\">` and `<ul id=\"todos\"></ul>`"
+      - "Compile with `tsc` (`lib` including `DOM`) or a bundler, and load the output with `<script type=\"module\">`"
+    code: |-
+      const list = document.querySelector<HTMLUListElement>("#todos")!;
+      const input = document.querySelector<HTMLInputElement>("#filter")!;
+      const todos = ["Write tests", "Ship it", "Write docs"];
+
+      function render(filter: string) {
+        const shown = todos.filter((t) => t.toLowerCase().includes(filter.toLowerCase()));
+        list.replaceChildren(...shown.map((t) => Object.assign(document.createElement("li"), { textContent: t })));
+      }
+      input.addEventListener("input", () => render(input.value));
+      render("");
+    expected: "The list shows all three to-dos; typing `write` leaves **Write tests** and **Write docs**."
+    sources:
+      - title: Element.replaceChildren — MDN
+        url: https://developer.mozilla.org/en-US/docs/Web/API/Element/replaceChildren
+    validation: &compiled
+      status: compiled
+      toolchain: TypeScript 5.9.3 (lib DOM)
+      date: "2026-11-11"
+      host: a browser page with the elements named in the setup
+  - id: cancel-superseded-requests
+    kind: code
+    title: Cancel superseded requests
+    note: Each keystroke aborts the previous search, so a slow old response can never overwrite a newer one.
+    prerequisites:
+      - "A page containing `<input id=\"search\">`, served by an origin with a `/api/search?q=` endpoint returning a JSON array of strings"
+      - "Compile with `tsc` (`lib` including `DOM`) or a bundler, and load the output with `<script type=\"module\">`"
+    code: |-
+      let inFlight: AbortController | undefined;
+
+      async function search(query: string): Promise<string[]> {
+        inFlight?.abort();                         // supersede the previous request
+        const controller = new AbortController();
+        inFlight = controller;
+        const response = await fetch(`/api/search?q=${encodeURIComponent(query)}`, {
+          signal: AbortSignal.any([controller.signal, AbortSignal.timeout(5_000)]),
+        });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        return (await response.json()) as string[];
+      }
+
+      const box = document.querySelector<HTMLInputElement>("#search")!;
+      box.addEventListener("input", async () => {
+        try {
+          console.log(await search(box.value));
+        } catch (e) {
+          if (e instanceof DOMException && e.name === "AbortError") return;   // superseded, not a failure
+          throw e;
+        }
+      });
+    expected: Only the response to the latest input is logged; earlier requests show as cancelled in the network panel.
+    sources:
+      - title: AbortSignal.any — MDN
+        url: https://developer.mozilla.org/en-US/docs/Web/API/AbortSignal/any_static
+    validation:
+      status: compiled
+      toolchain: TypeScript 5.9.3 (lib DOM)
+      date: "2026-11-11"
+      host: a browser page served with a `/api/search` endpoint
+  - id: persist-preferences
+    kind: code
+    title: Persist preferences safely
+    note: Storage can be disabled, full or hold an old shape — read defensively and version the key.
+    prerequisites: *page
+    code: |-
+      type Prefs = { theme: "light" | "dark" };
+      const KEY = "prefs:v1";
+      const DEFAULTS: Prefs = { theme: "light" };
+
+      function loadPrefs(): Prefs {
+        try {
+          const parsed: unknown = JSON.parse(localStorage.getItem(KEY) ?? "null");
+          return typeof parsed === "object" && parsed !== null && "theme" in parsed && (parsed.theme === "light" || parsed.theme === "dark")
+            ? { theme: parsed.theme }
+            : DEFAULTS;
+        } catch {
+          return DEFAULTS;                         // private mode, quota, corrupt JSON
+        }
+      }
+
+      function savePrefs(prefs: Prefs): void {
+        try {
+          localStorage.setItem(KEY, JSON.stringify(prefs));
+        } catch {
+          // keep working without persistence
+        }
+      }
+
+      const prefs = loadPrefs();
+      document.documentElement.dataset.theme = prefs.theme;
+      savePrefs({ theme: prefs.theme === "light" ? "dark" : "light" });
+    expected: The page takes the stored theme (light on first load) and the next load starts in the other one.
+    sources:
+      - title: Window.localStorage — MDN
+        url: https://developer.mozilla.org/en-US/docs/Web/API/Window/localStorage
+    validation: *compiled
+  - id: browser-state-rules
+    kind: rules
+    title: Rules
+    note: What UI frameworks automate, done by hand.
+    items:
+      - tone: good
+        text: "One owner per piece of state; everything else derives from it on change."
+      - tone: good
+        text: "Abort what the user has moved on from — requests, timers, listeners (`{ signal }` on `addEventListener`)."
+      - tone: bad
+        text: "`innerHTML` with data: an injection hole. Build nodes, set `textContent`."
+      - tone: neutral
+        text: "React, Vue and Svelte own this layer in real apps; these patterns are what they do underneath."

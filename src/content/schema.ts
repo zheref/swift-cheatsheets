@@ -50,6 +50,53 @@ export const applicability = z
  */
 export const scope = z.enum(["shared", "language", "platform"]);
 
+/**
+ * How far an example was proved, and with what — never further than what actually ran
+ * (zheref/swift-cheatsheets#3, AC-2):
+ *  - `ran`      — compiled and executed with `toolchain` on `date`; the output matched `expected`
+ *                 (or, with `check: exit-code`, the program exited 0 — for test runners whose
+ *                 output carries timings)
+ *  - `compiled` — compiled or type-checked with `toolchain` on `date`, not executed; `host`
+ *                 says what running it needs
+ *  - `excerpt`  — a fragment that needs an application `host` (an Android app, a browser page, a
+ *                 test project) and was neither compiled nor run here
+ */
+export const validation = z
+  .object({
+    status: z.enum(["ran", "compiled", "excerpt"]),
+    /** The compiler and runtime it was proved with, as they reported their versions. */
+    toolchain: z.string().min(1).optional(),
+    date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "must be a YYYY-MM-DD date").optional(),
+    /** What running it needs beyond a command line, e.g. `an Android app with Jetpack Compose`. */
+    host: z.string().min(1).optional(),
+    /** How a `ran` example's result is checked: its standard output (default) or its exit status. */
+    check: z.enum(["stdout", "exit-code"]).optional(),
+  })
+  .strict()
+  .superRefine((v, ctx) => {
+    const fail = (path: string, message: string) => ctx.addIssue({ code: "custom", path: [path], message });
+    if (v.status === "excerpt") {
+      if (!v.host) fail("host", "an excerpt must name the application host it needs");
+      if (v.toolchain || v.date) fail("toolchain", "an excerpt was not compiled or run: it has no toolchain or date");
+    } else {
+      if (!v.toolchain) fail("toolchain", `a '${v.status}' example must name the toolchain it was proved with`);
+      if (!v.date) fail("date", `a '${v.status}' example must say when it was proved`);
+    }
+    if (v.check && v.status !== "ran") fail("check", "only a 'ran' example has a checked result");
+  });
+
+/** Fields an example (a `code` or `compare` card) may carry to say how to reproduce it. */
+const exampleFields = {
+  /** What a reader sets up first to get the documented result: tools, files, commands. Inline markup allowed. */
+  prerequisites: z.array(z.string().min(1)).min(1).optional(),
+  validation: validation.optional(),
+};
+
+/** A `ran` example must state the result it was checked against. */
+const ranHasExpected = (c: { expected?: string; validation?: { status: string; check?: string } }) =>
+  c.validation?.status !== "ran" || c.validation.check === "exit-code" || c.expected !== undefined;
+const ranHasExpectedIssue = { message: "a 'ran' example checked on its output must state that output in `expected`", path: ["expected"] };
+
 const cardBase = {
   /** Stable within its sheet; with the sheet id it forms the card's global id `<sheet>/<card>`. */
   id: slug,
@@ -70,8 +117,10 @@ export const codeCard = z
     code: z.string().min(1),
     /** What running the example shows — output, a value, or an observable effect. */
     expected: z.string().min(1).optional(),
+    ...exampleFields,
   })
-  .strict();
+  .strict()
+  .refine(ranHasExpected, ranHasExpectedIssue);
 
 export const compareColumn = z
   .object({
@@ -87,9 +136,12 @@ export const compareCard = z
     ...cardBase,
     kind: z.literal("compare"),
     columns: z.array(compareColumn).min(1),
+    /** With `validation.status: ran`, the output EVERY column produces. */
     expected: z.string().min(1).optional(),
+    ...exampleFields,
   })
-  .strict();
+  .strict()
+  .refine(ranHasExpected, ranHasExpectedIssue);
 
 /** Inline text in rules and tables supports `code` spans and **bold**. */
 export const rule = z.object({ tone, text: z.string().min(1) }).strict();
@@ -184,6 +236,12 @@ export const language = z
     codeLanguage: slug,
     highlight,
     applies: applicability.optional(),
+    /**
+     * `true` makes the loader refuse an example (`code` or `compare` card) that does not
+     * carry, on the card or its sheet, everything a reader needs to reproduce it: platforms,
+     * runtime and versions, sources, prerequisites, the expected result and a validation status.
+     */
+    requireExampleMetadata: z.boolean().optional(),
     /** Sheet ids in reading order: drives both the sidebar and the scroll order. */
     sheets: z.array(slug).min(1),
   })
@@ -215,6 +273,7 @@ export const registry = z
 export type Tone = z.infer<typeof tone>;
 export type Source = z.infer<typeof source>;
 export type Applicability = z.infer<typeof applicability>;
+export type Validation = z.infer<typeof validation>;
 export type Scope = z.infer<typeof scope>;
 export type CodeCard = z.infer<typeof codeCard>;
 export type CompareCard = z.infer<typeof compareCard>;

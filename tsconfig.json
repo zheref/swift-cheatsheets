@@ -16,6 +16,6 @@
     "forceConsistentCasingInFileNames": true,
     "types": ["node"]
   },
-  "include": ["src", "test", "scripts/build-offline.mts", "scripts/serve.mts", "scripts/verify.mts", "gatsby-*.ts", "gatsby-*.tsx", "vitest.config.ts"],
+  "include": ["src", "test", "scripts/build-offline.mts", "scripts/run-examples.mts", "scripts/serve.mts", "scripts/verify.mts", "gatsby-*.ts", "gatsby-*.tsx", "vitest.config.ts"],
   "exclude": ["node_modules", "public", ".cache", ".offline-build"]
 }

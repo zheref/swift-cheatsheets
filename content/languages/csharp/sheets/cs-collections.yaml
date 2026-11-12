@@ -1,0 +1,148 @@
+id: cs-collections
+concept: collections.types
+scope: shared
+title: Collections — List, Dictionary, HashSet & Friends
+group: Shared concepts
+subtitle: Which container, what each operation costs, and the read-only, immutable and frozen variants.
+applies:
+  platforms: [dotnet]
+  runtime: .NET (the base class library)
+  versions: { csharp: ">=12", dotnet: ">=8" }
+sources:
+  - title: Collections and data structures — .NET
+    url: https://learn.microsoft.com/en-us/dotnet/standard/collections/
+  - title: Collection expressions — C# reference
+    url: https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/operators/collection-expressions
+cards:
+  - id: pick-the-container
+    kind: table
+    title: Pick the container
+    note: Enumeration order of `Dictionary` and `HashSet` is not guaranteed — sort when order matters.
+    headers: [Need, Use, Why]
+    rows:
+      - ["ordered list", "`List<T>`, `T[]`", "contiguous; `[..]` collection expressions build either"]
+      - ["key → value", "`Dictionary<TKey, TValue>`", "O(1) average; `TryGetValue` for a miss"]
+      - ["membership, dedupe", "`HashSet<T>`", "O(1) `Contains`; set operations mutate in place"]
+      - ["sorted keys", "`SortedDictionary`, `SortedSet`", "O(log n)"]
+      - ["FIFO / LIFO", "`Queue<T>`, `Stack<T>`", "O(1) at the end that matters"]
+      - ["priority queue", "`PriorityQueue<TElement, TPriority>`", "a min-heap since .NET 6"]
+      - ["read-mostly lookup", "`FrozenDictionary`, `FrozenSet`", "built once, optimized for reads (.NET 8)"]
+      - ["snapshots you can share", "`ImmutableList`, `ImmutableDictionary`", "every change returns a new collection"]
+  - id: costs
+    kind: table
+    title: What operations cost
+    note: Amortised costs (*) include the occasional resize.
+    headers: [Type, Lookup, Insert, Remove]
+    rows:
+      - ["`List<T>`", "O(1) by index, O(n) `Contains`", "O(1)* `Add`, O(n) `Insert`", "O(1) last, O(n) other"]
+      - ["`Dictionary` / `HashSet`", "O(1) average", "O(1)* average", "O(1) average"]
+      - ["`SortedDictionary` / `SortedSet`", "O(log n)", "O(log n)", "O(log n)"]
+      - ["`Queue<T>` / `Stack<T>`", "O(1) peek", "O(1)*", "O(1)"]
+      - ["`PriorityQueue`", "O(1) peek", "O(log n)", "O(log n)"]
+      - ["`ImmutableList<T>`", "O(log n)", "O(log n)", "O(log n)"]
+  - id: dictionary-and-set
+    kind: code
+    title: Dictionary and HashSet
+    note: "`GetValueOrDefault` reads a missing key as the default; `UnionWith` changes the set in place."
+    prerequisites: &run
+      - .NET 8 SDK or later
+      - "`dotnet new console -o Demo`, replace `Demo/Program.cs` with the example, then `dotnet run --project Demo`"
+    code: |-
+      var counts = new Dictionary<string, int>();
+      foreach (var word in "the cat and the hat".Split(' '))
+      {
+          counts[word] = counts.GetValueOrDefault(word) + 1;
+      }
+      Console.WriteLine(string.Join(", ", counts.OrderBy(kv => kv.Key, StringComparer.Ordinal).Select(kv => $"{kv.Key}={kv.Value}")));
+      Console.WriteLine($"{counts["the"]} {counts.ContainsKey("dog")} {counts.TryGetValue("cat", out var cat)} {cat}");
+
+      var set = new HashSet<int> { 1, 2, 3 };
+      set.UnionWith([2, 3, 4]);
+      Console.WriteLine(string.Join(",", set.Order()));
+    expected: |-
+      and=1, cat=1, hat=1, the=2
+      2 False True 1
+      1,2,3,4
+    sources:
+      - title: Dictionary<TKey,TValue> — .NET API
+        url: https://learn.microsoft.com/en-us/dotnet/api/system.collections.generic.dictionary-2
+    validation: &ran
+      status: ran
+      toolchain: .NET SDK 9.0.304 (net9.0, C# 13)
+      date: "2026-11-11"
+  - id: records-as-keys
+    kind: code
+    title: Keys need value equality
+    note: A `record` generates `Equals` and `GetHashCode`; a class compares by reference.
+    prerequisites: *run
+    code: |-
+      var points = new HashSet<Point> { new(1, 1), new(1, 1) };
+      var cells = new HashSet<Cell> { new(1, 1), new(1, 1) };
+      Console.WriteLine($"{points.Count} {cells.Count}");
+
+      record Point(int X, int Y);
+      class Cell(int x, int y)
+      {
+          public int X => x;
+          public int Y => y;
+      }
+    expected: "1 2"
+    sources:
+      - title: Records — C# reference
+        url: https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/builtin-types/record
+    validation: *ran
+  - id: queue-stack-priority
+    kind: code
+    title: Queue, Stack, PriorityQueue
+    note: "`PriorityQueue` dequeues the lowest priority first and is not stable for equal priorities."
+    prerequisites: *run
+    code: |-
+      var queue = new Queue<string>(["a", "b"]);
+      queue.Enqueue("c");
+      var stack = new Stack<int>([1, 2, 3]);
+      var tasks = new PriorityQueue<string, int>();
+      tasks.Enqueue("low", 5);
+      tasks.Enqueue("urgent", 1);
+      tasks.Enqueue("mid", 3);
+      Console.WriteLine($"{queue.Dequeue()} {stack.Pop()} {tasks.Dequeue()} {tasks.Dequeue()}");
+    expected: "a 3 urgent mid"
+    sources:
+      - title: PriorityQueue<TElement,TPriority> — .NET API
+        url: https://learn.microsoft.com/en-us/dotnet/api/system.collections.generic.priorityqueue-2
+    validation: *ran
+  - id: read-only-immutable-frozen
+    kind: code
+    title: Read-only, immutable, frozen
+    note: A read-only interface is a view; immutable collections return new ones; frozen ones trade build time for fast reads.
+    prerequisites: *run
+    code: |-
+      using System.Collections.Frozen;
+      using System.Collections.Immutable;
+
+      var colors = new Dictionary<string, int> { ["red"] = 1, ["green"] = 2 }.ToFrozenDictionary();
+      ImmutableList<int> v1 = [1, 2];
+      var v2 = v1.Add(3);                            // a new list; v1 is unchanged
+      var backing = new List<int> { 1 };
+      IReadOnlyList<int> view = backing;
+      backing.Add(2);                                // the view sees it
+      Console.WriteLine($"{colors["green"]} {v1.Count} {v2.Count} {view.Count}");
+    expected: "2 2 3 2"
+    sources:
+      - title: System.Collections.Frozen — .NET API
+        url: https://learn.microsoft.com/en-us/dotnet/api/system.collections.frozen
+    validation: *ran
+  - id: collection-pitfalls
+    kind: rules
+    title: Pitfalls
+    note: Where C# differs from Swift's value-type collections.
+    items:
+      - tone: bad
+        text: "Modifying a `List` or `Dictionary` inside its own `foreach` throws `InvalidOperationException`."
+      - tone: bad
+        text: "`list.RemoveAt(0)` in a loop is O(n²) — use `Queue<T>`."
+      - tone: bad
+        text: "Relying on `Dictionary` or `HashSet` enumeration order: it is an implementation detail."
+      - tone: good
+        text: "Expose `IReadOnlyList<T>` / `IReadOnlyDictionary` from APIs and keep the mutable type private."
+      - tone: neutral
+        text: "Collections are reference types even when they hold structs: `var b = a` aliases the list."

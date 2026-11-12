@@ -1,0 +1,123 @@
+id: cs-files
+concept: io.files-and-text
+scope: platform
+title: .NET — Files, Text & Atomic I/O
+group: .NET
+subtitle: System.IO — small files, atomic replace with a flush to disk, streaming lines, journals, enumerating trees.
+applies:
+  platforms: [dotnet]
+  runtime: .NET (System.IO)
+  versions: { csharp: ">=12", dotnet: ">=8" }
+sources:
+  - title: File and stream I/O — .NET
+    url: https://learn.microsoft.com/en-us/dotnet/standard/io/
+cards:
+  - id: read-write-text
+    kind: code
+    title: Read and write a small text file
+    note: Whole-file helpers are right for small files; they write UTF-8 without a byte-order mark.
+    prerequisites: &run
+      - .NET 8 SDK or later
+      - "`dotnet new console -o Demo`, replace `Demo/Program.cs` with the example, then `dotnet run --project Demo` — it works in a fresh temporary directory and removes it"
+    code: |-
+      var dir = Directory.CreateTempSubdirectory("demo-");
+      var file = Path.Combine(dir.FullName, "notes.txt");
+      await File.WriteAllTextAsync(file, "first line\nsecond line\n");
+      var lines = await File.ReadAllLinesAsync(file);
+      Console.WriteLine($"{lines.Length} lines, {new FileInfo(file).Length} bytes");
+      dir.Delete(recursive: true);
+    expected: "2 lines, 23 bytes"
+    validation: &ran
+      status: ran
+      toolchain: .NET SDK 9.0.304 (net9.0, C# 13)
+      date: "2026-11-11"
+  - id: atomic-write
+    kind: code
+    title: Writing atomically
+    note: "Write a temporary sibling, `Flush(flushToDisk: true)`, then move it over the target in one rename."
+    prerequisites: *run
+    code: |-
+      static void WriteAtomically(string path, string text)
+      {
+          var temp = Path.Combine(Path.GetDirectoryName(path)!, $".{Path.GetFileName(path)}.{Guid.NewGuid():N}.tmp");
+          using (var stream = new FileStream(temp, FileMode.CreateNew, FileAccess.Write))
+          using (var writer = new StreamWriter(stream))
+          {
+              writer.Write(text);
+              writer.Flush();
+              stream.Flush(flushToDisk: true);       // on the device before the move publishes it
+          }
+          File.Move(temp, path, overwrite: true);    // a rename within one volume
+      }
+
+      var dir = Directory.CreateTempSubdirectory("atomic-");
+      var settings = Path.Combine(dir.FullName, "settings.json");
+      WriteAtomically(settings, """{"theme":"dark"}""");
+      WriteAtomically(settings, """{"theme":"light"}""");
+      Console.WriteLine(File.ReadAllText(settings));
+      dir.Delete(recursive: true);
+    expected: '{"theme":"light"}'
+    sources:
+      - title: File.Move — .NET API
+        url: https://learn.microsoft.com/en-us/dotnet/api/system.io.file.move
+      - title: FileStream.Flush(Boolean) — .NET API
+        url: https://learn.microsoft.com/en-us/dotnet/api/system.io.filestream.flush
+    validation: *ran
+  - id: stream-lines
+    kind: code
+    title: Streaming a large file line by line
+    note: "`File.ReadLinesAsync` (.NET 7) yields one line at a time; `ReadAllLines` would load them all."
+    prerequisites: *run
+    code: |-
+      var log = Path.GetTempFileName();
+      await using (var writer = new StreamWriter(log))
+      {
+          for (var i = 0; i < 10_000; i++)
+              await writer.WriteLineAsync($"{(i % 10 == 0 ? "ERROR" : "INFO")} event {i}");
+      }
+
+      var errors = 0;
+      await foreach (var line in File.ReadLinesAsync(log))
+          if (line.StartsWith("ERROR", StringComparison.Ordinal)) errors++;
+      Console.WriteLine($"{errors} errors");
+      File.Delete(log);
+    expected: "1000 errors"
+    validation: *ran
+  - id: journal-and-tree
+    kind: code
+    title: An append-only journal, and enumerating a tree
+    note: "`AppendAllText` never rewrites existing bytes; `EnumerateFiles` is lazy, `GetFiles` is not."
+    prerequisites: *run
+    code: |-
+      using System.Text.Json;
+
+      var dir = Directory.CreateTempSubdirectory("tree-");
+      Directory.CreateDirectory(Path.Combine(dir.FullName, "src", "app"));
+      File.WriteAllText(Path.Combine(dir.FullName, "src", "app", "Program.cs"), "");
+      File.WriteAllText(Path.Combine(dir.FullName, "README.md"), "# demo");
+
+      var journal = Path.Combine(dir.FullName, "events.jsonl");
+      foreach (var e in new[] { "start", "save", "stop" })
+          File.AppendAllText(journal, JsonSerializer.Serialize(new { @event = e }) + "\n");
+
+      var sources = Directory.EnumerateFiles(dir.FullName, "*.cs", SearchOption.AllDirectories)
+          .Select(f => Path.GetRelativePath(dir.FullName, f).Replace('\\', '/'));
+      Console.WriteLine($"{string.Join(",", sources)} | {File.ReadAllLines(journal).Length} events");
+      dir.Delete(recursive: true);
+    expected: "src/app/Program.cs | 3 events"
+    validation: *ran
+  - id: data-loss-rules
+    kind: rules
+    title: Rules that prevent data loss
+    note: .NET adds a few platform differences.
+    items:
+      - tone: good
+        text: "Dispose every stream (`using` / `await using`) — `Dispose` flushes; a missed one loses the tail."
+      - tone: good
+        text: "Replace a file with a temporary sibling + move; never truncate the original first."
+      - tone: legacy
+        text: "On Windows prefer `File.Replace(temp, path, backup)` — it is the documented atomic replace there."
+      - tone: bad
+        text: "`Path.GetTempFileName()` creates a file in the shared temp folder — do not use it as a sibling for an atomic move to another volume."
+      - tone: neutral
+        text: "Paths: `Path.Combine` and `Path.GetRelativePath`, never string concatenation with `\\`."

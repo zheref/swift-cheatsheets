@@ -105,16 +105,16 @@ describe("the registry", () => {
     ]);
   });
 
-  it("publishes only Swift today: the other three are listed with no page, never as an empty catalog", () => {
-    expect(published.catalogs.map((c) => c.language.id)).toEqual(["swift"]);
+  it("publishes all four, each at its own route with its own topics (zheref/swift-cheatsheets#3)", () => {
+    expect(published.catalogs.map((c) => c.language.id)).toEqual(["swift", "csharp", "kotlin", "typescript"]);
     expect(published.languages.map(({ id, href }) => ({ id, href }))).toEqual([
       { id: "swift", href: "/" },
-      { id: "typescript", href: null },
-      { id: "kotlin", href: null },
-      { id: "csharp", href: null },
+      { id: "typescript", href: "/typescript/" },
+      { id: "kotlin", href: "/kotlin/" },
+      { id: "csharp", href: "/csharp/" },
     ]);
-    expect(published.languages.filter((l) => l.href === null).every((l) => l.topics.length === 0)).toBe(true);
     expect(published.languages[0]!.topics).toHaveLength(29);
+    expect(published.languages.every((l) => l.topics.length > 0)).toBe(true);
   });
 
   it("has one fixture catalog standing in for each configured language, in the same order (SC-1)", () => {
@@ -515,11 +515,13 @@ describe("the selector by keyboard and screen reader (AC-5)", () => {
   });
 
   it("states an unpublished language as unavailable, without a link to follow", async () => {
-    await open(published.catalogs[0]!, published.languages);
+    // The real registry with Kotlin and C# not built, as a build that skips them would see it.
+    const unbuilt = published.languages.map((l) => (l.id === "kotlin" || l.id === "csharp" ? { ...l, href: null, topics: [] } : l));
+    await open(published.catalogs[0]!, unbuilt);
     const opts = options();
-    expect(opts.map((o) => [o.id, o.state, o.href])).toEqual([
+    expect(opts.map((o) => [o.id, o.state, o.href?.replace(/[?#].*$/, "") ?? null])).toEqual([
       ["swift", "current", null],
-      ["typescript", "unavailable", null],
+      ["typescript", "available", "/typescript/"],
       ["kotlin", "unavailable", null],
       ["csharp", "unavailable", null],
     ]);

@@ -1,0 +1,180 @@
+id: kt-essentials
+concept: language.essentials
+scope: language
+title: Kotlin Language Essentials
+group: Kotlin language
+subtitle: Null safety, sealed hierarchies and when, generics and variance, exceptions, data classes, extensions and scope functions.
+applies:
+  platforms: [jvm, android]
+  runtime: Kotlin/JVM
+  versions: { kotlin: ">=1.9", jvm: ">=17" }
+sources:
+  - title: Kotlin language guide — Kotlin docs
+    url: https://kotlinlang.org/docs/basic-syntax.html
+cards:
+  - id: swift-to-kotlin
+    kind: table
+    title: Swift idea → Kotlin
+    note: Close cousins, with a different default for classes (final) and for equality (`==` calls `equals`).
+    headers: [Swift, Kotlin, Watch out]
+    rows:
+      - ["`Optional<T>`, `?.`, `??`, `guard let`", "`T?`, `?.`, `?:`, `?: return`", "`!!` is the force unwrap; Java types arrive as platform types (`T!`)"]
+      - ["`enum` with associated values", "`sealed interface` + `data class` cases", "`when` is exhaustive over a sealed type"]
+      - ["`struct`", "`data class` (with `val`s)", "a reference type: `copy()` instead of value semantics"]
+      - ["`protocol` + extension", "`interface` + extension functions", "extensions are resolved statically"]
+      - ["generics `where`", "`<T : Bound>`, `where T : A, T : B`", "declaration-site variance: `out` / `in`"]
+      - ["`throws`", "unchecked exceptions", "nothing in the signature says a function throws"]
+      - ["`defer`", "`try { } finally { }`, `use { }`", "`use` closes a `Closeable`"]
+  - id: null-safety
+    kind: code
+    title: Null safety
+    note: "Nullability is part of the type. `?.` short-circuits, `?:` supplies a default — or returns early."
+    prerequisites: &run
+      - A Kotlin 2.x compiler (`kotlinc`) and JDK 17 or later
+      - "Save as `main.kt`; run `kotlinc main.kt -include-runtime -d main.jar && java -jar main.jar`"
+    code: |-
+      data class Address(val city: String?)
+      data class User(val name: String, val address: Address?)
+
+      fun cityOf(user: User): String {
+          val city = user.address?.city ?: return "no city for ${user.name}"   // like guard let … else
+          return city.uppercase()                                              // smart cast: String here
+      }
+
+      fun main() {
+          val user = User("Ana", address = null)
+          println(user.address?.city ?: "unknown city")
+          println(cityOf(user))
+          println(cityOf(User("Bo", Address("lima"))))
+      }
+    expected: |-
+      unknown city
+      no city for Ana
+      LIMA
+    sources:
+      - title: Null safety — Kotlin docs
+        url: https://kotlinlang.org/docs/null-safety.html
+    validation: &ran
+      status: ran
+      toolchain: kotlinc 2.2.20, JVM 17.0.15
+      date: "2026-11-11"
+  - id: sealed-and-when
+    kind: code
+    title: Sealed hierarchies and when
+    note: A new case breaks compilation at every `when` that does not handle it.
+    prerequisites: *run
+    code: |-
+      sealed interface Shape
+      data class Circle(val radius: Double) : Shape
+      data class Rect(val width: Double, val height: Double) : Shape
+
+      fun area(s: Shape): Double = when (s) {
+          is Circle -> Math.PI * s.radius * s.radius
+          is Rect -> s.width * s.height               // smart cast: s is a Rect here
+      }
+
+      fun main() {
+          println(area(Rect(2.0, 3.0)))
+          println(Math.round(area(Circle(1.0)) * 100) / 100.0)
+      }
+    expected: |-
+      6.0
+      3.14
+    sources:
+      - title: Sealed classes and interfaces — Kotlin docs
+        url: https://kotlinlang.org/docs/sealed-classes.html
+    validation: *ran
+  - id: generics-and-variance
+    kind: code
+    title: Generics, bounds and variance
+    note: "`out T` marks a producer, so a `Source<Int>` is a `Source<Number>` — Swift has no user-declared variance."
+    prerequisites: *run
+    code: |-
+      fun <T : Comparable<T>> clamp(value: T, low: T, high: T): T = maxOf(low, minOf(value, high))
+
+      interface Source<out T> { fun next(): T }
+
+      fun sumAll(sources: List<Source<Number>>): Double = sources.sumOf { it.next().toDouble() }
+
+      fun main() {
+          println("${clamp(15, 0, 10)} ${clamp("m", "a", "f")}")
+          val ints = object : Source<Int> { override fun next() = 2 }
+          val doubles = object : Source<Double> { override fun next() = 0.5 }
+          println(sumAll(listOf(ints, doubles)))
+      }
+    expected: |-
+      10 f
+      2.5
+    sources:
+      - title: Generics — Kotlin docs
+        url: https://kotlinlang.org/docs/generics.html
+    validation: *ran
+  - id: exceptions-and-result
+    kind: code
+    title: Exceptions, require and runCatching
+    note: "`throw` is an expression; `require` throws `IllegalArgumentException`; `runCatching` turns a throw into a `Result`."
+    prerequisites: *run
+    code: |-
+      class InvalidPort(text: String) : Exception("not a port: $text")
+
+      fun parsePort(text: String): Int {
+          val n = text.toIntOrNull() ?: throw InvalidPort(text)
+          require(n in 1..65535) { "out of range: $n" }
+          return n
+      }
+
+      fun main() {
+          for (input in listOf("8080", "http", "70000")) {
+              val result = runCatching { parsePort(input) }
+              println(result.fold({ "port $it" }, { "${it::class.simpleName}: ${it.message}" }))
+          }
+      }
+    expected: |-
+      port 8080
+      InvalidPort: not a port: http
+      IllegalArgumentException: out of range: 70000
+    sources:
+      - title: Exceptions — Kotlin docs
+        url: https://kotlinlang.org/docs/exceptions.html
+    validation: *ran
+  - id: data-classes-and-copies
+    kind: code
+    title: Data classes and copies
+    note: "`==` compares values, `===` identity; `copy()` is shallow, like a struct copy of a reference field."
+    prerequisites: *run
+    code: |-
+      data class Settings(val theme: String, val tags: List<String>)
+
+      fun main() {
+          val a = Settings("dark", listOf("x"))
+          val b = a.copy(theme = "light")
+          println("$a $b")
+          println("${a == a.copy()} ${a === a.copy()} ${a.tags === b.tags}")
+      }
+    expected: |-
+      Settings(theme=dark, tags=[x]) Settings(theme=light, tags=[x])
+      true false true
+    validation: *ran
+  - id: extensions-and-scope-functions
+    kind: code
+    title: Extensions and scope functions
+    note: "`apply` configures and returns the receiver; `let` transforms and returns the lambda's result."
+    prerequisites: *run
+    code: |-
+      fun String.initials(): String =
+          split(" ").filter { it.isNotEmpty() }.joinToString("") { it.first().uppercase() }
+
+      data class Request(var url: String = "", var retries: Int = 0)
+
+      fun main() {
+          println("ada lovelace".initials())
+          val request = Request().apply { url = "https://example.com"; retries = 3 }
+          println(request.let { "${it.url} x${it.retries}" })
+      }
+    expected: |-
+      AL
+      https://example.com x3
+    sources:
+      - title: Scope functions — Kotlin docs
+        url: https://kotlinlang.org/docs/scope-functions.html
+    validation: *ran

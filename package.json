@@ -13,6 +13,7 @@
     "build:site": "gatsby build",
     "build:offline": "node scripts/build-offline.mts",
     "verify": "node scripts/verify.mts",
+    "examples": "node scripts/run-examples.mts",
     "lint": "tsc --noEmit && node scripts/verify.mts",
     "serve": "node scripts/serve.mts",
     "typecheck": "tsc --noEmit",

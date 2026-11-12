@@ -1,0 +1,53 @@
+id: cs-coverage
+concept: meta.coverage
+scope: language
+title: Coverage against the Swift Catalog
+group: Coverage
+subtitle: Every Swift topic, and what this catalog has for it — an equivalent, a partial counterpart, or the reason there is none.
+cards:
+  - id: how-to-read
+    kind: rules
+    title: How to read the matrix
+    note: Nothing here is a translation made to fill a gap.
+    items:
+      - tone: good
+        text: "**equivalent** — a sheet here covers the same concept and shares its concept id, so the language selector lands on it from the Swift sheet."
+      - tone: neutral
+        text: "**partial** — a sheet here covers part of it, or a nearby idea; the reason says what is missing. The selector offers it as a related topic."
+      - tone: bad
+        text: "**no counterpart** — nothing here; the reason says whether the topic does not exist in this language or is simply not written yet."
+  - id: matrix
+    kind: table
+    title: Swift topic by topic
+    note: In the Swift catalog's reading order.
+    headers: [Swift topic, Disposition, Here, Why]
+    rows:
+      - ["SwiftUI — State & Data Flow", "partial", "MVVM State — INotifyPropertyChanged & Observable Collections", "the observable view model and collection a XAML binding watches; no view-owned state wrappers like `@State`"]
+      - ["SwiftUI — Views, Layout & Animation", "no counterpart", "—", "XAML layout (WinUI, WPF, MAUI) is not written up yet"]
+      - ["SwiftUI vs UIKit", "no counterpart", "—", "a comparison of two Apple UI frameworks"]
+      - ["TCA — Core Loop", "no counterpart", "—", "The Composable Architecture is a Swift library; not covered"]
+      - ["TCA — Composition, Dependencies, Testing", "no counterpart", "—", "a Swift library's API"]
+      - ["TCA + SwiftUI — Navigation & UI", "no counterpart", "—", "a Swift library's API on an Apple UI framework"]
+      - ["Modern Swift Concurrency — Core", "equivalent", "Async/Await, Tasks & Cancellation", "tasks, WhenAll, cancellation tokens, async streams and callback bridging"]
+      - ["Actors, Sendable & Isolation", "partial", "Shared State — lock, Interlocked, SemaphoreSlim, Channels", "locks, an async mutex and a channel-owned state; C# has no compiler-checked isolation or Sendable"]
+      - ["Swift 6 Concurrency — Do's & Don'ts", "no counterpart", "—", "about migrating to Swift 6's strict concurrency checking"]
+      - ["Multithreading — GCD vs Combine vs async/await", "partial", "Async/Await, Tasks & Cancellation", "Task-based async only; the Thread / ThreadPool / BackgroundWorker comparison is not drawn"]
+      - ["Combine — Core", "partial", "Async/Await, Tasks & Cancellation", "`IAsyncEnumerable` covers pull-based streams; Rx.NET (System.Reactive), the push-based counterpart, is not in the BCL and not covered"]
+      - ["Timers & Async Patterns — Combine vs async/await", "partial", "Async/Await, Tasks & Cancellation", "delays, timeouts, polling and fan-out are covered; there is no Combine side to compare"]
+      - ["SwiftUI + Combine — Wiring Them Together", "partial", "MVVM State — INotifyPropertyChanged & Observable Collections", "change notifications are the view-model → view connection point; no reactive library is involved"]
+      - ["Timing Operators — Combine vs Swift Concurrency", "partial", "Testing Approaches in .NET", "injectable time with `TimeProvider`; no timing operators are catalogued"]
+      - ["Clean Code in Swift", "no counterpart", "—", "not written yet; the principles are language-neutral and the Swift sheet's advice carries over"]
+      - ["SOLID in Swift", "no counterpart", "—", "not written yet; the principles are language-neutral"]
+      - ["Functional Programming in Swift", "partial", "Collections — LINQ Cookbook", "LINQ's higher-order operators and deferred execution; no composition, currying or modelling card"]
+      - ["Swift Language Essentials", "equivalent", "C# Language Essentials", "the same questions — optionals, enums, generics, errors, value vs reference, pattern matching — answered for C#"]
+      - ["Collections — Types & Protocols", "equivalent", "Collections — List, Dictionary, HashSet & Friends", "which container and what it costs"]
+      - ["Collections — Operation Cookbook", "equivalent", "Collections — LINQ Cookbook", "filter, project, fold, group, sort, chunk, zip"]
+      - ["Swift Engineering Best Practices", "no counterpart", "—", "not written yet"]
+      - ["Architectural Approaches", "no counterpart", "—", "not written yet"]
+      - ["Modularization Approaches", "no counterpart", "—", "not written yet; projects, assemblies and `internal` are a different mechanism from Swift packages"]
+      - ["Testing Approaches on iOS", "equivalent", "Testing Approaches in .NET", "tooling, injectable time and an xUnit class"]
+      - ["AI Workflows for Swift (Cursor + Claude)", "no counterpart", "—", "Swift-specific by design: it is about why Swift is harder for models and wiring Xcode to an agent"]
+      - ["Algorithmic Patterns & Complexity", "equivalent", "Algorithmic Patterns & Complexity", "built-in costs and five core patterns; fewer patterns than the Swift sheet"]
+      - ["Streaming & Time-Series Patterns", "no counterpart", "—", "not written yet; the algorithms (ring buffers, sketches, reservoir sampling) are language-neutral"]
+      - ["Files, Text & Atomic I/O", "equivalent", ".NET — Files, Text & Atomic I/O", "the same file-safety questions on System.IO"]
+      - ["Core Bluetooth (BLE)", "no counterpart", "—", "an Apple framework; Windows has `Windows.Devices.Bluetooth`, not written up yet"]

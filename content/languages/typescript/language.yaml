@@ -1,0 +1,89 @@
+id: typescript
+name: TypeScript
+title: TypeScript Cheat Sheets
+route: /typescript/
+status: published
+description: Dense TypeScript reference — collections, async/await and cancellation, the type system, testing, algorithm costs, Node.js files and browser state — with every example's setup, versions and validation stated.
+locale: en
+codeLanguage: typescript
+requireExampleMetadata: true
+highlight:
+  keywords:
+    - const
+    - let
+    - var
+    - function
+    - return
+    - if
+    - else
+    - for
+    - of
+    - in
+    - while
+    - do
+    - switch
+    - case
+    - default
+    - break
+    - continue
+    - new
+    - class
+    - extends
+    - implements
+    - interface
+    - type
+    - import
+    - export
+    - from
+    - as
+    - async
+    - await
+    - yield
+    - try
+    - catch
+    - finally
+    - throw
+    - typeof
+    - instanceof
+    - keyof
+    - readonly
+    - private
+    - protected
+    - public
+    - static
+    - abstract
+    - satisfies
+    - infer
+    - is
+    - unknown
+    - never
+    - any
+    - void
+    - "null"
+    - undefined
+    - "true"
+    - "false"
+    - this
+    - super
+    - get
+    - set
+  lineComment: //
+  blockComment:
+    - /*
+    - "*/"
+  attributePrefix: "@"
+  capitalisedTypes: true
+  members: true
+applies:
+  runtime: Node.js or a browser
+sheets:
+  - ts-collections
+  - ts-collection-ops
+  - ts-async
+  - ts-algorithms
+  - ts-testing
+  - ts-essentials
+  - ts-modeling
+  - ts-node-files
+  - ts-browser-state
+  - ts-coverage

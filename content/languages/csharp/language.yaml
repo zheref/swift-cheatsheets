@@ -1,0 +1,29 @@
+id: csharp
+name: C#
+title: C# Cheat Sheets
+route: /csharp/
+status: published
+description: Dense C# and .NET reference — collections and LINQ, async/await and cancellation, synchronization, the language essentials, testing, algorithm costs, files and MVVM state — with every example's setup, versions and validation stated.
+locale: en
+codeLanguage: csharp
+requireExampleMetadata: true
+highlight:
+  keywords: [using, namespace, class, struct, record, interface, enum, public, private, protected, internal, static, readonly, const, var, new, return, if, else, for, foreach, in, while, do, switch, case, default, break, continue, try, catch, finally, throw, when, is, as, "null", "true", "false", this, base, void, async, await, yield, get, set, init, required, override, virtual, abstract, sealed, partial, ref, out, params, lock, with, and, or, not, typeof, nameof, event, operator, string, int, long, double, bool, object, decimal, char]
+  lineComment: //
+  blockComment: [/*, "*/"]
+  directivePrefix: "#"
+  capitalisedTypes: true
+  members: true
+applies:
+  runtime: .NET
+sheets:
+  - cs-collections
+  - cs-linq
+  - cs-async
+  - cs-algorithms
+  - cs-testing
+  - cs-essentials
+  - cs-shared-state
+  - cs-files
+  - cs-mvvm-state
+  - cs-coverage

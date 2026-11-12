@@ -1,0 +1,216 @@
+id: kt-coroutines
+concept: concurrency.async-await
+scope: shared
+title: Coroutines — Core
+group: Shared concepts
+subtitle: suspend functions, structured concurrency, async/await, failure propagation, cancellation and timeouts.
+applies:
+  platforms: [jvm, android]
+  runtime: Kotlin/JVM with kotlinx.coroutines
+  requires: [kotlinx-coroutines-core]
+  versions: { kotlin: ">=2.0", kotlinx-coroutines: ">=1.10", jvm: ">=17" }
+sources:
+  - title: Coroutines basics — Kotlin docs
+    url: https://kotlinlang.org/docs/coroutines-basics.html
+  - title: Cancellation and timeouts — Kotlin docs
+    url: https://kotlinlang.org/docs/cancellation-and-timeouts.html
+cards:
+  - id: sequential-vs-concurrent
+    kind: code
+    title: Sequential vs concurrent
+    note: Calls are sequential by default; `async` makes concurrency explicit.
+    prerequisites: &run
+      - A Kotlin 2.x compiler (`kotlinc`), JDK 17 or later, and `kotlinx-coroutines-core-jvm-1.10.2.jar`
+      - "Save as `main.kt`; run `kotlinc -cp kotlinx-coroutines-core-jvm-1.10.2.jar main.kt -d out && kotlin -cp out:kotlinx-coroutines-core-jvm-1.10.2.jar MainKt`"
+      - "Or, in a Gradle project: `implementation(\"org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.2\")`"
+    code: |-
+      import kotlinx.coroutines.*
+      import kotlin.time.measureTime
+
+      suspend fun load(name: String): String {
+          delay(100)                             // suspends; the thread is free meanwhile
+          return name
+      }
+
+      fun main() = runBlocking {
+          val sequential = measureTime { load("user"); load("posts") }
+          val concurrent = measureTime {
+              val user = async { load("user") }
+              val posts = async { load("posts") }
+              println("${user.await()} ${posts.await()}")
+          }
+          println("sequential ~${sequential.inWholeMilliseconds / 100 * 100} ms, concurrent ~${concurrent.inWholeMilliseconds / 100 * 100} ms")
+      }
+    expected: |-
+      user posts
+      sequential ~200 ms, concurrent ~100 ms
+    validation: &ran
+      status: ran
+      toolchain: kotlinc 2.2.20, JVM 17.0.15, kotlinx-coroutines-core 1.10.2
+      date: "2026-11-11"
+  - id: structured-fan-out
+    kind: code
+    title: Structured fan-out
+    note: "`coroutineScope` waits for every child and fails if one fails — the TaskGroup of Kotlin."
+    prerequisites: *run
+    code: |-
+      import kotlinx.coroutines.*
+
+      suspend fun thumbnail(id: Int): String {
+          delay(10L * (4 - id))                  // later ids finish first
+          return "thumb-$id"
+      }
+
+      suspend fun thumbnails(ids: List<Int>): Map<Int, String> = coroutineScope {
+          ids.map { id -> async { id to thumbnail(id) } }   // all start now
+              .awaitAll()                                   // results in INPUT order
+              .toMap()
+      }
+
+      fun main() = runBlocking {
+          println(thumbnails(listOf(1, 2, 3)))
+      }
+    expected: "{1=thumb-1, 2=thumb-2, 3=thumb-3}"
+    sources:
+      - title: Composing suspending functions — Kotlin docs
+        url: https://kotlinlang.org/docs/composing-suspending-functions.html
+    validation: *ran
+  - id: failure-propagation
+    kind: code
+    title: Failure propagation and supervision
+    note: A failing child cancels its siblings in `coroutineScope`; in `supervisorScope` each child fails alone.
+    prerequisites: *run
+    code: |-
+      import kotlinx.coroutines.*
+
+      fun main() = runBlocking {
+          try {
+              coroutineScope {
+                  launch { delay(1_000); println("never printed: cancelled by its sibling") }
+                  launch { delay(10); error("boom") }
+              }
+          } catch (e: IllegalStateException) {
+              println("caught ${e.message}")
+          }
+
+          val results = supervisorScope {
+              val a = async { delay(10); 1 }
+              val b = async<Int> { throw IllegalArgumentException("bad input") }
+              listOf(runCatching { a.await() }, runCatching { b.await() })
+          }
+          println(results.map { r -> r.getOrElse { it.message } })
+      }
+    expected: |-
+      caught boom
+      [1, bad input]
+    sources:
+      - title: Coroutine exceptions handling — Kotlin docs
+        url: https://kotlinlang.org/docs/exception-handling.html
+    validation: *ran
+  - id: cancellation
+    kind: code
+    title: Cancellation and timeouts
+    note: "Cancellation is cooperative: every suspension point checks it, and `finally` runs like Swift's `defer`."
+    prerequisites: *run
+    code: |-
+      import kotlinx.coroutines.*
+
+      fun main() = runBlocking {
+          val job = launch {
+              try {
+                  repeat(10) { i ->
+                      println("tick $i")
+                      delay(100)
+                  }
+              } finally {
+                  println("cleanup")
+              }
+          }
+          delay(250)
+          job.cancelAndJoin()
+
+          val result = withTimeoutOrNull(150) { delay(1_000); "done" }
+          println("timeout -> $result")
+      }
+    expected: |-
+      tick 0
+      tick 1
+      tick 2
+      cleanup
+      timeout -> null
+    validation: *ran
+  - id: cpu-work-and-ensure-active
+    kind: code
+    title: CPU work off the caller's thread
+    note: "`withContext(Dispatchers.Default)` moves the work; a loop without suspension must call `ensureActive()` to stay cancellable."
+    prerequisites: *run
+    code: |-
+      import kotlinx.coroutines.*
+
+      suspend fun countPrimes(limit: Int): Int = withContext(Dispatchers.Default) {
+          var count = 0
+          for (n in 2..limit) {
+              ensureActive()
+              if ((2..Math.sqrt(n.toDouble()).toInt()).none { n % it == 0 }) count++
+          }
+          count
+      }
+
+      fun main() = runBlocking {
+          println(countPrimes(10_000))
+      }
+    expected: "1229"
+    validation: *ran
+  - id: bridging-callbacks
+    kind: code
+    title: Bridging callbacks and futures
+    note: "`suspendCancellableCoroutine` is `withCheckedContinuation`; `CompletableFuture.await()` ships in coroutines-core."
+    prerequisites: *run
+    code: |-
+      import kotlinx.coroutines.*
+      import kotlinx.coroutines.future.await
+      import java.util.concurrent.CompletableFuture
+      import kotlin.coroutines.resume
+
+      fun fetchTheme(callback: (String) -> Unit) {          // a callback API you do not own
+          Thread { Thread.sleep(20); callback("dark") }.start()
+      }
+
+      suspend fun fetchTheme(): String = suspendCancellableCoroutine { cont ->
+          fetchTheme { value -> cont.resume(value) }
+      }
+
+      fun main() = runBlocking {
+          println(fetchTheme())
+          println(CompletableFuture.supplyAsync { 6 * 7 }.await())
+      }
+    expected: |-
+      dark
+      42
+    validation: *ran
+  - id: swift-to-kotlin
+    kind: table
+    title: Swift concurrency → coroutines
+    note: The concepts map one to one; the defaults differ.
+    headers: [Swift, Kotlin, Difference]
+    rows:
+      - ["`async let`", "`async { }` + `await()`", "needs a scope; `async` is a builder, not a keyword"]
+      - ["`withThrowingTaskGroup`", "`coroutineScope { map { async { } }.awaitAll() }`", "same structured semantics"]
+      - ["`Task { }`", "`scope.launch { }`", "always launched in an explicit scope"]
+      - ["`Task.detached`", "`GlobalScope.launch`", "discouraged for the same reasons"]
+      - ["`Task.checkCancellation()`", "`ensureActive()`", "`CancellationException` must be rethrown, never swallowed"]
+      - ["`withCheckedContinuation`", "`suspendCancellableCoroutine`", "resuming twice throws `IllegalStateException`"]
+      - ["`@MainActor`", "`Dispatchers.Main` / `withContext(Dispatchers.Main)`", "a dispatcher, not a compiler-checked isolation domain"]
+  - id: coroutine-rules
+    kind: rules
+    title: Rules
+    note: What reviewers flag first.
+    items:
+      - tone: bad
+        text: "`runBlocking` inside a coroutine or on the Android main thread blocks the thread it runs on."
+      - tone: bad
+        text: "`catch (e: Exception)` around a suspend call swallows `CancellationException` — rethrow it, or catch narrower types."
+      - tone: good
+        text: "Launch in a scope with a lifetime (`viewModelScope`, `lifecycleScope`, your own `CoroutineScope`), never `GlobalScope`."
+      - tone: good
+        text: "Make suspend functions main-safe: they switch dispatcher themselves with `withContext`."
