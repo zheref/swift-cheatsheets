@@ -193,6 +193,8 @@ swift-cheatsheets/
 ├── content/languages/swift/   the Swift catalog: language.yaml, sheets/*.yaml, diagrams/*.svg
 ├── src/
 │   ├── content/               renderer-independent: schema, loader, highlighter, inline markup, search
+│   ├── bankai/                the Bankai candidate primitives: tokens, behaviour hooks, Chakra layout,
+│   │                          selector, search, code block (docs/BANKAI-PRIMITIVES.md)
 │   ├── ui/                    framework-neutral React + Chakra: the page, cards, theme, hooks
 │   ├── adapters/gatsby/       the Gatsby page template (thin)
 │   ├── adapters/offline/      the offline renderer and its browser entry (thin)
