@@ -176,21 +176,35 @@ const key = async (k: string, target: EventTarget = document.activeElement ?? do
 
 describe("the primitives carry no product dependency (AC-1)", () => {
   const dir = path.join(ROOT, "src/bankai");
-  const files = fs.readdirSync(dir).filter((f) => /\.tsx?$/.test(f));
+  const walk = (d: string): string[] =>
+    fs.readdirSync(d, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? walk(path.join(d, e.name)) : [path.join(d, e.name)]));
+  const files = walk(dir).filter((f) => /\.tsx?$/.test(f));
+  /** Every module specifier, in any form: static `from`, bare side-effect `import`, dynamic `import()`, `require()`; either quote. */
+  const specifiers = (src: string) =>
+    [...src.matchAll(/(?:\bfrom\s*|\bimport\s*\(?\s*|\brequire\s*\(\s*)["'`]([^"'`]+)["'`]/g)].map((m) => m[1]!);
+
+  it("finds every specifier form, so the rule cannot be dodged by syntax", () => {
+    expect(specifiers(`import "lodash";\nimport x from 'lodash';\nawait import("gatsby-link");\nrequire("zod");\nexport { a } from "./a";`)).toEqual([
+      "lodash",
+      "lodash",
+      "gatsby-link",
+      "zod",
+      "./a",
+    ]);
+  });
 
   it("import only React, Chakra UI and each other", () => {
     expect(files.length).toBeGreaterThanOrEqual(9);
     for (const f of files) {
-      const src = fs.readFileSync(path.join(dir, f), "utf8");
-      const specifiers = [...src.matchAll(/^\s*(?:import|export)\b[^;]*?from\s+"([^"]+)"/gm)].map((m) => m[1]!);
-      for (const s of specifiers) expect(["react", "@chakra-ui/react"].includes(s) || /^\.\/[A-Za-z]+$/.test(s), `${f} imports ${s}`).toBe(true);
+      const src = fs.readFileSync(f, "utf8");
+      for (const s of specifiers(src)) expect(["react", "@chakra-ui/react"].includes(s) || /^\.\/[A-Za-z]+$/.test(s), `${f} imports ${s}`).toBe(true);
       // No router, no framework adapter, no content model, by name either.
       expect(src, f).not.toMatch(/gatsby|@reach\/router|react-router|\.\.\/content|\.\.\/ui/);
     }
   });
 
   it("keep behaviour and tokens framework-neutral: no styling engine below the Chakra layer", () => {
-    const imports = (f: string) => [...fs.readFileSync(path.join(dir, f), "utf8").matchAll(/from\s+"([^"]+)"/g)].map((m) => m[1]);
+    const imports = (f: string) => specifiers(fs.readFileSync(path.join(dir, f), "utf8"));
     expect(imports("tokens.ts")).toEqual([]);
     expect(imports("behaviour.ts")).toEqual(["react"]);
     expect(imports("scheme.ts")).toEqual(["react"]);
@@ -309,6 +323,7 @@ describe.each(PROVEN)("%s through the primitives (AC-2, AC-3)", (id) => {
 
 describe("copy feedback on the code block", () => {
   const catalog = catalogOf("kotlin-fixture");
+  const status = () => document.querySelector(".codeblock [role='status']")!.textContent;
 
   it("copies the code, says so in the button and to assistive technology, then resets", async () => {
     const writeText = vi.fn(async () => {});
@@ -320,21 +335,27 @@ describe("copy feedback on the code block", () => {
     expect(writeText).toHaveBeenCalledWith(firstCode(catalog));
     expect(button.textContent).toBe("Copied");
     expect(button.dataset.state).toBe("copied");
-    expect(document.querySelector(".codeblock [role='status']")!.textContent).toBe("Copied");
+    expect(status()).toBe("Copied");
+    // A second success is announced again: the status text changes, invisibly.
+    await act(async () => button.click());
+    expect(status()).toBe("Copied\u00a0");
     await act(async () => vi.advanceTimersByTime(2000));
     expect(button.textContent).toBe("Copy");
-    expect(document.querySelector(".codeblock [role='status']")!.textContent).toBe("");
+    expect(status()).toBe("");
   });
 
-  it("says when copying failed, and how to copy instead", async () => {
+  it("says when copying failed and how to copy instead, and holds that until the next press", async () => {
     clipboard(async () => {
       throw new Error("denied");
     });
     await load(catalog);
+    vi.useFakeTimers();
     const button = document.querySelector<HTMLButtonElement>("button.copy")!;
     await act(async () => button.click());
     expect(button.dataset.state).toBe("failed");
     expect(button.textContent).toBe("Copy failed — select the text");
+    await act(async () => vi.advanceTimersByTime(10_000));
+    expect(button.dataset.state).toBe("failed");
   });
 
   it("shows no button where the clipboard is unavailable", async () => {
@@ -343,13 +364,90 @@ describe("copy feedback on the code block", () => {
     expect(document.querySelector("button.copy")).toBeNull();
   });
 
-  it("takes the consumer's own labels", () => {
-    const html = renderToString(
+  it("takes the consumer's own labels, keeps a default for any left undefined, and names what it copies", async () => {
+    clipboard(async () => {
+      throw new Error("denied");
+    });
+    const block = (
       <ChakraProvider value={system}>
-        <CodeBlock code="x" language="text" copy={{ idle: "Copiar" }} />
-      </ChakraProvider>,
+        <CodeBlock code="x" language="text" copy={{ idle: "Copiar", copied: undefined, context: "snippet de Kotlin" }} />
+      </ChakraProvider>
     );
-    expect(html).toContain('class="codeblock');
+    document.body.innerHTML = `<div id="root">${renderToString(block)}</div>`;
+    await act(async () => {
+      mounted = hydrateRoot(document.getElementById("root")!, block);
+    });
+    const button = document.querySelector<HTMLButtonElement>("button.copy")!;
+    expect(button.textContent).toBe("Copiar snippet de Kotlin");
+    // The visible label stays the start of the accessible name (WCAG 2.5.3).
+    expect(button.firstChild!.textContent).toBe("Copiar");
+    await act(async () => button.click());
+    expect(button.firstChild!.textContent).toBe("Copy failed — select the text");
+  });
+
+  it("sets nothing when the block is gone before the clipboard answers", async () => {
+    let resolve!: () => void;
+    clipboard(() => new Promise<void>((r) => (resolve = r)));
+    await load(catalog);
+    const orig = console.error;
+    const errors: unknown[] = [];
+    console.error = (...args: unknown[]) => errors.push(args);
+    try {
+      const button = document.querySelector<HTMLButtonElement>("button.copy")!;
+      act(() => button.click());
+      act(() => mounted!.unmount());
+      mounted = null;
+      vi.useFakeTimers();
+      await act(async () => resolve());
+      expect(vi.getTimerCount()).toBe(0);
+      expect(errors).toEqual([]);
+    } finally {
+      console.error = orig;
+    }
+  });
+});
+
+describe("the drawer and the search keys, at the edges", () => {
+  const catalog = catalogOf("typescript-fixture");
+
+  it("closes the drawer when the window widens past the breakpoint, and stops listening on unmount", async () => {
+    const listeners = new Set<() => void>();
+    const mql = {
+      matches: false,
+      addEventListener: (_: string, l: () => void) => listeners.add(l),
+      removeEventListener: (_: string, l: () => void) => listeners.delete(l),
+    };
+    const matchMedia = vi.fn(() => mql);
+    vi.stubGlobal("matchMedia", matchMedia);
+    try {
+      await load(catalog);
+      expect(matchMedia).toHaveBeenCalledWith("(min-width: 901px)");
+      $("p-menu").style.display = "inline-flex";
+      await act(async () => $("p-menu").click());
+      expect($("p-shell").hasAttribute("data-nav-open")).toBe(true);
+      mql.matches = true;
+      await act(async () => listeners.forEach((l) => l()));
+      expect($("p-shell").hasAttribute("data-nav-open")).toBe(false);
+      act(() => mounted!.unmount());
+      mounted = null;
+      expect(listeners.size).toBe(0);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("lets a consumer turn the search shortcut off", async () => {
+    const field = (
+      <ChakraProvider value={system}>
+        <SearchField id="off-q" value="" onValueChange={() => {}} label="Search" placeholder="Search" shortcut={false} />
+      </ChakraProvider>
+    );
+    document.body.innerHTML = `<div id="root">${renderToString(field)}</div>`;
+    await act(async () => {
+      mounted = hydrateRoot(document.getElementById("root")!, field);
+    });
+    await key("/", document.body);
+    expect(document.activeElement).not.toBe($("off-q"));
   });
 });
 
@@ -399,6 +497,14 @@ describe("both schemes (AC-3)", () => {
     });
     expect(() => new Function(schemeInitScript(STORAGE_KEY))()).not.toThrow();
     get.mockRestore();
+  });
+});
+
+describe("the pre-paint script's storage key", () => {
+  it("refuses a key that could end the script element, and accepts a plain identifier", () => {
+    expect(() => schemeInitScript("</script><script>alert(1)//")).toThrow(/storage key must match/);
+    expect(() => schemeInitScript("")).toThrow();
+    expect(schemeInitScript("cheat-theme")).not.toMatch(/<\//);
   });
 });
 

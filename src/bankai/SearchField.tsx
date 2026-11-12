@@ -14,9 +14,10 @@ export interface SearchFieldProps {
   onValueChange: (value: string) => void;
   /** The accessible name: what is searched ("Search all Kotlin sheets"). */
   label: string;
-  placeholder?: string;
-  /** The key that focuses the field from anywhere on the page. */
-  shortcut?: string;
+  /** The field's only visible text, so it is required: what to type, and the shortcut. */
+  placeholder: string;
+  /** The key that focuses the field from anywhere on the page; `false` turns it off. */
+  shortcut?: string | false;
 }
 
 export function SearchField({ id, value, onValueChange, label, placeholder, shortcut = "/" }: SearchFieldProps) {

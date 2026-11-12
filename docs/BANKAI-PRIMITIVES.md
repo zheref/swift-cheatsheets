@@ -38,15 +38,17 @@ Every primitive is assigned to exactly one layer, and dependencies point down on
  product           src/ui/ (CatalogPage, cards, languages, theme, hooks)   ← knows the content model
    │ composes
  Chakra layer      src/bankai/*.tsx, system.ts, controls.ts               ← @chakra-ui/react + React
-   │ composes
- behaviour         src/bankai/behaviour.ts, scheme.ts                     ← React only
-   │ reads
- tokens            src/bankai/tokens.ts                                   ← no imports at all
+   ├─ composes ─▶ behaviour   src/bankai/behaviour.ts, scheme.ts         ← React only
+   └─ reads ────▶ tokens      src/bankai/tokens.ts                       ← no imports at all
 
  adapters          src/adapters/gatsby, src/adapters/offline              ← routing, pages, <head>, mount
 ```
 
-- **Tokens** are plain data. Any styling engine can read them.
+- **Tokens** are plain data with no imports. Most groups (sizes, spacing, radii, type,
+  layers, overlays, motion) are plain CSS values any styling engine can use. Two are the
+  Chakra layer's mapping: `color` holds Chakra semantic-token paths (`cs.*`) and `media`
+  holds emotion selector keys. An extraction splits those two into neutral role names plus
+  a Chakra mapping (§ 6.1). Behaviour and tokens are siblings: the hooks read no token.
 - **Behaviour** is framework-neutral React: hooks with no markup and no styling engine,
   covering focus, keyboard, dismissal and copy feedback. A Tailwind consumer such as
   `bankai-site` composes the same hooks around its own markup.
@@ -58,9 +60,10 @@ Every primitive is assigned to exactly one layer, and dependencies point down on
   and from `file://`.
 
 [`test/bankai.test.tsx`](../test/bankai.test.tsx) enforces the arrows. `src/bankai/`
-imports only `react`, `@chakra-ui/react` and itself. It never imports `gatsby`, a router,
-`src/content/` or `src/ui/`. `tokens.ts` imports nothing, and `behaviour.ts` and
-`scheme.ts` import only `react`.
+imports only `react`, `@chakra-ui/react` and itself. The check reads every specifier form
+(static, side-effect, dynamic `import()` and `require()`, with either quote) in every file
+under the folder. It never imports `gatsby`, a router, `src/content/` or `src/ui/`.
+`tokens.ts` imports nothing, and `behaviour.ts` and `scheme.ts` import only `react`.
 
 ## 3. Inventory and ownership
 
@@ -117,8 +120,9 @@ means it is proven here and moves in § 6, *product* means it stays in this repo
 
 ### 3.4 Search and filter controls → `SearchField` · **extract** · Chakra layer (+ `useSearchKeys`, behaviour)
 
-- **Props.** `id`, `value`, `onValueChange`, `label` (its accessible name), `placeholder`,
-  `shortcut` (default `/`).
+- **Props.** `id`, `value`, `onValueChange`, `label` (its accessible name), `placeholder`
+  (required: it is the field's only visible text), `shortcut` (default `/`; `false` turns it
+  off, as WCAG 2.1.4 asks a single-character shortcut to allow).
 - **State.** None. The consumer owns the query and the filtering (`src/content/search.ts`,
   which stays in the product). The field owns its keys: `/` focuses and selects it from
   anywhere but another field, and Escape clears it and lets go of focus.
@@ -132,14 +136,25 @@ means it is proven here and moves in § 6, *product* means it stays in this repo
 ### 3.5 Code block with copy feedback → `CodeBlock` · **extract** · Chakra layer (+ `useCopy`, behaviour)
 
 - **Props.** `code`, `language` (a label, `data-lang`), `tokens` (`{text, kind?}`, where
-  `kind` is a syntax role), `tone`, `copy` (`true` or custom labels), `resetAfterMs`.
-- **State.** The copy result: `idle` → `copied` | `failed` → `idle` after 2s.
+  `kind` is a syntax role), `tone`, `copy` (`true` or labels `{idle, copied, failed,
+  context}`; a label left `undefined` keeps its default), `resetAfterMs`.
+- **State.** The copy result: `idle` → `copied` → `idle` after 2s; `idle` → `failed`, held
+  until the next press, because it carries an instruction a reader may still be finding.
+  Nothing is set after unmount, even if the clipboard answers late.
 - **Accessibility.** React escapes every token. The copy button appears **only once scripts
-  run and the clipboard API exists**, so it is never a dead control. The result is announced
-  by a polite live region (UX-4), and failure says what to do instead ("select the text").
-  The button is 44px on touch (UX-3).
+  run and the clipboard API exists**, so it is never a dead control. Every result is
+  announced by a polite live region (UX-4), a repeated success included, and failure says
+  what to do instead ("select the text"). `context` adds a visually hidden suffix to the
+  button's name ("Copy Kotlin snippet"), so several buttons on a page are told apart, while
+  the visible label stays the start of the name (WCAG 2.5.3). The button is 38px on a fine
+  pointer, matching the bar's controls, and 44px on touch (UX-3). Its border shares the
+  control-boundary contrast gap every control here has today (1.25:1), which #5 closes for
+  all of them with a control-boundary colour role.
 - **Responsive.** The code scrolls horizontally inside its own box, never the page (UX-7).
-  The button sits above the code, never over it.
+  The button sits above the code, never over it, in a row reserved at the button's own
+  height, so the button appearing after hydration shifts nothing. Where no button can
+  appear (scripts off, no clipboard API), the reserved row stays. A collapsing row would
+  move the page as it hydrates, which UX-7 rules out.
 - **Highlighting stays the consumer's.** The primitive runs no highlighter.
   `src/content/highlight.ts` tokenizes for this reference, and `bankai-site` would pass
   shiki's output.
@@ -174,7 +189,9 @@ See [§ 4](#4-tokens).
 ### 3.9 Theme toggle and colour scheme → `ThemeToggle`, `useColorScheme`, `schemeInitScript` · **extract** · Chakra layer + behaviour
 
 - **Contract.** `<html data-theme="dark|light" class="dark|light">`, remembered under a key
-  the consumer names. The pre-paint script applies it before first paint. The hook starts at
+  the consumer names. The key is spliced into the pre-paint `<script>`, so it must be a
+  build-time identifier (`[A-Za-z0-9._-]{1,64}`); anything else throws rather than ending
+  the script early. The pre-paint script applies it before first paint. The hook starts at
   the default on the server and on the first client render, so hydration always matches,
   then reads the real scheme after mount.
 - **Bankai equivalent.** `bankai-site`'s `AppTheme` and `useAppTheme` have the same shape (an
@@ -213,15 +230,20 @@ moved unchanged**, which is why the rendered page is byte-identical (§ 5).
 
 | Group | Shape | What #5 does with it |
 | --- | --- | --- |
-| `color` | role → Chakra semantic path (`fg: "cs.fg"`); the palette behind it is the consumer's (`Palette`, 19 roles: surfaces, tones, syntax) | contrast fixes are palette edits in `src/ui/theme.ts`; no primitive changes |
-| `fontSize`, `lineHeight` | **semantic roles**: `body`, `control`, `input`, `hint`, `meta`, `groupLabel`, `navTitle`, `code`, `icon` | settles the scale *under* the roles (role → step) and adds the narrow floors (OQ-1: dense on desktop, 12px / 16px floors on narrow screens only) as a per-role narrow value; primitives keep asking for roles |
-| `space` | roles: `barGap`, `barPadding`, `mainPadding(Narrow)`, `railPadding`, `navItemPadding`, `optionPadding`, `menuPadding`, … | moves values onto a spacing step scale |
+| `color` | role → Chakra semantic path (`fg: "cs.fg"`); the palette behind it is the consumer's (`Palette`, 19 roles: surfaces, tones, syntax) | contrast fixes are palette edits in `src/ui/theme.ts`; **one new role is owed**: `line` serves both dividers and control borders today, so a control-boundary colour (UX-1, WCAG 1.4.11) needs its own role before a value change can fix it without darkening every divider |
+| `fontSize`, `lineHeight`, `letterSpacing` | **semantic roles**: `body`, `control`, `input`, `hint`, `meta`, `groupLabel`, `navTitle`, `code`, `icon` | settles the scale *under* the roles (role → step) and adds the narrow floors (OQ-1: dense on desktop, 12px / 16px floors on narrow screens only). The cheapest form that touches no component: emit each role as a custom property (`--fs-hint`) with one narrow-floor block, and point the role at the property |
+| `space` | roles: `barGap`, `barPadding`, `mainPadding(Narrow)`, `railPadding`, `navItemPadding`, `optionPadding`, `menuPadding`, `codePadding`, `toolbarGap`, `actionPaddingX`, … | moves values onto a spacing step scale |
 | `radius` | `option`, `code`, `control`, `menu`, `pill` | same |
 | `size` | `control` (38px), `option` (40px), `touch` (44px), `rail`, `menuMin`, `clipNarrow` | `touch` is already the UX-3 floor |
 | `layer` | one z-index ladder: `topbar` 20 < `menu` 30 < `scrim` 50 < `drawer` 60 | overlays never fight |
 | `overlay` | `scrim`, `menuShadow`, `drawerShadow`, `hover`, `selected` | state washes and elevations |
 | `media`, `wideQuery` | `narrow`, `touch`, `reducedMotion`, `print`; the same breakpoint as a `matchMedia` query | one breakpoint, named once |
 | `motion`, `focusRing` | the drawer's slide; `outside` / `inside` focus outlines | UX-9, UX-1 |
+
+Every size, spacing, radius and letter-spacing a primitive uses is one of these roles;
+`src/bankai/` holds no other length literal. `tokens` (the aggregate export) is the shape
+#5 and an extracted package carry; the primitives import its named groups, and a runtime
+override (a provider) is not part of this contract.
 
 Roles rather than steps are a deliberate choice. A primitive asks *what a value is for*
 (`fontSize.control`), and the theme decides *which step of its scale* that is. That
@@ -251,7 +273,8 @@ test with **its own palette, fonts and storage key**. It never touches the produ
 | AC-3: hydration | `hydrateRoot` over that markup: no recoverable error, no `console.error`, in dark and in a light scheme applied by the pre-paint script |
 | AC-3: keyboard | `/` focuses the search and Escape clears it; the selector opens, recomputes on open, closes on Escape back onto its toggle without clearing the search, and closes on an outside press; the drawer takes focus, makes the page inert, gives focus back on Escape, and closes on a link or the scrim |
 | AC-3: both themes | both palettes are emitted; the toggle switches `data-theme`, the class and storage, and names the action it will take |
-| copy feedback | copies the code, says "Copied" in the button and the live region, resets after 2s; says how to recover on failure; hidden without a clipboard |
+| copy feedback | copies the code, says "Copied" in the button and the live region, re-announces a repeated success, resets after 2s; says how to recover on failure and holds it; hidden without a clipboard; takes a consumer's labels and context; sets nothing after unmount |
+| edges | the drawer closes when the window widens past the breakpoint and stops listening on unmount; a consumer can turn the search shortcut off; the pre-paint script refuses a storage key that could end its `<script>` |
 
 **Gatsby compatibility.** The primitives import nothing from Gatsby. They are rendered by
 the Gatsby page template (`src/adapters/gatsby/CatalogTemplate.tsx`) at build time and by
@@ -268,9 +291,9 @@ split ownership before there is a second consumer that needs it. The packages:
 
 | Package (proposed name) | Contents | Depends on |
 | --- | --- | --- |
-| `@bankai/tokens` | `tokens.ts`'s role shape, plus a JSON/CSS-variable export generated from `bankai-site`'s `tokens.json` | nothing |
+| `@bankai/tokens` | `tokens.ts`'s engine-neutral groups, with `color` and `media` as neutral role names; a JSON/CSS-variable export generated from `bankai-site`'s `tokens.json` | nothing |
 | `@bankai/react` | behaviour: `useCopy`, `useDisclosure`, `useDrawer`, `useSearchKeys`, `useColorScheme`, `schemeInitScript` | `react` (peer) |
-| `@bankai/chakra` | the Chakra layer: `AppShell`, `TopicNav`, `SearchField`, `DisclosureSelector`, `CodeBlock`, `ThemeToggle`, `definePrimitivesConfig`, `syntaxCss`, `codeBlockCss` | `@bankai/react`, `@bankai/tokens`; `react` and `@chakra-ui/react` (peers) |
+| `@bankai/chakra` | the Chakra layer: `AppShell`, `TopicNav`, `SearchField`, `DisclosureSelector`, `CodeBlock`, `ThemeToggle`, `barButton`, `narrowTarget`, `definePrimitivesConfig`, `syntaxCss`, `codeBlockCss`, and the Chakra mapping of `color` and `media` | `@bankai/react`, `@bankai/tokens`; `react` and `@chakra-ui/react` (peers) |
 
 `bankai-site` consumes `@bankai/tokens` and `@bankai/react` under Tailwind. It does not
 take on Chakra. This reference consumes all three. The npm scope and the names are the
@@ -283,9 +306,13 @@ hook signatures in `behaviour.ts` and `scheme.ts`, the `Palette`/`PrimitivesThem
 and the token object. It also includes these **DOM contracts**, which consumers rely on:
 
 - `<html data-theme class>` for the scheme, and `--<role>` custom properties for the palette;
+- the Chakra semantic-token namespace `cs` (`--chakra-colors-cs-<role>`), which is this
+  reference's name and which an extraction renames to a neutral one (a breaking change for
+  any consumer that styled against it, so it happens at `0.1.0`, before anyone does);
 - `.t-<role>` on syntax tokens and `tone-<tone>` on a code block;
-- `data-state` on a copy button; `data-nav-open` on the shell; `.active` and
-  `aria-current="location"` on the current topic.
+- class hooks: `.codeblock` and `button.copy` (`data-state`), `.navgroup` on a rail's group
+  label, `.hint` on a selector option's hint, `.active` and `aria-current="location"` on the
+  current topic; `data-nav-open` on the shell.
 
 Consumer hooks (`itemProps`, `rootProps`, `ids`) are passed through unchanged. A primitive
 adds no test attribute of its own.
@@ -316,7 +343,7 @@ consumer's content model, router or framework adapter. The import rule in
   gets dark after a reload, with the toggle's label inverted. This was measured in a
   browser on `main` (`a6f14a1`) and on this branch alike; the offline file is not affected.
   The fix belongs to the Gatsby adapter (set `lang` in `onRenderBody`), not to the
-  primitives, and is tracked separately.
+  primitives, and is tracked in zheref/swift-cheatsheets#10.
 
 ### 6.5 Consumer migration
 

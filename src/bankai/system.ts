@@ -9,7 +9,7 @@
  * point at the same properties.
  */
 import { defineConfig, type SystemStyleObject } from "@chakra-ui/react";
-import { fontSize, lineHeight, media } from "./tokens";
+import { fontSize, lineHeight, media, radius, space } from "./tokens";
 
 /** Surface and text roles every primitive reads. */
 export type SurfaceRole = "bg" | "bg2" | "card" | "line" | "fg" | "dim" | "faint" | "accent";
@@ -45,10 +45,10 @@ export const syntaxCss: Record<string, SystemStyleObject> = {
 /** A code block's box, scoped to where the consumer shows code (`.card pre` here). */
 export const codeBlockCss = (scope: string): Record<string, SystemStyleObject> => ({
   [`${scope} pre`]: {
-    margin: 0, background: "var(--bg2)", border: "1px solid var(--line)", borderRadius: "8px",
-    padding: "9px 10px", overflowX: "auto", fontSize: fontSize.code, lineHeight: lineHeight.code, whiteSpace: "pre",
+    margin: 0, background: "var(--bg2)", border: "1px solid var(--line)", borderRadius: radius.code,
+    padding: space.codePadding, overflowX: "auto", fontSize: fontSize.code, lineHeight: lineHeight.code, whiteSpace: "pre",
   },
-  [`${scope} pre + pre`]: { marginTop: "7px" },
+  [`${scope} pre + pre`]: { marginTop: space.codeStackGap },
 });
 
 export function definePrimitivesConfig({ palettes, fonts, globalCss = {} }: PrimitivesTheme) {

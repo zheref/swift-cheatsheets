@@ -8,7 +8,7 @@
  * listed as not yet published, never linked.
  */
 import { Box, chakra, Heading, Text } from "@chakra-ui/react";
-import { memo, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { DisclosureSelector, media, type SelectorOption } from "../bankai";
 import { type Arrival, relatedTopics, switchLink, topicsOf } from "../content/languages";
 import type { Catalog, SiteLanguage } from "../content/schema";
@@ -52,7 +52,8 @@ export const LanguageSelector = memo(function LanguageSelector({
       }),
     [languages, concept, current],
   );
-  return <DisclosureSelector label="Language" value={self?.name ?? current} options={options} onOpen={() => setConcept(conceptAt())} ids={IDS} />;
+  const onOpen = useCallback(() => setConcept(conceptAt()), [conceptAt]);
+  return <DisclosureSelector label="Language" value={self?.name ?? current} options={options} onOpen={onOpen} ids={IDS} />;
 });
 
 /**

@@ -21,28 +21,40 @@ export type CopyState = "idle" | "copied" | "failed";
 /**
  * Copy feedback. `available` is false on the server and until mount, and stays
  * false where the clipboard API is missing, so a consumer never renders a dead
- * button; `state` returns to idle `resetAfterMs` after each result.
+ * button. `copied` returns to idle `resetAfterMs` after each success; `failed`
+ * holds until the next press, since it carries an instruction a reader may still
+ * be finding. `count` grows with every result, so a repeated one can be announced
+ * again. Nothing is set after unmount, even if the clipboard answers late.
  */
-export function useCopy(text: string, resetAfterMs = 2000): { available: boolean; state: CopyState; copy: () => Promise<void> } {
+export function useCopy(
+  text: string,
+  resetAfterMs = 2000,
+): { available: boolean; state: CopyState; count: number; copy: () => Promise<void> } {
   const [available, setAvailable] = useState(false);
-  const [state, setState] = useState<CopyState>("idle");
+  const [result, setResult] = useState<{ state: CopyState; count: number }>({ state: "idle", count: 0 });
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const mounted = useRef(false);
   useEffect(() => {
+    mounted.current = true;
     setAvailable(typeof navigator !== "undefined" && typeof navigator.clipboard?.writeText === "function");
-    return () => clearTimeout(timer.current);
+    return () => {
+      mounted.current = false;
+      clearTimeout(timer.current);
+    };
   }, []);
   const copy = useCallback(async () => {
+    clearTimeout(timer.current);
     let next: CopyState = "copied";
     try {
       await navigator.clipboard.writeText(text);
     } catch {
       next = "failed";
     }
-    setState(next);
-    clearTimeout(timer.current);
-    timer.current = setTimeout(() => setState("idle"), resetAfterMs);
+    if (!mounted.current) return;
+    setResult((r) => ({ state: next, count: r.count + 1 }));
+    if (next === "copied") timer.current = setTimeout(() => setResult((r) => ({ ...r, state: "idle" })), resetAfterMs);
   }, [text, resetAfterMs]);
-  return { available, state, copy };
+  return { available, state: result.state, count: result.count, copy };
 }
 
 /**
@@ -120,15 +132,17 @@ export function useDrawer<P extends HTMLElement, T extends HTMLElement>(
 /**
  * A page-wide search field's keys: `shortcut` focuses and selects it from
  * anywhere but another text field, and Escape clears it and lets go of focus.
+ * `false` turns the shortcut off (WCAG 2.1.4: a product offering a
+ * single-character shortcut should let the reader turn it off).
  */
-export function useSearchKeys<T extends HTMLInputElement>(shortcut: string, onClear: () => void): RefObject<T | null> {
+export function useSearchKeys<T extends HTMLInputElement>(shortcut: string | false, onClear: () => void): RefObject<T | null> {
   const input = useRef<T>(null);
   const clear = useLatest(onClear);
   useEffect(() => {
     const onKey = (ev: KeyboardEvent) => {
       const q = input.current;
       if (!q) return;
-      if (ev.key === shortcut && document.activeElement !== q) {
+      if (shortcut !== false && ev.key === shortcut && document.activeElement !== q) {
         const t = ev.target as HTMLElement | null;
         if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
         ev.preventDefault();

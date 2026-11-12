@@ -11,7 +11,7 @@ import { Box, chakra, VisuallyHidden } from "@chakra-ui/react";
 import { Fragment, memo } from "react";
 import { useCopy } from "./behaviour";
 import type { SyntaxRole } from "./system";
-import { color, colorVar, focusRing, fontSize, media, radius, size } from "./tokens";
+import { color, colorVar, focusRing, fontSize, media, radius, size, space } from "./tokens";
 
 export interface CodeToken {
   text: string;
@@ -23,6 +23,12 @@ export interface CopyLabels {
   idle: string;
   copied: string;
   failed: string;
+  /**
+   * What is copied, appended to the button's accessible name only ("Copy" + " Kotlin
+   * snippet"), so several copy buttons on one page are told apart. The visible label
+   * stays the start of the name (WCAG 2.5.3).
+   */
+  context?: string;
 }
 
 const COPY_LABELS: CopyLabels = { idle: "Copy", copied: "Copied", failed: "Copy failed — select the text" };
@@ -39,12 +45,24 @@ export interface CodeBlockProps {
    * and announces the result politely. `true` uses English labels.
    */
   copy?: boolean | Partial<CopyLabels>;
-  /** How long the copied/failed state lasts before the button reads idle again. */
+  /** How long the copied state lasts before the button reads idle again; a failure holds until the next press. */
   resetAfterMs?: number;
 }
 
+/** The consumer's labels over the defaults; a label given as `undefined` keeps its default. */
+const mergeLabels = (given: boolean | Partial<CopyLabels>): CopyLabels => {
+  const own = given === true || given === false ? {} : Object.fromEntries(Object.entries(given).filter(([, v]) => v !== undefined));
+  return { ...COPY_LABELS, ...own };
+};
+
+/** Touch-sized on a coarse pointer or the narrow layout, the bar's control height otherwise (UX-3). */
+const actionHeight = { minHeight: size.control, [media.touch]: { minHeight: size.touch } };
+
 function CopyButton({ code, labels, resetAfterMs }: { code: string; labels: CopyLabels; resetAfterMs: number }) {
-  const { available, state, copy } = useCopy(code, resetAfterMs);
+  const { available, state, count, copy } = useCopy(code, resetAfterMs);
+  const label = labels[state === "idle" ? "idle" : state];
+  // A repeated success changes the text by an invisible no-break space, so it is announced again.
+  const announcement = state === "idle" ? "" : `${labels[state]}${count % 2 === 1 ? "" : "\u00a0"}`;
   return (
     <>
       {available ? (
@@ -53,8 +71,7 @@ function CopyButton({ code, labels, resetAfterMs }: { code: string; labels: Copy
           className="copy"
           data-state={state}
           onClick={copy}
-          minH="32px"
-          px="8px"
+          px={space.actionPaddingX}
           bg={color.card}
           border="1px solid"
           borderColor={color.line}
@@ -64,14 +81,15 @@ function CopyButton({ code, labels, resetAfterMs }: { code: string; labels: Copy
           cursor="pointer"
           _hover={{ color: color.fg }}
           _focusVisible={focusRing.outside}
-          css={{ [media.touch]: { minHeight: size.touch } }}
+          css={actionHeight}
         >
-          {labels[state === "idle" ? "idle" : state]}
+          {label}
+          {labels.context ? <VisuallyHidden>{` ${labels.context}`}</VisuallyHidden> : null}
         </chakra.button>
       ) : null}
       {/* Announced once per result; the button's own label changing is not reliably read. */}
       <VisuallyHidden role="status" aria-live="polite">
-        {state === "idle" ? "" : labels[state]}
+        {announcement}
       </VisuallyHidden>
     </>
   );
@@ -96,12 +114,12 @@ export const CodeBlock = memo(function CodeBlock({ code, language, tokens, tone,
     </pre>
   );
   if (!copy) return block;
-  const labels = { ...COPY_LABELS, ...(copy === true ? {} : copy) };
   return (
     <Box className="codeblock">
-      {/* Above the code, never over it: a long first line stays readable. */}
-      <Box display="flex" justifyContent="flex-end" minH="32px" mb="4px">
-        <CopyButton code={code} labels={labels} resetAfterMs={resetAfterMs} />
+      {/* Above the code, never over it: a long first line stays readable. The row is reserved at the
+          button's own height, so the button appearing after hydration shifts nothing (UX-7). */}
+      <Box display="flex" justifyContent="flex-end" mb={space.toolbarGap} css={actionHeight}>
+        <CopyButton code={code} labels={mergeLabels(copy)} resetAfterMs={resetAfterMs} />
       </Box>
       {block}
     </Box>

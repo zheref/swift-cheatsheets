@@ -9,14 +9,23 @@ import { useCallback, useEffect, useState } from "react";
 
 export type ColorScheme = "dark" | "light";
 
+/** A storage key the pre-paint script can carry: a build-time constant, never reader input. */
+const STORAGE_KEY = /^[A-Za-z0-9._-]{1,64}$/;
+
 /**
  * Applies the stored scheme before first paint. Inline it in `<head>`, so a
  * reader who chose light never sees a dark flash, and React never renders a
- * scheme-dependent attribute that could mismatch on hydration.
+ * scheme-dependent attribute that could mismatch on hydration. The key is spliced
+ * into a `<script>`, so it must be a plain identifier; anything else throws at
+ * build time rather than ending the script early (CWE-116).
  */
-export const schemeInitScript = (storageKey: string) =>
-  `(function(){var r=document.documentElement;try{var t=localStorage.getItem(${JSON.stringify(storageKey)});` +
-  `if(t==="light"||t==="dark"){r.setAttribute("data-theme",t);r.className=t;}}catch(e){}})();`;
+export const schemeInitScript = (storageKey: string) => {
+  if (!STORAGE_KEY.test(storageKey)) throw new Error(`schemeInitScript: storage key must match ${STORAGE_KEY}, got ${JSON.stringify(storageKey)}`);
+  return (
+    `(function(){var r=document.documentElement;try{var t=localStorage.getItem(${JSON.stringify(storageKey)});` +
+    `if(t==="light"||t==="dark"){r.setAttribute("data-theme",t);r.className=t;}}catch(e){}})();`
+  );
+};
 
 /**
  * The reader's scheme. The server and the first client render both use

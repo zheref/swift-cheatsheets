@@ -7,7 +7,7 @@
  */
 import { chakra, Heading, Text } from "@chakra-ui/react";
 import type { ReactNode } from "react";
-import { color, colorVar, fontSize, lineHeight, media, overlay, radius, size, space } from "./tokens";
+import { color, colorVar, fontSize, letterSpacing, lineHeight, media, overlay, radius, size, space } from "./tokens";
 
 export interface TopicItem {
   id: string;
@@ -43,7 +43,7 @@ export function TopicNav({ title, meta, titleAs = "h2", items, active, onNavigat
           key={`g-${group}`}
           fontSize={fontSize.groupLabel}
           textTransform="uppercase"
-          letterSpacing=".09em"
+          letterSpacing={letterSpacing.groupLabel}
           color={color.faint}
           m={space.groupLabelMargin}
           fontWeight={700}
@@ -88,10 +88,10 @@ export function TopicNav({ title, meta, titleAs = "h2", items, active, onNavigat
   }
   return (
     <>
-      <Heading as={titleAs} fontSize={fontSize.navTitle} lineHeight={lineHeight.title} m={space.navTitleMargin} letterSpacing=".02em" fontWeight={700} color={color.fg}>
+      <Heading as={titleAs} fontSize={fontSize.navTitle} lineHeight={lineHeight.title} m={space.navTitleMargin} letterSpacing={letterSpacing.navTitle} fontWeight={700} color={color.fg}>
         {title}
         {meta ? (
-          <chakra.span display="block" fontSize={fontSize.meta} color={color.faint} fontWeight={400} mt="2px">
+          <chakra.span display="block" fontSize={fontSize.meta} color={color.faint} fontWeight={400} mt={space.metaGap}>
             {meta}
           </chakra.span>
         ) : null}

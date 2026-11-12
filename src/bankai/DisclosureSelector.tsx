@@ -50,7 +50,7 @@ const optionStyle = {
   display: "flex",
   flexDirection: "column" as const,
   justifyContent: "center",
-  gap: "1px",
+  gap: space.optionLineGap,
   minHeight: size.option,
   padding: space.optionPadding,
   borderRadius: radius.option,

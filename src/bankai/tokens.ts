@@ -1,17 +1,19 @@
 /**
  * Design tokens for the Bankai candidate primitives (zheref/swift-cheatsheets#4).
  *
- * Plain data, no framework: every primitive in `src/bankai/` reads its colours,
- * sizes, spacing, radii, layers and overlays from here and from nowhere else, so
- * a consumer re-themes them by changing values, never components. The values are
- * the page's current ones, moved here unchanged — the dense desktop scale this
+ * Plain data with no imports: every primitive in `src/bankai/` reads its
+ * colours, sizes, spacing, radii, layers and overlays from here, so changing a
+ * value re-themes every primitive with no component edit. The values are the
+ * page's current ones, moved here unchanged — the dense desktop scale this
  * reference has always used. zheref/swift-cheatsheets#5 settles the type scale
  * and the narrow-screen floors on top of these names (docs/BANKAI-PRIMITIVES.md,
  * "Tokens").
  *
  * Names are semantic roles (what a value is for), not steps (how big it is):
  * a primitive asks for `fontSize.control`, and the theme decides which step of
- * its scale that is.
+ * its scale that is. Most groups are engine-neutral CSS values; two are not:
+ * `color` holds Chakra semantic-token paths and `media` holds emotion selector
+ * keys — the Chakra layer's mapping, which an extraction moves beside it.
  */
 
 /** Media conditions, as Chakra/emotion selectors. */
@@ -51,7 +53,7 @@ export const color = {
 export const colorVar = {
   fg: "var(--fg)",
   accent: "var(--accent)",
-  /** The caution tone: notices that explain rather than warn. */
+  /** The caution tone: notices that explain rather than warn, a failed action's label. */
   caution: "var(--legacy)",
 } as const;
 
@@ -109,8 +111,24 @@ export const space = {
   /** A popover's inner padding and its distance from its toggle. */
   menuPadding: "5px",
   menuOffset: "6px",
-  /** A popover option's padding. */
+  /** A popover option's padding, and the gap between its label and hint. */
   optionPadding: "6px 10px",
+  optionLineGap: "1px",
+  /** The gap between a title and its small print. */
+  metaGap: "2px",
+  /** A small action button's horizontal padding (copy). */
+  actionPaddingX: "8px",
+  /** The gap between a code block and the toolbar above it. */
+  toolbarGap: "4px",
+  /** A code block's padding, and the gap between consecutive blocks. */
+  codePadding: "9px 10px",
+  codeStackGap: "7px",
+} as const;
+
+/** Letter spacing, by role. */
+export const letterSpacing = {
+  groupLabel: ".09em",
+  navTitle: ".02em",
 } as const;
 
 export const radius = {
@@ -175,6 +193,9 @@ export const focusRing = {
   inside: { outline: `2px solid ${colorVar.accent}`, outlineOffset: "-2px" },
 } as const;
 
-/** Every token, as one object: the shape a consumer's theme overrides. */
-export const tokens = { media, wideQuery, color, colorVar, fontSize, lineHeight, space, radius, size, layer, overlay, motion, focusRing } as const;
+/**
+ * Every token, as one object: the shape #5 and an extracted package carry. Primitives
+ * import the named groups; a runtime override (a provider) is not part of this contract.
+ */
+export const tokens = { media, wideQuery, color, colorVar, fontSize, lineHeight, letterSpacing, space, radius, size, layer, overlay, motion, focusRing } as const;
 export type Tokens = typeof tokens;
