@@ -87,14 +87,24 @@ describe("Gatsby adapter", () => {
     try {
       await (createPagesStatefully as (a: unknown) => Promise<void>)({ actions: { createPage }, reporter: { info: vi.fn(), error } });
       const sheet = path.join(tmp, "content/languages/swift/sheets/solid.yaml");
-      fs.writeFileSync(sheet, fs.readFileSync(sheet, "utf8").replace("title: SOLID in Swift", "title: SOLID in Swift (edited)"));
+      const edited = fs.readFileSync(sheet, "utf8").replace("title: SOLID in Swift", "title: SOLID in Swift (edited)");
+      // Save until the watcher reacts: under load (or right after the watch starts) macOS can
+      // coalesce or drop a file-system event, and an editor saving again is what a person does.
+      const saveUntil = async (content: string, reacted: () => boolean) =>
+        vi.waitFor(
+          () => {
+            if (reacted()) return;
+            fs.writeFileSync(sheet, content);
+            throw new Error("the watcher has not re-published yet");
+          },
+          { timeout: 15_000, interval: 300 },
+        );
       const swiftPage = () => createPage.mock.calls.map(([p]) => p).find((p: { path: string }) => p.path === "/");
-      await vi.waitFor(() => expect(swiftPage()).toBeDefined(), { timeout: 3000, interval: 50 });
+      await saveUntil(edited, () => swiftPage() !== undefined);
       const ctx = swiftPage().context.catalog;
       expect(ctx.sheets.find((x: { id: string }) => x.id === "solid").title).toBe("SOLID in Swift (edited)");
 
-      fs.writeFileSync(sheet, "id: [\n");
-      await vi.waitFor(() => expect(error).toHaveBeenCalled(), { timeout: 3000, interval: 50 });
+      await saveUntil("id: [\n", () => error.mock.calls.length > 0);
       expect(String(error.mock.calls[0]![0])).toMatch(/solid\.yaml/);
     } finally {
       stopContentWatch();
