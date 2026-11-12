@@ -77,14 +77,14 @@ cards:
   - id: binary-search
     kind: code
     title: Binary search — lower bound
-    note: The first index whose value is not less than the target; `>>> 1` halves without overflow concerns.
+    note: The first index whose value is not less than the target. Plain division keeps the midpoint exact — `>>> 1` would wrap past 2^31 elements.
     prerequisites: *run
     code: |-
       function lowerBound(xs: readonly number[], target: number): number {
         let lo = 0;
         let hi = xs.length;                        // the answer lies in [lo, hi]
         while (lo < hi) {
-          const mid = (lo + hi) >>> 1;
+          const mid = Math.floor((lo + hi) / 2);   // exact up to 2^53
           if (xs[mid]! < target) lo = mid + 1;
           else hi = mid;
         }

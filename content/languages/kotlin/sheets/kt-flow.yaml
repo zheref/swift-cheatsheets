@@ -103,7 +103,7 @@ cards:
       fun main() = runBlocking {
           flowOf("a", "ab", "abc")
               .onEach { delay(50) }                  // a keystroke every 50 ms
-              .flatMapLatest { q -> flow { delay(80); emit("results for $q") } }
+              .flatMapLatest { q -> flow { delay(500); emit("results for $q") } }   // a slow search
               .collect { println(it) }
 
           println(flowOf("ana", "bo").zip(flowOf(31, 27, 99)) { n, a -> "$n:$a" }.toList())
@@ -133,8 +133,9 @@ cards:
 
       fun main() = runBlocking {
           val screen = CoroutineScope(coroutineContext + Job())   // stand-in for viewModelScope
-          ticker(100).onEach { println("tick $it") }.launchIn(screen)
-          delay(250)
+          val thirdTick = CompletableDeferred<Unit>()
+          ticker(100).onEach { println("tick $it"); if (it == 2) thirdTick.complete(Unit) }.launchIn(screen)
+          thirdTick.await()                                        // e.g. the screen goes away after three ticks
           screen.cancel()
           delay(200)
           println("after cancel: quiet")

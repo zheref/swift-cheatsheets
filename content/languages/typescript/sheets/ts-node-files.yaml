@@ -44,13 +44,14 @@ cards:
     note: "Write a temporary file in the same directory, flush it, then rename over the target: readers see the old file or the new one, never half."
     prerequisites: *run
     code: |-
+      import { randomUUID } from "node:crypto";
       import { mkdtemp, open, readFile, rename, rm } from "node:fs/promises";
       import { tmpdir } from "node:os";
-      import { dirname, join } from "node:path";
+      import { basename, dirname, join } from "node:path";
 
       async function writeFileAtomic(path: string, data: string): Promise<void> {
-        const temp = join(dirname(path), `.${process.pid}.${Date.now()}.tmp`);   // same file system
-        const handle = await open(temp, "w");
+        const temp = join(dirname(path), `.${basename(path)}.${randomUUID()}.tmp`);   // same file system, unique per call
+        const handle = await open(temp, "wx");     // exclusive: never truncates another writer's file
         try {
           await handle.writeFile(data, "utf8");
           await handle.sync();                     // on the device before the rename publishes it

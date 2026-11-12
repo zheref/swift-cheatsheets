@@ -28,19 +28,20 @@ cards:
         await sleep(ms);
         return name;
       }
-      const elapsed = (since: number) => Math.round((performance.now() - since) / 100) * 100;
 
       let start = performance.now();
-      const a = await load("user", 100);           // total = a + b
+      const a = await load("user", 100);           // total = a + b (about 200 ms)
       const b = await load("posts", 100);
-      console.log(a, b, "sequential ~", elapsed(start), "ms");
+      const sequential = performance.now() - start;
 
       start = performance.now();
-      const [c, d] = await Promise.all([load("user", 100), load("posts", 100)]);   // total = max(a, b)
-      console.log(c, d, "concurrent ~", elapsed(start), "ms");
+      const [c, d] = await Promise.all([load("user", 100), load("posts", 100)]);   // total = max(a, b) (about 100 ms)
+      const concurrent = performance.now() - start;
+      console.log(a, b, "|", c, d);
+      console.log("concurrent took well under the sequential time:", concurrent < sequential * 0.75);
     expected: |-
-      user posts sequential ~ 200 ms
-      user posts concurrent ~ 100 ms
+      user posts | user posts
+      concurrent took well under the sequential time: true
     validation: &ran
       status: ran
       toolchain: Node 24.16.0, TypeScript 5.9.3
@@ -74,36 +75,44 @@ cards:
   - id: cancellation-abortsignal
     kind: code
     title: Cancellation with AbortSignal
-    note: "Promises cannot be cancelled; work is. Pass a signal down and honour it at every await."
+    note: "Promises cannot be cancelled; work is. Pass a signal down, honour it at every await, and detach the listener when the wait ends normally."
     prerequisites: *run
     code: |-
       function delay(ms: number, signal?: AbortSignal): Promise<void> {
         return new Promise((resolve, reject) => {
           if (signal?.aborted) return reject(signal.reason);
-          const timer = setTimeout(resolve, ms);
-          signal?.addEventListener("abort", () => {
+          const onAbort = () => {
             clearTimeout(timer);
-            reject(signal.reason);
-          }, { once: true });
+            reject(signal!.reason);
+          };
+          const timer = setTimeout(() => {
+            signal?.removeEventListener("abort", onAbort);   // no listener left behind per tick
+            resolve();
+          }, ms);
+          signal?.addEventListener("abort", onAbort, { once: true });
         });
       }
 
-      async function poll(signal: AbortSignal) {
+      async function poll(signal: AbortSignal, onTick: (i: number) => void) {
         for (let i = 1; ; i++) {
-          await delay(100, signal);                // each await is a cancellation point
+          await delay(50, signal);                 // each await is a cancellation point
           console.log("tick", i);
+          onTick(i);
         }
       }
 
+      const controller = new AbortController();
       try {
-        await poll(AbortSignal.timeout(250));      // controller.abort() would give an AbortError
+        await poll(controller.signal, (i) => {
+          if (i === 2) controller.abort();          // e.g. the user left the screen
+        });
       } catch (e) {
-        console.log((e as DOMException).name);
+        console.log((e as DOMException).name);     // AbortSignal.timeout(ms) rejects the same way, as TimeoutError
       }
     expected: |-
       tick 1
       tick 2
-      TimeoutError
+      AbortError
     validation: *ran
   - id: async-iteration
     kind: code

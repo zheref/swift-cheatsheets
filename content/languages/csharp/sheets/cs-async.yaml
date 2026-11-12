@@ -39,10 +39,11 @@ cards:
       var both = await Task.WhenAll(Load("user"), Load("posts"));
       var concurrent = clock.ElapsedMilliseconds;
       Console.WriteLine($"{user} {posts} | {string.Join(" ", both)}");
-      Console.WriteLine($"sequential ~{sequential / 100 * 100} ms, concurrent ~{concurrent / 100 * 100} ms");
+      // About 200 ms against about 100 ms; compared, not printed, so a busy machine cannot change the output
+      Console.WriteLine($"concurrent took well under the sequential time: {concurrent < sequential * 3 / 4}");
     expected: |-
       user posts | user posts
-      sequential ~200 ms, concurrent ~100 ms
+      concurrent took well under the sequential time: True
     validation: &ran
       status: ran
       toolchain: .NET SDK 9.0.304 (net9.0, C# 13)
@@ -53,19 +54,21 @@ cards:
     note: Cancellation is a token you pass down; awaiting a cancelled operation throws `OperationCanceledException`.
     prerequisites: *run
     code: |-
-      static async Task Poll(CancellationToken token)
+      static async Task Poll(CancellationToken token, Action<int> onTick)
       {
           for (var i = 0; ; i++)
           {
               Console.WriteLine($"tick {i}");
-              await Task.Delay(100, token);
+              onTick(i);
+              await Task.Delay(50, token);           // a cancellation point
           }
       }
 
-      using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(250));
+      // new CancellationTokenSource(TimeSpan.FromSeconds(5)) cancels on a deadline the same way
+      using var cts = new CancellationTokenSource();
       try
       {
-          await Poll(cts.Token);
+          await Poll(cts.Token, i => { if (i == 2) cts.Cancel(); });   // e.g. the user left the screen
       }
       catch (OperationCanceledException)
       {
