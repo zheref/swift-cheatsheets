@@ -1,45 +1,23 @@
 /**
  * The language selector and the absence notice (zheref/swift-cheatsheets#2).
  *
- * The selector is a disclosure of plain links — `<details>`/`<summary>`, so it
- * opens from the keyboard and works with scripts off — listing every registry
- * language in order. Opening it reads the topic the reader is on, so each link
- * points at the equivalent topic, or carries the concept for the target to
- * explain its absence; a language with no catalog in this build is listed as not
- * yet published, never linked. Links rather than
- * a `<select>` that navigates on change, so arrowing through the options never
- * leaves the page (WCAG 3.2.2).
+ * The selector is the Bankai disclosure selector (src/bankai/DisclosureSelector.tsx)
+ * listing every registry language in order. Opening it reads the topic the reader
+ * is on, so each link points at the equivalent topic, or carries the concept for
+ * the target to explain its absence; a language with no catalog in this build is
+ * listed as not yet published, never linked.
  */
-import { Box, chakra, Heading, Text, VisuallyHidden } from "@chakra-ui/react";
-import { type KeyboardEvent, memo, useEffect, useRef, useState } from "react";
+import { Box, chakra, Heading, Text } from "@chakra-ui/react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { DisclosureSelector, media, type SelectorOption } from "../bankai";
 import { type Arrival, relatedTopics, switchLink, topicsOf } from "../content/languages";
 import type { Catalog, SiteLanguage } from "../content/schema";
 
-const NARROW = "@media (max-width: 900px)";
 /** Touch-sized targets (UX-3) on narrow screens and on any coarse pointer, whatever the width. */
-const TOUCH = "@media (max-width: 900px), (pointer: coarse)";
-
-const optionStyle = {
-  display: "flex",
-  flexDirection: "column" as const,
-  justifyContent: "center",
-  gap: "1px",
-  minHeight: "40px",
-  padding: "6px 10px",
-  borderRadius: "7px",
-  fontSize: "13.2px",
-  lineHeight: 1.3,
-  textDecoration: "none",
-  [TOUCH]: { minHeight: "44px" },
-};
+const TOUCH = media.touch;
 
 const TOGGLE_ID = "lang-toggle";
-
-const Hint = ({ children }: { children: string }) => (
-  <chakra.span className="hint" display="block" fontSize="12px" color="cs.faint" fontWeight={400}>
-    {children}
-  </chakra.span>
-);
+const IDS = { nav: "langnav", menu: "langmenu", toggle: TOGGLE_ID, list: "langlist" };
 
 export const LanguageSelector = memo(function LanguageSelector({
   languages,
@@ -51,145 +29,31 @@ export const LanguageSelector = memo(function LanguageSelector({
   /** Reads the concept the reader is on, or `null` at the top of the page. */
   conceptAt: () => string | null;
 }) {
-  const [open, setOpen] = useState(false);
   // Until the list first opens (and with scripts off) the links go to each language's top.
   const [concept, setConcept] = useState<string | null>(null);
-  const root = useRef<HTMLDetailsElement>(null);
-  const summary = useRef<HTMLElement>(null);
   const self = languages.find((l) => l.id === current);
-
-  // A pointer press or focus outside closes the list, as any disclosure menu does.
-  useEffect(() => {
-    if (!open) return;
-    const outside = (ev: Event) => {
-      if (!root.current?.contains(ev.target as Node)) setOpen(false);
-    };
-    document.addEventListener("pointerdown", outside);
-    document.addEventListener("focusin", outside);
-    return () => {
-      document.removeEventListener("pointerdown", outside);
-      document.removeEventListener("focusin", outside);
-    };
-  }, [open]);
-
-  // Escape closes the open list and returns focus to its toggle — without also
-  // clearing the search, which the page's own Escape handler would do.
-  const onKeyDown = (ev: KeyboardEvent) => {
-    if (ev.key !== "Escape" || !open) return;
-    ev.stopPropagation();
-    setOpen(false);
-    summary.current?.focus();
-  };
-
-  return (
-    <chakra.nav id="langnav" aria-label="Language" flex="0 0 auto">
-      <chakra.details
-        id="langmenu"
-        ref={root}
-        open={open}
-        onToggle={(ev) => {
-          const opened = ev.currentTarget.open;
-          if (opened) setConcept(conceptAt());
-          setOpen(opened);
-        }}
-        onKeyDown={onKeyDown}
-        position="relative"
-      >
-        <chakra.summary
-          id={TOGGLE_ID}
-          ref={summary}
-          display="flex"
-          alignItems="center"
-          gap="6px"
-          h="38px"
-          px="11px"
-          bg="cs.bg2"
-          border="1px solid"
-          borderColor="cs.line"
-          borderRadius="9px"
-          color="cs.fg"
-          fontSize="13.2px"
-          fontWeight={600}
-          cursor="pointer"
-          whiteSpace="nowrap"
-          userSelect="none"
-          listStyle="none"
-          _focusVisible={{ outline: "2px solid var(--accent)", outlineOffset: "1px" }}
-          css={{ "&::-webkit-details-marker": { display: "none" }, [TOUCH]: { height: "44px" } }}
-        >
-          <VisuallyHidden>Language: </VisuallyHidden>
-          {/* A long name is clipped on narrow screens so the search keeps its width; the full name stays in the accessible name. */}
-          <chakra.span overflow="hidden" textOverflow="ellipsis" css={{ [NARROW]: { maxWidth: "7.5em" } }}>
-            {self?.name ?? current}
-          </chakra.span>
-          <chakra.span aria-hidden="true" fontSize="12px" color="cs.dim">
-            ▾
-          </chakra.span>
-        </chakra.summary>
-        <chakra.ul
-          id="langlist"
-          listStyle="none"
-          m={0}
-          p="5px"
-          position="absolute"
-          right={0}
-          top="calc(100% + 6px)"
-          zIndex={30}
-          minW="240px"
-          maxW="calc(100vw - 24px)"
-          bg="cs.card"
-          border="1px solid"
-          borderColor="cs.line"
-          borderRadius="10px"
-          boxShadow="0 10px 30px rgba(0,0,0,.35)"
-        >
-          {languages.map((l) => {
-            const link = switchLink(l, concept, current);
-            if (l.id === current) {
-              return (
-                <li key={l.id} data-lang-option={l.id} data-state="current">
-                  <chakra.span aria-current="true" css={optionStyle} color="cs.fg" fontWeight={700}>
-                    <span>
-                      <span aria-hidden="true">✓ </span>
-                      {l.name}
-                    </span>
-                    <Hint>current language</Hint>
-                  </chakra.span>
-                </li>
-              );
-            }
-            if (link.href === null) {
-              return (
-                <li key={l.id} data-lang-option={l.id} data-state="unavailable">
-                  {/* No link to follow, and the hint says why; `aria-disabled` is not allowed on a generic span (ARIA 1.2). */}
-                  <chakra.span css={optionStyle} color="cs.faint">
-                    <span>{l.name}</span>
-                    <Hint>not yet published</Hint>
-                  </chakra.span>
-                </li>
-              );
-            }
-            return (
-              <li key={l.id} data-lang-option={l.id} data-state="available" data-match={concept ? (link.match ? "same" : "absent") : undefined}>
-                <chakra.a
-                  href={link.href}
-                  css={optionStyle}
-                  color="cs.dim"
-                  _hover={{ bg: "rgba(127,150,190,.12)", color: "cs.fg" }}
-                  _focusVisible={{ outline: "2px solid var(--accent)", outlineOffset: "-2px" }}
-                >
-                  <chakra.span color="cs.fg" fontWeight={600}>
-                    {l.name}
-                  </chakra.span>
-                  {concept ? <Hint>{link.match ? `same topic: ${link.match.title}` : "no equivalent topic yet"}</Hint> : null}
-                </chakra.a>
-              </li>
-            );
-          })}
-        </chakra.ul>
-      </chakra.details>
-    </chakra.nav>
+  const options = useMemo(
+    () =>
+      languages.map((l): SelectorOption => {
+        if (l.id === current) {
+          return { id: l.id, label: l.name, href: null, current: true, hint: "current language", itemProps: { "data-lang-option": l.id, "data-state": "current" } };
+        }
+        const link = switchLink(l, concept, current);
+        if (link.href === null) {
+          return { id: l.id, label: l.name, href: null, hint: "not yet published", itemProps: { "data-lang-option": l.id, "data-state": "unavailable" } };
+        }
+        return {
+          id: l.id,
+          label: l.name,
+          href: link.href,
+          hint: concept ? (link.match ? `same topic: ${link.match.title}` : "no equivalent topic yet") : undefined,
+          itemProps: { "data-lang-option": l.id, "data-state": "available", "data-match": concept ? (link.match ? "same" : "absent") : undefined },
+        };
+      }),
+    [languages, concept, current],
   );
+  const onOpen = useCallback(() => setConcept(conceptAt()), [conceptAt]);
+  return <DisclosureSelector label="Language" value={self?.name ?? current} options={options} onOpen={onOpen} ids={IDS} />;
 });
 
 /**
