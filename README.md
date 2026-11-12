@@ -118,7 +118,7 @@ npm run build     # Gatsby site into public/, offline file into index.html
 npm run verify    # structural checks on both built pages
 npm run examples  # compile and run the TypeScript, Kotlin and C# examples (see below)
 npm test          # parity, rendering, hydration and offline tests
-npm run check     # what CI runs, except its committed-index.html staleness check
+npm run check     # what CI runs, except its examples step and its offline-files staleness check
 ```
 
 The `Makefile` keeps the familiar shortcuts (`make`, `make build`, `make verify`,
@@ -202,9 +202,14 @@ real toolchains, and skips (never passes) a language whose toolchain it cannot f
 | Kotlin | `kotlinc` 2.x, a JDK 17+, and the jars the examples import | `PATH` or `KOTLINC`; jars in `KOTLIN_CLASSPATH` (colon-separated): `kotlinx-coroutines-core-jvm` and `-test-jvm` 1.10.x, `junit-jupiter-api` 5.10.x with `opentest4j` and `apiguardian-api` |
 | C# | the .NET 8+ SDK | `PATH`, `DOTNET`, or `~/.dotnet/dotnet` |
 
+Running it **executes every `ran` card as a program on your machine**, so review a content
+change that adds or edits one as you would code. Each snippet runs with a scratch `HOME` and
+`TMPDIR` and none of your environment beyond `PATH` and `LANG`; C# builds ignore MSBuild and
+NuGet files above their work folder.
+
 `--lang kotlin,csharp` limits the run; `--require-all` fails it when a toolchain is missing;
-`--json <file>` writes the report. CI runs the TypeScript examples on every pull request;
-the Kotlin and C# ones run wherever their toolchains are installed.
+`--json <file>` writes the report. CI runs the TypeScript and C# examples on every pull
+request; the Kotlin ones run wherever `kotlinc` and their jars are installed.
 
 ### Project layout
 

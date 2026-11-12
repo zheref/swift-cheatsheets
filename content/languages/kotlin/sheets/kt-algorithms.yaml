@@ -7,7 +7,7 @@ subtitle: The JVM collections' costs, then the patterns that solve most problems
 applies:
   platforms: [jvm, android]
   runtime: Kotlin/JVM (the standard library and java.util)
-  versions: { kotlin: ">=1.9", jvm: ">=17" }
+  versions: { kotlin: ">=2.0", jvm: ">=17" }
 sources:
   - title: Collections overview — Kotlin docs
     url: https://kotlinlang.org/docs/collections-overview.html

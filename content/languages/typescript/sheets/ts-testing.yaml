@@ -32,7 +32,7 @@ cards:
     note: Running the file runs its tests; any failure makes the process exit 1.
     prerequisites: &run
       - Node.js 22.18 or later (it runs `.mts` files directly by stripping the types)
-      - "Save as `main.mts` and run `node main.mts` (or every test file: `node --test`)"
+      - "Save as `main.mts` and run `node main.mts` — or name test files `*.test.mts` and run them all with `node --test`"
       - "Optional type-check: `npm i -D typescript @types/node`, then `npx tsc --noEmit --strict --target esnext --module nodenext main.mts`"
     code: |-
       import assert from "node:assert/strict";

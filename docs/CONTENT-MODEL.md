@@ -142,7 +142,10 @@ not. The Swift catalog does not set it and is unchanged.
 `ran` and `compiled` example with the real toolchain — the snippet on the page is the whole
 program, nothing is wrapped around it — runs the `ran` ones, and compares their output
 with `expected`. A missing toolchain skips its language and says so; it never counts as a
-pass. The README's *Running the examples* lists the toolchains and how they are found.
+pass. It therefore **executes every `ran` card** on the machine that runs it — a diff adding
+or editing one is a code change and is reviewed as one; the runner gives snippets a scratch
+`HOME`/`TMPDIR` and none of the caller's environment beyond `PATH` and `LANG`. The README's
+*Running the examples* lists the toolchains and how they are found.
 
 ## Coverage against Swift
 
@@ -168,7 +171,9 @@ without being that topic's equivalent. A gap is stated, never filled with a tran
    equivalent, so a reader switching languages can land on the same concept; give
    language- or platform-specific material its own concept and the right `scope`.
 3. Add the coverage sheet (above), set `requireExampleMetadata: true`, and run
-   `npm run examples` with the language's toolchain installed.
+   `npm run examples` with the language's toolchain installed. The runner knows TypeScript,
+   Kotlin and C#; a new language needs its own `Runner` in `scripts/run-examples.mts`, and
+   until it has one the runner refuses a catalog that sets `requireExampleMetadata` in it.
 4. Flip to `status: published` and `npm run build`: `gatsby-node.ts` creates the page at
    its route from the same template, the offline export writes `offline/<id>.html`, and
    every page's selector starts linking to it.

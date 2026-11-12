@@ -19,6 +19,11 @@
  *   csharp      `dotnet` ($DOTNET, else ~/.dotnet/dotnet, the install script's default)
  * A missing toolchain skips its examples and says so — it never counts as a pass. With
  * `--require-all`, a skipped example fails the run.
+ *
+ * Running this executes every `ran` card as a program on this machine: a content change that
+ * adds or edits one is a code change. Snippets get a scratch HOME and TMPDIR and none of the
+ * caller's environment beyond PATH and LANG (`snippetEnv`); C# builds ignore MSBuild files above
+ * the work folder (`MSBUILD_ISOLATION`).
  */
 import { execFile } from "node:child_process";
 import fs from "node:fs";
@@ -64,8 +69,16 @@ export function collectExamples(root: string): Example[] {
   const langRoot = path.join(root, "content/languages");
   const out: Example[] = [];
   for (const dir of fs.readdirSync(langRoot, { withFileTypes: true }).filter((d) => d.isDirectory())) {
-    const lang = YAML.parse(fs.readFileSync(path.join(langRoot, dir.name, "language.yaml"), "utf8")) as { codeLanguage: string; sheets: string[] };
-    if (!(EXAMPLE_LANGUAGES as readonly string[]).includes(lang.codeLanguage)) continue;
+    const lang = YAML.parse(fs.readFileSync(path.join(langRoot, dir.name, "language.yaml"), "utf8")) as {
+      codeLanguage: string;
+      sheets: string[];
+      requireExampleMetadata?: boolean;
+    };
+    if (!(EXAMPLE_LANGUAGES as readonly string[]).includes(lang.codeLanguage)) {
+      // A catalog that promises validated examples in a language this runner cannot run would read as 0 failures.
+      if (lang.requireExampleMetadata) throw new Error(`${dir.name}: requireExampleMetadata is set, but scripts/run-examples.mts has no runner for '${lang.codeLanguage}'`);
+      continue;
+    }
     for (const sheet of lang.sheets) {
       const doc = YAML.parse(fs.readFileSync(path.join(langRoot, dir.name, "sheets", `${sheet}.yaml`), "utf8")) as { cards: RawCard[] };
       for (const card of doc.cards) {
@@ -93,7 +106,7 @@ export const normalizeOutput = (s: string) =>
     .split("\n")
     .map((l) => l.trimEnd())
     .join("\n")
-    .trim();
+    .replace(/^\n+|\n+$/g, ""); // blank lines around the output, never a line's own indentation
 
 /** The verdict on one executed example. */
 export function judge(example: Example, exit: { code: number; stdout: string; stderr: string }): Outcome {
@@ -152,7 +165,31 @@ async function pool<T, R>(items: T[], size: number, fn: (item: T, index: number)
   return out;
 }
 
-const fileName = (id: string) => id.replace(/[^A-Za-z0-9]+/g, "_");
+/** A file or folder name per example, unique by position: ids differing only in punctuation never collide. */
+const fileName = (id: string, index: number) => `${String(index).padStart(3, "0")}_${id.replace(/[^A-Za-z0-9]+/g, "_")}`;
+
+/**
+ * The environment a snippet runs in: enough to find its runtime, and nothing of the caller's —
+ * no tokens, no keys. A `ran` card is a program executed on the machine of whoever runs this,
+ * so its process gets a scratch HOME and TMPDIR inside the work folder.
+ */
+export function snippetEnv(env: NodeJS.ProcessEnv, dir: string, keep: string[] = []): NodeJS.ProcessEnv {
+  const out: NodeJS.ProcessEnv = { PATH: env.PATH ?? "", HOME: dir, TMPDIR: dir, LANG: env.LANG ?? "C.UTF-8" };
+  for (const k of keep) if (env[k] !== undefined) out[k] = env[k];
+  return out;
+}
+
+/**
+ * MSBuild imports `Directory.Build.*` and `Directory.Packages.props` from every folder above a
+ * project, and a `Directory.Build.rsp` as arguments; the work folder sits under a temp directory
+ * other users may write to. These keep the build to the files this runner wrote.
+ */
+export const MSBUILD_ISOLATION = [
+  "-p:ImportDirectoryBuildProps=false",
+  "-p:ImportDirectoryBuildTargets=false",
+  "-p:ImportDirectoryPackagesProps=false",
+  "-noAutoResponse",
+];
 
 export interface Runner {
   /** The versions the toolchain reports, or why it is unavailable. */
@@ -170,8 +207,8 @@ export function typescriptRunner(root: string): Runner {
       return { toolchain: `Node ${n.stdout.trim().replace(/^v/, "")}, TypeScript ${t.stdout.trim().replace(/^Version /, "")}` };
     },
     async run(examples, work) {
-      const files = examples.map((e) => {
-        const file = path.join(work, `${fileName(e.id)}.mts`);
+      const files = examples.map((e, i) => {
+        const file = path.join(work, `${fileName(e.id, i)}.mts`);
         fs.writeFileSync(file, e.code.endsWith("\n") ? e.code : `${e.code}\n`);
         return file;
       });
@@ -212,7 +249,7 @@ export function typescriptRunner(root: string): Runner {
         const typeErrors = errors.get(path.basename(files[i]!));
         if (typeErrors) return { id: e.id, status: e.status, result: "fail" as const, detail: `tsc: ${typeErrors.slice(0, 4).join(" | ")}` };
         if (e.status === "compiled") return { id: e.id, status: e.status, result: "pass" as const };
-        return judge(e, await exec(process.execPath, [files[i]!], { cwd: work, timeout: 60_000 }));
+        return judge(e, await exec(process.execPath, [files[i]!], { cwd: work, env: snippetEnv(process.env, work), timeout: 60_000 }));
       });
     },
   };
@@ -228,13 +265,14 @@ export function kotlinRunner(env: NodeJS.ProcessEnv = process.env): Runner {
       if (!kotlinc || !kotlin || !fs.existsSync(kotlin)) return { missing: "kotlinc not found (put it on PATH or set KOTLINC)" };
       const [k, j] = await Promise.all([exec(kotlinc, ["-version"], { env }), exec("java", ["-version"], { env })]);
       const kv = /kotlinc-jvm ([\w.-]+)/.exec(k.stderr + k.stdout)?.[1] ?? "unknown";
-      const jv = /version "([^"]+)"/.exec(j.stderr + j.stdout)?.[1] ?? "unknown";
+      // The JVM kotlinc itself reports runs the examples ($JAVA_HOME's); `java` on PATH is only a fallback.
+      const jv = /\(JRE ([\d._]+)/.exec(k.stderr + k.stdout)?.[1] ?? /version "([^"]+)"/.exec(j.stderr + j.stdout)?.[1] ?? "unknown";
       const libs = classpath.map((c) => path.basename(c, ".jar")).join(", ");
       return { toolchain: `kotlinc ${kv}, JVM ${jv}${libs ? `, ${libs}` : ""}` };
     },
     async run(examples, work) {
-      return pool(examples, 4, async (e) => {
-        const dir = path.join(work, fileName(e.id));
+      return pool(examples, 4, async (e, i) => {
+        const dir = path.join(work, fileName(e.id, i));
         fs.mkdirSync(dir, { recursive: true });
         const src = path.join(dir, "main.kt");
         fs.writeFileSync(src, e.code);
@@ -242,7 +280,8 @@ export function kotlinRunner(env: NodeJS.ProcessEnv = process.env): Runner {
         const compile = await exec(kotlinc!, [...(cp ? ["-cp", cp] : []), "-nowarn", src, "-d", path.join(dir, "out")], { env, timeout: 240_000 });
         if (compile.code !== 0) return { id: e.id, status: e.status, result: "fail" as const, detail: `kotlinc: ${compile.stderr.trim().split("\n").slice(0, 4).join(" | ")}` };
         if (e.status === "compiled") return { id: e.id, status: e.status, result: "pass" as const };
-        return judge(e, await exec(kotlin!, ["-cp", [path.join(dir, "out"), ...classpath].join(":"), "MainKt"], { env, timeout: 60_000 }));
+        const run = snippetEnv(env, dir, ["JAVA_HOME"]);
+        return judge(e, await exec(kotlin!, ["-cp", [path.join(dir, "out"), ...classpath].join(":"), "MainKt"], { env: run, timeout: 60_000 }));
       });
     },
   };
@@ -260,8 +299,8 @@ export function csharpRunner(env: NodeJS.ProcessEnv = process.env): Runner {
       return { toolchain: `.NET SDK ${v} (${framework})` };
     },
     async run(examples, work) {
-      return pool(examples, 3, async (e) => {
-        const dir = path.join(work, fileName(e.id));
+      return pool(examples, 3, async (e, i) => {
+        const dir = path.join(work, fileName(e.id, i));
         fs.mkdirSync(dir, { recursive: true });
         fs.writeFileSync(
           path.join(dir, "Example.csproj"),
@@ -269,11 +308,16 @@ export function csharpRunner(env: NodeJS.ProcessEnv = process.env): Runner {
             `<Nullable>enable</Nullable><ImplicitUsings>enable</ImplicitUsings><TreatWarningsAsErrors>true</TreatWarningsAsErrors></PropertyGroup></Project>\n`,
         );
         fs.writeFileSync(path.join(dir, "Program.cs"), e.code);
+        // No package source either: the examples use the SDK alone, and a NuGet.Config above the folder is ignored.
+        fs.writeFileSync(path.join(dir, "nuget.config"), `<?xml version="1.0" encoding="utf-8"?>\n<configuration><packageSources><clear /></packageSources></configuration>\n`);
         const denv = { ...env, DOTNET_CLI_TELEMETRY_OPTOUT: "1", DOTNET_NOLOGO: "1", DOTNET_SKIP_FIRST_TIME_EXPERIENCE: "1" };
-        const build = await exec(dotnet!, ["build", dir, "-nologo", "-v", "q", "-clp:ErrorsOnly"], { env: denv, timeout: 240_000 });
+        const out = path.join(dir, "out");
+        const build = await exec(dotnet!, ["build", dir, "-o", out, "-nologo", "-v", "q", "-clp:ErrorsOnly", ...MSBUILD_ISOLATION], { env: denv, timeout: 240_000 });
         if (build.code !== 0) return { id: e.id, status: e.status, result: "fail" as const, detail: `dotnet build: ${(build.stdout + build.stderr).trim().split("\n").slice(0, 4).join(" | ")}` };
         if (e.status === "compiled") return { id: e.id, status: e.status, result: "pass" as const };
-        return judge(e, await exec(dotnet!, ["run", "--no-build", "--project", dir], { env: denv, timeout: 60_000 }));
+        // Run the built assembly directly: `dotnet run` would evaluate the project (and its imports) again.
+        const run = { ...snippetEnv(env, dir), DOTNET_CLI_TELEMETRY_OPTOUT: "1", DOTNET_NOLOGO: "1" };
+        return judge(e, await exec(dotnet!, [path.join(out, "Example.dll")], { env: run, cwd: dir, timeout: 60_000 }));
       });
     },
   };
@@ -298,7 +342,11 @@ export async function runExamples(
   try {
     for (const language of languages) {
       const examples = all.filter((e) => e.language === language);
-      if (!examples.length) continue;
+      if (!examples.length) {
+        report.toolchains[language] = "no examples";
+        log(`${language}: no compiled or run examples found`);
+        continue;
+      }
       const probe = await runners[language].probe();
       if ("missing" in probe) {
         report.toolchains[language] = `missing: ${probe.missing}`;
@@ -320,9 +368,23 @@ export async function runExamples(
   return report;
 }
 
-/** The process exit status a report earns. */
+/**
+ * The process exit status a report earns. With `requireAll`, a skipped example fails it, and so
+ * does a requested language that ran nothing — a run that checked nothing is not a pass.
+ */
 export const exitStatus = (report: Report, requireAll: boolean) =>
-  report.outcomes.some((o) => o.result === "fail" || (requireAll && o.result === "skipped")) ? 1 : 0;
+  report.outcomes.some((o) => o.result === "fail" || (requireAll && o.result === "skipped")) ||
+  (requireAll && Object.values(report.toolchains).includes("no examples"))
+    ? 1
+    : 0;
+
+/** The `--lang` list, refused when it is empty or names a language this runner does not have. */
+export function parseLanguages(value: string | undefined): ExampleLanguage[] | { error: string } {
+  if (value === undefined || value === "" || value.startsWith("--")) return { error: "--lang needs a value: a comma-separated list of typescript, kotlin, csharp" };
+  const langs = value.split(",");
+  const unknown = langs.filter((l) => !(EXAMPLE_LANGUAGES as readonly string[]).includes(l));
+  return unknown.length ? { error: `--lang: unknown language ${unknown.join(", ")} (expected typescript, kotlin or csharp)` } : (langs as ExampleLanguage[]);
+}
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -331,7 +393,11 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     const i = args.indexOf(name);
     return i >= 0 ? args[i + 1] : undefined;
   };
-  const languages = flag("--lang")?.split(",") as ExampleLanguage[] | undefined;
+  const languages = args.includes("--lang") ? parseLanguages(flag("--lang")) : undefined;
+  if (languages && "error" in languages) {
+    console.error(languages.error);
+    process.exit(2);
+  }
   const report = await runExamples(root, languages ? { languages } : {});
   const json = flag("--json");
   if (json) fs.writeFileSync(json, `${JSON.stringify(report, null, 2)}\n`);

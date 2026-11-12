@@ -13,7 +13,7 @@ cards:
       - tone: good
         text: "**equivalent** — a sheet here covers the same concept and shares its concept id, so the language selector lands on it from the Swift sheet."
       - tone: neutral
-        text: "**partial** — a sheet here covers part of it, or a nearby idea; the reason says what is missing. The selector offers it as a related topic."
+        text: "**partial** — a sheet here covers part of it under its own concept id, so the selector does not land on it: the Here column names it and the reason says what is missing."
       - tone: bad
         text: "**no counterpart** — nothing here; the reason says whether the topic does not exist in this language or is simply not written yet."
   - id: matrix

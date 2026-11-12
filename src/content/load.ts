@@ -112,7 +112,7 @@ export function exampleProblems(sheet: Sheet, card: Sheet["cards"][number]): str
   const missing = [
     !applies.platforms && "applies.platforms",
     !applies.runtime && "applies.runtime",
-    !applies.versions && "applies.versions",
+    !Object.keys(applies.versions ?? {}).length && "applies.versions", // `{}` states nothing
     !(card.sources ?? sheet.sources) && "sources",
     !card.prerequisites && "prerequisites",
     !card.validation && "validation",

@@ -286,6 +286,8 @@ describe("example metadata (zheref/swift-cheatsheets#3, AC-2, AC-3, SC-1)", () =
     expect(sheet.cards.flatMap((c) => exampleProblems(sheet, c))).toEqual([
       "card 'bare' is an example without applies.versions, prerequisites, validation, expected",
     ]);
+    const emptyVersions = sheetSchema.parse({ ...sheet, cards: [card({ id: "e", expected: "1", prerequisites: ["p"], validation: ran, applies: { versions: {} } })] });
+    expect(exampleProblems(emptyVersions, emptyVersions.cards[0]!)).toEqual(["card 'e' is an example without applies.versions"]);
     const plain = sheetSchema.parse({ ...sheet, applies: undefined, sources: undefined });
     expect(exampleProblems(plain, plain.cards[1]!)).toEqual(["card 'full' is an example without applies.platforms, applies.runtime, sources"]);
   });

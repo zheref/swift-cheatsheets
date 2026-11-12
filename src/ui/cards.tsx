@@ -69,17 +69,24 @@ export function validationLabel(v: Validation): string {
   }
 }
 
+/**
+ * Instructions read as body text, so on the narrow layout they take the 16px floor (the dense
+ * scale stays on desktop: zheref/swift-cheatsheets#5, OQ-1); long inline code wraps rather than
+ * being clipped by the card.
+ */
+const READABLE_ON_NARROW = { "@media (max-width: 900px)": { fontSize: "16px" } };
+
 /** An example's setup steps and validation status, under its code. */
 function ExampleMeta({ card }: { card: Card }) {
   if (card.kind !== "code" && card.kind !== "compare") return null;
   const { prerequisites, validation } = card;
   if (!prerequisites && !validation) return null;
   return (
-    <Box className="example" m="7px 0 0" fontSize="12px" color="cs.dim">
+    <Box className="example" m="7px 0 0" fontSize="12px" color="cs.dim" overflowWrap="anywhere">
       {prerequisites ? (
         <div className="prerequisites">
-          <span className="collabel">Setup</span>
-          <chakra.ol m="2px 0 0" pl="18px">
+          <span className="collabel tone-neutral">Setup</span>
+          <chakra.ol m="2px 0 0" pl="18px" css={READABLE_ON_NARROW}>
             {prerequisites.map((p, i) => (
               <li key={i}>
                 <InlineText text={p} />
@@ -90,7 +97,7 @@ function ExampleMeta({ card }: { card: Card }) {
       ) : null}
       {validation ? (
         <Text className="validation" data-status={validation.status} m="4px 0 0">
-          {validationLabel(validation)}
+          <InlineText text={validationLabel(validation)} />
         </Text>
       ) : null}
     </Box>
@@ -112,7 +119,7 @@ function Expected({ card, highlight, lang }: { card: Card; highlight: Highlight;
     <Box className="expected" mt="7px">
       <span className="collabel tone-good">Result</span>
       {describesResult(card) ? (
-        <Text className="described" m="2px 0 0" fontSize="13px">
+        <Text className="described" m="2px 0 0" fontSize="13px" overflowWrap="anywhere" css={READABLE_ON_NARROW}>
           <InlineText text={card.expected} />
         </Text>
       ) : (

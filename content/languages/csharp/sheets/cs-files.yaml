@@ -116,7 +116,7 @@ cards:
       - tone: good
         text: "Replace a file with a temporary sibling + move; never truncate the original first."
       - tone: legacy
-        text: "On Windows prefer `File.Replace(temp, path, backup)` — it is the documented atomic replace there."
+        text: "`File.Replace(temp, path, backup)` also keeps a backup of the old file and the target's metadata; it needs both files on the same volume."
       - tone: bad
         text: "`Path.GetTempFileName()` creates a file in the shared temp folder — do not use it as a sibling for an atomic move to another volume."
       - tone: neutral

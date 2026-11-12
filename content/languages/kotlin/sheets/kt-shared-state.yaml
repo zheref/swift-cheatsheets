@@ -19,7 +19,8 @@ cards:
     note: Swift proves data-race freedom at compile time; Kotlin leaves it to discipline and these tools.
     headers: [Swift, Kotlin, Difference]
     rows:
-      - ["`actor`", "state confined to one coroutine or a `limitedParallelism(1)` dispatcher", "no reentrancy at suspension points unless you write it"]
+      - ["`actor`", "state owned by one coroutine that reads a channel (below)", "one message at a time, start to finish: no reentrancy at its suspension points"]
+      - ["`actor` (serial executor)", "a `limitedParallelism(1)` dispatcher", "serial only between suspension points: other work interleaves at an `await`, as on a Swift actor"]
       - ["actor-isolated mutation", "`Mutex.withLock { }`", "suspends while waiting, never blocks a thread"]
       - ["`Sendable`", "—", "no compiler check: immutable data (`val`, read-only collections) by convention"]
       - ["`@MainActor`", "`Dispatchers.Main`", "a dispatcher choice, not a type-system guarantee"]

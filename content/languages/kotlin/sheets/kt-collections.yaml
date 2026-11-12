@@ -7,7 +7,7 @@ subtitle: Read-only interfaces over mutable JVM collections — which to pick an
 applies:
   platforms: [jvm, android]
   runtime: Kotlin/JVM (the standard library)
-  versions: { kotlin: ">=1.9", jvm: ">=17" }
+  versions: { kotlin: ">=2.0", jvm: ">=17" }
 sources:
   - title: Collections overview — Kotlin docs
     url: https://kotlinlang.org/docs/collections-overview.html

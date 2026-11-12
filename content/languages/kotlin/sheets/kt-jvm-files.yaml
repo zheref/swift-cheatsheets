@@ -7,7 +7,7 @@ subtitle: kotlin.io.path over java.nio — small files, atomic replace with fsyn
 applies:
   platforms: [jvm]
   runtime: Kotlin/JVM (kotlin.io.path and java.nio.file)
-  versions: { kotlin: ">=1.9", jvm: ">=17" }
+  versions: { kotlin: ">=2.0", jvm: ">=17" }
 sources:
   - title: kotlin.io.path — Kotlin API reference
     url: https://kotlinlang.org/api/core/kotlin-stdlib/kotlin.io.path/
@@ -138,7 +138,7 @@ cards:
       - tone: good
         text: "Replace a file with a temporary sibling + `ATOMIC_MOVE`; never truncate the original first."
       - tone: bad
-        text: "`File.readText()` without a charset on old JDKs used the platform default — say `Charsets.UTF_8` when it matters."
+        text: "Java's `FileReader` / `InputStreamReader` without a charset used the platform default before JDK 18; Kotlin's `readText()` / `readLines()` default to UTF-8 already."
       - tone: legacy
         text: "`ATOMIC_MOVE` over an existing target is implementation-specific: POSIX `rename` replaces, other file systems may throw."
       - tone: neutral

@@ -7,7 +7,7 @@ subtitle: Null safety, sealed hierarchies and when, generics and variance, excep
 applies:
   platforms: [jvm, android]
   runtime: Kotlin/JVM
-  versions: { kotlin: ">=1.9", jvm: ">=17" }
+  versions: { kotlin: ">=2.0", jvm: ">=17" }
 sources:
   - title: Kotlin language guide — Kotlin docs
     url: https://kotlinlang.org/docs/basic-syntax.html
