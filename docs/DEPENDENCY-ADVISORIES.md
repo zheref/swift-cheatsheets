@@ -12,9 +12,11 @@ It reads `package-lock.json` only and executes nothing. The script is Hatsu's in
 at nen 0.30.0 that verb still refuses the contract's `bun` row, exit `2`).
 
 Its exit stays `1` while an accepted finding below is in the lockfile — the audit honours no
-suppression key, by design — so this page is the record that each remaining HIGH finding is known,
-unreachable today, and owned. **At the head that recorded them, its `finding:` lines are exactly
-these two, and any other `finding:` id is new and unrecorded:**
+suppression key, by design — so this page is the record that each remaining HIGH finding is known
+and owned, and how far it reaches today: `@graphql-tools/utils` is not reached (typegen is off),
+while `decode-uri-component` is reached, but only in the developer's own browser under
+`gatsby develop`, never in the built site. **At the head that recorded them, its `finding:` lines
+are exactly these two, and any other `finding:` id is new and unrecorded:**
 
 ```text
 finding: GHSA-7mx3-vvmw-hjmv HIGH "@graphql-tools/utils@8.13.1" "@graphql-tools/utils@9.2.1"
