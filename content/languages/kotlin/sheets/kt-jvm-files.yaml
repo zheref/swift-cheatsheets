@@ -1,0 +1,145 @@
+id: kt-jvm-files
+concept: io.files-and-text
+scope: platform
+title: JVM — Files, Text & Atomic I/O
+group: JVM
+subtitle: kotlin.io.path over java.nio — small files, atomic replace with fsync, streaming lines, journals, walking trees.
+applies:
+  platforms: [jvm]
+  runtime: Kotlin/JVM (kotlin.io.path and java.nio.file)
+  versions: { kotlin: ">=2.0", jvm: ">=17" }
+sources:
+  - title: kotlin.io.path — Kotlin API reference
+    url: https://kotlinlang.org/api/core/kotlin-stdlib/kotlin.io.path/
+  - title: Files — Java SE 17 API
+    url: https://docs.oracle.com/en/java/javase/17/docs/api/java.base/java/nio/file/Files.html
+cards:
+  - id: read-write-text
+    kind: code
+    title: Read and write a small text file
+    note: Whole-file helpers are right for small files; they default to UTF-8.
+    prerequisites: &run
+      - A Kotlin 2.x compiler (`kotlinc`) and JDK 17 or later
+      - "Save as `main.kt`; run `kotlinc main.kt -include-runtime -d main.jar && java -jar main.jar` — it works in a fresh temporary directory and removes it"
+    code: |-
+      import kotlin.io.path.*
+
+      fun main() {
+          val dir = createTempDirectory("demo")
+          val file = dir / "notes.txt"
+          file.writeText("first line\nsecond line\n")
+          println("${file.readLines().size} lines, ${file.fileSize()} bytes")
+          dir.toFile().deleteRecursively()
+      }
+    expected: "2 lines, 23 bytes"
+    validation: &ran
+      status: ran
+      toolchain: kotlinc 2.2.20, JVM 17.0.15
+      date: "2026-11-11"
+  - id: atomic-write
+    kind: code
+    title: Writing atomically
+    note: "Write a temporary sibling, `force(true)` it to the device, then `ATOMIC_MOVE` over the target."
+    prerequisites: *run
+    code: |-
+      import java.nio.ByteBuffer
+      import java.nio.channels.FileChannel
+      import java.nio.file.Files
+      import java.nio.file.Path
+      import java.nio.file.StandardCopyOption
+      import java.nio.file.StandardOpenOption
+      import kotlin.io.path.*
+
+      fun writeAtomically(target: Path, text: String) {
+          val temp = Files.createTempFile(target.parent, ".${target.name}", ".tmp")   // same file system
+          FileChannel.open(temp, StandardOpenOption.WRITE).use { channel ->
+              val buffer = ByteBuffer.wrap(text.toByteArray())
+              while (buffer.hasRemaining()) channel.write(buffer)
+              channel.force(true)                    // on the device before the move publishes it
+          }
+          Files.move(temp, target, StandardCopyOption.ATOMIC_MOVE)
+      }
+
+      fun main() {
+          val dir = createTempDirectory("atomic")
+          val settings = dir / "settings.json"
+          writeAtomically(settings, """{"theme":"dark"}""")
+          writeAtomically(settings, """{"theme":"light"}""")
+          println(settings.readText())
+          dir.toFile().deleteRecursively()
+      }
+    expected: '{"theme":"light"}'
+    sources:
+      - title: Files.move — Java SE 17 API
+        url: https://docs.oracle.com/en/java/javase/17/docs/api/java.base/java/nio/file/Files.html#move(java.nio.file.Path,java.nio.file.Path,java.nio.file.CopyOption...)
+    validation: *ran
+  - id: stream-lines
+    kind: code
+    title: Streaming a large file line by line
+    note: "`useLines` hands a lazy sequence and closes the file afterwards; one line is in memory at a time."
+    prerequisites: *run
+    code: |-
+      import kotlin.io.path.*
+
+      fun main() {
+          val log = createTempFile("app", ".log")
+          log.bufferedWriter().use { out ->
+              for (i in 0 until 10_000) out.appendLine("${if (i % 10 == 0) "ERROR" else "INFO"} event $i")
+          }
+          val errors = log.useLines { lines -> lines.count { it.startsWith("ERROR") } }
+          println("$errors errors")
+          log.deleteExisting()
+      }
+    expected: "1000 errors"
+    validation: *ran
+  - id: append-journal
+    kind: code
+    title: An append-only journal
+    note: One JSON object per line — appending never rewrites what is already there.
+    prerequisites: *run
+    code: |-
+      import kotlin.io.path.*
+
+      fun main() {
+          val journal = createTempFile("journal", ".jsonl")
+          for (event in listOf("start", "save", "stop")) journal.appendText("{\"event\":\"$event\"}\n")
+          println(journal.readLines().map { it.substringAfter(":\"").removeSuffix("\"}") })
+          journal.deleteExisting()
+      }
+    expected: "[start, save, stop]"
+    validation: *ran
+  - id: walk-a-tree
+    kind: code
+    title: Walking a directory tree
+    note: "`walk()` is lazy and depth-first; it is still marked experimental, hence the opt-in."
+    prerequisites: *run
+    code: |-
+      import kotlin.io.path.*
+
+      @OptIn(ExperimentalPathApi::class)
+      fun main() {
+          val root = createTempDirectory("tree")
+          (root / "src/main").createDirectories()
+          (root / "src/main/App.kt").writeText("fun main() {}")
+          (root / "README.md").writeText("# demo")
+          val sources = root.walk().filter { it.extension == "kt" }.map { it.relativeTo(root).invariantSeparatorsPathString }
+          println(sources.toList())
+          root.deleteRecursively()
+      }
+    expected: "[src/main/App.kt]"
+    validation: *ran
+  - id: data-loss-rules
+    kind: rules
+    title: Rules that prevent data loss
+    note: The JVM adds a few of its own.
+    items:
+      - tone: good
+        text: "Close every stream with `use { }` — it is `defer` for `Closeable`."
+      - tone: good
+        text: "Replace a file with a temporary sibling + `ATOMIC_MOVE`; never truncate the original first."
+      - tone: bad
+        text: "Java's `FileReader` / `InputStreamReader` without a charset used the platform default before JDK 18; Kotlin's `readText()` / `readLines()` default to UTF-8 already."
+      - tone: legacy
+        text: "`ATOMIC_MOVE` over an existing target is implementation-specific: POSIX `rename` replaces, other file systems may throw."
+      - tone: neutral
+        text: "On Android, app-private files go under `context.filesDir`; shared storage goes through the Storage Access Framework."

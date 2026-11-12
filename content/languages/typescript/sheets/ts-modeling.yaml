@@ -1,0 +1,136 @@
+id: ts-modeling
+concept: language.type-modeling
+scope: language
+title: Modeling with the Type System
+group: TypeScript language
+subtitle: Branded ids, satisfies, utility and mapped types, and validating what the types cannot see.
+applies:
+  platforms: [node, browser]
+  runtime: TypeScript compiler; the examples run on Node.js
+  versions: { typescript: ">=5.0", node: ">=22.18" }
+sources:
+  - title: Utility types — TypeScript Handbook
+    url: https://www.typescriptlang.org/docs/handbook/utility-types.html
+  - title: Mapped types — TypeScript Handbook
+    url: https://www.typescriptlang.org/docs/handbook/2/mapped-types.html
+cards:
+  - id: branded-ids
+    kind: code
+    title: Branded ids
+    note: Structural typing makes every `string` interchangeable; a brand makes `UserId` and `OrderId` distinct at no runtime cost.
+    prerequisites: &run
+      - Node.js 22.18 or later (it runs `.mts` files directly by stripping the types)
+      - "Save as `main.mts` and run `node main.mts`"
+      - "Optional type-check: `npm i -D typescript @types/node`, then `npx tsc --noEmit --strict --target esnext --module nodenext main.mts`"
+    code: |-
+      type Brand<T, B extends string> = T & { readonly __brand: B };
+      type UserId = Brand<string, "UserId">;
+      type OrderId = Brand<string, "OrderId">;
+
+      const userId = (raw: string) => raw as UserId;     // the one place a raw string becomes an id
+      function ordersOf(user: UserId): string {
+        return `orders of ${user}`;
+      }
+
+      console.log(ordersOf(userId("u-42")));
+      // ordersOf("o-7" as OrderId);   // error TS2345: 'OrderId' is not assignable to 'UserId'
+    expected: "orders of u-42"
+    validation: &ran
+      status: ran
+      toolchain: Node 24.16.0, TypeScript 5.9.3
+      date: "2026-11-11"
+  - id: satisfies
+    kind: code
+    title: satisfies — check without widening
+    note: An annotation would widen the keys to `string`; `satisfies` checks the shape and keeps the literal keys.
+    prerequisites: *run
+    code: |-
+      type Route = { path: string; auth: boolean };
+      const routes = {
+        home: { path: "/", auth: false },
+        settings: { path: "/settings", auth: true },
+      } satisfies Record<string, Route>;
+
+      console.log(routes.settings.path, Object.keys(routes));   // routes.home is known to exist
+    expected: "/settings [ 'home', 'settings' ]"
+    applies:
+      versions: { typescript: ">=4.9", node: ">=22.18" }
+    sources:
+      - title: The satisfies operator — TypeScript 4.9 release notes
+        url: https://www.typescriptlang.org/docs/handbook/release-notes/typescript-4-9.html
+    validation: *ran
+  - id: utility-types
+    kind: code
+    title: Utility types
+    note: Derive the variants from one source of truth instead of copying fields.
+    prerequisites: *run
+    code: |-
+      interface User { id: string; name: string; email: string; admin: boolean }
+      type UserPatch = Partial<Omit<User, "id">>;  // the id never changes
+      type PublicUser = Pick<User, "id" | "name">;
+
+      function apply(user: User, patch: UserPatch): Readonly<User> {
+        return { ...user, ...patch };
+      }
+      const ana: User = { id: "1", name: "Ana", email: "ana@example.com", admin: false };
+      const shown: PublicUser = { id: ana.id, name: ana.name };
+      console.log(apply(ana, { admin: true }).admin, Object.keys(shown));
+    expected: "true [ 'id', 'name' ]"
+    validation: *ran
+  - id: mapped-and-template-types
+    kind: code
+    title: Mapped and template literal types
+    note: Generate a family of keys from a union; the compiler then knows every one of them.
+    prerequisites: *run
+    code: |-
+      type EventName = "click" | "focus";
+      type Handlers = { [E in EventName as `on${Capitalize<E>}`]: (at: number) => void };
+
+      const handlers: Handlers = {
+        onClick: (at) => console.log("click at", at),
+        onFocus: (at) => console.log("focus at", at),
+      };
+      handlers.onClick(10);
+      // handlers.onHover(1);   // error TS2339: Property 'onHover' does not exist on type 'Handlers'
+    expected: "click at 10"
+    sources:
+      - title: Template literal types — TypeScript Handbook
+        url: https://www.typescriptlang.org/docs/handbook/2/template-literal-types.html
+    validation: *ran
+  - id: validate-untrusted-data
+    kind: code
+    title: Validate what the types cannot see
+    note: "`JSON.parse` returns `any`. Treat it as `unknown` and narrow with a type guard (or a schema library such as zod)."
+    prerequisites: *run
+    code: |-
+      interface Config { port: number; hosts: string[] }
+
+      function isConfig(x: unknown): x is Config {
+        if (typeof x !== "object" || x === null) return false;
+        const c = x as Record<string, unknown>;
+        return typeof c.port === "number" && Array.isArray(c.hosts) && c.hosts.every((h) => typeof h === "string");
+      }
+
+      for (const text of ['{"port":8080,"hosts":["a"]}', '{"port":"8080"}']) {
+        const data: unknown = JSON.parse(text);
+        console.log(isConfig(data) ? `ok ${data.port}` : "rejected");
+      }
+    expected: |-
+      ok 8080
+      rejected
+    validation: *ran
+  - id: modeling-rules
+    kind: rules
+    title: Rules
+    note: Make illegal states unrepresentable — within what erasure allows.
+    items:
+      - tone: good
+        text: "A discriminated union over a bag of optional fields: `{ status: \"error\"; error: E }` cannot lack its error."
+      - tone: good
+        text: "String-literal unions over `enum`: they erase completely (Node's type stripping rejects `enum`)."
+      - tone: bad
+        text: "`as` is an assertion, not a conversion — `x as User` on unchecked data is a bug waiting."
+      - tone: bad
+        text: "`any` switches checking off for everything it touches; `unknown` forces a check."
+      - tone: neutral
+        text: "Types vanish at runtime: anything crossing a boundary (network, storage, user input) needs validation."

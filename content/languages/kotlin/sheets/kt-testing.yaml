@@ -1,0 +1,147 @@
+id: kt-testing
+concept: testing.approaches
+scope: shared
+title: Testing Approaches in Kotlin
+group: Shared concepts
+subtitle: JUnit 5, virtual time with kotlinx-coroutines-test, and seams that make tests fast and deterministic.
+applies:
+  platforms: [jvm, android]
+  runtime: Kotlin/JVM with a test runner
+  versions: { kotlin: ">=2.0", jvm: ">=17" }
+sources:
+  - title: Test code using JUnit in JVM — Kotlin docs
+    url: https://kotlinlang.org/docs/jvm-test-using-junit.html
+  - title: kotlinx-coroutines-test — API reference
+    url: https://kotlinlang.org/api/kotlinx.coroutines/kotlinx-coroutines-test/
+cards:
+  - id: tooling
+    kind: table
+    title: Tooling matrix
+    note: The common JVM and Android choices.
+    headers: [Need, Tool]
+    rows:
+      - ["runner and assertions", "JUnit 5 (`org.junit.jupiter`) or `kotlin.test`"]
+      - ["coroutines and virtual time", "`kotlinx-coroutines-test`: `runTest`, `advanceTimeBy`, `StandardTestDispatcher`"]
+      - ["Flow assertions", "Turbine (`app.cash.turbine`)"]
+      - ["test doubles", "hand-written fakes; MockK when a fake is impractical"]
+      - ["Android without a device", "Robolectric; Compose `createComposeRule()`"]
+      - ["coverage", "Kover or JaCoCo"]
+  - id: virtual-time
+    kind: code
+    title: Virtual time with runTest
+    note: Inside `runTest`, `delay` advances a virtual clock — a 300 ms debounce is tested instantly.
+    prerequisites:
+      - A Kotlin 2.x compiler (`kotlinc`), JDK 17 or later, and the jars `kotlinx-coroutines-core-jvm-1.10.2` and `kotlinx-coroutines-test-jvm-1.10.2`
+      - "Save as `main.kt`; run `kotlinc -cp <both jars> main.kt -d out && kotlin -cp out:<both jars> MainKt`"
+      - "In a project the same body goes in a `@Test fun` with `testImplementation(\"org.jetbrains.kotlinx:kotlinx-coroutines-test:1.10.2\")`"
+    code: |-
+      import kotlinx.coroutines.*
+      import kotlinx.coroutines.test.*
+
+      class Debouncer(private val scope: CoroutineScope, private val waitMs: Long, private val action: (String) -> Unit) {
+          private var pending: Job? = null
+          fun submit(value: String) {
+              pending?.cancel()
+              pending = scope.launch { delay(waitMs); action(value) }
+          }
+      }
+
+      fun main() = runTest {
+          val saved = mutableListOf<String>()
+          val debouncer = Debouncer(this, 300, saved::add)
+          debouncer.submit("h")
+          debouncer.submit("he")
+          debouncer.submit("hey")
+          advanceTimeBy(299); runCurrent()
+          check(saved.isEmpty())
+          advanceTimeBy(1); runCurrent()
+          check(saved == listOf("hey"))
+          println("saved $saved at virtual $currentTime ms")
+      }
+    expected: "saved [hey] at virtual 300 ms"
+    applies:
+      requires: [kotlinx-coroutines-core, kotlinx-coroutines-test]
+      versions: { kotlin: ">=2.0", kotlinx-coroutines: ">=1.10", jvm: ">=17" }
+    validation:
+      status: ran
+      toolchain: kotlinc 2.2.20, JVM 17.0.15, kotlinx-coroutines-core and -test 1.10.2
+      date: "2026-11-11"
+  - id: inject-the-seam
+    kind: code
+    title: Design for testability — inject the clock
+    note: A `fun interface` makes the seam a lambda in tests.
+    prerequisites:
+      - A Kotlin 2.x compiler (`kotlinc`) and JDK 17 or later
+      - "Save as `main.kt`; run `kotlinc main.kt -include-runtime -d main.jar && java -jar main.jar`"
+    code: |-
+      fun interface Clock { fun nowMs(): Long }
+
+      class Session(private val clock: Clock, private val ttlMs: Long) {
+          private val started = clock.nowMs()
+          fun expired() = clock.nowMs() - started >= ttlMs
+      }
+
+      fun main() {
+          var now = 1_000L
+          val session = Session({ now }, ttlMs = 500)
+          check(!session.expired())
+          now += 500                             // the test owns time: no sleeping
+          check(session.expired())
+          println("expired after ${now - 1_000} ms of fake time")
+      }
+    expected: "expired after 500 ms of fake time"
+    validation:
+      status: ran
+      toolchain: kotlinc 2.2.20, JVM 17.0.15
+      date: "2026-11-11"
+  - id: junit5
+    kind: code
+    title: A JUnit 5 test class
+    note: Backtick names read as sentences; `assertThrows<T>` is JUnit's Kotlin extension.
+    prerequisites:
+      - "A Gradle JVM project with `testImplementation(platform(\"org.junit:junit-bom:5.10.1\"))`, `testImplementation(\"org.junit.jupiter:junit-jupiter\")` and `tasks.test { useJUnitPlatform() }`"
+      - "Put the class under `src/test/kotlin` and run `./gradlew test`"
+    code: |-
+      import org.junit.jupiter.api.Assertions.assertEquals
+      import org.junit.jupiter.api.Test
+      import org.junit.jupiter.api.assertThrows
+
+      fun slugify(title: String): String {
+          require(title.isNotBlank()) { "blank title" }
+          return title.trim().lowercase().replace(Regex("[^a-z0-9]+"), "-").trim('-')
+      }
+
+      class SlugTest {
+          @Test
+          fun `joins words with single hyphens`() = assertEquals("hello-world", slugify("  Hello, World!  "))
+
+          @Test
+          fun `rejects blank titles`() {
+              assertThrows<IllegalArgumentException> { slugify("   ") }
+          }
+      }
+    expected: "`./gradlew test` reports both tests passed."
+    applies:
+      requires: [JUnit 5]
+      versions: { kotlin: ">=2.0", junit-jupiter: ">=5.10", jvm: ">=17" }
+    sources:
+      - title: JUnit 5 User Guide
+        url: https://junit.org/junit5/docs/current/user-guide/
+    validation:
+      status: compiled
+      toolchain: kotlinc 2.2.20, JVM 17.0.15, junit-jupiter-api 5.10.1
+      date: "2026-11-11"
+      host: a JUnit Platform launcher (Gradle `test`) to run the tests
+  - id: testing-principles
+    kind: rules
+    title: Principles worth stating
+    note: The same in every language.
+    items:
+      - tone: good
+        text: "Fakes you own (an in-memory repository, a `Clock`) over mocks of code you do not."
+      - tone: good
+        text: "Inject dispatchers and scopes; in tests pass `StandardTestDispatcher` or the `TestScope` itself."
+      - tone: bad
+        text: "`Thread.sleep` or real `delay` in tests: slow and flaky — use virtual time."
+      - tone: neutral
+        text: "`runTest` fails a test that leaves coroutines running — a free leak check."

@@ -1,6 +1,6 @@
 import { Box, chakra, Heading, Text } from "@chakra-ui/react";
 import { memo, type ReactNode } from "react";
-import type { Applicability, Card, Highlight, Source } from "../content/schema";
+import type { Applicability, Card, Highlight, Source, Validation } from "../content/schema";
 import { CodeBlock, InlineText } from "./text";
 
 /** Comparison, table and diagram cards take the full row; a one-column comparison does not. */
@@ -57,12 +57,74 @@ export function SourcesLine({ sources }: { sources?: Source[] }) {
   );
 }
 
-function Expected({ text, highlight, lang }: { text?: string; highlight: Highlight; lang: string }) {
-  if (!text) return null;
+/** How far an example was proved, in words a reader can act on (zheref/swift-cheatsheets#3). */
+export function validationLabel(v: Validation): string {
+  switch (v.status) {
+    case "ran":
+      return `Ran with ${v.toolchain} on ${v.date}: ${v.check === "exit-code" ? "it exited 0" : "the output matched the result shown"}.`;
+    case "compiled":
+      return `Compiled with ${v.toolchain} on ${v.date}; not run here${v.host ? ` — running it needs ${v.host}` : ""}.`;
+    case "excerpt":
+      return `Excerpt, not compiled or run here: it needs ${v.host}.`;
+  }
+}
+
+/**
+ * Instructions read as body text, so on the narrow layout they take the 16px floor (the dense
+ * scale stays on desktop: zheref/swift-cheatsheets#5, OQ-1); long inline code wraps rather than
+ * being clipped by the card.
+ */
+const READABLE_ON_NARROW = { "@media (max-width: 900px)": { fontSize: "16px" } };
+
+/** An example's setup steps and validation status, under its code. */
+function ExampleMeta({ card }: { card: Card }) {
+  if (card.kind !== "code" && card.kind !== "compare") return null;
+  const { prerequisites, validation } = card;
+  if (!prerequisites && !validation) return null;
+  return (
+    <Box className="example" m="7px 0 0" fontSize="12px" color="cs.dim" overflowWrap="anywhere">
+      {prerequisites ? (
+        <div className="prerequisites">
+          <span className="collabel tone-neutral">Setup</span>
+          <chakra.ol m="2px 0 0" pl="18px" css={READABLE_ON_NARROW}>
+            {prerequisites.map((p, i) => (
+              <li key={i}>
+                <InlineText text={p} />
+              </li>
+            ))}
+          </chakra.ol>
+        </div>
+      ) : null}
+      {validation ? (
+        <Text className="validation" data-status={validation.status} m="4px 0 0">
+          <InlineText text={validationLabel(validation)} />
+        </Text>
+      ) : null}
+    </Box>
+  );
+}
+
+/**
+ * An example's result is printed output — shown as code — unless its validation says it was
+ * not checked against standard output, in which case `expected` describes an effect in words.
+ */
+export const describesResult = (card: Card) =>
+  (card.kind === "code" || card.kind === "compare") &&
+  card.validation !== undefined &&
+  (card.validation.status !== "ran" || card.validation.check === "exit-code");
+
+function Expected({ card, highlight, lang }: { card: Card; highlight: Highlight; lang: string }) {
+  if ((card.kind !== "code" && card.kind !== "compare") || !card.expected) return null;
   return (
     <Box className="expected" mt="7px">
       <span className="collabel tone-good">Result</span>
-      <CodeBlock code={text} highlight={highlight} lang={lang} />
+      {describesResult(card) ? (
+        <Text className="described" m="2px 0 0" fontSize="13px" overflowWrap="anywhere" css={READABLE_ON_NARROW}>
+          <InlineText text={card.expected} />
+        </Text>
+      ) : (
+        <CodeBlock code={card.expected} highlight={highlight} lang={lang} />
+      )}
     </Box>
   );
 }
@@ -73,7 +135,7 @@ function body(card: Card, highlight: Highlight, lang: string, titleId: string): 
       return (
         <>
           <CodeBlock code={card.code} highlight={highlight} lang={lang} tone="neutral" />
-          <Expected text={card.expected} highlight={highlight} lang={lang} />
+          <Expected card={card} highlight={highlight} lang={lang} />
         </>
       );
     case "compare":
@@ -87,7 +149,7 @@ function body(card: Card, highlight: Highlight, lang: string, titleId: string): 
               </div>
             ))}
           </div>
-          <Expected text={card.expected} highlight={highlight} lang={lang} />
+          <Expected card={card} highlight={highlight} lang={lang} />
         </>
       );
     case "rules":
@@ -175,6 +237,7 @@ export const CardView = memo(function CardView({
       </Heading>
       {card.note ? <p className="note">{card.note}</p> : null}
       {body(card, highlight, lang, `${anchor}-title`)}
+      <ExampleMeta card={card} />
       <AppliesLine applies={card.applies} />
       <SourcesLine sources={card.sources} />
     </chakra.article>

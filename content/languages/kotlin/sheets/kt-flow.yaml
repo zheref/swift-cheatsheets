@@ -1,0 +1,197 @@
+id: kt-flow
+concept: reactive.streams-core
+scope: language
+title: Flow — Core
+group: Kotlin language
+subtitle: Cold flows, StateFlow and SharedFlow as subjects, the operators that matter, lifetime, and bridging listeners.
+applies:
+  platforms: [jvm, android]
+  runtime: Kotlin/JVM with kotlinx.coroutines
+  requires: [kotlinx-coroutines-core]
+  versions: { kotlin: ">=2.0", kotlinx-coroutines: ">=1.10", jvm: ">=17" }
+sources:
+  - title: Asynchronous Flow — Kotlin docs
+    url: https://kotlinlang.org/docs/flow.html
+  - title: StateFlow and SharedFlow — Android Developers
+    url: https://developer.android.com/kotlin/flow/stateflow-and-sharedflow
+cards:
+  - id: combine-to-flow
+    kind: table
+    title: Combine → Flow
+    note: The same reactive vocabulary, built on suspension instead of demand.
+    headers: [Combine, Flow, Note]
+    rows:
+      - ["`Publisher`", "`Flow<T>` (cold)", "the block runs again for every collector"]
+      - ["`CurrentValueSubject`", "`MutableStateFlow`", "always has a value; equal values are not re-emitted"]
+      - ["`PassthroughSubject`", "`MutableSharedFlow`", "no value; `replay` and buffers are configurable"]
+      - ["`sink` + `AnyCancellable`", "`collect` / `launchIn(scope)`", "the scope's end cancels the collection"]
+      - ["`switchToLatest`", "`flatMapLatest`", "cancels the previous inner flow"]
+      - ["`zip` / `combineLatest`", "`zip` / `combine`", "—"]
+      - ["`receive(on:)`", "`flowOn(dispatcher)`", "changes the upstream context, not the collector's"]
+      - ["`share()`", "`shareIn` / `stateIn`", "turns a cold flow hot, with an explicit start policy"]
+  - id: cold-flows
+    kind: code
+    title: Cold flows
+    note: A `flow { }` does nothing until collected, and runs again for each collector.
+    prerequisites: &run
+      - A Kotlin 2.x compiler (`kotlinc`), JDK 17 or later, and `kotlinx-coroutines-core-jvm-1.10.2.jar`
+      - "Save as `main.kt`; run `kotlinc -cp kotlinx-coroutines-core-jvm-1.10.2.jar main.kt -d out && kotlin -cp out:kotlinx-coroutines-core-jvm-1.10.2.jar MainKt`"
+      - "Or, in a Gradle project: `implementation(\"org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.2\")`"
+    code: |-
+      import kotlinx.coroutines.flow.*
+      import kotlinx.coroutines.runBlocking
+
+      fun numbers(): Flow<Int> = flow {
+          println("start")
+          for (i in 1..3) emit(i)
+      }
+
+      fun main() = runBlocking {
+          numbers().map { it * 10 }.collect { println(it) }
+          println(numbers().toList())
+      }
+    expected: |-
+      start
+      10
+      20
+      30
+      start
+      [1, 2, 3]
+    validation: &ran
+      status: ran
+      toolchain: kotlinc 2.2.20, JVM 17.0.15, kotlinx-coroutines-core 1.10.2
+      date: "2026-11-11"
+  - id: state-and-shared-flow
+    kind: code
+    title: StateFlow and SharedFlow
+    note: "`StateFlow` holds the latest value and skips equal ones; `SharedFlow` broadcasts events."
+    prerequisites: *run
+    code: |-
+      import kotlinx.coroutines.*
+      import kotlinx.coroutines.flow.*
+
+      fun main() = runBlocking {
+          val count = MutableStateFlow(0)
+          val events = MutableSharedFlow<String>()
+
+          val watcher = launch { count.collect { println("count = $it") } }
+          val listener = launch { events.collect { println("event: $it") } }
+          yield()                                    // let both collectors subscribe
+          count.value = 1
+          yield()
+          count.value = 1                            // equal: not re-emitted
+          events.emit("saved")
+          yield()
+          watcher.cancel()
+          listener.cancel()
+      }
+    expected: |-
+      count = 0
+      count = 1
+      event: saved
+    validation: *ran
+  - id: operators
+    kind: code
+    title: Operators that matter
+    note: "`flatMapLatest` cancels stale work — the search-as-you-type operator."
+    prerequisites: *run
+    code: |-
+      import kotlinx.coroutines.*
+      import kotlinx.coroutines.flow.*
+
+      @OptIn(ExperimentalCoroutinesApi::class)
+      fun main() = runBlocking {
+          flowOf("a", "ab", "abc")
+              .onEach { delay(50) }                  // a keystroke every 50 ms
+              .flatMapLatest { q -> flow { delay(500); emit("results for $q") } }   // a slow search
+              .collect { println(it) }
+
+          println(flowOf("ana", "bo").zip(flowOf(31, 27, 99)) { n, a -> "$n:$a" }.toList())
+          println(flowOf(1, 1, 2, 2, 3).distinctUntilChanged().scan(0) { acc, x -> acc + x }.toList())
+      }
+    expected: |-
+      results for abc
+      [ana:31, bo:27]
+      [0, 1, 3, 6]
+    validation: *ran
+  - id: lifetime
+    kind: code
+    title: Lifetime belongs to a scope
+    note: "`launchIn(scope)` ties the collection to the scope; cancelling the scope ends it (the role of `AnyCancellable`)."
+    prerequisites: *run
+    code: |-
+      import kotlinx.coroutines.*
+      import kotlinx.coroutines.flow.*
+
+      fun ticker(periodMs: Long): Flow<Int> = flow {
+          var n = 0
+          while (true) {
+              emit(n++)
+              delay(periodMs)
+          }
+      }
+
+      fun main() = runBlocking {
+          val screen = CoroutineScope(coroutineContext + Job())   // stand-in for viewModelScope
+          val thirdTick = CompletableDeferred<Unit>()
+          ticker(100).onEach { println("tick $it"); if (it == 2) thirdTick.complete(Unit) }.launchIn(screen)
+          thirdTick.await()                                        // e.g. the screen goes away after three ticks
+          screen.cancel()
+          delay(200)
+          println("after cancel: quiet")
+      }
+    expected: |-
+      tick 0
+      tick 1
+      tick 2
+      after cancel: quiet
+    validation: *ran
+  - id: callback-flow
+    kind: code
+    title: Bridging a listener API
+    note: "`callbackFlow` registers on collect and unregisters in `awaitClose` when the collector stops."
+    prerequisites: *run
+    code: |-
+      import kotlinx.coroutines.channels.awaitClose
+      import kotlinx.coroutines.flow.*
+      import kotlinx.coroutines.runBlocking
+
+      fun interface Listener { fun onReading(value: Int) }
+
+      class Sensor {                                 // a listener API you do not own
+          fun register(listener: Listener) {
+              Thread { for (v in listOf(10, 20, 30, 40)) listener.onReading(v) }.start()
+          }
+          fun unregister() = println("unregistered")
+      }
+
+      fun Sensor.readings(): Flow<Int> = callbackFlow {
+          register { value -> trySend(value) }
+          awaitClose { unregister() }
+      }
+
+      fun main() = runBlocking {
+          println(Sensor().readings().take(3).toList())
+      }
+    expected: |-
+      unregistered
+      [10, 20, 30]
+    sources:
+      - title: callbackFlow — kotlinx.coroutines API
+        url: https://kotlinlang.org/api/kotlinx.coroutines/kotlinx-coroutines-core/kotlinx.coroutines.flow/callback-flow.html
+    validation: *ran
+  - id: flow-gotchas
+    kind: rules
+    title: Gotchas
+    note: The ones that cost a day.
+    items:
+      - tone: bad
+        text: "`collect` suspends until the flow completes — a `StateFlow` never does, so the next line never runs."
+      - tone: bad
+        text: "Updating a `StateFlow` with a mutated list: equal by `equals`, so nothing is emitted. Emit a new list."
+      - tone: good
+        text: "`stateIn(scope, SharingStarted.WhileSubscribed(5_000), initial)` for UI state: stops upstream work when nobody watches."
+      - tone: good
+        text: "`flowOn(Dispatchers.IO)` for blocking upstream work; the collector keeps its own context."
+      - tone: neutral
+        text: "`catch { }` handles upstream exceptions only — a throw in `collect { }` is not caught by it."

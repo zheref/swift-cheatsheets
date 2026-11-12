@@ -4,8 +4,9 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { tokenize } from "../src/content/highlight";
 import { parseInline, plainInline } from "../src/content/inline";
-import { CatalogError, diagramProblems, loadCatalog, loadCatalogs } from "../src/content/load";
-import { buildIndex, hitsLabel, search } from "../src/content/search";
+import { CatalogError, diagramProblems, exampleProblems, loadCatalog, loadCatalogs } from "../src/content/load";
+import { codeCard, compareCard, sheet as sheetSchema } from "../src/content/schema";
+import { buildIndex, cardText, hitsLabel, search } from "../src/content/search";
 import { FIXTURE_DIR, FIXTURE_ROOT, ROOT, swiftCatalog } from "./helpers";
 
 /** The pre-migration browser highlighter (src/render.py at 1093188), verbatim, as the reference. */
@@ -97,7 +98,7 @@ describe("search parity with the pre-migration page (AC-3)", () => {
 
 describe("loader", () => {
   it("loads only published catalogs by default", () => {
-    expect(loadCatalogs(path.join(ROOT, "content")).map((c) => c.language.id)).toEqual(["swift"]);
+    expect(loadCatalogs(path.join(ROOT, "content")).map((c) => c.language.id)).toEqual(["swift", "csharp", "kotlin", "typescript"]);
     expect(loadCatalogs(FIXTURE_ROOT)).toEqual([]);
     expect(loadCatalogs(FIXTURE_ROOT, ["fixture"]).map((c) => c.language.id)).toEqual([
       "csharp-fixture",
@@ -233,5 +234,75 @@ describe("loader", () => {
     expect(broken((d) => fs.writeFileSync(path.join(d, "diagrams/pyramid.svg"), '<svg class="dg" viewBox="0 0 800 10"></svg>'))).toMatch(
       /viewBox must be 940 units wide/,
     );
+  });
+});
+
+describe("example metadata (zheref/swift-cheatsheets#3, AC-2, AC-3, SC-1)", () => {
+  const card = (over: object) => ({ id: "c", kind: "code", title: "t", code: "x", ...over });
+  const problems = (over: object) => {
+    const r = codeCard.safeParse(card(over));
+    return r.success ? [] : r.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`);
+  };
+  const ran = { status: "ran", toolchain: "Node 24", date: "2026-11-11" };
+
+  it("accepts each validation status with what it needs", () => {
+    expect(problems({ expected: "1", validation: ran })).toEqual([]);
+    expect(problems({ validation: { ...ran, check: "exit-code" } })).toEqual([]);
+    expect(problems({ validation: { ...ran, status: "compiled", host: "a browser page" } })).toEqual([]);
+    expect(problems({ validation: { status: "excerpt", host: "an Android app" }, prerequisites: ["`npm ci`"] })).toEqual([]);
+    const column = { label: "a", tone: "good", code: "x" };
+    expect(compareCard.safeParse({ id: "c", kind: "compare", title: "t", columns: [column], validation: ran, expected: "y" }).success).toBe(true);
+    expect(compareCard.safeParse({ id: "c", kind: "compare", title: "t", columns: [column], validation: ran }).success).toBe(false);
+  });
+
+  it("refuses a status that claims more than it says", () => {
+    expect(problems({ validation: { status: "ran", date: "2026-11-11" }, expected: "1" })).toEqual(["validation.toolchain: a 'ran' example must name the toolchain it was proved with"]);
+    expect(problems({ validation: { status: "compiled", toolchain: "tsc" } })).toEqual(["validation.date: a 'compiled' example must say when it was proved"]);
+    expect(problems({ validation: { status: "excerpt" } })).toEqual(["validation.host: an excerpt must name the application host it needs"]);
+    expect(problems({ validation: { status: "excerpt", host: "h", toolchain: "tsc" } })).toEqual([
+      "validation.toolchain: an excerpt was not compiled or run: it has no toolchain or date",
+    ]);
+    expect(problems({ validation: { ...ran, status: "compiled", check: "stdout" } })).toEqual(["validation.check: only a 'ran' example has a checked result"]);
+    expect(problems({ validation: { ...ran, date: "11/11/2026" }, expected: "1" })).toEqual(["validation.date: must be a YYYY-MM-DD date"]);
+    expect(problems({ validation: ran })).toEqual(["expected: a 'ran' example checked on its output must state that output in `expected`"]);
+    expect(problems({ prerequisites: [] })).toHaveLength(1);
+  });
+
+  it("names what an example lacks, counting applicability and sources from its card or sheet", () => {
+    const sheet = sheetSchema.parse({
+      id: "s",
+      concept: "x",
+      scope: "shared",
+      title: "S",
+      group: "G",
+      applies: { platforms: ["node"], runtime: "Node.js" },
+      sources: [{ title: "Docs", url: "https://example.com/" }],
+      cards: [
+        card({ id: "bare" }),
+        card({ id: "full", expected: "1", prerequisites: ["p"], validation: ran, applies: { versions: { node: ">=22" } } }),
+        { id: "r", kind: "rules", title: "Rules", items: [{ tone: "good", text: "t" }] },
+      ],
+    });
+    expect(sheet.cards.flatMap((c) => exampleProblems(sheet, c))).toEqual([
+      "card 'bare' is an example without applies.versions, prerequisites, validation, expected",
+    ]);
+    const emptyVersions = sheetSchema.parse({ ...sheet, cards: [card({ id: "e", expected: "1", prerequisites: ["p"], validation: ran, applies: { versions: {} } })] });
+    expect(exampleProblems(emptyVersions, emptyVersions.cards[0]!)).toEqual(["card 'e' is an example without applies.versions"]);
+    const plain = sheetSchema.parse({ ...sheet, applies: undefined, sources: undefined });
+    expect(exampleProblems(plain, plain.cards[1]!)).toEqual(["card 'full' is an example without applies.platforms, applies.runtime, sources"]);
+  });
+
+  it("is enforced by the loader only for a language that asks for it — the Swift catalog is unchanged", () => {
+    const dir = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "catalog-")), "kotlin-fixture");
+    fs.cpSync(FIXTURE_DIR, dir, { recursive: true });
+    expect(() => loadCatalog(dir)).not.toThrow();
+    fs.appendFileSync(path.join(dir, "language.yaml"), "requireExampleMetadata: true\n");
+    expect(() => loadCatalog(dir)).toThrow(/fixture-collections\.yaml: card '[a-z-]+' is an example without /);
+    expect(swiftCatalog().language.requireExampleMetadata).toBeUndefined();
+  });
+
+  it("puts an example's setup into what search finds", () => {
+    const c = codeCard.parse(card({ prerequisites: ["run `node --test`"] }));
+    expect(cardText(c)).toContain("run node --test");
   });
 });

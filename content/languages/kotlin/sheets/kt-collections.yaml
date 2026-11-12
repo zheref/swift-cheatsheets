@@ -1,0 +1,144 @@
+id: kt-collections
+concept: collections.types
+scope: shared
+title: Collections — Lists, Sets, Maps & Arrays
+group: Shared concepts
+subtitle: Read-only interfaces over mutable JVM collections — which to pick and what each operation costs.
+applies:
+  platforms: [jvm, android]
+  runtime: Kotlin/JVM (the standard library)
+  versions: { kotlin: ">=2.0", jvm: ">=17" }
+sources:
+  - title: Collections overview — Kotlin docs
+    url: https://kotlinlang.org/docs/collections-overview.html
+cards:
+  - id: pick-the-container
+    kind: table
+    title: Pick the container
+    note: The defaults keep insertion order — `mutableSetOf` and `mutableMapOf` are linked hash collections.
+    headers: [Need, Use, Why]
+    rows:
+      - ["ordered list", "`List<T>` / `mutableListOf()`", "an `ArrayList` underneath; `List` is a read-only view"]
+      - ["membership, dedupe", "`Set<T>` / `mutableSetOf()`", "`LinkedHashSet`: O(1) `contains`, insertion order"]
+      - ["key → value", "`Map<K, V>` / `mutableMapOf()`", "`LinkedHashMap`; `hashMapOf()` drops the order for a little speed"]
+      - ["sorted keys", "`sortedMapOf()` / `java.util.TreeMap`", "O(log n), range queries"]
+      - ["queue or stack", "`ArrayDeque<T>`", "O(1) at both ends"]
+      - ["priority queue", "`java.util.PriorityQueue`", "O(log n) offer and poll"]
+      - ["primitives in bulk", "`IntArray`, `DoubleArray`…", "`int[]` underneath — no boxing"]
+  - id: costs
+    kind: table
+    title: What operations cost
+    note: The JVM implementations behind the Kotlin interfaces.
+    headers: [Type, Lookup, Insert, Remove]
+    rows:
+      - ["`ArrayList`", "O(1) by index, O(n) by value", "O(1)* at the end, O(n) elsewhere", "O(1) last, O(n) other"]
+      - ["`LinkedHashSet` / `LinkedHashMap`", "O(1) average", "O(1) average", "O(1) average"]
+      - ["`TreeMap` / `TreeSet`", "O(log n)", "O(log n)", "O(log n)"]
+      - ["`ArrayDeque`", "O(1) by index", "O(1)* at either end", "O(1) at either end"]
+      - ["`PriorityQueue`", "O(1) peek", "O(log n)", "O(log n) poll, O(n) by value"]
+  - id: read-only-vs-mutable
+    kind: code
+    title: Read-only is not immutable
+    note: "`List` hides the mutators; the object underneath can still change through another reference."
+    prerequisites: &run
+      - A Kotlin 2.x compiler (`kotlinc`) and JDK 17 or later
+      - "Save as `main.kt`; run `kotlinc main.kt -include-runtime -d main.jar && java -jar main.jar`"
+    code: |-
+      fun main() {
+          val readOnly: List<Int> = listOf(3, 1, 2)
+          val mutable = readOnly.toMutableList()      // a copy you may change
+          mutable += 4
+          println("$readOnly $mutable")
+
+          val view: List<Int> = mutable               // a read-only VIEW of the same list
+          mutable.clear()
+          println(view.size)
+      }
+    expected: |-
+      [3, 1, 2] [3, 1, 2, 4]
+      0
+    sources:
+      - title: List, Set and Map — Kotlin docs
+        url: https://kotlinlang.org/docs/collections-overview.html#collection-types
+    validation: &ran
+      status: ran
+      toolchain: kotlinc 2.2.20, JVM 17.0.15
+      date: "2026-11-11"
+  - id: maps-and-sets
+    kind: code
+    title: Maps and sets
+    note: "`getValue` throws on a missing key; `[]` returns null; set algebra reads as infix words."
+    prerequisites: *run
+    code: |-
+      fun main() {
+          val counts = mutableMapOf<String, Int>()
+          for (word in "the cat and the hat".split(" ")) {
+              counts[word] = counts.getOrDefault(word, 0) + 1
+          }
+          println(counts)
+          println(counts.getValue("the") to ("dog" in counts))
+
+          val a = setOf(1, 2, 3)
+          val b = setOf(2, 3, 4)
+          println("${a union b} ${a intersect b} ${a subtract b}")
+      }
+    expected: |-
+      {the=2, cat=1, and=1, hat=1}
+      (2, false)
+      [1, 2, 3, 4] [2, 3] [1]
+    validation: *ran
+  - id: value-keys
+    kind: code
+    title: Keys need value equality
+    note: "A `data class` generates `equals` and `hashCode`; a plain class compares by identity."
+    prerequisites: *run
+    code: |-
+      data class Point(val x: Int, val y: Int)
+      class Cell(val x: Int, val y: Int)
+
+      fun main() {
+          println(setOf(Point(1, 1), Point(1, 1)).size)
+          println(setOf(Cell(1, 1), Cell(1, 1)).size)
+      }
+    expected: |-
+      1
+      2
+    sources:
+      - title: Data classes — Kotlin docs
+        url: https://kotlinlang.org/docs/data-classes.html
+    validation: *ran
+  - id: deque-and-arrays
+    kind: code
+    title: ArrayDeque and primitive arrays
+    note: "`ArrayDeque` is the queue and the stack; `IntArray` is `int[]` with no boxing."
+    prerequisites: *run
+    code: |-
+      fun main() {
+          val queue = ArrayDeque<String>()
+          queue.addLast("a")
+          queue.addLast("b")
+          queue.addFirst("urgent")
+          println("${queue.removeFirst()} ${queue.removeLast()} $queue")
+
+          val primes = intArrayOf(2, 3, 5, 7)
+          println(primes.sum())
+      }
+    expected: |-
+      urgent b [a]
+      17
+    validation: *ran
+  - id: collection-pitfalls
+    kind: rules
+    title: Pitfalls
+    note: Where Kotlin differs from Swift's value-type collections.
+    items:
+      - tone: bad
+        text: "Collections are references: `val ys = xs` aliases a `MutableList`. Copy with `toList()` / `toMutableList()`."
+      - tone: bad
+        text: "`list.removeAt(0)` in a loop is O(n²) — use `ArrayDeque`."
+      - tone: bad
+        text: "Mutating a collection while iterating it throws `ConcurrentModificationException`; use `removeAll { }` or iterate a copy."
+      - tone: good
+        text: "Expose `List`, `Set`, `Map` from APIs; keep the `Mutable*` type private."
+      - tone: neutral
+        text: "`List<Int>` boxes every element; `IntArray` does not — it matters for large numeric data."

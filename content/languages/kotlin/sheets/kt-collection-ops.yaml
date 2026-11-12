@@ -1,0 +1,156 @@
+id: kt-collection-ops
+concept: collections.operations
+scope: shared
+title: Collections — Operation Cookbook
+group: Shared concepts
+subtitle: Transform, fold, group, sort, chunk, window and zip — eager on collections, lazy on sequences.
+applies:
+  platforms: [jvm, android]
+  runtime: Kotlin/JVM (the standard library)
+  versions: { kotlin: ">=2.0", jvm: ">=17" }
+sources:
+  - title: Collection operations overview — Kotlin docs
+    url: https://kotlinlang.org/docs/collection-operations.html
+cards:
+  - id: i-want-to
+    kind: table
+    title: I want to…
+    note: Each returns a new collection; the `Mutable*` variants (`sort`, `removeAll`…) change in place.
+    headers: [Goal, Function]
+    rows:
+      - ["transform each", "`map`, `mapNotNull`, `flatMap`"]
+      - ["keep some", "`filter`, `filterNot`, `filterIsInstance<T>()`"]
+      - ["fold to one value", "`sumOf`, `fold`, `reduce`"]
+      - ["first / last match", "`first { }`, `firstOrNull { }`, `lastOrNull { }`"]
+      - ["test", "`any`, `all`, `none`, `in`"]
+      - ["sort", "`sorted()`, `sortedBy { }`, `sortedWith(compareBy(...).thenBy(...))`"]
+      - ["group / index / count", "`groupBy`, `associateBy`, `groupingBy { }.eachCount()`"]
+      - ["split in two", "`partition { }`"]
+      - ["slice", "`take`, `drop`, `chunked`, `windowed`"]
+      - ["pair up", "`zip`, `zipWithNext`"]
+      - ["dedupe", "`distinct()`, `distinctBy { }`"]
+  - id: transform-fold
+    kind: code
+    title: Transform and fold
+    note: "`sumOf` says the intent; `fold` is the general form."
+    prerequisites: &run
+      - A Kotlin 2.x compiler (`kotlinc`) and JDK 17 or later
+      - "Save as `main.kt`; run `kotlinc main.kt -include-runtime -d main.jar && java -jar main.jar`"
+    code: |-
+      data class Order(val id: Int, val customer: String, val total: Int)
+
+      fun main() {
+          val orders = listOf(Order(1, "ana", 30), Order(2, "bo", 12), Order(3, "ana", 8))
+          println(orders.filter { it.total >= 10 }.map { it.id })
+          println(orders.sumOf { it.total })
+          println(orders.fold(0) { acc, o -> acc + o.total })
+      }
+    expected: |-
+      [1, 2]
+      50
+      50
+    validation: &ran
+      status: ran
+      toolchain: kotlinc 2.2.20, JVM 17.0.15
+      date: "2026-11-11"
+  - id: group-and-index
+    kind: code
+    title: Group, index, count, partition
+    note: Groups keep the order in which keys first appear.
+    prerequisites: *run
+    code: |-
+      data class Person(val name: String, val team: String)
+
+      fun main() {
+          val people = listOf(Person("Ana", "web"), Person("Bo", "data"), Person("Cy", "web"))
+          println(people.groupBy({ it.team }, { it.name }))
+          println(people.associateBy { it.name }.getValue("Bo").team)
+          println(people.groupingBy { it.team }.eachCount())
+          val (web, others) = people.partition { it.team == "web" }
+          println("${web.size} ${others.size}")
+      }
+    expected: |-
+      {web=[Ana, Cy], data=[Bo]}
+      data
+      {web=2, data=1}
+      2 1
+    sources:
+      - title: Grouping — Kotlin docs
+        url: https://kotlinlang.org/docs/collection-grouping.html
+    validation: *ran
+  - id: sort-by-keys
+    kind: code
+    title: Sort by several keys
+    note: "Comparators compose: `compareByDescending { }.thenBy { }`. Sorting is stable."
+    prerequisites: *run
+    code: |-
+      data class Player(val name: String, val score: Int)
+
+      fun main() {
+          val players = listOf(Player("cy", 7), Player("ana", 9), Player("bo", 7))
+          val ranked = players.sortedWith(compareByDescending<Player> { it.score }.thenBy { it.name })
+          println(ranked.joinToString(" ") { "${it.name}:${it.score}" })
+          println("${players.maxBy { it.score }.name} ${players.minByOrNull { it.score }?.name}")
+      }
+    expected: |-
+      ana:9 bo:7 cy:7
+      ana cy
+    sources:
+      - title: Ordering — Kotlin docs
+        url: https://kotlinlang.org/docs/collection-ordering.html
+    validation: *ran
+  - id: slice-and-pair
+    kind: code
+    title: Chunk, window, dedupe, zip
+    note: All built in.
+    prerequisites: *run
+    code: |-
+      fun main() {
+          println((1..5).chunked(2))
+          println((1..4).windowed(3))
+          println(listOf("b", "a", "b", "c", "a").distinct())
+          println(listOf("a", "b", "c").zip(listOf(1, 2)))     // stops at the shorter
+          println(listOf(1, 2, 4, 7).zipWithNext { a, b -> b - a })
+      }
+    expected: |-
+      [[1, 2], [3, 4], [5]]
+      [[1, 2, 3], [2, 3, 4]]
+      [b, a, c]
+      [(a, 1), (b, 2)]
+      [1, 2, 3]
+    validation: *ran
+  - id: search-and-test
+    kind: code
+    title: Search and test
+    note: "`first { }` throws when nothing matches; the `OrNull` variants return null."
+    prerequisites: *run
+    code: |-
+      fun main() {
+          val xs = listOf(3, 8, 12, 5, 20)
+          println("${xs.first { it > 10 }} ${xs.lastOrNull { it > 10 }} ${xs.indexOfFirst { it > 100 }} ${xs.firstOrNull { it > 100 }}")
+          println("${xs.any { it % 2 == 0 }} ${xs.all { it > 0 }} ${5 in xs} ${xs.none { it < 0 }}")
+      }
+    expected: |-
+      12 20 -1 null
+      true true true true
+    validation: *ran
+  - id: sequences
+    kind: code
+    title: Lazy pipelines with sequences
+    note: A sequence runs each element through the whole chain and stops as soon as `take` is satisfied.
+    prerequisites: *run
+    code: |-
+      fun main() {
+          var squared = 0
+          val firstOddSquares = generateSequence(1) { it + 1 }
+              .map { squared++; it * it }
+              .filter { it % 2 == 1 }
+              .take(3)
+              .toList()
+          println("$firstOddSquares after $squared squares")
+      }
+    expected: "[1, 9, 25] after 5 squares"
+    sources:
+      - title: Sequences — Kotlin docs
+        url: https://kotlinlang.org/docs/sequences.html
+    validation: *ran

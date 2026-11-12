@@ -1,0 +1,189 @@
+id: cs-async
+concept: concurrency.async-await
+scope: shared
+title: Async/Await, Tasks & Cancellation
+group: Shared concepts
+subtitle: Sequential vs concurrent awaits, WhenAll and its exceptions, CancellationToken, IAsyncEnumerable and bridging callbacks.
+applies:
+  platforms: [dotnet]
+  runtime: .NET (System.Threading.Tasks)
+  versions: { csharp: ">=12", dotnet: ">=8" }
+sources:
+  - title: Asynchronous programming with async and await — C#
+    url: https://learn.microsoft.com/en-us/dotnet/csharp/asynchronous-programming/
+  - title: Cancellation in managed threads — .NET
+    url: https://learn.microsoft.com/en-us/dotnet/standard/threading/cancellation-in-managed-threads
+cards:
+  - id: sequential-vs-concurrent
+    kind: code
+    title: Sequential vs concurrent
+    note: A task starts when it is created; `await` only waits. Start both, then await both.
+    prerequisites: &run
+      - .NET 8 SDK or later
+      - "`dotnet new console -o Demo`, replace `Demo/Program.cs` with the example, then `dotnet run --project Demo`"
+    code: |-
+      using System.Diagnostics;
+
+      static async Task<string> Load(string name)
+      {
+          await Task.Delay(100);                         // frees the thread while waiting
+          return name;
+      }
+
+      var clock = Stopwatch.StartNew();
+      var user = await Load("user");
+      var posts = await Load("posts");
+      var sequential = clock.ElapsedMilliseconds;
+
+      clock.Restart();
+      var both = await Task.WhenAll(Load("user"), Load("posts"));
+      var concurrent = clock.ElapsedMilliseconds;
+      Console.WriteLine($"{user} {posts} | {string.Join(" ", both)}");
+      // About 200 ms against about 100 ms; compared, not printed, so a busy machine cannot change the output
+      Console.WriteLine($"concurrent took well under the sequential time: {concurrent < sequential * 3 / 4}");
+    expected: |-
+      user posts | user posts
+      concurrent took well under the sequential time: True
+    validation: &ran
+      status: ran
+      toolchain: .NET SDK 9.0.304 (net9.0, C# 13)
+      date: "2026-11-11"
+  - id: cancellation-token
+    kind: code
+    title: Cancellation with CancellationToken
+    note: Cancellation is a token you pass down; awaiting a cancelled operation throws `OperationCanceledException`.
+    prerequisites: *run
+    code: |-
+      static async Task Poll(CancellationToken token, Action<int> onTick)
+      {
+          for (var i = 0; ; i++)
+          {
+              Console.WriteLine($"tick {i}");
+              onTick(i);
+              await Task.Delay(50, token);           // a cancellation point
+          }
+      }
+
+      // new CancellationTokenSource(TimeSpan.FromSeconds(5)) cancels on a deadline the same way
+      using var cts = new CancellationTokenSource();
+      try
+      {
+          await Poll(cts.Token, i => { if (i == 2) cts.Cancel(); });   // e.g. the user left the screen
+      }
+      catch (OperationCanceledException)
+      {
+          Console.WriteLine("cancelled");
+      }
+    expected: |-
+      tick 0
+      tick 1
+      tick 2
+      cancelled
+    validation: *ran
+  - id: whenall-exceptions
+    kind: code
+    title: WhenAll and its exceptions
+    note: "`await` rethrows the first failure only; the task's `Exception` holds all of them."
+    prerequisites: *run
+    code: |-
+      static async Task<int> Work(int n)
+      {
+          await Task.Delay(10 * n);
+          return n == 2 ? throw new InvalidOperationException($"job {n} failed") : n;
+      }
+
+      var all = Task.WhenAll(Work(1), Work(2), Work(3));
+      try
+      {
+          await all;
+      }
+      catch (InvalidOperationException e)
+      {
+          Console.WriteLine(e.Message);
+          Console.WriteLine($"{all.Exception!.InnerExceptions.Count} failure(s) recorded");
+      }
+    expected: |-
+      job 2 failed
+      1 failure(s) recorded
+    validation: *ran
+  - id: async-streams
+    kind: code
+    title: Async streams
+    note: "`IAsyncEnumerable` is the pull-based stream; `break` disposes the enumerator, so no further page is fetched."
+    prerequisites: *run
+    code: |-
+      using System.Runtime.CompilerServices;
+
+      static async IAsyncEnumerable<int[]> Pages(int total, int size, [EnumeratorCancellation] CancellationToken token = default)
+      {
+          for (var offset = 0; offset < total; offset += size)
+          {
+              await Task.Delay(10, token);               // stand-in for a fetch
+              yield return Enumerable.Range(offset, Math.Min(size, total - offset)).ToArray();
+          }
+      }
+
+      var seen = 0;
+      await foreach (var page in Pages(7, 3))
+      {
+          seen += page.Length;
+          Console.WriteLine(string.Join(",", page));
+          if (seen >= 6) break;
+      }
+    expected: |-
+      0,1,2
+      3,4,5
+    sources:
+      - title: Generate and consume async streams — C#
+        url: https://learn.microsoft.com/en-us/dotnet/csharp/asynchronous-programming/generate-consume-asynchronous-stream
+    validation: *ran
+  - id: bridging-callbacks
+    kind: code
+    title: Bridging callbacks
+    note: "`TaskCompletionSource` is `withCheckedContinuation`; `WaitAsync` adds a timeout to any task."
+    prerequisites: *run
+    code: |-
+      static void FetchTheme(Action<string> onDone) =>        // a callback API you do not own
+          ThreadPool.QueueUserWorkItem(_ => onDone("dark"));
+
+      static Task<string> FetchThemeAsync()
+      {
+          var tcs = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+          FetchTheme(value => tcs.SetResult(value));
+          return tcs.Task;
+      }
+
+      Console.WriteLine(await FetchThemeAsync());
+      Console.WriteLine(await FetchThemeAsync().WaitAsync(TimeSpan.FromSeconds(5)));
+    expected: |-
+      dark
+      dark
+    validation: *ran
+  - id: swift-to-csharp
+    kind: table
+    title: Swift concurrency → C#
+    note: The same shapes; C# tasks are hot and cancellation is explicit.
+    headers: [Swift, C#, Difference]
+    rows:
+      - ["`async let`", "start a `Task`, `await` it later", "tasks start eagerly"]
+      - ["`withThrowingTaskGroup`", "`Task.WhenAll(items.Select(Work))`", "no automatic cancellation of siblings — share a token"]
+      - ["`Task.isCancelled`", "`token.IsCancellationRequested`, `ThrowIfCancellationRequested()`", "a parameter, not ambient"]
+      - ["`AsyncStream`", "`IAsyncEnumerable<T>`, `Channel<T>`", "—"]
+      - ["`withCheckedContinuation`", "`TaskCompletionSource<T>`", "`SetResult` twice throws; `TrySetResult` does not"]
+      - ["`Task.detached`", "`Task.Run`", "queues to the thread pool"]
+      - ["`@MainActor`", "`SynchronizationContext` (UI thread)", "a runtime mechanism, not compiler-checked"]
+  - id: async-rules
+    kind: rules
+    title: Rules
+    note: What reviewers flag first.
+    items:
+      - tone: bad
+        text: "`async void` outside event handlers: exceptions crash the process and nobody can await it."
+      - tone: bad
+        text: "`.Result` / `.Wait()` on a UI or legacy ASP.NET context deadlocks — await all the way up."
+      - tone: good
+        text: "Accept a `CancellationToken` in every async API and pass it to everything you call."
+      - tone: good
+        text: "`ConfigureAwait(false)` in library code that does not need the caller's context."
+      - tone: neutral
+        text: "`ValueTask` only for hot paths that usually complete synchronously; await it exactly once."

@@ -1,0 +1,147 @@
+id: cs-linq
+concept: collections.operations
+scope: shared
+title: Collections — LINQ Cookbook
+group: Shared concepts
+subtitle: Filter, project, fold, group, sort, chunk and zip — and the deferred execution that surprises everyone once.
+applies:
+  platforms: [dotnet]
+  runtime: .NET (System.Linq)
+  versions: { csharp: ">=12", dotnet: ">=8" }
+sources:
+  - title: Language Integrated Query (LINQ) — C#
+    url: https://learn.microsoft.com/en-us/dotnet/csharp/linq/
+cards:
+  - id: i-want-to
+    kind: table
+    title: I want to…
+    note: Method syntax; every operator returns a new sequence.
+    headers: [Goal, Operator]
+    rows:
+      - ["transform each", "`Select`, `SelectMany`"]
+      - ["keep some", "`Where`, `OfType<T>()`"]
+      - ["fold to one value", "`Sum`, `Aggregate`, `Count`"]
+      - ["first match", "`First`, `FirstOrDefault`, `Single`"]
+      - ["test", "`Any`, `All`, `Contains`"]
+      - ["sort", "`Order`, `OrderBy(…).ThenBy(…)` (stable)"]
+      - ["group / index / count", "`GroupBy`, `ToDictionary`, `ToLookup`, `CountBy` (.NET 9)"]
+      - ["slice", "`Skip`, `Take`, `Chunk`, `TakeWhile`"]
+      - ["pair up", "`Zip`"]
+      - ["dedupe", "`Distinct`, `DistinctBy`"]
+      - ["extremes", "`Max`, `MaxBy`, `MinBy`"]
+  - id: transform-fold
+    kind: code
+    title: Filter, project, fold
+    note: "`Sum` says the intent; `Aggregate` is the general fold."
+    prerequisites: &run
+      - .NET 8 SDK or later
+      - "`dotnet new console -o Demo`, replace `Demo/Program.cs` with the example, then `dotnet run --project Demo`"
+    code: |-
+      Order[] orders = [new(1, "ana", 30), new(2, "bo", 12), new(3, "ana", 8)];
+      Console.WriteLine(string.Join(",", orders.Where(o => o.Total >= 10).Select(o => o.Id)));
+      Console.WriteLine($"{orders.Sum(o => o.Total)} {orders.Aggregate(0, (acc, o) => acc + o.Total)}");
+
+      record Order(int Id, string Customer, int Total);
+    expected: |-
+      1,2
+      50 50
+    validation: &ran
+      status: ran
+      toolchain: .NET SDK 9.0.304 (net9.0, C# 13)
+      date: "2026-11-11"
+  - id: group-and-index
+    kind: code
+    title: Group, index, count
+    note: "`GroupBy` keeps the order in which keys first appear; `CountBy` is new in .NET 9."
+    prerequisites:
+      - .NET 9 SDK or later
+      - "`dotnet new console -o Demo`, replace `Demo/Program.cs` with the example, then `dotnet run --project Demo`"
+    code: |-
+      Person[] people = [new("Ana", "web"), new("Bo", "data"), new("Cy", "web")];
+      foreach (var team in people.GroupBy(p => p.Team))
+          Console.WriteLine($"{team.Key}: {string.Join(",", team.Select(p => p.Name))}");
+
+      Console.WriteLine(people.ToDictionary(p => p.Name)["Bo"].Team);
+      Console.WriteLine(string.Join(" ", people.CountBy(p => p.Team).Select(kv => $"{kv.Key}={kv.Value}")));
+      Console.WriteLine(people.ToLookup(p => p.Team)["web"].Count());
+
+      record Person(string Name, string Team);
+    expected: |-
+      web: Ana,Cy
+      data: Bo
+      data
+      web=2 data=1
+      2
+    applies:
+      versions: { csharp: ">=13", dotnet: ">=9" }
+    sources:
+      - title: Enumerable.CountBy — .NET API
+        url: https://learn.microsoft.com/en-us/dotnet/api/system.linq.enumerable.countby
+    validation: *ran
+  - id: deferred-execution
+    kind: code
+    title: Deferred execution
+    note: A query is a recipe, not a result — it runs each time it is enumerated, against the source as it is then.
+    prerequisites: *run
+    code: |-
+      var source = new List<int> { 1, 2, 3 };
+      var evens = source.Where(n => n % 2 == 0);     // nothing has run yet
+      source.Add(4);
+      Console.WriteLine(string.Join(",", evens));    // runs now, and sees 4
+
+      var snapshot = evens.ToList();                  // materialize once
+      source.Add(6);
+      Console.WriteLine($"{string.Join(",", evens)} vs {string.Join(",", snapshot)}");
+    expected: |-
+      2,4
+      2,4,6 vs 2,4
+    sources:
+      - title: Deferred execution and lazy evaluation — .NET
+        url: https://learn.microsoft.com/en-us/dotnet/standard/linq/deferred-execution-lazy-evaluation
+    validation: *ran
+  - id: sort-by-keys
+    kind: code
+    title: Sort by several keys
+    note: "`OrderBy` is stable; pass an explicit comparer for text so the culture cannot change the order."
+    prerequisites: *run
+    code: |-
+      Player[] players = [new("cy", 7), new("ana", 9), new("bo", 7)];
+      var ranked = players.OrderByDescending(p => p.Score).ThenBy(p => p.Name, StringComparer.Ordinal);
+      Console.WriteLine(string.Join(" ", ranked.Select(p => $"{p.Name}:{p.Score}")));
+      Console.WriteLine($"{players.MaxBy(p => p.Score)!.Name} {players.MinBy(p => p.Score)!.Name}");
+
+      record Player(string Name, int Score);
+    expected: |-
+      ana:9 bo:7 cy:7
+      ana cy
+    validation: *ran
+  - id: chunk-distinct-zip
+    kind: code
+    title: Chunk, distinct, zip, skip/take
+    note: All built in since .NET 6.
+    prerequisites: *run
+    code: |-
+      int[] xs = [1, 2, 3, 4, 5];
+      Console.WriteLine(string.Join(" ", xs.Chunk(2).Select(c => $"[{string.Join(",", c)}]")));
+      Console.WriteLine(string.Join(",", new[] { "b", "a", "b", "c", "a" }.Distinct()));
+      Console.WriteLine(string.Join(" ", new[] { "a", "b", "c" }.Zip(new[] { 1, 2 }, (s, n) => $"{s}{n}")));
+      Console.WriteLine(string.Join(",", xs.Skip(1).Take(3)));
+    expected: |-
+      [1,2] [3,4] [5]
+      b,a,c
+      a1 b2
+      2,3,4
+    validation: *ran
+  - id: linq-rules
+    kind: rules
+    title: Rules
+    note: Where LINQ costs more than it looks.
+    items:
+      - tone: bad
+        text: "Enumerating the same query twice runs it twice — including any database or network call behind an `IQueryable`."
+      - tone: bad
+        text: "`Count() > 0` walks the sequence; `Any()` stops at the first element."
+      - tone: good
+        text: "Materialize (`ToList`, `ToArray`) at the boundary where you want a snapshot."
+      - tone: neutral
+        text: "Lambdas in hot loops allocate; for tight numeric code a `for` loop over a `Span<T>` is faster."

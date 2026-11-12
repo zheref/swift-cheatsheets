@@ -1,0 +1,165 @@
+id: kt-algorithms
+concept: algorithms.patterns
+scope: shared
+title: Algorithmic Patterns & Complexity
+group: Shared concepts
+subtitle: The JVM collections' costs, then the patterns that solve most problems — with a heap and a deque built in.
+applies:
+  platforms: [jvm, android]
+  runtime: Kotlin/JVM (the standard library and java.util)
+  versions: { kotlin: ">=2.0", jvm: ">=17" }
+sources:
+  - title: Collections overview — Kotlin docs
+    url: https://kotlinlang.org/docs/collections-overview.html
+  - title: PriorityQueue — Java SE 17 API
+    url: https://docs.oracle.com/en/java/javase/17/docs/api/java.base/java/util/PriorityQueue.html
+cards:
+  - id: builtin-costs
+    kind: table
+    title: Built-in costs
+    note: What the standard library hands you, and what to reach for instead.
+    headers: [Need, Built-in, Cost]
+    rows:
+      - ["stack / queue", "`ArrayDeque`", "O(1) at both ends"]
+      - ["priority queue", "`java.util.PriorityQueue`", "O(log n) offer / poll, O(1) peek"]
+      - ["sorted map / set", "`TreeMap`, `TreeSet`", "O(log n); `floorKey`, `ceiling`, ranges"]
+      - ["sort", "`sorted()` / `sortWith`", "O(n log n); stable for objects (TimSort)"]
+      - ["binary search", "`List.binarySearch`", "O(log n); returns `-(insertion point) - 1` on a miss"]
+      - ["build a string", "`buildString { }`", "`+=` in a loop is O(n²)"]
+      - ["big integers", "`java.math.BigInteger`", "`Int` overflows silently"]
+  - id: two-pointers
+    kind: code
+    title: Two pointers
+    note: On sorted input, move the pointer that brings the sum closer. O(n), O(1) space.
+    prerequisites: &run
+      - A Kotlin 2.x compiler (`kotlinc`) and JDK 17 or later
+      - "Save as `main.kt`; run `kotlinc main.kt -include-runtime -d main.jar && java -jar main.jar`"
+    code: |-
+      fun pairWithSum(sorted: List<Int>, target: Int): Pair<Int, Int>? {
+          var lo = 0
+          var hi = sorted.lastIndex
+          while (lo < hi) {
+              val sum = sorted[lo] + sorted[hi]
+              when {
+                  sum == target -> return lo to hi
+                  sum < target -> lo++
+                  else -> hi--
+              }
+          }
+          return null
+      }
+
+      fun main() = println("${pairWithSum(listOf(1, 3, 4, 6, 9), 10)} ${pairWithSum(listOf(1, 2), 7)}")
+    expected: "(0, 4) null"
+    validation: &ran
+      status: ran
+      toolchain: kotlinc 2.2.20, JVM 17.0.15
+      date: "2026-11-11"
+  - id: sliding-window
+    kind: code
+    title: Sliding window
+    note: Longest substring without repeats — grow the right edge, jump the left past the last repeat. O(n).
+    prerequisites: *run
+    code: |-
+      fun longestUnique(s: String): Int {
+          val lastSeen = HashMap<Char, Int>()
+          var start = 0
+          var best = 0
+          for ((i, ch) in s.withIndex()) {
+              val prev = lastSeen[ch]
+              if (prev != null && prev >= start) start = prev + 1
+              lastSeen[ch] = i
+              best = maxOf(best, i - start + 1)
+          }
+          return best
+      }
+
+      fun main() = println("${longestUnique("abcabcbb")} ${longestUnique("pwwkew")}")
+    expected: "3 3"
+    validation: *ran
+  - id: binary-search
+    kind: code
+    title: Binary search — built in and lower bound
+    note: "The built-in finds some match; the lower bound finds the first index not less than the target."
+    prerequisites: *run
+    code: |-
+      fun lowerBound(xs: List<Int>, target: Int): Int {
+          var lo = 0
+          var hi = xs.size
+          while (lo < hi) {
+              val mid = (lo + hi) ushr 1
+              if (xs[mid] < target) lo = mid + 1 else hi = mid
+          }
+          return lo
+      }
+
+      fun main() {
+          val xs = listOf(1, 3, 3, 5, 8)
+          println("${xs.binarySearch(5)} ${xs.binarySearch(4)}")    // 4 is missing: -(3) - 1
+          println("${lowerBound(xs, 3)} ${lowerBound(xs, 4)} ${lowerBound(xs, 9)}")
+      }
+    expected: |-
+      3 -4
+      1 3 5
+    validation: *ran
+  - id: heap-top-k
+    kind: code
+    title: Heap — top k
+    note: A min-heap of size k keeps the k largest; its root is the smallest of them. O(n log k).
+    prerequisites: *run
+    code: |-
+      import java.util.PriorityQueue
+
+      fun topK(xs: List<Int>, k: Int): List<Int> {
+          val heap = PriorityQueue<Int>()
+          for (x in xs) {
+              heap.offer(x)
+              if (heap.size > k) heap.poll()
+          }
+          return heap.sortedDescending()
+      }
+
+      fun main() = println(topK(listOf(5, 1, 9, 3, 7, 9, 2), 3))
+    expected: "[9, 9, 7]"
+    validation: *ran
+  - id: bfs-grid
+    kind: code
+    title: Breadth-first search on a grid
+    note: BFS finds shortest paths in unweighted graphs; `ArrayDeque` makes each dequeue O(1).
+    prerequisites: *run
+    code: |-
+      fun shortestPath(grid: List<String>, from: Pair<Int, Int>, to: Pair<Int, Int>): Int {
+          val dist = hashMapOf(from to 0)
+          val queue = ArrayDeque(listOf(from))
+          while (queue.isNotEmpty()) {
+              val cell = queue.removeFirst()
+              val here = dist.getValue(cell)
+              if (cell == to) return here
+              val (r, c) = cell
+              for ((dr, dc) in listOf(1 to 0, -1 to 0, 0 to 1, 0 to -1)) {
+                  val next = r + dr to c + dc
+                  val (nr, nc) = next
+                  if (nr !in grid.indices || nc !in grid[nr].indices || grid[nr][nc] == '#' || next in dist) continue
+                  dist[next] = here + 1
+                  queue.addLast(next)
+              }
+          }
+          return -1
+      }
+
+      fun main() = println(shortestPath(listOf("..#.", ".##.", "...."), 0 to 0, 0 to 3))
+    expected: "7"
+    validation: *ran
+  - id: working-it-out
+    kind: rules
+    title: Working a problem out loud
+    note: The habits that matter more than the language.
+    items:
+      - tone: good
+        text: "State the brute force and its cost first, then the bottleneck the better pattern removes."
+      - tone: good
+        text: "Name the edge cases before coding: empty input, one element, duplicates, `Int` overflow."
+      - tone: bad
+        text: "`(lo + hi) / 2` can overflow on huge indices — `ushr 1` or `lo + (hi - lo) / 2`."
+      - tone: neutral
+        text: "`List<Int>` boxes; for tight numeric loops prefer `IntArray`."

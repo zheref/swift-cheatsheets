@@ -56,11 +56,22 @@ describe("Gatsby adapter", () => {
       return createPage.mock.calls.map(([p]) => ({ path: p.path, id: p.context.catalog.language.id, component: p.component }));
     };
     const published = await run();
-    expect(published.map(({ path, id }) => ({ path, id }))).toEqual([{ path: "/", id: "swift" }]);
+    expect(published.map(({ path, id }) => ({ path, id }))).toEqual([
+      { path: "/", id: "swift" },
+      { path: "/csharp/", id: "csharp" },
+      { path: "/kotlin/", id: "kotlin" },
+      { path: "/typescript/", id: "typescript" },
+    ]);
     expect(published[0]!.component).toMatch(/src\/adapters\/gatsby\/CatalogTemplate\.tsx$/);
     const withFixtures = await run("1");
-    expect(withFixtures.map((p) => p.path)).toEqual(["/", "/csharp-fixture/", "/kotlin-fixture/", "/swift-fixture/", "/typescript-fixture/"]);
-    expect(new Set(withFixtures.map((p) => p.component)).size).toBe(1); // one template for every language
+    expect(withFixtures.map((p) => p.path)).toEqual([
+      ...published.map((p) => p.path),
+      "/csharp-fixture/",
+      "/kotlin-fixture/",
+      "/swift-fixture/",
+      "/typescript-fixture/",
+    ]);
+    expect(new Set([...published, ...withFixtures].map((p) => p.component)).size).toBe(1); // one template for every language
   });
 
   it("re-creates catalog pages when content changes under gatsby develop, and survives a bad save", async () => {
@@ -76,13 +87,24 @@ describe("Gatsby adapter", () => {
     try {
       await (createPagesStatefully as (a: unknown) => Promise<void>)({ actions: { createPage }, reporter: { info: vi.fn(), error } });
       const sheet = path.join(tmp, "content/languages/swift/sheets/solid.yaml");
-      fs.writeFileSync(sheet, fs.readFileSync(sheet, "utf8").replace("title: SOLID in Swift", "title: SOLID in Swift (edited)"));
-      await vi.waitFor(() => expect(createPage).toHaveBeenCalled(), { timeout: 3000, interval: 50 });
-      const ctx = createPage.mock.calls.at(-1)![0].context.catalog;
+      const edited = fs.readFileSync(sheet, "utf8").replace("title: SOLID in Swift", "title: SOLID in Swift (edited)");
+      // Save until the watcher reacts: under load (or right after the watch starts) macOS can
+      // coalesce or drop a file-system event, and an editor saving again is what a person does.
+      const saveUntil = async (content: string, reacted: () => boolean) =>
+        vi.waitFor(
+          () => {
+            if (reacted()) return;
+            fs.writeFileSync(sheet, content);
+            throw new Error("the watcher has not re-published yet");
+          },
+          { timeout: 15_000, interval: 300 },
+        );
+      const swiftPage = () => createPage.mock.calls.map(([p]) => p).find((p: { path: string }) => p.path === "/");
+      await saveUntil(edited, () => swiftPage() !== undefined);
+      const ctx = swiftPage().context.catalog;
       expect(ctx.sheets.find((x: { id: string }) => x.id === "solid").title).toBe("SOLID in Swift (edited)");
 
-      fs.writeFileSync(sheet, "id: [\n");
-      await vi.waitFor(() => expect(error).toHaveBeenCalled(), { timeout: 3000, interval: 50 });
+      await saveUntil("id: [\n", () => error.mock.calls.length > 0);
       expect(String(error.mock.calls[0]![0])).toMatch(/solid\.yaml/);
     } finally {
       stopContentWatch();
@@ -151,7 +173,7 @@ describe("offline adapter", () => {
     const offline = offlineLanguages(languages, catalogs, catalogs[0]!);
     const html = renderOffline(catalogs[0]!, "", offline);
     const json = html.match(new RegExp(`<script type="application/json" id="${LANGUAGES_ELEMENT_ID}">(.*?)</script>`, "s"))![1]!;
-    expect(JSON.parse(json).map((l: { href: string | null }) => l.href)).toEqual(["index.html", null, null, null]);
+    expect(JSON.parse(json).map((l: { href: string | null }) => l.href)).toEqual(["index.html", "offline/typescript.html", "offline/kotlin.html", "offline/csharp.html"]);
     expect(html).toContain('id="langnav"');
   });
 
@@ -173,9 +195,9 @@ describe("offline adapter", () => {
     expect(Object.keys(document.getElementById("root")!).some((k) => k.startsWith("__reactContainer"))).toBe(true);
     expect([...document.querySelectorAll("#langlist > li")].map((li) => li.getAttribute("data-state"))).toEqual([
       "current",
-      "unavailable",
-      "unavailable",
-      "unavailable",
+      "available",
+      "available",
+      "available",
     ]);
   });
 });

@@ -1,8 +1,8 @@
 # Builds and checks the site on every pull request and on main: typecheck, the
 # test suite (content and anchor parity, highlighter and search parity, static
 # render + hydration, the offline file opened from disk), the Gatsby build, the
-# offline export, structural verification — and that the committed offline
-# index.html is exactly what the sources produce.
+# offline export, structural verification, the TypeScript and C# catalogs' examples
+# run for real — and that the committed offline files are exactly what the sources produce.
 name: site
 
 on:
@@ -49,6 +49,18 @@ jobs:
 
       - name: Verify built pages
         run: npm run verify
+
+      - name: Set up .NET for the C# examples
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          dotnet-version: 9.0.x
+
+      - name: Run the TypeScript and C# examples
+        # The Kotlin examples need kotlinc and pinned library jars this job does not install; they
+        # run locally with `npm run examples` (README: Running the examples).
+        env:
+          DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+        run: npm run examples -- --lang typescript,csharp --require-all
 
       - name: Offline file is current
         run: |

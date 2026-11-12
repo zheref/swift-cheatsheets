@@ -1,0 +1,231 @@
+id: ts-async
+concept: concurrency.async-await
+scope: shared
+title: Async/Await, Promises & Cancellation
+group: Shared concepts
+subtitle: One thread, one event loop — sequential vs concurrent awaits, combinators, AbortSignal, async iteration.
+applies:
+  platforms: [node, browser]
+  runtime: any ES2024+ engine; the examples run on Node.js
+  versions: { typescript: ">=5.6", node: ">=22.18" }
+sources:
+  - title: Using promises — MDN
+    url: https://developer.mozilla.org/en-US/docs/Web/JavaScript/Guide/Using_promises
+  - title: AbortSignal — MDN
+    url: https://developer.mozilla.org/en-US/docs/Web/API/AbortSignal
+cards:
+  - id: sequential-vs-concurrent
+    kind: code
+    title: Sequential vs concurrent
+    note: "A promise starts when it is created; `await` only waits. Start both, then await both."
+    prerequisites: &run
+      - Node.js 22.18 or later (it runs `.mts` files directly by stripping the types)
+      - "Save as `main.mts` and run `node main.mts` (top-level `await` needs a module: the `.mts` extension makes it one)"
+      - "Optional type-check: `npm i -D typescript @types/node`, then `npx tsc --noEmit --strict --target esnext --module nodenext main.mts`"
+    code: |-
+      const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+      async function load(name: string, ms: number): Promise<string> {
+        await sleep(ms);
+        return name;
+      }
+
+      let start = performance.now();
+      const a = await load("user", 100);           // total = a + b (about 200 ms)
+      const b = await load("posts", 100);
+      const sequential = performance.now() - start;
+
+      start = performance.now();
+      const [c, d] = await Promise.all([load("user", 100), load("posts", 100)]);   // total = max(a, b) (about 100 ms)
+      const concurrent = performance.now() - start;
+      console.log(a, b, "|", c, d);
+      console.log("concurrent took well under the sequential time:", concurrent < sequential * 0.75);
+    expected: |-
+      user posts | user posts
+      concurrent took well under the sequential time: true
+    validation: &ran
+      status: ran
+      toolchain: Node 24.16.0, TypeScript 5.9.3
+      date: "2026-11-11"
+  - id: combinators
+    kind: code
+    title: all, allSettled, any
+    note: "`all` fails fast on the first rejection; `allSettled` never rejects; `any` takes the first success."
+    prerequisites: *run
+    code: |-
+      const ok = (v: number) => Promise.resolve(v);
+      const fail = (why: string) => Promise.reject(new Error(why));
+
+      const settled = await Promise.allSettled([ok(1), fail("boom"), ok(3)]);
+      console.log(settled.map((r) => (r.status === "fulfilled" ? r.value : r.reason.message)));
+
+      try {
+        await Promise.all([ok(1), fail("first failure wins")]);
+      } catch (e) {
+        console.log((e as Error).message);
+      }
+      console.log(await Promise.any([fail("a"), ok(2), ok(3)]));
+    expected: |-
+      [ 1, 'boom', 3 ]
+      first failure wins
+      2
+    sources:
+      - title: Promise — MDN
+        url: https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise
+    validation: *ran
+  - id: cancellation-abortsignal
+    kind: code
+    title: Cancellation with AbortSignal
+    note: "Promises cannot be cancelled; work is. Pass a signal down, honour it at every await, and detach the listener when the wait ends normally."
+    prerequisites: *run
+    code: |-
+      function delay(ms: number, signal?: AbortSignal): Promise<void> {
+        return new Promise((resolve, reject) => {
+          if (signal?.aborted) return reject(signal.reason);
+          const onAbort = () => {
+            clearTimeout(timer);
+            reject(signal!.reason);
+          };
+          const timer = setTimeout(() => {
+            signal?.removeEventListener("abort", onAbort);   // no listener left behind per tick
+            resolve();
+          }, ms);
+          signal?.addEventListener("abort", onAbort, { once: true });
+        });
+      }
+
+      async function poll(signal: AbortSignal, onTick: (i: number) => void) {
+        for (let i = 1; ; i++) {
+          await delay(50, signal);                 // each await is a cancellation point
+          console.log("tick", i);
+          onTick(i);
+        }
+      }
+
+      const controller = new AbortController();
+      try {
+        await poll(controller.signal, (i) => {
+          if (i === 2) controller.abort();          // e.g. the user left the screen
+        });
+      } catch (e) {
+        console.log((e as DOMException).name);     // AbortSignal.timeout(ms) rejects the same way, as TimeoutError
+      }
+    expected: |-
+      tick 1
+      tick 2
+      AbortError
+    validation: *ran
+  - id: async-iteration
+    kind: code
+    title: Async iteration
+    note: "An async generator is a pull-based stream; `break` calls its `return()`, so no further page is fetched."
+    prerequisites: *run
+    code: |-
+      async function* pages(total: number, size: number) {
+        for (let offset = 0; offset < total; offset += size) {
+          await new Promise((r) => setTimeout(r, 10));        // stand-in for a fetch
+          yield Array.from({ length: Math.min(size, total - offset) }, (_, i) => offset + i);
+        }
+      }
+
+      let seen = 0;
+      for await (const page of pages(7, 3)) {
+        seen += page.length;
+        console.log(page);
+        if (seen >= 6) break;
+      }
+    expected: |-
+      [ 0, 1, 2 ]
+      [ 3, 4, 5 ]
+    sources:
+      - title: for await...of — MDN
+        url: https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Statements/for-await...of
+    validation: *ran
+  - id: bridging-callbacks
+    kind: code
+    title: Bridging callbacks
+    note: "`promisify` for Node-style callbacks; `Promise.withResolvers` for anything that fires once."
+    prerequisites: *run
+    code: |-
+      import { readFile } from "node:fs";
+      import { promisify } from "node:util";
+
+      const readFileAsync = promisify(readFile);
+      const self = await readFileAsync(new URL(import.meta.url), "utf8");
+      console.log(self.startsWith("import"));
+
+      function once(target: EventTarget, type: string): Promise<Event> {
+        const { promise, resolve } = Promise.withResolvers<Event>();
+        target.addEventListener(type, resolve, { once: true });
+        return promise;
+      }
+      const target = new EventTarget();
+      setTimeout(() => target.dispatchEvent(new Event("ready")), 10);
+      console.log((await once(target, "ready")).type);
+    expected: |-
+      true
+      ready
+    applies:
+      platforms: [node]
+      versions: { node: ">=22.18", typescript: ">=5.4" }
+    sources:
+      - title: util.promisify — Node.js
+        url: https://nodejs.org/api/util.html#utilpromisifyoriginal
+      - title: Promise.withResolvers — MDN
+        url: https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise/withResolvers
+    validation: *ran
+  - id: foreach-trap
+    kind: code
+    title: The forEach trap
+    note: "`forEach` ignores the promises its callback returns; `for…of` awaits each in turn."
+    prerequisites: *run
+    code: |-
+      const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+      const log: string[] = [];
+
+      [30, 10].forEach(async (ms) => {             // fire-and-forget: nothing waits for these
+        await sleep(ms);
+        log.push(`forEach ${ms}`);
+      });
+      log.push("after forEach");
+
+      for (const ms of [30, 10]) {
+        await sleep(ms);
+        log.push(`for-of ${ms}`);
+      }
+      log.push("after for-of");
+      console.log(log.join("\n"));
+    expected: |-
+      after forEach
+      forEach 10
+      forEach 30
+      for-of 30
+      for-of 10
+      after for-of
+    validation: *ran
+  - id: swift-to-typescript
+    kind: table
+    title: Swift concurrency → TypeScript
+    note: The same ideas on a single-threaded event loop.
+    headers: [Swift, TypeScript, Difference]
+    rows:
+      - ["`async let` / `await (a, b)`", "start promises, then `await Promise.all([a, b])`", "promises start eagerly"]
+      - ["`withThrowingTaskGroup`", "`Promise.all(items.map(work))`", "no automatic cancellation of siblings"]
+      - ["`Task.isCancelled`, `try Task.checkCancellation()`", "`signal.aborted`, `signal.throwIfAborted()`", "cancellation is a value you pass, not ambient"]
+      - ["`AsyncStream` / `for await`", "async generator / `for await`", "same pull model"]
+      - ["`withCheckedContinuation`", "`new Promise(...)` / `Promise.withResolvers()`", "resolving twice is ignored, not a crash"]
+      - ["`@MainActor`", "—", "one thread: no data races on ordinary objects"]
+  - id: async-rules
+    kind: rules
+    title: Rules
+    note: What reviewers flag first.
+    items:
+      - tone: bad
+        text: "A floating promise (no `await`, no `return`, no `.catch`) loses its errors — Node then exits on the unhandled rejection."
+      - tone: good
+        text: "Independent work: `Promise.all`. Partial failure acceptable: `Promise.allSettled`."
+      - tone: good
+        text: "Accept an `AbortSignal` in every long-running function and pass it to `fetch`, timers and streams."
+      - tone: good
+        text: "`AbortSignal.timeout(ms)` and `AbortSignal.any([a, b])` compose deadlines without timers of your own."
+      - tone: neutral
+        text: "CPU-bound work blocks everything: move it to a `Worker` (browser) or `worker_threads` (Node)."

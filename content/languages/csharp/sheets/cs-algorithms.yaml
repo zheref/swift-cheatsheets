@@ -1,0 +1,154 @@
+id: cs-algorithms
+concept: algorithms.patterns
+scope: shared
+title: Algorithmic Patterns & Complexity
+group: Shared concepts
+subtitle: The BCL's costs, then the patterns that solve most problems — PriorityQueue and BinarySearch included.
+applies:
+  platforms: [dotnet]
+  runtime: .NET (the base class library)
+  versions: { csharp: ">=12", dotnet: ">=8" }
+sources:
+  - title: Collections and data structures — .NET
+    url: https://learn.microsoft.com/en-us/dotnet/standard/collections/
+cards:
+  - id: builtin-costs
+    kind: table
+    title: Built-in costs
+    note: Two sorts with different guarantees — know which one you called.
+    headers: [Need, Built-in, Cost]
+    rows:
+      - ["stack / queue", "`Stack<T>`, `Queue<T>`", "O(1)"]
+      - ["priority queue", "`PriorityQueue<TElement, TPriority>`", "O(log n) enqueue / dequeue"]
+      - ["sorted map / set", "`SortedDictionary`, `SortedSet`", "O(log n); `SortedSet.GetViewBetween` for ranges"]
+      - ["sort in place", "`Array.Sort`, `List.Sort`", "O(n log n) introsort — **not stable**"]
+      - ["sort a copy", "`OrderBy`", "O(n log n) — stable"]
+      - ["binary search", "`Array.BinarySearch`, `List.BinarySearch`", "O(log n); `~result` is the insertion point on a miss"]
+      - ["build a string", "`StringBuilder`, `string.Join`", "`+=` in a loop is O(n²)"]
+  - id: two-pointers
+    kind: code
+    title: Two pointers
+    note: On sorted input, move the pointer that brings the sum closer. O(n), O(1) space.
+    prerequisites: &run
+      - .NET 8 SDK or later
+      - "`dotnet new console -o Demo`, replace `Demo/Program.cs` with the example, then `dotnet run --project Demo`"
+    code: |-
+      static (int, int)? PairWithSum(int[] sorted, int target)
+      {
+          int lo = 0, hi = sorted.Length - 1;
+          while (lo < hi)
+          {
+              var sum = sorted[lo] + sorted[hi];
+              if (sum == target) return (lo, hi);
+              if (sum < target) lo++; else hi--;
+          }
+          return null;
+      }
+
+      Console.WriteLine($"{PairWithSum([1, 3, 4, 6, 9], 10)} {PairWithSum([1, 2], 7)?.ToString() ?? "none"}");
+    expected: "(0, 4) none"
+    validation: &ran
+      status: ran
+      toolchain: .NET SDK 9.0.304 (net9.0, C# 13)
+      date: "2026-11-11"
+  - id: sliding-window
+    kind: code
+    title: Sliding window
+    note: Longest substring without repeats — grow the right edge, jump the left past the last repeat. O(n).
+    prerequisites: *run
+    code: |-
+      static int LongestUnique(string s)
+      {
+          var lastSeen = new Dictionary<char, int>();
+          int start = 0, best = 0;
+          for (var i = 0; i < s.Length; i++)
+          {
+              if (lastSeen.TryGetValue(s[i], out var prev) && prev >= start) start = prev + 1;
+              lastSeen[s[i]] = i;
+              best = Math.Max(best, i - start + 1);
+          }
+          return best;
+      }
+
+      Console.WriteLine($"{LongestUnique("abcabcbb")} {LongestUnique("pwwkew")}");
+    expected: "3 3"
+    validation: *ran
+  - id: binary-search
+    kind: code
+    title: Binary search
+    note: A miss returns the bitwise complement of the insertion point.
+    prerequisites: *run
+    code: |-
+      int[] xs = [1, 3, 3, 5, 8];
+      Console.WriteLine(Array.BinarySearch(xs, 5));
+      var miss = Array.BinarySearch(xs, 4);
+      Console.WriteLine($"{miss} -> insert at {~miss}");
+    expected: |-
+      3
+      -4 -> insert at 3
+    sources:
+      - title: Array.BinarySearch — .NET API
+        url: https://learn.microsoft.com/en-us/dotnet/api/system.array.binarysearch
+    validation: *ran
+  - id: heap-top-k
+    kind: code
+    title: Heap — top k
+    note: A min-heap of size k keeps the k largest; its root is the smallest of them. O(n log k).
+    prerequisites: *run
+    code: |-
+      static int[] TopK(IEnumerable<int> xs, int k)
+      {
+          var heap = new PriorityQueue<int, int>();
+          foreach (var x in xs)
+          {
+              heap.Enqueue(x, x);
+              if (heap.Count > k) heap.Dequeue();
+          }
+          return [.. heap.UnorderedItems.Select(e => e.Element).OrderDescending()];
+      }
+
+      Console.WriteLine(string.Join(",", TopK([5, 1, 9, 3, 7, 9, 2], 3)));
+    expected: "9,9,7"
+    validation: *ran
+  - id: bfs-grid
+    kind: code
+    title: Breadth-first search on a grid
+    note: BFS finds shortest paths in unweighted graphs.
+    prerequisites: *run
+    code: |-
+      static int ShortestPath(string[] grid, (int R, int C) from, (int R, int C) to)
+      {
+          var dist = new Dictionary<(int, int), int> { [from] = 0 };
+          var queue = new Queue<(int R, int C)>([from]);
+          while (queue.TryDequeue(out var cell))
+          {
+              var here = dist[cell];
+              if (cell == to) return here;
+              foreach (var (dr, dc) in new[] { (1, 0), (-1, 0), (0, 1), (0, -1) })
+              {
+                  var next = (R: cell.R + dr, C: cell.C + dc);
+                  if (next.R < 0 || next.C < 0 || next.R >= grid.Length || next.C >= grid[0].Length
+                      || grid[next.R][next.C] == '#' || dist.ContainsKey(next)) continue;
+                  dist[next] = here + 1;
+                  queue.Enqueue(next);
+              }
+          }
+          return -1;
+      }
+
+      Console.WriteLine(ShortestPath(["..#.", ".##.", "...."], (0, 0), (0, 3)));
+    expected: "7"
+    validation: *ran
+  - id: working-it-out
+    kind: rules
+    title: Working a problem out loud
+    note: The habits that matter more than the language.
+    items:
+      - tone: good
+        text: "State the brute force and its cost first, then the bottleneck the better pattern removes."
+      - tone: good
+        text: "Name the edge cases before coding: empty input, one element, duplicates, `int` overflow (`checked` makes it throw)."
+      - tone: bad
+        text: "Relying on `Array.Sort` keeping equal elements in order — use `OrderBy` when stability matters."
+      - tone: neutral
+        text: "`Span<T>` slices without copying — the cheap way to pass a window of an array."
