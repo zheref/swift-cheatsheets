@@ -99,7 +99,12 @@ describe("loader", () => {
   it("loads only published catalogs by default", () => {
     expect(loadCatalogs(path.join(ROOT, "content")).map((c) => c.language.id)).toEqual(["swift"]);
     expect(loadCatalogs(FIXTURE_ROOT)).toEqual([]);
-    expect(loadCatalogs(FIXTURE_ROOT, ["fixture"]).map((c) => c.language.id)).toEqual(["kotlin-fixture"]);
+    expect(loadCatalogs(FIXTURE_ROOT, ["fixture"]).map((c) => c.language.id)).toEqual([
+      "csharp-fixture",
+      "kotlin-fixture",
+      "swift-fixture",
+      "typescript-fixture",
+    ]);
   });
 
   it("accepts every committed diagram under the allowlist", () => {
@@ -162,6 +167,15 @@ describe("loader", () => {
       if (id !== "kotlin-fixture") edit(dir, "language.yaml", "id: kotlin-fixture", `id: ${id}`);
     }
     expect(() => loadCatalogs(root, ["fixture"])).toThrow(/two catalogs publish at \/kotlin-fixture\//);
+  });
+
+  it("refuses a sheet id the page itself uses, which would shadow its anchor", () => {
+    const msg = broken((d) => {
+      edit(d, "language.yaml", "sheets: [fixture-collections, fixture-concurrency]", "sheets: [fixture-collections, langmenu]");
+      fs.renameSync(path.join(d, "sheets/fixture-concurrency.yaml"), path.join(d, "sheets/langmenu.yaml"));
+      edit(d, "sheets/langmenu.yaml", "id: fixture-concurrency", "id: langmenu");
+    });
+    expect(msg).toMatch(/langmenu\.yaml: id 'langmenu' is reserved by the page itself/);
   });
 
   it("refuses a duplicate card id", () => {

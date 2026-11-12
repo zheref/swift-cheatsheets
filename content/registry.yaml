@@ -1,0 +1,14 @@
+# The languages the top-navigation selector offers, in this order
+# (zheref/swift-cheatsheets#2). Each id names a folder under languages/; the name
+# must equal that catalog's own `name`. A language whose catalog is missing or not
+# `published` is listed as "not yet published", never as an empty page. The real
+# TypeScript, Kotlin and C# catalogs are zheref/swift-cheatsheets#3's.
+languages:
+  - id: swift
+    name: Swift
+  - id: typescript
+    name: TypeScript
+  - id: kotlin
+    name: Kotlin
+  - id: csharp
+    name: C#

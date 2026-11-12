@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { type Arrival, readArrival, sheetOfHash } from "../content/languages";
 import { DEFAULT_THEME, THEME_STORAGE_KEY, type ThemeMode } from "./theme";
 
 /**
@@ -45,4 +46,53 @@ export function useActiveSection(ids: string[]): string | null {
     return () => obs.disconnect();
   }, [ids]);
   return active;
+}
+
+/**
+ * The sheet the reader is on, read from the page when it is needed (the selector
+ * opening), not tracked on every scroll. The sheet the address names wins while it
+ * is on screen — a reader who picked a short or final sheet that cannot scroll to
+ * the top is still on it; otherwise the last visible sheet whose top has passed
+ * the top bar. An unscrolled page with no address has no topic yet, so switching
+ * from it lands on the other language's top.
+ */
+export function readingTopic(ids: string[]): string | null {
+  const hashed = sheetOfHash(window.location.hash);
+  const named = ids.includes(hashed) ? document.getElementById(hashed) : null;
+  if (named && !named.hidden) {
+    const r = named.getBoundingClientRect();
+    if (r.bottom >= 0 && r.top <= window.innerHeight) return hashed;
+  }
+  if (window.scrollY <= 0) return null;
+  let current: string | null = null;
+  for (const id of ids) {
+    const el = document.getElementById(id);
+    if (el && !el.hidden && el.getBoundingClientRect().top <= 80) current = id;
+  }
+  return current;
+}
+
+/**
+ * The language switch this page was opened by (`?from=…&concept=…`), read after
+ * mount so the server and first client render agree. Dismissing it drops the
+ * query from the address without a reload, so a later reload does not repeat it.
+ */
+export function useArrival(): [Arrival | null, () => void] {
+  const [arrival, setArrival] = useState<Arrival | null>(null);
+  useEffect(() => {
+    // The same switch read again keeps its object, so nothing downstream re-runs for a hash-only step.
+    const read = () => {
+      const next = readArrival(window.location.search);
+      setArrival((prev) => (prev && next && prev.from === next.from && prev.concept === next.concept ? prev : next));
+    };
+    read();
+    window.addEventListener("popstate", read);
+    return () => window.removeEventListener("popstate", read);
+  }, []);
+  const dismiss = useCallback(() => {
+    const { pathname, hash } = window.location;
+    window.history.replaceState(window.history.state, "", pathname + hash);
+    setArrival(null);
+  }, []);
+  return [arrival, dismiss];
 }

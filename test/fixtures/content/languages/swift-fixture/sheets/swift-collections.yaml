@@ -1,0 +1,13 @@
+id: swift-collections
+concept: collections.types
+scope: shared
+title: Fixture — Swift collections
+group: Fixture Basics
+subtitle: The shared collections concept, under a Swift-only sheet id.
+cards:
+  - id: array-literal
+    kind: code
+    title: An array collection
+    note: ""
+    code: |-
+      let xs = [1, 2, 3]

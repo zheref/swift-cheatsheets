@@ -9,7 +9,10 @@
  *  - sheets sharing a group are adjacent (a split group repeats its sidebar heading);
  *  - code blocks hold only text and highlight spans (no raw markup leaked);
  *  - every diagram's font-size is numeric;
- *  - no template or serialisation artefacts leaked into the text;
+ *  - no template or serialisation artefacts leaked into the text, and no page element id (outside
+ *    the diagrams' own SVG ids) is used twice;
+ *  - the language selector lists the registry's languages in order, marks exactly this one
+ *    current, and every language link it holds lands on a page that was built;
  *  - the site requests resources only from itself, and the offline file requests nothing at all:
  *    every URL-bearing attribute (src, srcset, data, poster, and href on anything but a link
  *    a reader follows), and every url()/@import in style sheets and style attributes, is read.
@@ -72,10 +75,33 @@ export function resourceReferences(d: Document): ResourceReference[] {
   return out;
 }
 
-/** The problems with one built page; `offline` pages may reference nothing at all. */
-export function checkPage(html: string, sheets: string[], offline: boolean): { problems: string[]; stats: PageStats } {
+/**
+ * The problems with one built page; `offline` pages may reference nothing at all. With
+ * `languages` (the registry's ids, in order) the selector is checked too, and its link
+ * targets are returned for the caller to resolve against the built files.
+ */
+export function checkPage(
+  html: string,
+  sheets: string[],
+  offline: boolean,
+  languages?: { ids: string[]; current: string },
+): { problems: string[]; stats: PageStats; languageLinks: string[] } {
   const problems: string[] = [];
   const { document: d } = new JSDOM(html).window;
+
+  const options = [...d.querySelectorAll<HTMLElement>("nav#langnav #langlist > li")];
+  if (languages) {
+    const ids = options.map((o) => o.getAttribute("data-lang-option") ?? "");
+    if (JSON.stringify(ids) !== JSON.stringify(languages.ids)) problems.push(`language selector lists [${ids.join(", ")}], registry.yaml [${languages.ids.join(", ")}]`);
+    const current = options.filter((o) => o.querySelector("[aria-current]")).map((o) => o.getAttribute("data-lang-option"));
+    if (JSON.stringify(current) !== JSON.stringify([languages.current])) problems.push(`language selector marks [${current.join(", ")}] current, not ${languages.current}`);
+  }
+  // A sheet anchor shadowed by another element (a control sharing its id) breaks saved `#links`.
+  // Ids inside diagrams are each SVG's own marker/gradient names, outside this check.
+  const allIds = [...d.querySelectorAll("[id]")].filter((e) => !e.closest("svg.dg")).map((e) => e.id);
+  const dupIds = allIds.filter((id, i) => allIds.indexOf(id) !== i);
+  if (dupIds.length) problems.push(`duplicate element ids: ${[...new Set(dupIds)].join(", ")}`);
+  const languageLinks = options.flatMap((o) => [...o.querySelectorAll("a[href]")].map((a) => a.getAttribute("href")!));
 
   const sections = [...d.querySelectorAll("section.sheet")];
   const ids = sections.map((s) => s.id);
@@ -125,7 +151,7 @@ export function checkPage(html: string, sheets: string[], offline: boolean): { p
     blocks: blocks.length,
     diagrams: d.querySelectorAll("svg.dg").length,
   };
-  return { problems, stats };
+  return { problems, stats, languageLinks };
 }
 
 interface LanguageFile {
@@ -135,10 +161,45 @@ interface LanguageFile {
   sheets: string[];
 }
 
+/**
+ * The built file a selector link lands on, or `null` when the link cannot work: the site
+ * links by route (under public/), an offline file only by a path relative to itself, and
+ * neither may resolve outside what the build wrote (public/ on the site, the checkout offline).
+ */
+function linkTarget(root: string, page: string, href: string, offline: boolean): string | null {
+  const bare = href.replace(/[?#].*$/, "");
+  if (bare.startsWith("/") === offline || /^[a-z][a-z0-9+.-]*:/i.test(bare)) return null;
+  const base = offline ? root : path.join(root, "public");
+  const target = offline ? path.resolve(path.dirname(page), bare) : path.join(base, bare);
+  const inside = path.relative(base, target);
+  if (inside.startsWith("..") || path.isAbsolute(inside)) return null;
+  return bare.endsWith("/") ? path.join(target, "index.html") : target;
+}
+
+/** The registry's language ids, or the reason they cannot be read — named, never a bare throw. */
+function readRegistry(file: string): { ids: string[] } | { problem: string } {
+  if (!fs.existsSync(file)) return { problem: "content/registry.yaml: missing" };
+  let doc: unknown;
+  try {
+    doc = YAML.parse(fs.readFileSync(file, "utf8"));
+  } catch (err) {
+    return { problem: `content/registry.yaml: ${err instanceof Error ? err.message.split("\n")[0] : String(err)}` };
+  }
+  const languages = (doc as { languages?: unknown } | null)?.languages;
+  if (!Array.isArray(languages) || !languages.every((l) => typeof (l as { id?: unknown })?.id === "string")) {
+    return { problem: "content/registry.yaml: malformed — expected `languages:` entries with an `id`" };
+  }
+  return { ids: languages.map((l) => (l as { id: string }).id) };
+}
+
 /** Checks every published catalog's two pages under `root`; returns the failures. */
 export function verifyRepository(root: string, log: (line: string) => void = console.log): string[] {
   const failures: string[] = [];
   const langRoot = path.join(root, "content/languages");
+  const registryFile = path.join(root, "content/registry.yaml");
+  const read = readRegistry(registryFile);
+  const registry = "ids" in read ? read.ids : null;
+  if ("problem" in read) failures.push(read.problem);
   let checked = 0;
   for (const dir of fs.readdirSync(langRoot, { withFileTypes: true }).filter((e) => e.isDirectory())) {
     const lang = YAML.parse(fs.readFileSync(path.join(langRoot, dir.name, "language.yaml"), "utf8")) as LanguageFile;
@@ -155,8 +216,12 @@ export function verifyRepository(root: string, log: (line: string) => void = con
         continue;
       }
       const html = fs.readFileSync(file, "utf8");
-      const { problems, stats } = checkPage(html, lang.sheets, offline);
+      const { problems, stats, languageLinks } = checkPage(html, lang.sheets, offline, registry ? { ids: registry, current: lang.id } : undefined);
       failures.push(...problems.map((p) => `${where}: ${p}`));
+      for (const href of languageLinks) {
+        const target = linkTarget(root, file, href, offline);
+        if (!target || !fs.existsSync(target)) failures.push(`${where}: language link ${href} lands on no built page`);
+      }
       log(
         `${where.padEnd(28)} sections ${stats.sections}  links ${stats.links}  cards ${stats.cards}  code blocks ${stats.blocks}  diagrams ${stats.diagrams}  ${Math.round(html.length / 1024)} KB`,
       );

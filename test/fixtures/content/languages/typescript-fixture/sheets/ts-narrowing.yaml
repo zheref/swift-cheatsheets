@@ -1,0 +1,13 @@
+id: ts-narrowing
+concept: language.type-narrowing
+scope: language
+title: Fixture — TypeScript narrowing
+group: Fixture Language
+subtitle: ""
+cards:
+  - id: typeof-guard
+    kind: code
+    title: A typeof guard
+    note: ""
+    code: |-
+      if (typeof x === "string") return x.length;

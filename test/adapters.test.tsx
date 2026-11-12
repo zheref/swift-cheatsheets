@@ -16,13 +16,14 @@ import { wrapRootElement as wrapBrowser } from "../gatsby-browser";
 import { onRenderBody, wrapRootElement as wrapSsr } from "../gatsby-ssr";
 import CatalogTemplate, { Head } from "../src/adapters/gatsby/CatalogTemplate";
 import { escapeHtml, scriptSafeJs, scriptSafeJson } from "../src/adapters/offline/escape";
-import { CATALOG_ELEMENT_ID } from "../src/adapters/offline/ids";
+import { CATALOG_ELEMENT_ID, LANGUAGES_ELEMENT_ID } from "../src/adapters/offline/ids";
+import { offlineLanguages } from "../src/adapters/offline/paths";
 import { renderOffline } from "../src/adapters/offline/render";
-import { loadCatalog } from "../src/content/load";
+import { loadCatalog, loadSite } from "../src/content/load";
 import NotFound, { Head as NotFoundHead } from "../src/pages/404";
 import { UiProvider } from "../src/ui/Provider";
 import { themeInitScript } from "../src/ui/theme";
-import { FIXTURE_DIR, swiftCatalog } from "./helpers";
+import { FIXTURE_DIR, ROOT, swiftCatalog } from "./helpers";
 
 beforeAll(() => {
   globalThis.IntersectionObserver ??= class {
@@ -58,7 +59,7 @@ describe("Gatsby adapter", () => {
     expect(published.map(({ path, id }) => ({ path, id }))).toEqual([{ path: "/", id: "swift" }]);
     expect(published[0]!.component).toMatch(/src\/adapters\/gatsby\/CatalogTemplate\.tsx$/);
     const withFixtures = await run("1");
-    expect(withFixtures.map((p) => p.path)).toEqual(["/", "/kotlin-fixture/"]);
+    expect(withFixtures.map((p) => p.path)).toEqual(["/", "/csharp-fixture/", "/kotlin-fixture/", "/swift-fixture/", "/typescript-fixture/"]);
     expect(new Set(withFixtures.map((p) => p.component)).size).toBe(1); // one template for every language
   });
 
@@ -97,9 +98,11 @@ describe("Gatsby adapter", () => {
   });
 
   it("renders the template and its head from page context", () => {
-    const props = { pageContext: { catalog: fixture } } as unknown as Call<typeof CatalogTemplate>;
+    const { languages } = loadSite(path.resolve("test/fixtures/content"), ["fixture"]);
+    const props = { pageContext: { catalog: fixture, languages } } as unknown as Call<typeof CatalogTemplate>;
     const html = renderToString(<UiProvider>{CatalogTemplate(props)}</UiProvider>);
     expect(html).toContain('id="fixture-collections"');
+    expect(html).toContain('href="/swift-fixture/"');
     const head = renderToStaticMarkup(<>{Head(props as unknown as Call<typeof Head>)}</>);
     expect(head).toContain("<title>Kotlin Fixture Catalog</title>");
     expect(head).toContain('<html lang="en">');
@@ -140,10 +143,21 @@ describe("offline adapter", () => {
     expect(html).toContain("<script>window.__client=1</script>");
     const json = html.match(new RegExp(`<script type="application/json" id="${CATALOG_ELEMENT_ID}">(.*?)</script>`, "s"))![1]!;
     expect(JSON.parse(json).language.id).toBe("kotlin-fixture");
+    expect(html).not.toContain(LANGUAGES_ELEMENT_ID);
   });
 
-  it("hydrates from the embedded catalog in the browser entry", async () => {
-    const html = renderOffline(swiftCatalog(), "");
+  it("embeds the selector's languages beside the catalog, with offline paths", () => {
+    const { catalogs, languages } = loadSite(path.join(ROOT, "content"));
+    const offline = offlineLanguages(languages, catalogs, catalogs[0]!);
+    const html = renderOffline(catalogs[0]!, "", offline);
+    const json = html.match(new RegExp(`<script type="application/json" id="${LANGUAGES_ELEMENT_ID}">(.*?)</script>`, "s"))![1]!;
+    expect(JSON.parse(json).map((l: { href: string | null }) => l.href)).toEqual(["index.html", null, null, null]);
+    expect(html).toContain('id="langnav"');
+  });
+
+  it("hydrates from the embedded catalog and languages in the browser entry", async () => {
+    const { catalogs, languages } = loadSite(path.join(ROOT, "content"));
+    const html = renderOffline(swiftCatalog(), "", offlineLanguages(languages, catalogs, catalogs[0]!));
     document.documentElement.innerHTML = html.replace(/^<!doctype html>\s*<html[^>]*>/, "").replace(/<\/html>\s*$/, "");
     const errors: unknown[] = [];
     const orig = console.error;
@@ -157,5 +171,11 @@ describe("offline adapter", () => {
     }
     expect(errors).toEqual([]);
     expect(Object.keys(document.getElementById("root")!).some((k) => k.startsWith("__reactContainer"))).toBe(true);
+    expect([...document.querySelectorAll("#langlist > li")].map((li) => li.getAttribute("data-state"))).toEqual([
+      "current",
+      "unavailable",
+      "unavailable",
+      "unavailable",
+    ]);
   });
 });

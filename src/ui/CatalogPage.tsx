@@ -1,16 +1,20 @@
 /**
- * One language catalog as a page: sidebar, sticky search bar, every sheet.
+ * One language catalog as a page: sidebar, sticky top bar (search and the
+ * language selector), every sheet.
  *
- * Framework-neutral React + Chakra. It receives a validated `Catalog` and knows
- * nothing about Gatsby, routing or any particular language — the Gatsby page
- * template and the offline export are thin adapters around it.
+ * Framework-neutral React + Chakra. It receives a validated `Catalog` and the
+ * registry's languages with their addresses already resolved, and knows nothing
+ * about Gatsby, routing or any particular language — the Gatsby page template
+ * and the offline export are thin adapters around it.
  */
 import { Box, chakra, Flex, Grid, Heading, IconButton, Input, Text } from "@chakra-ui/react";
-import { memo, type ReactNode, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
-import type { Catalog, Highlight, Sheet } from "../content/schema";
+import { memo, type ReactNode, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
+import { soleLanguage } from "../content/languages";
+import type { Catalog, Highlight, Sheet, SiteLanguage } from "../content/schema";
 import { buildIndex, cardKey, hitsLabel, search } from "../content/search";
 import { AppliesLine, CardView, SourcesLine } from "./cards";
-import { useActiveSection, useThemeMode } from "./hooks";
+import { readingTopic, useActiveSection, useArrival, useThemeMode } from "./hooks";
+import { AbsenceNotice, LanguageSelector } from "./languages";
 
 const NARROW = "@media (max-width: 900px)";
 
@@ -185,15 +189,45 @@ const barButton = {
 /** Touch-sized controls on narrow screens (UX-3). */
 const narrowTarget = { height: "44px", minWidth: "44px" };
 
-export function CatalogPage({ catalog }: { catalog: Catalog }) {
+export function CatalogPage({ catalog, languages: given }: { catalog: Catalog; languages?: SiteLanguage[] }) {
   const { language, sheets } = catalog;
+  const languages = useMemo(() => given ?? [soleLanguage(catalog)], [given, catalog]);
   const index = useMemo(() => buildIndex(catalog), [catalog]);
   const [query, setQuery] = useState("");
   const deferred = useDeferredValue(query);
+  // A topic chosen from the absence notice: the search is cleared first, and the address
+  // moves to the sheet only once it is shown again (a hidden section cannot be scrolled to).
+  const [chosen, setChosen] = useState<string | null>(null);
   const result = useMemo(() => search(index, deferred), [index, deferred]);
   const [navOpen, setNavOpen] = useState(false);
   const ids = useMemo(() => sheets.map((s) => s.id), [sheets]);
   const active = useActiveSection(ids);
+  const conceptAt = useCallback(() => {
+    const topic = readingTopic(ids);
+    return sheets.find((s) => s.id === topic)?.concept ?? null;
+  }, [ids, sheets]);
+  const [arrival, dismissArrival] = useArrival();
+  const chooseTopic = useCallback(
+    (sheet: string) => {
+      setQuery("");
+      dismissArrival();
+      setChosen(sheet);
+    },
+    [dismissArrival],
+  );
+  // A switch whose concept this catalog DOES have (a hand-made `?concept=` link) lands on it.
+  const arrivedAt = arrival ? sheets.find((s) => s.concept === arrival.concept) : undefined;
+  useEffect(() => {
+    if (chosen === null || deferred !== "") return;
+    window.location.hash = chosen;
+    setChosen(null);
+  }, [chosen, deferred]);
+  useEffect(() => {
+    if (!arrivedAt) return;
+    window.history.replaceState(window.history.state, "", `${window.location.pathname}#${arrivedAt.id}`);
+    document.getElementById(arrivedAt.id)?.scrollIntoView();
+    dismissArrival();
+  }, [arrivedAt, dismissArrival]);
   const [mode, toggleTheme] = useThemeMode();
   const input = useRef<HTMLInputElement>(null);
   const menu = useRef<HTMLButtonElement>(null);
@@ -249,7 +283,6 @@ export function CatalogPage({ catalog }: { catalog: Catalog }) {
       <Box as="main" id="main" flex="1" minW={0} p="0 20px 120px" inert={navOpen} css={{ [NARROW]: { padding: "0 12px 120px" } }}>
         <Flex
           id="topbar"
-          role="search"
           position="sticky"
           top={0}
           zIndex={20}
@@ -273,29 +306,32 @@ export function CatalogPage({ catalog }: { catalog: Catalog }) {
           >
             <span aria-hidden="true">☰</span>
           </IconButton>
-          <Input
-            id="q"
-            ref={input}
-            type="search"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder="Search everything  (press /)"
-            aria-label={`Search all ${language.name} sheets`}
-            autoComplete="off"
-            autoCorrect="off"
-            spellCheck={false}
-            flex="1"
-            h="38px"
-            bg="cs.bg2"
-            borderColor="cs.line"
-            color="cs.fg"
-            borderRadius="9px"
-            px="12px"
-            fontSize="14px"
-            _placeholder={{ color: "cs.faint" }}
-            _focusVisible={{ borderColor: "cs.accent", outline: "2px solid var(--accent)", outlineOffset: "1px", boxShadow: "none" }}
-            css={{ [NARROW]: { height: "44px" } }}
-          />
+          <Box role="search" flex="1" minW={0}>
+            <Input
+              id="q"
+              ref={input}
+              type="search"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder={`Search ${language.name}  (press /)`}
+              aria-label={`Search all ${language.name} sheets`}
+              autoComplete="off"
+              autoCorrect="off"
+              spellCheck={false}
+              w="100%"
+              h="38px"
+              bg="cs.bg2"
+              borderColor="cs.line"
+              color="cs.fg"
+              borderRadius="9px"
+              px="12px"
+              fontSize="14px"
+              _placeholder={{ color: "cs.faint" }}
+              _focusVisible={{ borderColor: "cs.accent", outline: "2px solid var(--accent)", outlineOffset: "1px", boxShadow: "none" }}
+              css={{ [NARROW]: { height: "44px" } }}
+            />
+          </Box>
+          <LanguageSelector languages={languages} current={language.id} conceptAt={conceptAt} />
           <IconButton
             id="theme"
             aria-label={mode === "dark" ? "Switch to light theme" : "Switch to dark theme"}
@@ -306,9 +342,22 @@ export function CatalogPage({ catalog }: { catalog: Catalog }) {
             <span aria-hidden="true">☼</span>
           </IconButton>
         </Flex>
+        {language.status === "fixture" ? (
+          <Text id="fixture-note" role="note" m="12px 0 0" p="8px 12px" fontSize="13px" color="cs.fg" bg="cs.bg2" borderRadius="8px" borderLeft="3px solid var(--legacy)">
+            Fixture catalog — test data that proves the page renders any language. It is not reference material.
+          </Text>
+        ) : null}
+        {arrival && !arrivedAt ? (
+          <AbsenceNotice arrival={arrival} catalog={catalog} languages={languages} onDismiss={dismissArrival} onChoose={chooseTopic} />
+        ) : null}
         <Text id="hits" aria-live="polite" color="cs.faint" fontSize="12.5px" m={0} p="8px 2px 0" minH="1px">
           {deferred.trim() ? hitsLabel(result.count, deferred) : ""}
         </Text>
+        {deferred.trim() && result.count === 0 ? (
+          <Text id="empty" m="10px 2px 0" fontSize="13.5px" color="cs.dim">
+            No {language.name} card matches. Search covers this language only — try other words, or switch language.
+          </Text>
+        ) : null}
         {sheets.map((s) => (
           <SheetSection
             key={s.id}

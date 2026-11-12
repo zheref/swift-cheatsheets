@@ -10,6 +10,11 @@ Designed to be opened on a second screen (iPad, phone, laptop) and skimmed while
 sidebar navigation, instant full-text search, syntax-highlighted snippets, dark/light
 themes, and a responsive layout that collapses to one column on small screens.
 
+A **language selector** in the top bar lists Swift, TypeScript, Kotlin and C#. Switching
+keeps you on the same concept where the other language has it, and says so plainly where it
+does not. Only Swift is published today; the other three are listed as *not yet published*
+until their catalogs land (zheref/swift-cheatsheets#3).
+
 The site is built with **Gatsby 5 + TypeScript + Chakra UI 3** from a **content catalog
 kept as data** (YAML), so another language is a new catalog folder, not a new page.
 
@@ -175,13 +180,16 @@ width — fails the build with the file named.
 
 See [docs/CONTENT-MODEL.md](docs/CONTENT-MODEL.md). In short: a new folder
 `content/languages/<id>/` with a `language.yaml` (route, highlighter keywords, sheet order)
-and its sheets. No template, component or route code changes.
+and its sheets, listed in `content/registry.yaml` — the selector's languages, in order. Give
+sheets the same `concept` as their equivalents in other languages so switching lands on them.
+No template, component or route code changes.
 
 ### Project layout
 
 ```
 swift-cheatsheets/
 ├── index.html                 generated — the offline artifact (committed), one self-contained file
+├── content/registry.yaml      the languages the selector offers, in order
 ├── content/languages/swift/   the Swift catalog: language.yaml, sheets/*.yaml, diagrams/*.svg
 ├── src/
 │   ├── content/               renderer-independent: schema, loader, highlighter, inline markup, search
@@ -192,15 +200,16 @@ swift-cheatsheets/
 ├── gatsby-node.ts             one page per published catalog, at its declared route
 ├── gatsby-ssr.tsx / gatsby-browser.tsx   provider wrap and the pre-paint theme script
 ├── scripts/                   build-offline.mts, verify.mts, serve.mts (+ Hatsu CI scripts)
-├── test/                      vitest suite and fixtures (legacy inventory, a fixture language)
+├── test/                      vitest suite and fixtures (legacy inventory, a four-language fixture site)
 ├── serve.command              HTTP server for LAN access
 └── serve-https.command        HTTPS server (self-signed) for TLS-forcing browsers
 ```
 
 `npm run verify` checks both built pages: one section per listed sheet in order, every
 sidebar link resolves, groups are adjacent, no raw markup leaked into a code block, diagram
-font sizes are numeric, no serialisation artefacts, and the offline file references no
-external resource at all.
+font sizes are numeric, no serialisation artefacts, the language selector lists the registry
+in order with this language current and every language link landing on a built page, and
+the offline file references no external resource at all.
 
 ---
 
@@ -208,8 +217,9 @@ external resource at all.
 
 | Key | Action |
 | --- | --- |
-| `/` | focus the search box |
-| `Esc` | clear the search, close the drawer, unfocus |
+| `/` | focus the search box (it searches the current language only) |
+| `Esc` | clear the search, close the drawer, unfocus — or, inside the language list, close it |
+| Language button | open the language list; `Tab` through it, `Enter` to switch |
 | `☼` button | toggle dark / light (remembered per browser) |
 | `☰` button | show the sidebar on narrow screens |
 

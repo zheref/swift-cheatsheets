@@ -1,0 +1,13 @@
+id: ts-async
+concept: concurrency.async-await
+scope: shared
+title: Fixture — TypeScript promises
+group: Fixture Basics
+subtitle: ""
+cards:
+  - id: async-function
+    kind: code
+    title: An async function
+    note: ""
+    code: |-
+      async function load(): Promise<string> { return "done"; }

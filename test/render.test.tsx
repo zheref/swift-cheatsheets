@@ -9,7 +9,7 @@ import { JSDOM } from "jsdom";
 import { act } from "react";
 import { hydrateRoot } from "react-dom/client";
 import { renderToString } from "react-dom/server";
-import { beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
 import { loadCatalog } from "../src/content/load";
 import type { Catalog } from "../src/content/schema";
 import { CatalogPage } from "../src/ui/CatalogPage";
@@ -206,9 +206,10 @@ describe("offline artifact opened from disk (AC-5)", () => {
       },
     });
     const { document: d } = dom.window;
-    await new Promise((r) => setTimeout(r, 50));
+    // Poll rather than sleep a fixed time: a loaded CI runner hydrates and renders more slowly.
+    const settle = { timeout: 10_000, interval: 25 };
     const root = d.getElementById("root")!;
-    expect(Object.keys(root).some((k) => k.startsWith("__reactContainer"))).toBe(true);
+    await vi.waitFor(() => expect(Object.keys(root).some((k) => k.startsWith("__reactContainer"))).toBe(true), settle);
     expect(errors).toEqual([]);
     expect(d.querySelectorAll("section.sheet")).toHaveLength(29);
     expect(d.querySelectorAll("svg.dg")).toHaveLength(17);
@@ -216,13 +217,23 @@ describe("offline artifact opened from disk (AC-5)", () => {
     expect([...d.querySelectorAll("#side a")].map((a) => a.getAttribute("href"))).toEqual(
       swiftCatalog().sheets.map((s) => `#${s.id}`),
     );
+    // The selector: Swift current, the other three configured languages listed as not yet published.
+    expect([...d.querySelectorAll("#langlist > li")].map((li) => [li.getAttribute("data-lang-option"), li.getAttribute("data-state")])).toEqual([
+      ["swift", "current"],
+      ["typescript", "unavailable"],
+      ["kotlin", "unavailable"],
+      ["csharp", "unavailable"],
+    ]);
+    expect(d.querySelectorAll("#langlist a")).toHaveLength(0);
+    const toggle = d.getElementById("lang-toggle")!;
+    toggle.click();
+    await vi.waitFor(() => expect((d.getElementById("langmenu") as HTMLDetailsElement).open).toBe(true), settle);
 
     const q = d.getElementById("q") as HTMLInputElement;
     const setter = Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype, "value")!.set!;
     setter.call(q, "debounce");
     q.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
-    await new Promise((r) => setTimeout(r, 100));
-    expect(d.getElementById("hits")!.textContent).toBe("23 cards matching “debounce”");
+    await vi.waitFor(() => expect(d.getElementById("hits")!.textContent).toBe("23 cards matching “debounce”"), settle);
     dom.window.close();
   });
 });

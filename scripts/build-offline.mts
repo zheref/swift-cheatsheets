@@ -3,6 +3,7 @@
  * catalog, server-rendered and hydrated by an inline bundle. The default
  * catalog (route `/`) is written to the repository root as `index.html` — the
  * file you open from disk or AirDrop; any other is written to `offline/<id>.html`.
+ * Each file's language selector links to the others by relative path.
  *
  *   node scripts/build-offline.mts
  */
@@ -47,12 +48,12 @@ await build({
 });
 
 type Entry = typeof import("../src/adapters/offline/entry.ts");
-const { loadCatalogs, renderOffline } = createRequire(import.meta.url)(serverFile) as Entry;
+const { loadSite, offlineFile, offlineLanguages, renderOffline } = createRequire(import.meta.url)(serverFile) as Entry;
 
-for (const catalog of loadCatalogs(path.join(root, "content"))) {
-  const html = renderOffline(catalog, clientJs);
-  const out =
-    catalog.language.route === "/" ? path.join(root, "index.html") : path.join(root, "offline", `${catalog.language.id}.html`);
+const { catalogs, languages } = loadSite(path.join(root, "content"));
+for (const catalog of catalogs) {
+  const html = renderOffline(catalog, clientJs, offlineLanguages(languages, catalogs, catalog));
+  const out = path.join(root, offlineFile(catalog.language));
   fs.mkdirSync(path.dirname(out), { recursive: true });
   fs.writeFileSync(out, html);
   const cards = catalog.sheets.reduce((n, s) => n + s.cards.length, 0);

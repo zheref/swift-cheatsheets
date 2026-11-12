@@ -1,0 +1,18 @@
+# A TEST FIXTURE, not reference material: one of the four fixture catalogs that
+# prove the language selector (zheref/swift-cheatsheets#2). status `fixture` keeps
+# it out of every published build; the real C# catalog is #3's. It has no
+# `concurrency.async-await` sheet, so switching here from one exercises the absence state.
+id: csharp-fixture
+name: C# (fixture)
+title: C# Fixture Catalog
+route: /csharp-fixture/
+status: fixture
+description: Fixture catalog used by tests to prove the language selector.
+locale: en
+codeLanguage: csharp
+highlight:
+  keywords: [var, new, class, record, public, static, void, return, switch, is, "true", "false", "null"]
+  lineComment: "//"
+  blockComment: ["/*", "*/"]
+  directivePrefix: "#"
+sheets: [cs-collections, cs-patterns]
