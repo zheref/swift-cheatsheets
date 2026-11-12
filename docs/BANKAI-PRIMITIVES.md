@@ -155,6 +155,9 @@ means it is proven here and moves in § 6, *product* means it stays in this repo
   height, so the button appearing after hydration shifts nothing. Where no button can
   appear (scripts off, no clipboard API), the reserved row stays. A collapsing row would
   move the page as it hydrates, which UX-7 rules out.
+- **Required setup.** The `<pre>` carries no styles of its own, so the consumer spreads
+  `codeBlockCss(<scope>)` (unscoped: every `pre`) and `syntaxCss` into its global CSS; that
+  gives the box and the horizontal scroll. This reference scopes it to `.card`.
 - **Highlighting stays the consumer's.** The primitive runs no highlighter.
   `src/content/highlight.ts` tokenizes for this reference, and `bankai-site` would pass
   shiki's output.

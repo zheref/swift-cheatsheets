@@ -32,25 +32,29 @@ export interface TopicNavProps {
 
 export function TopicNav({ title, meta, titleAs = "h2", items, active, onNavigate }: TopicNavProps) {
   const rows: ReactNode[] = [];
+  // The group of the previous item, grouped or not: a label starts every run of one group,
+  // so a group that returns after other items is labelled again.
   let group: string | undefined;
-  for (const item of items) {
-    if (item.group !== undefined && item.group !== group) {
+  items.forEach((item, index) => {
+    if (item.group !== group) {
       group = item.group;
-      rows.push(
-        <Text
-          as="div"
-          className="navgroup"
-          key={`g-${group}`}
-          fontSize={fontSize.groupLabel}
-          textTransform="uppercase"
-          letterSpacing={letterSpacing.groupLabel}
-          color={color.faint}
-          m={space.groupLabelMargin}
-          fontWeight={700}
-        >
-          {group}
-        </Text>,
-      );
+      if (group !== undefined) {
+        rows.push(
+          <Text
+            as="div"
+            className="navgroup"
+            key={`g-${index}-${group}`}
+            fontSize={fontSize.groupLabel}
+            textTransform="uppercase"
+            letterSpacing={letterSpacing.groupLabel}
+            color={color.faint}
+            m={space.groupLabelMargin}
+            fontWeight={700}
+          >
+            {group}
+          </Text>,
+        );
+      }
     }
     const on = item.id === active;
     rows.push(
@@ -85,7 +89,7 @@ export function TopicNav({ title, meta, titleAs = "h2", items, active, onNavigat
         {item.label}
       </chakra.a>,
     );
-  }
+  });
   return (
     <>
       <Heading as={titleAs} fontSize={fontSize.navTitle} lineHeight={lineHeight.title} m={space.navTitleMargin} letterSpacing={letterSpacing.navTitle} fontWeight={700} color={color.fg}>

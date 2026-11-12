@@ -18,6 +18,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite
 import {
   AppShell,
   CodeBlock,
+  codeBlockCss,
   type CodeToken,
   definePrimitivesConfig,
   DisclosureSelector,
@@ -64,7 +65,7 @@ const DARK = palette("#101010");
 const LIGHT = { ...palette("#fefefe"), fg: "#111111", dim: "#333333", faint: "#555555" };
 const system = createSystem(
   defaultConfig,
-  definePrimitivesConfig({ palettes: { dark: DARK, light: LIGHT }, fonts: { sans: "system-ui, sans-serif", mono: "monospace" }, globalCss: { ...syntaxCss } }),
+  definePrimitivesConfig({ palettes: { dark: DARK, light: LIGHT }, fonts: { sans: "system-ui, sans-serif", mono: "monospace" }, globalCss: { ...codeBlockCss(), ...syntaxCss } }),
 );
 const STORAGE_KEY = "proof-scheme";
 
@@ -385,6 +386,25 @@ describe("copy feedback on the code block", () => {
     expect(button.firstChild!.textContent).toBe("Copy failed — select the text");
   });
 
+  it("ignores an earlier press answering late: a newer failure keeps its instruction", async () => {
+    const pending: Array<{ resolve: () => void; reject: (e: Error) => void }> = [];
+    clipboard(() => new Promise<void>((resolve, reject) => pending.push({ resolve, reject })));
+    await load(catalog);
+    vi.useFakeTimers();
+    const button = document.querySelector<HTMLButtonElement>("button.copy")!;
+    act(() => button.click());
+    act(() => button.click());
+    expect(pending).toHaveLength(2);
+    await act(async () => pending[1]!.reject(new Error("denied")));
+    expect(button.dataset.state).toBe("failed");
+    // The first press succeeds late: stale, so it neither changes the state nor schedules a reset.
+    await act(async () => pending[0]!.resolve());
+    expect(button.dataset.state).toBe("failed");
+    await act(async () => vi.advanceTimersByTime(10_000));
+    expect(button.dataset.state).toBe("failed");
+    expect(button.textContent).toBe("Copy failed — select the text");
+  });
+
   it("sets nothing when the block is gone before the clipboard answers", async () => {
     let resolve!: () => void;
     clipboard(() => new Promise<void>((r) => (resolve = r)));
@@ -404,6 +424,44 @@ describe("copy feedback on the code block", () => {
     } finally {
       console.error = orig;
     }
+  });
+});
+
+describe("the rail and the code block, at the edges", () => {
+  it("labels a group again when it returns after other items, grouped or not", () => {
+    const html = renderToString(
+      <ChakraProvider value={system}>
+        <TopicNav
+          title="T"
+          active={null}
+          items={[
+            { id: "a1", label: "a1", href: "#a1", group: "A" },
+            { id: "n1", label: "n1", href: "#n1" },
+            { id: "a2", label: "a2", href: "#a2", group: "A" },
+            { id: "b1", label: "b1", href: "#b1", group: "B" },
+            { id: "a3", label: "a3", href: "#a3", group: "A" },
+          ]}
+        />
+      </ChakraProvider>,
+    );
+    document.body.innerHTML = html;
+    expect([...document.querySelectorAll(".navgroup")].map((e) => e.textContent)).toEqual(["A", "A", "B", "A"]);
+  });
+
+  it("scrolls a long line inside the block under the documented setup, never widening the page", async () => {
+    const long = `const x = "${"y".repeat(400)}";`;
+    const block = (
+      <ChakraProvider value={system}>
+        <CodeBlock code={long} language="text" />
+      </ChakraProvider>
+    );
+    document.body.innerHTML = `<div id="root">${renderToString(block)}</div>`;
+    await act(async () => {
+      mounted = hydrateRoot(document.getElementById("root")!, block);
+    });
+    const pre = document.querySelector("pre")!;
+    expect(getComputedStyle(pre).overflowX).toBe("auto");
+    expect(getComputedStyle(pre).whiteSpace).toBe("pre");
   });
 });
 

@@ -42,14 +42,22 @@ export const syntaxCss: Record<string, SystemStyleObject> = {
   ".t-attr": { color: "var(--attr)" }, ".t-mem": { color: "var(--mem)" },
 };
 
-/** A code block's box, scoped to where the consumer shows code (`.card pre` here). */
-export const codeBlockCss = (scope: string): Record<string, SystemStyleObject> => ({
-  [`${scope} pre`]: {
-    margin: 0, background: "var(--bg2)", border: "1px solid var(--line)", borderRadius: radius.code,
-    padding: space.codePadding, overflowX: "auto", fontSize: fontSize.code, lineHeight: lineHeight.code, whiteSpace: "pre",
-  },
-  [`${scope} pre + pre`]: { marginTop: space.codeStackGap },
-});
+/**
+ * A code block's box — background, border, padding, and a horizontal scroll inside the
+ * block so a long line never widens the page. `CodeBlock` renders an unstyled `<pre>`,
+ * so this is its required setup: spread it into the system's global CSS, scoped to where
+ * the consumer shows code (`.card` here), or unscoped (every `pre`).
+ */
+export const codeBlockCss = (scope = ""): Record<string, SystemStyleObject> => {
+  const pre = scope ? `${scope} pre` : "pre";
+  return {
+    [pre]: {
+      margin: 0, background: "var(--bg2)", border: "1px solid var(--line)", borderRadius: radius.code,
+      padding: space.codePadding, overflowX: "auto", fontSize: fontSize.code, lineHeight: lineHeight.code, whiteSpace: "pre",
+    },
+    [`${pre} + pre`]: { marginTop: space.codeStackGap },
+  };
+};
 
 export function definePrimitivesConfig({ palettes, fonts, globalCss = {} }: PrimitivesTheme) {
   return defineConfig({

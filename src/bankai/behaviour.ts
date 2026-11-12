@@ -24,7 +24,8 @@ export type CopyState = "idle" | "copied" | "failed";
  * button. `copied` returns to idle `resetAfterMs` after each success; `failed`
  * holds until the next press, since it carries an instruction a reader may still
  * be finding. `count` grows with every result, so a repeated one can be announced
- * again. Nothing is set after unmount, even if the clipboard answers late.
+ * again. Only the latest press's answer counts: an earlier press answering late, or
+ * any answer after unmount, sets nothing.
  */
 export function useCopy(
   text: string,
@@ -33,16 +34,17 @@ export function useCopy(
   const [available, setAvailable] = useState(false);
   const [result, setResult] = useState<{ state: CopyState; count: number }>({ state: "idle", count: 0 });
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
-  const mounted = useRef(false);
+  // The latest press; a clipboard answer for any earlier press, or after unmount, is stale and ignored.
+  const request = useRef(0);
   useEffect(() => {
-    mounted.current = true;
     setAvailable(typeof navigator !== "undefined" && typeof navigator.clipboard?.writeText === "function");
     return () => {
-      mounted.current = false;
+      request.current += 1;
       clearTimeout(timer.current);
     };
   }, []);
   const copy = useCallback(async () => {
+    const id = ++request.current;
     clearTimeout(timer.current);
     let next: CopyState = "copied";
     try {
@@ -50,7 +52,7 @@ export function useCopy(
     } catch {
       next = "failed";
     }
-    if (!mounted.current) return;
+    if (id !== request.current) return;
     setResult((r) => ({ state: next, count: r.count + 1 }));
     if (next === "copied") timer.current = setTimeout(() => setResult((r) => ({ ...r, state: "idle" })), resetAfterMs);
   }, [text, resetAfterMs]);

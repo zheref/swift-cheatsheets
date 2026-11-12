@@ -6,6 +6,11 @@
  * build time or in render, so server and client agree) and passes the tokens;
  * `language` is only a label (`data-lang`). Without tokens the code is shown
  * plain. React escapes every token, so code can never inject markup.
+ *
+ * Required setup: the `<pre>` carries no styles of its own, so a consumer spreads
+ * `codeBlockCss(<scope>)` and `syntaxCss` (src/bankai/system.ts) into its global CSS.
+ * That gives the box and a horizontal scroll inside it, so a long line never widens
+ * the page.
  */
 import { Box, chakra, VisuallyHidden } from "@chakra-ui/react";
 import { Fragment, memo } from "react";
