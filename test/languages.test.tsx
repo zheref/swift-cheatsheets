@@ -322,7 +322,9 @@ describe("the selected concept survives a switch (AC-2) or its absence is explai
     await open(catalogOf("typescript-fixture"), fixtures.languages, "/typescript-fixture/?from=swift-fixture&concept=concurrency.isolation");
     const notice = document.getElementById("absence")!;
     expect(document.getElementById("absence-title")!.textContent).toBe("No TypeScript (fixture) equivalent for “Fixture — Swift actors”");
-    expect(notice.textContent).toContain("You switched from Swift (fixture), on a topic (concurrency.isolation)");
+    expect(notice.textContent).toContain("You switched from Swift (fixture), on a topic this TypeScript (fixture) catalog does not cover yet.");
+    // The concept id is internal; the heading names the topic by title.
+    expect(notice.querySelector("p")!.textContent).not.toContain("concurrency.isolation");
     expect(notice.textContent).toContain("Related TypeScript (fixture) topics:");
     expect([...notice.querySelectorAll("a")].map((a) => a.getAttribute("href"))).toEqual(["#ts-async"]);
     expect(document.activeElement).toBe(notice);
@@ -338,12 +340,35 @@ describe("the selected concept survives a switch (AC-2) or its absence is explai
     expect([...notice.querySelectorAll("a")].map((a) => a.getAttribute("href"))).toEqual(["#cs-collections", "#cs-patterns"]);
   });
 
-  it("dismisses the notice and drops the query, so a reload does not repeat it", async () => {
+  it("dismisses the notice, drops the query so a reload does not repeat it, and hands focus to the toggle", async () => {
     await open(catalogOf("csharp-fixture"), fixtures.languages, "/csharp-fixture/?from=kotlin-fixture&concept=concurrency.async-await#cs-patterns");
-    await act(async () => document.getElementById("absence-dismiss")!.click());
+    const dismiss = document.getElementById("absence-dismiss")!;
+    dismiss.focus();
+    await act(async () => dismiss.click());
     expect(document.getElementById("absence")).toBeNull();
     expect(window.location.search).toBe("");
     expect(window.location.pathname + window.location.hash).toBe("/csharp-fixture/#cs-patterns");
+    expect(document.activeElement).toBe(toggle());
+  });
+
+  it("does not pull focus back to the notice when history only moves the hash", async () => {
+    await open(catalogOf("kotlin-fixture"), fixtures.languages, "/kotlin-fixture/?from=swift-fixture&concept=concurrency.isolation");
+    expect(document.activeElement!.id).toBe("absence");
+    const q = document.getElementById("q")!;
+    q.focus();
+    await act(async () => {
+      window.history.pushState(null, "", "/kotlin-fixture/?from=swift-fixture&concept=concurrency.isolation#fixture-collections");
+      window.dispatchEvent(new PopStateEvent("popstate"));
+    });
+    expect(document.getElementById("absence")).not.toBeNull();
+    expect(document.activeElement).toBe(q);
+  });
+
+  it("reads a hand-made link claiming to come from this same language as an unknown origin", async () => {
+    await open(catalogOf("swift-fixture"), fixtures.languages, "/swift-fixture/?from=swift-fixture&concept=platform.bluetooth-le");
+    const notice = document.getElementById("absence")!;
+    expect(notice.textContent).toContain("You arrived on a topic");
+    expect(notice.textContent).not.toContain("You switched from Swift (fixture)");
   });
 
   it("choosing an offered topic also retires the notice", async () => {
@@ -454,23 +479,29 @@ describe("the selector by keyboard and screen reader (AC-5)", () => {
       ["csharp", "unavailable", null],
     ]);
     for (const li of document.querySelectorAll("#langlist [data-state='unavailable'] > span")) {
-      expect(li.getAttribute("aria-disabled")).toBe("true");
+      // No link to follow, and the visible hint carries the state (aria-disabled is not allowed on a generic span).
+      expect(li.hasAttribute("aria-disabled")).toBe(false);
       expect(li.textContent).toMatch(/not yet published$/);
     }
     expect(document.getElementById("fixture-note")).toBeNull();
   });
 
-  it("gives the toggle and every option a touch-sized target on narrow screens and a visible focus ring", async () => {
-    await open(catalogOf("swift-fixture"), fixtures.languages);
+  it("gives every control a touch-sized target on narrow screens and coarse pointers, and a visible focus ring", async () => {
+    await open(catalogOf("csharp-fixture"), fixtures.languages, "/csharp-fixture/?from=kotlin-fixture&concept=concurrency.async-await");
     const css = [...document.querySelectorAll("style")].map((s) => s.textContent).join("");
     const rule = (el: Element, body: string) => css.includes(`.${el.classList[0]}${body}`);
-    const narrow = (el: Element, decl: string) => css.includes(`@media (max-width: 900px){.${el.classList[0]}{${decl};}}`);
-    const link = document.querySelector("#langlist a")!;
-    // UX-3: 44px on the ≤900px layout, for the toggle and every option.
-    expect(narrow(toggle(), "height:44px")).toBe(true);
-    for (const el of document.querySelectorAll("#langlist > li > *")) expect(narrow(el, "min-height:44px"), el.textContent!).toBe(true);
-    expect(rule(toggle(), ":is(:focus-visible, [data-focus-visible]){outline:2px solid var(--accent)")).toBe(true);
-    expect(rule(link, ":is(:focus-visible, [data-focus-visible]){outline:2px solid var(--accent)")).toBe(true);
+    const touch = (el: Element, decl: string) => css.includes(`@media (max-width: 900px),(pointer: coarse){.${el.classList[0]}{${decl};}}`);
+    // UX-3: 44px on the ≤900px layout and on any coarse pointer — the toggle, every option, every offered topic, Dismiss.
+    expect(touch(toggle(), "height:44px")).toBe(true);
+    expect(touch(document.getElementById("absence-dismiss")!, "height:44px")).toBe(true);
+    const targets = [...document.querySelectorAll("#langlist > li > *"), ...document.querySelectorAll("#absence li > a")];
+    expect(targets).toHaveLength(6);
+    for (const el of targets) expect(touch(el, "min-height:44px"), el.textContent!).toBe(true);
+    for (const el of [toggle(), document.querySelector("#langlist a")!, document.querySelector("#absence li > a")!, document.getElementById("absence-dismiss")!]) {
+      expect(rule(el, ":is(:focus-visible, [data-focus-visible]){outline:2px solid var(--accent)"), el.textContent!).toBe(true);
+    }
+    // Offered topics sit 8px apart.
+    expect(css).toMatch(new RegExp(`\\.${document.querySelector("#absence ul")!.classList[0]}\\{[^}]*gap:8px`));
   });
 });
 

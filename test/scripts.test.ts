@@ -115,6 +115,21 @@ describe("verify: built-page checks", () => {
       "offline/x.html: language link /x/ lands on no built page",
       "offline/x.html: language link https://x.test/ lands on no built page",
     ]);
+
+    // A link that climbs out of what the build wrote never counts, even onto a file that exists.
+    fs.writeFileSync(path.join(empty, "outside.html"), "x");
+    fs.writeFileSync(path.join(empty, "public/x/index.html"), page(selector(["/../outside.html", "/x/"])));
+    fs.writeFileSync(path.join(empty, "offline/x.html"), page(selector(["../../outside.html", "x.html"])));
+    expect(verifyRepository(empty, () => {})).toEqual([
+      "public/x/index.html: language link /../outside.html lands on no built page",
+      "offline/x.html: language link ../../outside.html lands on no built page",
+    ]);
+
+    // A malformed registry is named, never a bare throw.
+    fs.writeFileSync(path.join(empty, "content/registry.yaml"), "langs: []\n");
+    expect(verifyRepository(empty, () => {})[0]).toBe("content/registry.yaml: malformed — expected `languages:` entries with an `id`");
+    fs.writeFileSync(path.join(empty, "content/registry.yaml"), "languages: [\n");
+    expect(verifyRepository(empty, () => {})[0]).toMatch(/^content\/registry\.yaml: /);
   });
 });
 

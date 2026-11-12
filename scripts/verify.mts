@@ -157,13 +157,33 @@ interface LanguageFile {
 
 /**
  * The built file a selector link lands on, or `null` when the link cannot work: the site
- * links by route (under public/), an offline file only by a path relative to itself.
+ * links by route (under public/), an offline file only by a path relative to itself, and
+ * neither may resolve outside what the build wrote (public/ on the site, the checkout offline).
  */
 function linkTarget(root: string, page: string, href: string, offline: boolean): string | null {
   const bare = href.replace(/[?#].*$/, "");
   if (bare.startsWith("/") === offline || /^[a-z][a-z0-9+.-]*:/i.test(bare)) return null;
-  const target = offline ? path.resolve(path.dirname(page), bare) : path.join(root, "public", bare);
+  const base = offline ? root : path.join(root, "public");
+  const target = offline ? path.resolve(path.dirname(page), bare) : path.join(base, bare);
+  const inside = path.relative(base, target);
+  if (inside.startsWith("..") || path.isAbsolute(inside)) return null;
   return bare.endsWith("/") ? path.join(target, "index.html") : target;
+}
+
+/** The registry's language ids, or the reason they cannot be read — named, never a bare throw. */
+function readRegistry(file: string): { ids: string[] } | { problem: string } {
+  if (!fs.existsSync(file)) return { problem: "content/registry.yaml: missing" };
+  let doc: unknown;
+  try {
+    doc = YAML.parse(fs.readFileSync(file, "utf8"));
+  } catch (err) {
+    return { problem: `content/registry.yaml: ${err instanceof Error ? err.message.split("\n")[0] : String(err)}` };
+  }
+  const languages = (doc as { languages?: unknown } | null)?.languages;
+  if (!Array.isArray(languages) || !languages.every((l) => typeof (l as { id?: unknown })?.id === "string")) {
+    return { problem: "content/registry.yaml: malformed — expected `languages:` entries with an `id`" };
+  }
+  return { ids: languages.map((l) => (l as { id: string }).id) };
 }
 
 /** Checks every published catalog's two pages under `root`; returns the failures. */
@@ -171,8 +191,9 @@ export function verifyRepository(root: string, log: (line: string) => void = con
   const failures: string[] = [];
   const langRoot = path.join(root, "content/languages");
   const registryFile = path.join(root, "content/registry.yaml");
-  const registry = fs.existsSync(registryFile) ? (YAML.parse(fs.readFileSync(registryFile, "utf8")) as { languages: { id: string }[] }).languages.map((l) => l.id) : null;
-  if (!registry) failures.push("content/registry.yaml: missing");
+  const read = readRegistry(registryFile);
+  const registry = "ids" in read ? read.ids : null;
+  if ("problem" in read) failures.push(read.problem);
   let checked = 0;
   for (const dir of fs.readdirSync(langRoot, { withFileTypes: true }).filter((e) => e.isDirectory())) {
     const lang = YAML.parse(fs.readFileSync(path.join(langRoot, dir.name, "language.yaml"), "utf8")) as LanguageFile;

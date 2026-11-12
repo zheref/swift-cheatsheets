@@ -80,7 +80,11 @@ export function readingTopic(ids: string[]): string | null {
 export function useArrival(): [Arrival | null, () => void] {
   const [arrival, setArrival] = useState<Arrival | null>(null);
   useEffect(() => {
-    const read = () => setArrival(readArrival(window.location.search));
+    // The same switch read again keeps its object, so nothing downstream re-runs for a hash-only step.
+    const read = () => {
+      const next = readArrival(window.location.search);
+      setArrival((prev) => (prev && next && prev.from === next.from && prev.concept === next.concept ? prev : next));
+    };
     read();
     window.addEventListener("popstate", read);
     return () => window.removeEventListener("popstate", read);
