@@ -1,4 +1,5 @@
 import { Fragment, memo } from "react";
+import { CodeBlock as PrimitiveCodeBlock } from "../bankai";
 import { tokenize } from "../content/highlight";
 import { parseInline } from "../content/inline";
 import type { Highlight, Tone } from "../content/schema";
@@ -21,7 +22,10 @@ export const InlineText = memo(function InlineText({ text }: { text: string }) {
   );
 });
 
-/** A syntax-highlighted snippet. Tokenizing happens during render, so server and client agree. */
+/**
+ * A syntax-highlighted snippet: this catalog's tokenizer feeding the Bankai code
+ * block. Tokenizing happens during render, so server and client agree.
+ */
 export const CodeBlock = memo(function CodeBlock({
   code,
   highlight,
@@ -33,19 +37,6 @@ export const CodeBlock = memo(function CodeBlock({
   lang: string;
   tone?: Tone;
 }) {
-  return (
-    <pre className={tone ? `tone-${tone}` : undefined}>
-      <code data-lang={lang}>
-        {tokenize(code, highlight).map((t, i) =>
-          t.cls ? (
-            <span className={`t-${t.cls}`} key={i}>
-              {t.text}
-            </span>
-          ) : (
-            <Fragment key={i}>{t.text}</Fragment>
-          ),
-        )}
-      </code>
-    </pre>
-  );
+  const tokens = tokenize(code, highlight).map((t) => ({ text: t.text, kind: t.cls }));
+  return <PrimitiveCodeBlock code={code} language={lang} tokens={tokens} tone={tone} />;
 });
