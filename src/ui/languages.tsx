@@ -9,9 +9,10 @@
  */
 import { Box, chakra, Heading, Text } from "@chakra-ui/react";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { DisclosureSelector, media, type SelectorOption } from "../bankai";
+import { color, colorVar, DisclosureSelector, focusRing, fontSize, lineHeight, media, radius, type SelectorOption, size } from "../bankai";
 import { type Arrival, relatedTopics, switchLink, topicsOf } from "../content/languages";
 import type { Catalog, SiteLanguage } from "../content/schema";
+import { pageRadius, pageSize, textSize } from "./theme";
 
 /** Touch-sized targets (UX-3) on narrow screens and on any coarse pointer, whatever the width. */
 const TOUCH = media.touch;
@@ -93,24 +94,26 @@ export function AbsenceNotice({
       ref={box}
       tabIndex={-1}
       aria-labelledby="absence-title"
-      m="14px 0 0"
-      p="12px 14px"
+      m={0}
+      mt="3.5"
+      py="3"
+      px="3.5"
       bg="cs.bg2"
       border="1px solid"
       borderColor="cs.line"
-      borderLeft="3px solid var(--legacy)"
-      borderRadius="10px"
-      _focusVisible={{ outline: "2px solid var(--accent)", outlineOffset: "2px" }}
+      borderLeft={`${pageSize.accentRule} solid ${colorVar.caution}`}
+      borderRadius={pageRadius.notice}
+      _focusVisible={focusRing.outside}
     >
-      <Heading as="h2" id="absence-title" m={0} fontSize="15px" lineHeight="1.4" fontWeight={700} color="cs.fg">
+      <Heading as="h2" id="absence-title" m={0} fontSize={textSize.heading} lineHeight={lineHeight.title} fontWeight={700} color="cs.fg">
         No {name} equivalent for “{missing?.title ?? arrival.concept}”
       </Heading>
-      <Text m="4px 0 8px" fontSize="13px" color="cs.dim">
+      <Text m={0} mt="1" mb="2" fontSize={textSize.prose} color="cs.dim">
         {from ? `You switched from ${from.name}, ` : "You arrived "}
         on a topic this {name} catalog does not cover yet.{" "}
         {offer.related ? `Related ${name} topics:` : `Every ${name} topic:`}
       </Text>
-      <chakra.ul display="flex" flexWrap="wrap" gap="8px" listStyle="none" p={0} m="0 0 10px">
+      <chakra.ul display="flex" flexWrap="wrap" gap="2" listStyle="none" p={0} m={0} mb="2.5">
         {offer.topics.map((t) => (
           <li key={t.sheet}>
             <chakra.a
@@ -123,18 +126,18 @@ export function AbsenceNotice({
               }}
               display="inline-flex"
               alignItems="center"
-              minH="32px"
-              px="10px"
-              borderRadius="20px"
+              minH={pageSize.chip}
+              px="2.5"
+              borderRadius={radius.pill}
               border="1px solid"
-              borderColor="cs.line"
+              borderColor={color.edge}
               bg="cs.card"
               color="cs.fg"
-              fontSize="13px"
+              fontSize={fontSize.control}
               textDecoration="none"
-              _hover={{ borderColor: "cs.accent" }}
-              _focusVisible={{ outline: "2px solid var(--accent)", outlineOffset: "1px" }}
-              css={{ [TOUCH]: { minHeight: "44px" } }}
+              _hover={{ borderColor: color.accent }}
+              _focusVisible={focusRing.outside}
+              css={{ [TOUCH]: { minHeight: size.touch } }}
             >
               {t.title}
             </chakra.a>
@@ -151,18 +154,18 @@ export function AbsenceNotice({
             // the control that brought the reader here, rather than dropping it on <body> (WCAG 2.4.3).
             document.getElementById(TOGGLE_ID)?.focus({ preventScroll: true });
           }}
-          h="32px"
-          px="10px"
+          minH={pageSize.chip}
+          px="2.5"
           bg="transparent"
           border="1px solid"
-          borderColor="cs.line"
-          borderRadius="8px"
+          borderColor={color.edge}
+          borderRadius={radius.code}
           color="cs.dim"
-          fontSize="12.5px"
+          fontSize={fontSize.control}
           cursor="pointer"
           _hover={{ color: "cs.fg" }}
-          _focusVisible={{ outline: "2px solid var(--accent)", outlineOffset: "1px" }}
-          css={{ [TOUCH]: { height: "44px" } }}
+          _focusVisible={focusRing.outside}
+          css={{ [TOUCH]: { minHeight: size.touch } }}
         >
           Dismiss
         </chakra.button>

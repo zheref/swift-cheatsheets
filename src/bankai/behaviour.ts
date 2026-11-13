@@ -161,3 +161,30 @@ export function useSearchKeys<T extends HTMLInputElement>(shortcut: string | fal
   }, [shortcut, clear]);
   return input;
 }
+
+/**
+ * Publishes one element's rendered height as a custom property on another (`--topbar-height` on
+ * the shell), kept current as it resizes: a sticky bar that wraps on narrow screens or grows with
+ * the reader's text size is then read as drawn, not as assumed. Where `ResizeObserver` is missing
+ * nothing is written and the consumer's CSS fallback stands.
+ */
+export function useHeightProperty<S extends HTMLElement, T extends HTMLElement>(
+  property: string,
+): { source: RefObject<S | null>; target: RefObject<T | null> } {
+  const source = useRef<S>(null);
+  const target = useRef<T>(null);
+  useEffect(() => {
+    const measured = source.current;
+    const root = target.current;
+    if (!measured || !root || typeof ResizeObserver === "undefined") return;
+    const write = () => root.style.setProperty(property, `${measured.getBoundingClientRect().height}px`);
+    write();
+    const observer = new ResizeObserver(write);
+    observer.observe(measured);
+    return () => {
+      observer.disconnect();
+      root.style.removeProperty(property);
+    };
+  }, [property]);
+  return { source, target };
+}

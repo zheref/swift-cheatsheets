@@ -79,7 +79,7 @@ function CopyButton({ code, labels, resetAfterMs }: { code: string; labels: Copy
           px={space.actionPaddingX}
           bg={color.card}
           border="1px solid"
-          borderColor={color.line}
+          borderColor={color.edge}
           borderRadius={radius.option}
           color={state === "failed" ? colorVar.caution : color.dim}
           fontSize={fontSize.hint}

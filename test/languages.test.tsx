@@ -254,7 +254,7 @@ describe("routes and selector for all four configured languages (SC-1)", () => {
         }
       }
       expect(document.querySelector("#langlist [aria-current='true']")!.textContent).toContain(languageOf(fixture).name);
-      expect(toggle().textContent).toBe(`Language: ${languageOf(fixture).name}▾`);
+      expect(toggle().textContent).toBe(`Language: ${languageOf(fixture).name}`);
       expect(document.getElementById("shell")!.dataset.lang).toBe(fixture);
       expect(document.getElementById("fixture-note")!.textContent).toMatch(/not reference material/);
     });
@@ -293,6 +293,8 @@ describe("the selected concept survives a switch (AC-2) or its absence is explai
     await open(catalogOf("swift-fixture"), fixtures.languages, "/swift-fixture/#swift-collections");
     const place = (id: string, top: number) =>
       vi.spyOn(document.getElementById(id)!, "getBoundingClientRect").mockReturnValue({ top, bottom: top + 300 } as DOMRect);
+    // The one-row desktop bar, as drawn.
+    vi.spyOn(document.getElementById("topbar")!, "getBoundingClientRect").mockReturnValue({ top: 0, bottom: 61 } as DOMRect);
     place("swift-collections", -900);
     place("swift-concurrency", -400);
     place("swift-isolation", 40);
@@ -303,6 +305,26 @@ describe("the selected concept survives a switch (AC-2) or its absence is explai
       document.getElementById("swift-isolation")!.hidden = true;
       await openSelector();
       expect(options().find((o) => o.id === "typescript-fixture")!.href).toBe("/typescript-fixture/#ts-async");
+    } finally {
+      Object.defineProperty(window, "scrollY", { value: 0, configurable: true });
+      vi.restoreAllMocks();
+    }
+  });
+
+  it("measures the bar as drawn: under the two-row narrow bar, a sheet hidden behind it is not the topic", async () => {
+    await open(catalogOf("swift-fixture"), fixtures.languages, "/swift-fixture/");
+    const place = (id: string, top: number, bottom = top + 300) =>
+      vi.spyOn(document.getElementById(id)!, "getBoundingClientRect").mockReturnValue({ top, bottom } as DOMRect);
+    // The narrow layout's two-row bar reaches 119px; the concurrency sheet ends behind it at 100px,
+    // and the isolation sheet's top sits just under the bar, at 100px — with 80px assumed, concurrency won.
+    vi.spyOn(document.getElementById("topbar")!, "getBoundingClientRect").mockReturnValue({ top: 0, bottom: 119 } as DOMRect);
+    place("swift-collections", -900);
+    place("swift-concurrency", -200, 100);
+    place("swift-isolation", 100);
+    Object.defineProperty(window, "scrollY", { value: 1200, configurable: true });
+    try {
+      await openSelector();
+      expect(options().find((o) => o.id === "typescript-fixture")!.href).toBe("/typescript-fixture/?from=swift-fixture&concept=concurrency.isolation");
     } finally {
       Object.defineProperty(window, "scrollY", { value: 0, configurable: true });
       vi.restoreAllMocks();
@@ -480,8 +502,8 @@ describe("the selector by keyboard and screen reader (AC-5)", () => {
     expect(nav.getAttribute("aria-label")).toBe("Language");
     expect(toggle().tagName).toBe("SUMMARY");
     expect(toggle().tabIndex).toBe(0);
-    // The visible name is part of the accessible one (WCAG 2.5.3), and the arrow is hidden from it.
-    expect(toggle().querySelector("[aria-hidden='true']")!.textContent).toBe("▾");
+    // The visible name is part of the accessible one (WCAG 2.5.3), and the caret — a vector icon — is hidden from it.
+    expect(toggle().querySelector("svg[aria-hidden='true']")).not.toBeNull();
     // The search is its own landmark, no longer wrapping the selector.
     expect(document.querySelector("[role='search'] #q")).not.toBeNull();
     expect(document.querySelector("[role='search'] #langnav")).toBeNull();
@@ -539,16 +561,16 @@ describe("the selector by keyboard and screen reader (AC-5)", () => {
     const rule = (el: Element, body: string) => css.includes(`.${el.classList[0]}${body}`);
     const touch = (el: Element, decl: string) => css.includes(`@media (max-width: 900px),(pointer: coarse){.${el.classList[0]}{${decl};}}`);
     // UX-3: 44px on the ≤900px layout and on any coarse pointer — the toggle, every option, every offered topic, Dismiss.
-    expect(touch(toggle(), "height:44px")).toBe(true);
-    expect(touch(document.getElementById("absence-dismiss")!, "height:44px")).toBe(true);
+    expect(touch(toggle(), "min-height:44px")).toBe(true);
+    expect(touch(document.getElementById("absence-dismiss")!, "min-height:44px")).toBe(true);
     const targets = [...document.querySelectorAll("#langlist > li > *"), ...document.querySelectorAll("#absence li > a")];
     expect(targets).toHaveLength(6);
     for (const el of targets) expect(touch(el, "min-height:44px"), el.textContent!).toBe(true);
     for (const el of [toggle(), document.querySelector("#langlist a")!, document.querySelector("#absence li > a")!, document.getElementById("absence-dismiss")!]) {
       expect(rule(el, ":is(:focus-visible, [data-focus-visible]){outline:2px solid var(--accent)"), el.textContent!).toBe(true);
     }
-    // Offered topics sit 8px apart.
-    expect(css).toMatch(new RegExp(`\\.${document.querySelector("#absence ul")!.classList[0]}\\{[^}]*gap:8px`));
+    // Offered topics sit one spacing step (0.5rem, 8px at the default size) apart.
+    expect(css).toMatch(new RegExp(`\\.${document.querySelector("#absence ul")!.classList[0]}\\{[^}]*gap:var\\(--chakra-spacing-2\\)`));
   });
 });
 

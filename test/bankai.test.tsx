@@ -57,7 +57,7 @@ beforeEach(() => clipboard(async () => {}));
 // ---------- a consumer that is not the product: its own palette, fonts and storage key ----------
 
 const palette = (base: string): Palette => ({
-  bg: base, bg2: "#202020", card: "#2a2a2a", line: "#3a3a3a", fg: "#fafafa", dim: "#c8c8c8", faint: "#a8a8a8", accent: "#ffcc00",
+  bg: base, bg2: "#202020", card: "#2a2a2a", line: "#3a3a3a", edge: "#8a8a8a", fg: "#fafafa", dim: "#c8c8c8", faint: "#a8a8a8", accent: "#ffcc00",
   good: "#00aa55", bad: "#ee3344", modern: "#3399ff", legacy: "#cc8800",
   kw: "#ff66cc", str: "#66dd88", typ: "#66ccff", num: "#ffaa66", com: "#a8a8a8", attr: "#cc99ff", mem: "#ffdd77",
 });
@@ -247,7 +247,7 @@ describe.each(PROVEN)("%s through the primitives (AC-2, AC-3)", (id) => {
     expect(current.querySelector("[aria-current='true']")!.textContent).toMatch(/current$/);
     for (const li of items.filter((li) => li !== current)) expect(li.querySelector("a")!.getAttribute("href")).toMatch(/^\//);
     // The toggle's accessible name carries the label and the visible value (WCAG 2.5.3).
-    expect(document.querySelector("summary")!.textContent).toBe(`Language: ${catalog.language.name}▾`);
+    expect(document.querySelector("summary")!.textContent).toBe(`Language: ${catalog.language.name}`);
   });
 
   it("is operable by keyboard: shortcut and Escape on the search", async () => {

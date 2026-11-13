@@ -11,13 +11,14 @@
  */
 import { chakra, Grid, Heading, Text } from "@chakra-ui/react";
 import { memo, useCallback, useDeferredValue, useEffect, useMemo, useState } from "react";
-import { AppShell, media, SearchField, ThemeToggle, TopicNav } from "../bankai";
+import { AppShell, colorVar, media, radius, SearchField, ThemeToggle, TopicNav } from "../bankai";
 import { soleLanguage } from "../content/languages";
 import type { Catalog, Highlight, Sheet, SiteLanguage } from "../content/schema";
 import { buildIndex, cardKey, hitsLabel, search } from "../content/search";
 import { AppliesLine, CardView, SourcesLine } from "./cards";
 import { readingTopic, useActiveSection, useArrival, useThemeMode } from "./hooks";
 import { AbsenceNotice, LanguageSelector } from "./languages";
+import { pageSize, pageText, textSize } from "./theme";
 
 const NARROW = media.narrow;
 
@@ -42,15 +43,15 @@ const SheetSection = memo(function SheetSection({
       data-concept={sheet.concept}
       data-scope={sheet.scope}
       hidden={hidden}
-      pt="16px"
-      scrollMarginTop="64px"
+      pt="4"
+      scrollMarginTop={pageSize.anchorOffset}
     >
-      <chakra.header className="sheethead" m="10px 0 14px" pb="8px" borderBottom="2px solid" borderColor="cs.line">
-        <Heading as="h2" m={0} fontSize="21px" lineHeight="1.3" fontWeight={700} letterSpacing="-.01em" color="cs.fg">
+      <chakra.header className="sheethead" mt="2.5" mb="3.5" pb="2" borderBottom={`${pageSize.dividerRule} solid`} borderColor="cs.line">
+        <Heading as="h2" m={0} fontSize={textSize.sheetTitle} lineHeight={pageText.displayLeading} fontWeight={700} letterSpacing={pageText.displayTracking} color="cs.fg">
           {sheet.title}
         </Heading>
         {sheet.subtitle ? (
-          <Text m="4px 0 0" color="cs.dim" fontSize="13px">
+          <Text m={0} mt="1" color="cs.dim" fontSize={textSize.prose}>
             {sheet.subtitle}
           </Text>
         ) : null}
@@ -59,8 +60,8 @@ const SheetSection = memo(function SheetSection({
       </chakra.header>
       <Grid
         className="grid"
-        templateColumns="repeat(auto-fill, minmax(370px, 1fr))"
-        gap="12px"
+        templateColumns={`repeat(auto-fill, minmax(${pageSize.cardMin}, 1fr))`}
+        gap="3"
         alignItems="start"
         css={{ [NARROW]: { gridTemplateColumns: "1fr" } }}
       >
@@ -149,7 +150,7 @@ export function CatalogPage({ catalog, languages: given }: { catalog: Catalog; l
             id="q"
             value={query}
             onValueChange={setQuery}
-            placeholder={`Search ${language.name}  (press /)`}
+            placeholder={`${language.name} sheets  (press /)`}
             label={`Search all ${language.name} sheets`}
           />
           <LanguageSelector languages={languages} current={language.id} conceptAt={conceptAt} />
@@ -158,18 +159,18 @@ export function CatalogPage({ catalog, languages: given }: { catalog: Catalog; l
       }
     >
       {language.status === "fixture" ? (
-        <Text id="fixture-note" role="note" m="12px 0 0" p="8px 12px" fontSize="13px" color="cs.fg" bg="cs.bg2" borderRadius="8px" borderLeft="3px solid var(--legacy)">
+        <Text id="fixture-note" role="note" m={0} mt="3" py="2" px="3" fontSize={textSize.prose} color="cs.fg" bg="cs.bg2" borderRadius={radius.code} borderLeft={`${pageSize.accentRule} solid ${colorVar.caution}`}>
           Fixture catalog — test data that proves the page renders any language. It is not reference material.
         </Text>
       ) : null}
       {arrival && !arrivedAt ? (
         <AbsenceNotice arrival={arrival} catalog={catalog} languages={languages} onDismiss={dismissArrival} onChoose={chooseTopic} />
       ) : null}
-      <Text id="hits" aria-live="polite" color="cs.faint" fontSize="12.5px" m={0} p="8px 2px 0" minH="1px">
+      <Text id="hits" aria-live="polite" color="cs.faint" fontSize={textSize.small} m={0} pt="2" px="0.5" minH={pageSize.statusLine}>
         {deferred.trim() ? hitsLabel(result.count, deferred) : ""}
       </Text>
       {deferred.trim() && result.count === 0 ? (
-        <Text id="empty" m="10px 2px 0" fontSize="13.5px" color="cs.dim">
+        <Text id="empty" m={0} mt="2.5" mx="0.5" fontSize={textSize.prose} color="cs.dim">
           No {language.name} card matches. Search covers this language only — try other words, or switch language.
         </Text>
       ) : null}

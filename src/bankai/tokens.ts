@@ -3,11 +3,10 @@
  *
  * Plain data with no imports: every primitive in `src/bankai/` reads its
  * colours, sizes, spacing, radii, layers and overlays from here, so changing a
- * value re-themes every primitive with no component edit. The values are the
- * page's current ones, moved here unchanged — the dense desktop scale this
- * reference has always used. zheref/swift-cheatsheets#5 settles the type scale
- * and the narrow-screen floors on top of these names (docs/BANKAI-PRIMITIVES.md,
- * "Tokens").
+ * value re-themes every primitive with no component edit. The type scale is
+ * zheref/swift-cheatsheets#5's: a short list of rem steps, dense on desktop and
+ * floored on narrow screens, each role emitted as a custom property
+ * (docs/BANKAI-PRIMITIVES.md, "Tokens").
  *
  * Names are semantic roles (what a value is for), not steps (how big it is):
  * a primitive asks for `fontSize.control`, and the theme decides which step of
@@ -40,7 +39,10 @@ export const color = {
   surface: "cs.bg2",
   /** Cards and popovers. */
   card: "cs.card",
+  /** Dividers and passive outlines: cards, tables, chips. */
   line: "cs.line",
+  /** A control's boundary — field, button, toggle — at 3:1 or more against the page and its own fill (WCAG 1.4.11). */
+  edge: "cs.edge",
   fg: "cs.fg",
   /** Secondary text. */
   dim: "cs.dim",
@@ -57,27 +59,65 @@ export const colorVar = {
   caution: "var(--legacy)",
 } as const;
 
-/** Type scale, by role. Desktop values; #5 adds the narrow-screen floors. */
-export const fontSize = {
-  /** The page's base text. */
-  body: "15px",
-  /** An icon glyph inside a square control. */
-  icon: "15px",
-  /** Text in a search field. */
-  input: "14px",
-  /** The navigation rail's title. */
-  navTitle: "14px",
-  /** Navigation links, selector options and the selector's toggle. */
-  control: "13.2px",
-  /** Code inside a code block. */
-  code: "12.6px",
-  /** One-line hints under an option, the selector's caret, a copy button. */
-  hint: "12px",
-  /** Small print under a title. */
-  meta: "11px",
-  /** Uppercase group labels. */
-  groupLabel: "10.5px",
+/**
+ * The type scale's steps, in rem, so every size follows the reader's root font size (WCAG 1.4.4).
+ * The names read at the default 16px root: `2xs` 11px … `display` 21px.
+ */
+export const typeScale = {
+  "2xs": "0.6875rem",
+  xs: "0.75rem",
+  sm: "0.78125rem",
+  md: "0.8125rem",
+  lg: "0.875rem",
+  xl: "0.9375rem",
+  base: "1rem",
+  display: "1.3125rem",
 } as const;
+export type TypeStep = keyof typeof typeScale;
+
+/**
+ * A type role's step on each layout. Desktop keeps the dense "second screen" scale; on narrow
+ * screens nothing is below `xs` (12px) and body text is `base` (16px) — UX-8, as the maintainer
+ * ruled on zheref/swift-cheatsheets#5 (OQ-1).
+ */
+export interface TypeRole {
+  wide: TypeStep;
+  narrow: TypeStep;
+}
+
+/** The primitives' type roles. A consumer adds its own beside them (`definePrimitivesConfig`'s `type`). */
+export const typeRoles = {
+  /** The page's base text. */
+  body: { wide: "xl", narrow: "base" },
+  /** An icon inside a square control. */
+  icon: { wide: "xl", narrow: "xl" },
+  /** Text in a search field: 16px on narrow screens, which also keeps mobile browsers from zooming on focus. */
+  input: { wide: "lg", narrow: "base" },
+  /** The navigation rail's title. */
+  navTitle: { wide: "lg", narrow: "lg" },
+  /** Navigation links, selector options, the selector's toggle, a field's visible label. */
+  control: { wide: "md", narrow: "md" },
+  /** Code inside a code block. */
+  code: { wide: "sm", narrow: "sm" },
+  /** One-line hints under an option, a copy button. */
+  hint: { wide: "xs", narrow: "xs" },
+  /** Small print under a title. */
+  meta: { wide: "2xs", narrow: "xs" },
+  /** Uppercase group labels. */
+  groupLabel: { wide: "2xs", narrow: "xs" },
+} as const satisfies Record<string, TypeRole>;
+
+/**
+ * A type role as the custom property the system emits for it: `fontSizeOf("hint")` is `var(--fs-hint)`.
+ * It builds role maps (`fontSize`, a consumer's own); name a size through such a map, whose keys are
+ * the declared roles, rather than calling this with a string a typo could leave undefined.
+ */
+export const fontSizeOf = (role: string) => `var(--fs-${role})`;
+
+/** The primitives' type roles, as values a style can take. */
+export const fontSize = Object.fromEntries(Object.keys(typeRoles).map((role) => [role, fontSizeOf(role)])) as {
+  readonly [R in keyof typeof typeRoles]: string;
+};
 
 export const lineHeight = {
   body: 1.5,
@@ -87,42 +127,68 @@ export const lineHeight = {
 } as const;
 
 /** Spacing, by role. */
+/**
+ * The spacing scale: one definition for the primitives' `space` roles and for every spacing step
+ * the consumer's components name (`"2"`); `definePrimitivesConfig` hands it to Chakra as its
+ * `spacing` tokens. Keys and values follow Chakra's own scale (a step is 0.25rem), so a step
+ * means the same thing in both places, and in rem it follows the reader's root size.
+ */
+export const spaceScale = {
+  px: "1px",
+  0.5: "0.125rem",
+  1: "0.25rem",
+  1.5: "0.375rem",
+  2: "0.5rem",
+  2.5: "0.625rem",
+  3: "0.75rem",
+  3.5: "0.875rem",
+  4: "1rem",
+  4.5: "1.125rem",
+  5: "1.25rem",
+  8: "2rem",
+  10: "2.5rem",
+  16: "4rem",
+  30: "7.5rem",
+} as const;
+const s = spaceScale;
+
+/** Spacing, by role: each a step of `spaceScale`. */
 export const space = {
   /** Between controls in a bar. */
-  barGap: "8px",
+  barGap: s[2],
   /** Between a label and its glyph inside a control. */
-  inlineGap: "6px",
+  inlineGap: s[1.5],
   /** The top bar's own padding. */
-  barPadding: "12px 0 10px",
+  barPadding: `${s[3]} 0 ${s[2.5]}`,
   /** The main column's padding: wide, then narrow. */
-  mainPadding: "0 20px 120px",
-  mainPaddingNarrow: "0 12px 120px",
+  mainPadding: `0 ${s[5]} ${s[30]}`,
+  mainPaddingNarrow: `0 ${s[3]} ${s[30]}`,
   /** The navigation rail's padding. */
-  railPadding: "14px 10px 40px",
+  railPadding: `${s[3.5]} ${s[2.5]} ${s[10]}`,
   /** A navigation link's padding and vertical rhythm. */
-  navItemPadding: "6px 9px",
-  navItemGap: "1px",
+  navItemPadding: `${s[1.5]} ${s[2]}`,
+  navItemGap: s.px,
   /** A group label's margin, and the rail title's. */
-  groupLabelMargin: "14px 8px 5px",
-  navTitleMargin: "4px 8px 12px",
+  groupLabelMargin: `${s[3.5]} ${s[2]} ${s[1]}`,
+  navTitleMargin: `${s[1]} ${s[2]} ${s[3]}`,
   /** A control's horizontal padding: a search field, a toggle. */
-  inputPaddingX: "12px",
-  togglePaddingX: "11px",
+  inputPaddingX: s[3],
+  togglePaddingX: s[3],
   /** A popover's inner padding and its distance from its toggle. */
-  menuPadding: "5px",
-  menuOffset: "6px",
+  menuPadding: s[1],
+  menuOffset: s[1.5],
   /** A popover option's padding, and the gap between its label and hint. */
-  optionPadding: "6px 10px",
-  optionLineGap: "1px",
+  optionPadding: `${s[1.5]} ${s[2.5]}`,
+  optionLineGap: s.px,
   /** The gap between a title and its small print. */
-  metaGap: "2px",
+  metaGap: s[0.5],
   /** A small action button's horizontal padding (copy). */
-  actionPaddingX: "8px",
+  actionPaddingX: s[2],
   /** The gap between a code block and the toolbar above it. */
-  toolbarGap: "4px",
+  toolbarGap: s[1],
   /** A code block's padding, and the gap between consecutive blocks. */
-  codePadding: "9px 10px",
-  codeStackGap: "7px",
+  codePadding: `${s[2]} ${s[2.5]}`,
+  codeStackGap: s[2],
 } as const;
 
 /** Letter spacing, by role. */
@@ -157,6 +223,10 @@ export const size = {
   /** A popover's minimum width, and its margin from the viewport edge. */
   menuMin: "240px",
   menuViewportMargin: "24px",
+  /** An icon: one em, so it follows the text of the control it sits in. */
+  icon: "1em",
+  /** The stripe that marks the current link in a navigation list. */
+  currentStripe: "3px",
   /** Where a long current value is clipped on narrow screens so the search keeps its width. */
   clipNarrow: "7.5em",
 } as const;
@@ -180,6 +250,9 @@ export const overlay = {
   selected: "color-mix(in srgb, var(--accent) 14%, transparent)",
 } as const;
 
+/** The printed page: white paper, whatever the scheme on screen. */
+export const paper = { bg: "#fff" } as const;
+
 const DRAWER = ".18s";
 export const motion = {
   /** The drawer's slide, and how long its closed state waits before hiding. Every transition is dropped under `media.reducedMotion`. */
@@ -197,5 +270,7 @@ export const focusRing = {
  * Every token, as one object: the shape #5 and an extracted package carry. Primitives
  * import the named groups; a runtime override (a provider) is not part of this contract.
  */
-export const tokens = { media, wideQuery, color, colorVar, fontSize, lineHeight, letterSpacing, space, radius, size, layer, overlay, motion, focusRing } as const;
+export const tokens = {
+  media, wideQuery, color, colorVar, typeScale, typeRoles, fontSize, lineHeight, letterSpacing, spaceScale, space, radius, size, layer, overlay, paper, motion, focusRing,
+} as const;
 export type Tokens = typeof tokens;

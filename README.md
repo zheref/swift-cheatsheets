@@ -251,8 +251,8 @@ the offline file references no external resource at all.
 | `/` | focus the search box (it searches the current language only) |
 | `Esc` | clear the search, close the drawer, unfocus — or, inside the language list, close it |
 | Language button | open the language list; `Tab` through it, `Enter` to switch |
-| `☼` button | toggle dark / light (remembered per browser) |
-| `☰` button | show the sidebar on narrow screens |
+| Theme button (a sun on the dark page, a moon on the light one) | toggle dark / light (remembered per browser) |
+| Menu button (three bars) | show the sidebar on narrow screens |
 
 ---
 

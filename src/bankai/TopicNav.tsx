@@ -72,7 +72,7 @@ export function TopicNav({ title, meta, titleAs = "h2", items, active, onNavigat
         textDecoration="none"
         fontSize={fontSize.control}
         lineHeight={String(lineHeight.control)}
-        borderLeft="3px solid transparent"
+        borderLeft={`${size.currentStripe} solid transparent`}
         color={color.dim}
         _hover={{ bg: overlay.hover, color: color.fg }}
         css={{
@@ -82,8 +82,8 @@ export function TopicNav({ title, meta, titleAs = "h2", items, active, onNavigat
             borderLeftColor: colorVar.accent,
             fontWeight: 600,
           },
-          // A comfortable touch target inside the narrow-screen drawer (UX-3).
-          [media.narrow]: { display: "flex", alignItems: "center", minHeight: size.touch },
+          // A comfortable touch target in the narrow drawer and on any coarse pointer (UX-3).
+          [media.touch]: { display: "flex", alignItems: "center", minHeight: size.touch },
         }}
       >
         {item.label}

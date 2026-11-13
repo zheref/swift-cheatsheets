@@ -5,13 +5,16 @@
  * The shell owns the drawer's behaviour and nothing else: opening moves focus
  * into it, closing returns focus to the menu button, Escape and the scrim close
  * it, widening the window past the breakpoint closes it, and while it is open
- * the main column is inert and its closed links leave the tab order. What the
+ * the main column is inert and its closed links leave the tab order. The top
+ * bar's rendered height is published on the shell as `--topbar-height`, so
+ * anchored content can clear the bar however it wraps or grows. What the
  * rail lists, what the bar holds and what the page says are the consumer's.
  */
 import { Box, chakra, Flex, IconButton } from "@chakra-ui/react";
 import type { ReactNode } from "react";
-import { useDrawer } from "./behaviour";
-import { barButton, narrowTarget } from "./controls";
+import { useDrawer, useHeightProperty } from "./behaviour";
+import { barButton, touchTarget } from "./controls";
+import { MenuIcon } from "./icons";
 import { color, layer, media, motion, overlay, size, space, wideQuery } from "./tokens";
 
 export interface AppShellIds {
@@ -46,9 +49,10 @@ export interface AppShellProps {
 export function AppShell({ nav, navLabel, menuLabel, bar, children, open, onOpenChange, ids: given, rootProps }: AppShellProps) {
   const ids = { ...DEFAULT_IDS, ...given };
   const { panel: rail, trigger: menu } = useDrawer<HTMLElement, HTMLButtonElement>(open, onOpenChange, wideQuery);
+  const { source: topbar, target: shell } = useHeightProperty<HTMLDivElement, HTMLDivElement>("--topbar-height");
 
   return (
-    <Flex id={ids.shell} minH="100vh" data-nav-open={open ? "" : undefined} {...rootProps}>
+    <Flex id={ids.shell} ref={shell} minH="100vh" data-nav-open={open ? "" : undefined} {...rootProps}>
       <Box
         id={ids.scrim}
         aria-hidden="true"
@@ -93,6 +97,7 @@ export function AppShell({ nav, navLabel, menuLabel, bar, children, open, onOpen
       <Box as="main" id={ids.main} flex="1" minW={0} p={space.mainPadding} inert={open} css={{ [media.narrow]: { padding: space.mainPaddingNarrow } }}>
         <Flex
           id={ids.topbar}
+          ref={topbar}
           position="sticky"
           top={0}
           zIndex={layer.topbar}
@@ -102,6 +107,8 @@ export function AppShell({ nav, navLabel, menuLabel, bar, children, open, onOpen
           borderColor={color.line}
           gap={space.barGap}
           align="center"
+          // A narrow bar wraps: the consumer's search can take a full-width row of its own (SearchField).
+          css={{ [media.narrow]: { flexWrap: "wrap" } }}
         >
           <IconButton
             id={ids.menu}
@@ -112,9 +119,10 @@ export function AppShell({ nav, navLabel, menuLabel, bar, children, open, onOpen
             onClick={() => onOpenChange(!open)}
             display="none"
             {...barButton}
-            css={{ [media.narrow]: { display: "inline-flex", ...narrowTarget } }}
+            // On the narrow layout the menu leads the bar's first row and pushes the other controls to its end.
+            css={{ [media.narrow]: { display: "inline-flex", marginInlineEnd: "auto" }, [media.touch]: touchTarget }}
           >
-            <span aria-hidden="true">☰</span>
+            <MenuIcon />
           </IconButton>
           {bar}
         </Flex>
