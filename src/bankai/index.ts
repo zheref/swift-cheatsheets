@@ -8,7 +8,7 @@
  * inventory and the extraction proposal.
  */
 export { AppShell, type AppShellIds, type AppShellProps } from "./AppShell";
-export { type CopyState, useCopy, useDisclosure, useDrawer, useSearchKeys } from "./behaviour";
+export { type CopyState, useCopy, useDisclosure, useDrawer, useHeightProperty, useSearchKeys } from "./behaviour";
 export { CodeBlock, type CodeBlockProps, type CodeToken, type CopyLabels } from "./CodeBlock";
 export { barButton, touchTarget } from "./controls";
 export { CaretIcon, CheckIcon, MenuIcon, MoonIcon, SearchIcon, SunIcon } from "./icons";

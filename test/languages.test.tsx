@@ -293,6 +293,8 @@ describe("the selected concept survives a switch (AC-2) or its absence is explai
     await open(catalogOf("swift-fixture"), fixtures.languages, "/swift-fixture/#swift-collections");
     const place = (id: string, top: number) =>
       vi.spyOn(document.getElementById(id)!, "getBoundingClientRect").mockReturnValue({ top, bottom: top + 300 } as DOMRect);
+    // The one-row desktop bar, as drawn.
+    vi.spyOn(document.getElementById("topbar")!, "getBoundingClientRect").mockReturnValue({ top: 0, bottom: 61 } as DOMRect);
     place("swift-collections", -900);
     place("swift-concurrency", -400);
     place("swift-isolation", 40);
@@ -303,6 +305,26 @@ describe("the selected concept survives a switch (AC-2) or its absence is explai
       document.getElementById("swift-isolation")!.hidden = true;
       await openSelector();
       expect(options().find((o) => o.id === "typescript-fixture")!.href).toBe("/typescript-fixture/#ts-async");
+    } finally {
+      Object.defineProperty(window, "scrollY", { value: 0, configurable: true });
+      vi.restoreAllMocks();
+    }
+  });
+
+  it("measures the bar as drawn: under the two-row narrow bar, a sheet hidden behind it is not the topic", async () => {
+    await open(catalogOf("swift-fixture"), fixtures.languages, "/swift-fixture/");
+    const place = (id: string, top: number, bottom = top + 300) =>
+      vi.spyOn(document.getElementById(id)!, "getBoundingClientRect").mockReturnValue({ top, bottom } as DOMRect);
+    // The narrow layout's two-row bar reaches 119px; the concurrency sheet ends behind it at 100px,
+    // and the isolation sheet's top sits just under the bar, at 100px — with 80px assumed, concurrency won.
+    vi.spyOn(document.getElementById("topbar")!, "getBoundingClientRect").mockReturnValue({ top: 0, bottom: 119 } as DOMRect);
+    place("swift-collections", -900);
+    place("swift-concurrency", -200, 100);
+    place("swift-isolation", 100);
+    Object.defineProperty(window, "scrollY", { value: 1200, configurable: true });
+    try {
+      await openSelector();
+      expect(options().find((o) => o.id === "typescript-fixture")!.href).toBe("/typescript-fixture/?from=swift-fixture&concept=concurrency.isolation");
     } finally {
       Object.defineProperty(window, "scrollY", { value: 0, configurable: true });
       vi.restoreAllMocks();

@@ -90,8 +90,12 @@ export const textSize = Object.fromEntries(Object.keys(pageType).map((role) => [
 
 /** The reference's own sizes and washes, by role. Spacing is Chakra's step scale (`"2"` is 0.5rem). */
 export const pageSize = {
-  /** How far below the sticky top bar an anchored sheet or card lands: the bar is two rows on the narrow layout. */
-  anchorOffset: "var(--anchor-offset)",
+  /**
+   * How far below the sticky top bar an anchored sheet or card lands: the bar as drawn (the shell's
+   * measured `--topbar-height`, which follows wrapping and the reader's text size) plus a small gap,
+   * or, before scripts run, the per-layout fallback below.
+   */
+  anchorOffset: "calc(var(--topbar-height, var(--anchor-offset)) + 0.25rem)",
   /** The narrowest a card is before the grid drops a column, and a comparison column. */
   cardMin: "370px",
   columnMin: "300px",
@@ -131,8 +135,8 @@ const config = definePrimitivesConfig({
   fonts: { sans: SANS, mono: MONO },
   type: pageType,
   globalCss: {
-    // The sticky top bar's height, for anchored sheets and cards: one row wide, two rows narrow.
-    html: { "--anchor-offset": "64px", [media.narrow]: { "--anchor-offset": "120px" } },
+    // The sticky top bar's height before scripts measure it: one row wide, two rows narrow.
+    html: { "--anchor-offset": "61px", [media.narrow]: { "--anchor-offset": "119px" } },
     // ---------- cards ----------
     ".card .note": { margin: 0, marginBottom: "2", fontSize: textSize.prose, color: "var(--dim)", lineHeight: 1.45 },
     ...codeBlockCss(".card"),

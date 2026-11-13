@@ -6,6 +6,15 @@ import { DEFAULT_THEME, THEME_STORAGE_KEY, type ThemeMode } from "./theme";
 /** The reader's theme, remembered under this reference's storage key (src/bankai/scheme.ts). */
 export const useThemeMode = (): [ThemeMode, () => void] => useColorScheme(THEME_STORAGE_KEY, DEFAULT_THEME);
 
+/**
+ * How far down the viewport the sticky top bar reaches, as drawn — one row wide, two rows on the
+ * narrow layout, taller again with enlarged text — so "under the bar" is never a guessed number.
+ */
+export const topbarBottom = () => document.getElementById("topbar")?.getBoundingClientRect().bottom ?? 0;
+
+/** A sheet counts as reached once its top is within this distance below the bar. */
+const REACHED = 20;
+
 /** The sheet currently at the top of the viewport, for the sidebar's active link. */
 export function useActiveSection(ids: string[]): string | null {
   const [active, setActive] = useState<string | null>(null);
@@ -15,7 +24,7 @@ export function useActiveSection(ids: string[]): string | null {
       (entries) => {
         for (const en of entries) if (en.isIntersecting) setActive(en.target.id);
       },
-      { rootMargin: "-60px 0px -70% 0px", threshold: 0 },
+      { rootMargin: `-${Math.round(topbarBottom())}px 0px -70% 0px`, threshold: 0 },
     );
     for (const id of ids) {
       const el = document.getElementById(id);
@@ -31,7 +40,7 @@ export function useActiveSection(ids: string[]): string | null {
  * opening), not tracked on every scroll. The sheet the address names wins while it
  * is on screen — a reader who picked a short or final sheet that cannot scroll to
  * the top is still on it; otherwise the last visible sheet whose top has passed
- * the top bar. An unscrolled page with no address has no topic yet, so switching
+ * the top bar as drawn. An unscrolled page with no address has no topic yet, so switching
  * from it lands on the other language's top.
  */
 export function readingTopic(ids: string[]): string | null {
@@ -42,10 +51,11 @@ export function readingTopic(ids: string[]): string | null {
     if (r.bottom >= 0 && r.top <= window.innerHeight) return hashed;
   }
   if (window.scrollY <= 0) return null;
+  const cutoff = topbarBottom() + REACHED;
   let current: string | null = null;
   for (const id of ids) {
     const el = document.getElementById(id);
-    if (el && !el.hidden && el.getBoundingClientRect().top <= 80) current = id;
+    if (el && !el.hidden && el.getBoundingClientRect().top <= cutoff) current = id;
   }
   return current;
 }

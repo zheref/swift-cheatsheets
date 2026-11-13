@@ -11,7 +11,8 @@ import path from "node:path";
 import { act } from "react";
 import { hydrateRoot } from "react-dom/client";
 import { renderToString } from "react-dom/server";
-import { beforeAll, describe, expect, it } from "vitest";
+import { afterEach, beforeAll, describe, expect, it } from "vitest";
+import type { Root } from "react-dom/client";
 import { space, spaceScale, typeRoles, typeScale } from "../src/bankai";
 import { loadCatalog } from "../src/content/load";
 import type { Catalog } from "../src/content/schema";
@@ -40,11 +41,19 @@ const page = () => (
   </UiProvider>
 );
 
+let mounted: Root | null = null;
+afterEach(async () => {
+  // Each test's page is unmounted, so its key handlers, listeners and observers never outlive it.
+  await act(async () => mounted?.unmount());
+  mounted = null;
+  document.body.innerHTML = "";
+});
+
 async function hydrate() {
   document.documentElement.removeAttribute("data-theme");
   document.body.innerHTML = `<div id="root">${renderToString(page())}</div>`;
   await act(async () => {
-    hydrateRoot(document.getElementById("root")!, page());
+    mounted = hydrateRoot(document.getElementById("root")!, page());
   });
 }
 
@@ -137,8 +146,39 @@ describe("a search field that keeps its label (AC-3)", () => {
     expect(search).toContain(";order:1;");
     expect(search).toContain(";flex-basis:100%;");
     expect(inMedia(document.getElementById("topbar")!, NARROW)).toContain("flex-wrap:wrap");
-    // Anchored sheets clear the taller two-row bar.
-    expect(styles()).toMatch(/@media \(max-width: 900px\)\{html\{--anchor-offset:120px;\}\}/);
+    // Before scripts run, anchored sheets clear the two-row bar by its fallback height.
+    expect(styles()).toMatch(/@media \(max-width: 900px\)\{html\{--anchor-offset:119px;\}\}/);
+  });
+
+  it("publishes the bar's drawn height on the shell, so anchors clear it however it wraps or grows", async () => {
+    let resize: () => void = () => {};
+    const original = globalThis.ResizeObserver;
+    globalThis.ResizeObserver = class {
+      constructor(cb: () => void) {
+        resize = cb;
+      }
+      observe() {}
+      disconnect() {}
+      unobserve() {}
+    } as unknown as typeof ResizeObserver;
+    let height = 119;
+    const rect = HTMLElement.prototype.getBoundingClientRect;
+    HTMLElement.prototype.getBoundingClientRect = function (this: HTMLElement) {
+      return this.id === "topbar" ? ({ top: 0, bottom: height, height } as DOMRect) : rect.call(this);
+    };
+    try {
+      await hydrate();
+      const shell = document.getElementById("shell")!;
+      expect(shell.style.getPropertyValue("--topbar-height")).toBe("119px");
+      // Enlarged text grows the bar; the property follows it.
+      height = 149;
+      resize();
+      expect(shell.style.getPropertyValue("--topbar-height")).toBe("149px");
+      expect(styles()).toContain("scroll-margin-top:calc(var(--topbar-height, var(--anchor-offset)) + 0.25rem)");
+    } finally {
+      HTMLElement.prototype.getBoundingClientRect = rect;
+      globalThis.ResizeObserver = original;
+    }
   });
 
 
