@@ -12,7 +12,6 @@ export const Head: HeadFC<object, Context> = ({ pageContext }) => {
   const { language } = pageContext.catalog;
   return (
     <>
-      <html lang={language.locale} />
       <title>{language.title}</title>
       <meta name="description" content={language.description} />
     </>
