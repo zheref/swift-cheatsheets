@@ -120,15 +120,18 @@ means it is proven here and moves in § 6, *product* means it stays in this repo
 
 ### 3.4 Search and filter controls → `SearchField` · **extract** · Chakra layer (+ `useSearchKeys`, behaviour)
 
-- **Props.** `id`, `value`, `onValueChange`, `label` (its accessible name), `placeholder`
-  (required: it is the field's only visible text), `shortcut` (default `/`; `false` turns it
-  off, as WCAG 2.1.4 asks a single-character shortcut to allow).
+- **Props.** `id`, `value`, `onValueChange`, `label` (its accessible name, starting with the
+  visible label), `visibleLabel` (default `Search`: shown with a search icon inside the field,
+  before the text, so the purpose stays visible while the reader types, UX-10), `placeholder`
+  (a hint that goes on input), `shortcut` (default `/`; `false` turns it off, as WCAG 2.1.4
+  asks a single-character shortcut to allow).
 - **State.** None. The consumer owns the query and the filtering (`src/content/search.ts`,
   which stays in the product). The field owns its keys: `/` focuses and selects it from
   anywhere but another field, and Escape clears it and lets go of focus.
 - **Accessibility.** Its own `search` landmark, kept out of the selector's. The hit count and
   the empty state are the product's live region (`#hits`).
-- **Responsive.** 38px tall, 44px at ≤900px.
+- **Responsive.** 38px tall, 44px at ≤900px; its text is 16px on narrow screens, which also
+  keeps mobile browsers from zooming on focus.
 - **Bankai equivalent.** `bankai-site`'s `DocsSearch` is feature code, coupled to FlexSearch,
   `fetch` and Gatsby's `Link`. Its input could adopt `useSearchKeys`. Its results list stays
   its own.
@@ -147,9 +150,9 @@ means it is proven here and moves in § 6, *product* means it stays in this repo
   what to do instead ("select the text"). `context` adds a visually hidden suffix to the
   button's name ("Copy Kotlin snippet"), so several buttons on a page are told apart, while
   the visible label stays the start of the name (WCAG 2.5.3). The button is 38px on a fine
-  pointer, matching the bar's controls, and 44px on touch (UX-3). Its border shares the
-  control-boundary contrast gap every control here has today (1.25:1), which #5 closes for
-  all of them with a control-boundary colour role.
+  pointer, matching the bar's controls, and 44px on touch (UX-3). Its border, like every
+  control's, is the `edge` role: at least 3:1 against the page and the control's fill
+  (WCAG 1.4.11; #5).
 - **Responsive.** The code scrolls horizontally inside its own box, never the page (UX-7).
   The button sits above the code, never over it, in a row reserved at the button's own
   height, so the button appearing after hydration shifts nothing. Where no button can
@@ -228,18 +231,20 @@ Ten candidates, ten decisions. Seven primitives are proven, with two languages e
 ## 4. Tokens
 
 [`src/bankai/tokens.ts`](../src/bankai/tokens.ts) is the one place a primitive reads a
-size, a colour role, a layer or an overlay from. **Its values are the page's current ones,
-moved unchanged**, which is why the rendered page is byte-identical (§ 5).
+size, a colour role, a layer or an overlay from. #4 moved the page's values there unchanged
+(the byte-identical proof of § 5); #5 then settled the type scale and the control boundary on
+top of the same names.
 
-| Group | Shape | What #5 does with it |
+| Group | Shape | Since #5 |
 | --- | --- | --- |
-| `color` | role → Chakra semantic path (`fg: "cs.fg"`); the palette behind it is the consumer's (`Palette`, 19 roles: surfaces, tones, syntax) | contrast fixes are palette edits in `src/ui/theme.ts`; **one new role is owed**: `line` serves both dividers and control borders today, so a control-boundary colour (UX-1, WCAG 1.4.11) needs its own role before a value change can fix it without darkening every divider |
-| `fontSize`, `lineHeight`, `letterSpacing` | **semantic roles**: `body`, `control`, `input`, `hint`, `meta`, `groupLabel`, `navTitle`, `code`, `icon` | settles the scale *under* the roles (role → step) and adds the narrow floors (OQ-1: dense on desktop, 12px / 16px floors on narrow screens only). The cheapest form that touches no component: emit each role as a custom property (`--fs-hint`) with one narrow-floor block, and point the role at the property |
-| `space` | roles: `barGap`, `barPadding`, `mainPadding(Narrow)`, `railPadding`, `navItemPadding`, `optionPadding`, `menuPadding`, `codePadding`, `toolbarGap`, `actionPaddingX`, … | moves values onto a spacing step scale |
-| `radius` | `option`, `code`, `control`, `menu`, `pill` | same |
+| `color` | role → Chakra semantic path (`fg: "cs.fg"`); the palette behind it is the consumer's (`Palette`, 20 roles: surfaces, tones, syntax) | **`edge`** is a control's boundary — the search field, the bar buttons, the selector toggle, the copy button, the notice's chips and Dismiss — at 3:1 or more against the page, a control's fill and a card in both schemes (WCAG 1.4.11); `line` stays the quieter divider for cards and tables |
+| `typeScale`, `typeRoles`, `fontSize` | eight **rem steps** (`2xs` 11px … `display` 21px at the default root); each **role** (`body`, `control`, `input`, `hint`, `meta`, `groupLabel`, `navTitle`, `code`, `icon`) names a step for the wide and the narrow layout; `fontSize.<role>` is `var(--fs-<role>)` | the system emits every role as `--fs-<role>` on `:root`, with one narrow-screen block re-flooring them: desktop keeps the dense scale, narrow screens get nothing under 12px and 16px body text (OQ-1). Every size is in rem, so it follows the reader's root size. A consumer adds its own roles through `definePrimitivesConfig({ type })` and reads them with `fontSizeOf(role)` — this reference adds `sheetTitle`, `heading`, `prose`, `table`, `small` and `label` |
+| `lineHeight`, `letterSpacing` | semantic roles | unchanged |
+| `space` | roles: `barGap`, `barPadding`, `mainPadding(Narrow)`, `railPadding`, `navItemPadding`, `optionPadding`, `menuPadding`, `codePadding`, `toolbarGap`, `actionPaddingX`, … | unchanged; the product's own components use Chakra's spacing steps (`"2"` is 0.5rem) |
+| `radius` | `option`, `code`, `control`, `menu`, `pill` | unchanged |
 | `size` | `control` (38px), `option` (40px), `touch` (44px), `rail`, `menuMin`, `clipNarrow` | `touch` is already the UX-3 floor |
 | `layer` | one z-index ladder: `topbar` 20 < `menu` 30 < `scrim` 50 < `drawer` 60 | overlays never fight |
-| `overlay` | `scrim`, `menuShadow`, `drawerShadow`, `hover`, `selected` | state washes and elevations |
+| `overlay`, `paper` | `scrim`, `menuShadow`, `drawerShadow`, `hover`, `selected`; the printed page's white | state washes and elevations |
 | `media`, `wideQuery` | `narrow`, `touch`, `reducedMotion`, `print`; the same breakpoint as a `matchMedia` query | one breakpoint, named once |
 | `motion`, `focusRing` | the drawer's slide; `outside` / `inside` focus outlines | UX-9, UX-1 |
 
@@ -252,8 +257,16 @@ Roles rather than steps are a deliberate choice. A primitive asks *what a value 
 (`fontSize.control`), and the theme decides *which step of its scale* that is. That
 indirection lets #5 replace the dense one-off sizes with a real scale, and lets
 `bankai-site` map the same roles onto its own `tokens.json`, without touching a component.
-The values `src/ui/` still writes inline (cards, the absence notice, the fixture note) are
-#5's to move onto these roles.
+Since #5 the product's components write no colour, font-size or spacing literal either: they
+name a type role, a Chakra spacing step or a token from `src/ui/theme.ts` (`textSize`,
+`pageSize`, `pageRadius`, `pageOverlay`). `test/accessibility.test.tsx` holds both folders
+to it.
+
+**Icons.** [`src/bankai/icons.tsx`](../src/bankai/icons.tsx) holds the primitives' vector
+icons — menu, sun, moon, search, check, caret — as inline `currentColor` strokes sized in
+`em`, so they render alike on every platform and font (UX-6). The theme toggle carries both
+the sun and the moon and shows the one for the scheme it switches *to*, keyed on
+`<html data-theme>` in CSS, so it is right from the pre-paint script on.
 
 ## 5. The proof
 

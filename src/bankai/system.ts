@@ -9,10 +9,10 @@
  * point at the same properties.
  */
 import { defineConfig, type SystemStyleObject } from "@chakra-ui/react";
-import { fontSize, lineHeight, media, radius, space } from "./tokens";
+import { fontSize, lineHeight, media, paper, radius, space, type TypeRole, typeRoles, typeScale } from "./tokens";
 
 /** Surface and text roles every primitive reads. */
-export type SurfaceRole = "bg" | "bg2" | "card" | "line" | "fg" | "dim" | "faint" | "accent";
+export type SurfaceRole = "bg" | "bg2" | "card" | "line" | "edge" | "fg" | "dim" | "faint" | "accent";
 /** Intent tones: a comparison column, a rule, a notice. */
 export type ToneRole = "good" | "bad" | "modern" | "legacy";
 /** Syntax roles a code block colours (see `CodeToken`). */
@@ -25,15 +25,24 @@ export type Palette = Record<PaletteRole, string>;
 export interface PrimitivesTheme {
   palettes: { dark: Palette; light: Palette };
   fonts: { sans: string; mono: string };
+  /**
+   * The consumer's own type roles, beside the primitives' (`typeRoles`): each becomes
+   * `--fs-<role>` with its narrow-screen step, read through `fontSizeOf(role)`.
+   */
+  type?: Record<string, TypeRole>;
   /** The consumer's own global styles, after the primitives' base. */
   globalCss?: Record<string, SystemStyleObject>;
 }
 
-const SURFACES: SurfaceRole[] = ["bg", "bg2", "card", "line", "fg", "dim", "faint", "accent"];
+const SURFACES: SurfaceRole[] = ["bg", "bg2", "card", "line", "edge", "fg", "dim", "faint", "accent"];
 
 const asProperties = (palette: Palette): SystemStyleObject =>
   // Custom properties, which Chakra's style type does not model.
   Object.fromEntries(Object.entries(palette).map(([role, value]) => [`--${role}`, value])) as unknown as SystemStyleObject;
+
+/** Every type role as `--fs-<role>` on one layout, so one narrow-screen block re-floors the whole page. */
+const typeProperties = (roles: Record<string, TypeRole>, layout: keyof TypeRole): SystemStyleObject =>
+  Object.fromEntries(Object.entries(roles).map(([role, steps]) => [`--fs-${role}`, typeScale[steps[layout]]])) as unknown as SystemStyleObject;
 
 /** Syntax colouring for `CodeBlock`'s tokens: `.t-<role>` reads `--<role>`; comments are italic. */
 export const syntaxCss: Record<string, SystemStyleObject> = {
@@ -59,7 +68,8 @@ export const codeBlockCss = (scope = ""): Record<string, SystemStyleObject> => {
   };
 };
 
-export function definePrimitivesConfig({ palettes, fonts, globalCss = {} }: PrimitivesTheme) {
+export function definePrimitivesConfig({ palettes, fonts, type = {}, globalCss = {} }: PrimitivesTheme) {
+  const roles = { ...typeRoles, ...type };
   return defineConfig({
     // No Chakra preflight: its `* { font: inherit }` reset sits in a cascade layer that
     // outranks SVG presentation attributes, which would strip every diagram's
@@ -76,13 +86,17 @@ export function definePrimitivesConfig({ palettes, fonts, globalCss = {} }: Prim
       },
     },
     globalCss: {
-      ":root": asProperties(palettes.dark),
+      ":root": {
+        ...asProperties(palettes.dark),
+        ...typeProperties(roles, "wide"),
+        [media.narrow]: typeProperties(roles, "narrow"),
+      },
       'html[data-theme="light"]': asProperties(palettes.light),
       "*, *::before, *::after": { boxSizing: "border-box" },
       "html, body": { margin: 0, padding: 0 },
       body: {
         background: "var(--bg)", color: "var(--fg)", font: `${fontSize.body}/${lineHeight.body} ${fonts.sans}`, textSizeAdjust: "100%",
-        [media.print]: { background: "#fff" },
+        [media.print]: { background: paper.bg },
       },
       "code, pre": { fontFamily: fonts.mono },
       ...globalCss,

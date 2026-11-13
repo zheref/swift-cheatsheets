@@ -5,7 +5,7 @@ import { color, fontSize, radius, size } from "./tokens";
 export const barButton = {
   variant: "outline" as const,
   bg: color.surface,
-  borderColor: color.line,
+  borderColor: color.edge,
   color: color.dim,
   borderRadius: radius.control,
   h: size.control,

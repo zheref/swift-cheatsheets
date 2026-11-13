@@ -1,7 +1,9 @@
 import { Box, chakra, Heading, Text } from "@chakra-ui/react";
 import { memo, type ReactNode } from "react";
+import { radius } from "../bankai";
 import type { Applicability, Card, Highlight, Source, Validation } from "../content/schema";
 import { CodeBlock, InlineText } from "./text";
+import { pageRadius, pageSize, textSize } from "./theme";
 
 /** Comparison, table and diagram cards take the full row; a one-column comparison does not. */
 export const isWide = (card: Card) =>
@@ -18,16 +20,16 @@ export function AppliesLine({ applies, runtimeless }: { applies?: Applicability;
   ];
   if (!chips.length) return null;
   return (
-    <chakra.ul className="applies" display="flex" flexWrap="wrap" gap="4px" listStyle="none" p={0} m="6px 0 0">
+    <chakra.ul className="applies" display="flex" flexWrap="wrap" gap="1" listStyle="none" p={0} m={0} mt="1.5">
       {chips.map((c) => (
         <chakra.li
           key={c.k}
           title={c.title}
-          fontSize="12px"
+          fontSize={textSize.small}
           lineHeight="1.4"
-          px="7px"
-          py="1px"
-          borderRadius="20px"
+          px="1.5"
+          py="0.5"
+          borderRadius={radius.pill}
           border="1px solid"
           borderColor="cs.line"
           color="cs.dim"
@@ -43,7 +45,7 @@ export function AppliesLine({ applies, runtimeless }: { applies?: Applicability;
 export function SourcesLine({ sources }: { sources?: Source[] }) {
   if (!sources?.length) return null;
   return (
-    <Text className="sources" m="6px 0 0" fontSize="12px" color="cs.faint">
+    <Text className="sources" m={0} mt="1.5" fontSize={textSize.small} color="cs.faint">
       Sources:{" "}
       {sources.map((s, i) => (
         <span key={s.url}>
@@ -70,23 +72,19 @@ export function validationLabel(v: Validation): string {
 }
 
 /**
- * Instructions read as body text, so on the narrow layout they take the 16px floor (the dense
- * scale stays on desktop: zheref/swift-cheatsheets#5, OQ-1); long inline code wraps rather than
- * being clipped by the card.
+ * An example's setup steps and validation status, under its code. The steps read as prose, so on
+ * narrow screens they take the 16px body size; long inline code wraps rather than being clipped.
  */
-const READABLE_ON_NARROW = { "@media (max-width: 900px)": { fontSize: "16px" } };
-
-/** An example's setup steps and validation status, under its code. */
 function ExampleMeta({ card }: { card: Card }) {
   if (card.kind !== "code" && card.kind !== "compare") return null;
   const { prerequisites, validation } = card;
   if (!prerequisites && !validation) return null;
   return (
-    <Box className="example" m="7px 0 0" fontSize="12px" color="cs.dim" overflowWrap="anywhere">
+    <Box className="example" m={0} mt="2" fontSize={textSize.small} color="cs.dim" overflowWrap="anywhere">
       {prerequisites ? (
         <div className="prerequisites">
           <span className="collabel tone-neutral">Setup</span>
-          <chakra.ol m="2px 0 0" pl="18px" css={READABLE_ON_NARROW}>
+          <chakra.ol m={0} mt="0.5" pl="4.5" fontSize={textSize.prose}>
             {prerequisites.map((p, i) => (
               <li key={i}>
                 <InlineText text={p} />
@@ -96,7 +94,7 @@ function ExampleMeta({ card }: { card: Card }) {
         </div>
       ) : null}
       {validation ? (
-        <Text className="validation" data-status={validation.status} m="4px 0 0">
+        <Text className="validation" data-status={validation.status} m={0} mt="1">
           <InlineText text={validationLabel(validation)} />
         </Text>
       ) : null}
@@ -116,10 +114,10 @@ export const describesResult = (card: Card) =>
 function Expected({ card, highlight, lang }: { card: Card; highlight: Highlight; lang: string }) {
   if ((card.kind !== "code" && card.kind !== "compare") || !card.expected) return null;
   return (
-    <Box className="expected" mt="7px">
+    <Box className="expected" mt="2">
       <span className="collabel tone-good">Result</span>
       {describesResult(card) ? (
-        <Text className="described" m="2px 0 0" fontSize="13px" overflowWrap="anywhere" css={READABLE_ON_NARROW}>
+        <Text className="described" m={0} mt="0.5" fontSize={textSize.prose} overflowWrap="anywhere">
           <InlineText text={card.expected} />
         </Text>
       ) : (
@@ -219,20 +217,20 @@ export const CardView = memo(function CardView({
     <chakra.article
       className={`card${wide ? " wide" : ""}${card.kind === "diagram" ? " diagram" : ""}`}
       id={anchor}
-      scrollMarginTop="64px"
+      scrollMarginTop={pageSize.anchorOffset}
       data-kind={card.kind}
       data-concept={card.concept}
       hidden={hidden}
       bg="cs.card"
       border="1px solid"
       borderColor="cs.line"
-      borderRadius="11px"
-      p="11px 12px 12px"
+      borderRadius={pageRadius.card}
+      p="3"
       overflow="hidden"
       gridColumn={wide ? "1 / -1" : undefined}
       minW={0}
     >
-      <Heading as="h3" id={`${anchor}-title`} m="0 0 3px" fontSize="14.2px" lineHeight="1.5" fontWeight={700} color="cs.fg" letterSpacing="-.005em">
+      <Heading as="h3" id={`${anchor}-title`} m={0} mb="1" fontSize={textSize.heading} lineHeight="1.5" fontWeight={700} color="cs.fg" letterSpacing="-.005em">
         {card.title}
       </Heading>
       {card.note ? <p className="note">{card.note}</p> : null}

@@ -3,11 +3,10 @@
  *
  * Plain data with no imports: every primitive in `src/bankai/` reads its
  * colours, sizes, spacing, radii, layers and overlays from here, so changing a
- * value re-themes every primitive with no component edit. The values are the
- * page's current ones, moved here unchanged — the dense desktop scale this
- * reference has always used. zheref/swift-cheatsheets#5 settles the type scale
- * and the narrow-screen floors on top of these names (docs/BANKAI-PRIMITIVES.md,
- * "Tokens").
+ * value re-themes every primitive with no component edit. The type scale is
+ * zheref/swift-cheatsheets#5's: a short list of rem steps, dense on desktop and
+ * floored on narrow screens, each role emitted as a custom property
+ * (docs/BANKAI-PRIMITIVES.md, "Tokens").
  *
  * Names are semantic roles (what a value is for), not steps (how big it is):
  * a primitive asks for `fontSize.control`, and the theme decides which step of
@@ -40,7 +39,10 @@ export const color = {
   surface: "cs.bg2",
   /** Cards and popovers. */
   card: "cs.card",
+  /** Dividers and passive outlines: cards, tables, chips. */
   line: "cs.line",
+  /** A control's boundary — field, button, toggle — at 3:1 or more against the page and its own fill (WCAG 1.4.11). */
+  edge: "cs.edge",
   fg: "cs.fg",
   /** Secondary text. */
   dim: "cs.dim",
@@ -57,27 +59,61 @@ export const colorVar = {
   caution: "var(--legacy)",
 } as const;
 
-/** Type scale, by role. Desktop values; #5 adds the narrow-screen floors. */
-export const fontSize = {
-  /** The page's base text. */
-  body: "15px",
-  /** An icon glyph inside a square control. */
-  icon: "15px",
-  /** Text in a search field. */
-  input: "14px",
-  /** The navigation rail's title. */
-  navTitle: "14px",
-  /** Navigation links, selector options and the selector's toggle. */
-  control: "13.2px",
-  /** Code inside a code block. */
-  code: "12.6px",
-  /** One-line hints under an option, the selector's caret, a copy button. */
-  hint: "12px",
-  /** Small print under a title. */
-  meta: "11px",
-  /** Uppercase group labels. */
-  groupLabel: "10.5px",
+/**
+ * The type scale's steps, in rem, so every size follows the reader's root font size (WCAG 1.4.4).
+ * The names read at the default 16px root: `2xs` 11px … `display` 21px.
+ */
+export const typeScale = {
+  "2xs": "0.6875rem",
+  xs: "0.75rem",
+  sm: "0.78125rem",
+  md: "0.8125rem",
+  lg: "0.875rem",
+  xl: "0.9375rem",
+  base: "1rem",
+  display: "1.3125rem",
 } as const;
+export type TypeStep = keyof typeof typeScale;
+
+/**
+ * A type role's step on each layout. Desktop keeps the dense "second screen" scale; on narrow
+ * screens nothing is below `xs` (12px) and body text is `base` (16px) — UX-8, as the maintainer
+ * ruled on zheref/swift-cheatsheets#5 (OQ-1).
+ */
+export interface TypeRole {
+  wide: TypeStep;
+  narrow: TypeStep;
+}
+
+/** The primitives' type roles. A consumer adds its own beside them (`definePrimitivesConfig`'s `type`). */
+export const typeRoles = {
+  /** The page's base text. */
+  body: { wide: "xl", narrow: "base" },
+  /** An icon inside a square control. */
+  icon: { wide: "xl", narrow: "xl" },
+  /** Text in a search field: 16px on narrow screens, which also keeps mobile browsers from zooming on focus. */
+  input: { wide: "lg", narrow: "base" },
+  /** The navigation rail's title. */
+  navTitle: { wide: "lg", narrow: "lg" },
+  /** Navigation links, selector options, the selector's toggle, a field's visible label. */
+  control: { wide: "md", narrow: "md" },
+  /** Code inside a code block. */
+  code: { wide: "sm", narrow: "sm" },
+  /** One-line hints under an option, a copy button. */
+  hint: { wide: "xs", narrow: "xs" },
+  /** Small print under a title. */
+  meta: { wide: "2xs", narrow: "xs" },
+  /** Uppercase group labels. */
+  groupLabel: { wide: "2xs", narrow: "xs" },
+} as const satisfies Record<string, TypeRole>;
+
+/** A type role as the custom property the system emits for it: `fontSizeOf("hint")` is `var(--fs-hint)`. */
+export const fontSizeOf = (role: string) => `var(--fs-${role})`;
+
+/** The primitives' type roles, as values a style can take. */
+export const fontSize = Object.fromEntries(Object.keys(typeRoles).map((role) => [role, fontSizeOf(role)])) as {
+  readonly [R in keyof typeof typeRoles]: string;
+};
 
 export const lineHeight = {
   body: 1.5,
@@ -180,6 +216,9 @@ export const overlay = {
   selected: "color-mix(in srgb, var(--accent) 14%, transparent)",
 } as const;
 
+/** The printed page: white paper, whatever the scheme on screen. */
+export const paper = { bg: "#fff" } as const;
+
 const DRAWER = ".18s";
 export const motion = {
   /** The drawer's slide, and how long its closed state waits before hiding. Every transition is dropped under `media.reducedMotion`. */
@@ -197,5 +236,7 @@ export const focusRing = {
  * Every token, as one object: the shape #5 and an extracted package carry. Primitives
  * import the named groups; a runtime override (a provider) is not part of this contract.
  */
-export const tokens = { media, wideQuery, color, colorVar, fontSize, lineHeight, letterSpacing, space, radius, size, layer, overlay, motion, focusRing } as const;
+export const tokens = {
+  media, wideQuery, color, colorVar, typeScale, typeRoles, fontSize, lineHeight, letterSpacing, space, radius, size, layer, overlay, paper, motion, focusRing,
+} as const;
 export type Tokens = typeof tokens;

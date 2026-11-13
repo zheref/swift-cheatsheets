@@ -12,6 +12,7 @@ import { Box, chakra, Flex, IconButton } from "@chakra-ui/react";
 import type { ReactNode } from "react";
 import { useDrawer } from "./behaviour";
 import { barButton, narrowTarget } from "./controls";
+import { MenuIcon } from "./icons";
 import { color, layer, media, motion, overlay, size, space, wideQuery } from "./tokens";
 
 export interface AppShellIds {
@@ -114,7 +115,7 @@ export function AppShell({ nav, navLabel, menuLabel, bar, children, open, onOpen
             {...barButton}
             css={{ [media.narrow]: { display: "inline-flex", ...narrowTarget } }}
           >
-            <span aria-hidden="true">☰</span>
+            <MenuIcon />
           </IconButton>
           {bar}
         </Flex>

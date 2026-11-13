@@ -254,7 +254,7 @@ describe("routes and selector for all four configured languages (SC-1)", () => {
         }
       }
       expect(document.querySelector("#langlist [aria-current='true']")!.textContent).toContain(languageOf(fixture).name);
-      expect(toggle().textContent).toBe(`Language: ${languageOf(fixture).name}▾`);
+      expect(toggle().textContent).toBe(`Language: ${languageOf(fixture).name}`);
       expect(document.getElementById("shell")!.dataset.lang).toBe(fixture);
       expect(document.getElementById("fixture-note")!.textContent).toMatch(/not reference material/);
     });
@@ -480,8 +480,8 @@ describe("the selector by keyboard and screen reader (AC-5)", () => {
     expect(nav.getAttribute("aria-label")).toBe("Language");
     expect(toggle().tagName).toBe("SUMMARY");
     expect(toggle().tabIndex).toBe(0);
-    // The visible name is part of the accessible one (WCAG 2.5.3), and the arrow is hidden from it.
-    expect(toggle().querySelector("[aria-hidden='true']")!.textContent).toBe("▾");
+    // The visible name is part of the accessible one (WCAG 2.5.3), and the caret — a vector icon — is hidden from it.
+    expect(toggle().querySelector("svg[aria-hidden='true']")).not.toBeNull();
     // The search is its own landmark, no longer wrapping the selector.
     expect(document.querySelector("[role='search'] #q")).not.toBeNull();
     expect(document.querySelector("[role='search'] #langnav")).toBeNull();
@@ -547,8 +547,8 @@ describe("the selector by keyboard and screen reader (AC-5)", () => {
     for (const el of [toggle(), document.querySelector("#langlist a")!, document.querySelector("#absence li > a")!, document.getElementById("absence-dismiss")!]) {
       expect(rule(el, ":is(:focus-visible, [data-focus-visible]){outline:2px solid var(--accent)"), el.textContent!).toBe(true);
     }
-    // Offered topics sit 8px apart.
-    expect(css).toMatch(new RegExp(`\\.${document.querySelector("#absence ul")!.classList[0]}\\{[^}]*gap:8px`));
+    // Offered topics sit one spacing step (0.5rem, 8px at the default size) apart.
+    expect(css).toMatch(new RegExp(`\\.${document.querySelector("#absence ul")!.classList[0]}\\{[^}]*gap:var\\(--chakra-spacing-2\\)`));
   });
 });
 

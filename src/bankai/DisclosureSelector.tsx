@@ -13,6 +13,7 @@
 import { chakra, VisuallyHidden } from "@chakra-ui/react";
 import { type LiHTMLAttributes, memo, type ReactNode, useId } from "react";
 import { useDisclosure } from "./behaviour";
+import { CaretIcon, CheckIcon } from "./icons";
 import { color, focusRing, fontSize, layer, lineHeight, media, overlay, radius, size, space } from "./tokens";
 
 export interface SelectorOption {
@@ -72,10 +73,10 @@ function Option({ option }: { option: SelectorOption }) {
     return (
       <li {...itemProps}>
         <chakra.span aria-current="true" css={optionStyle} color={color.fg} fontWeight={700}>
-          <span>
-            <span aria-hidden="true">✓ </span>
+          <chakra.span display="inline-flex" alignItems="center" gap={space.inlineGap}>
+            <CheckIcon />
             {label}
-          </span>
+          </chakra.span>
           {hint ? <Hint>{hint}</Hint> : null}
         </chakra.span>
       </li>
@@ -146,7 +147,7 @@ export const DisclosureSelector = memo(function DisclosureSelector({ label, valu
           px={space.togglePaddingX}
           bg={color.surface}
           border="1px solid"
-          borderColor={color.line}
+          borderColor={color.edge}
           borderRadius={radius.control}
           color={color.fg}
           fontSize={fontSize.control}
@@ -163,8 +164,8 @@ export const DisclosureSelector = memo(function DisclosureSelector({ label, valu
           <chakra.span overflow="hidden" textOverflow="ellipsis" css={{ [media.narrow]: { maxWidth: size.clipNarrow } }}>
             {value}
           </chakra.span>
-          <chakra.span aria-hidden="true" fontSize={fontSize.hint} color={color.dim}>
-            ▾
+          <chakra.span display="inline-flex" color={color.dim}>
+            <CaretIcon />
           </chakra.span>
         </chakra.summary>
         <chakra.ul
