@@ -9,7 +9,7 @@
  * point at the same properties.
  */
 import { defineConfig, type SystemStyleObject } from "@chakra-ui/react";
-import { fontSize, lineHeight, media, paper, radius, space, type TypeRole, typeRoles, typeScale } from "./tokens";
+import { fontSize, lineHeight, media, paper, radius, space, spaceScale, type TypeRole, typeRoles, typeScale } from "./tokens";
 
 /** Surface and text roles every primitive reads. */
 export type SurfaceRole = "bg" | "bg2" | "card" | "line" | "edge" | "fg" | "dim" | "faint" | "accent";
@@ -69,6 +69,9 @@ export const codeBlockCss = (scope = ""): Record<string, SystemStyleObject> => {
 };
 
 export function definePrimitivesConfig({ palettes, fonts, type = {}, globalCss = {} }: PrimitivesTheme) {
+  // A consumer role beside the primitives', never over one: a replaced `body` would re-size every primitive silently.
+  const clash = Object.keys(type).filter((role) => role in typeRoles);
+  if (clash.length) throw new Error(`definePrimitivesConfig: type roles ${clash.join(", ")} are the primitives' own; name the consumer's roles differently`);
   const roles = { ...typeRoles, ...type };
   return defineConfig({
     // No Chakra preflight: its `* { font: inherit }` reset sits in a cascade layer that
@@ -79,6 +82,7 @@ export function definePrimitivesConfig({ palettes, fonts, type = {}, globalCss =
     preflight: { scope: ".chakra-preflight-unused", level: "parent" },
     theme: {
       tokens: {
+        spacing: Object.fromEntries(Object.entries(spaceScale).map(([step, value]) => [step, { value }])),
         fonts: { body: { value: fonts.sans }, heading: { value: fonts.sans }, mono: { value: fonts.mono } },
       },
       semanticTokens: {

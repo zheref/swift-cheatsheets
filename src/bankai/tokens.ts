@@ -107,7 +107,11 @@ export const typeRoles = {
   groupLabel: { wide: "2xs", narrow: "xs" },
 } as const satisfies Record<string, TypeRole>;
 
-/** A type role as the custom property the system emits for it: `fontSizeOf("hint")` is `var(--fs-hint)`. */
+/**
+ * A type role as the custom property the system emits for it: `fontSizeOf("hint")` is `var(--fs-hint)`.
+ * It builds role maps (`fontSize`, a consumer's own); name a size through such a map, whose keys are
+ * the declared roles, rather than calling this with a string a typo could leave undefined.
+ */
 export const fontSizeOf = (role: string) => `var(--fs-${role})`;
 
 /** The primitives' type roles, as values a style can take. */
@@ -123,42 +127,68 @@ export const lineHeight = {
 } as const;
 
 /** Spacing, by role. */
+/**
+ * The spacing scale: one definition for the primitives' `space` roles and for every spacing step
+ * the consumer's components name (`"2"`); `definePrimitivesConfig` hands it to Chakra as its
+ * `spacing` tokens. Keys and values follow Chakra's own scale (a step is 0.25rem), so a step
+ * means the same thing in both places, and in rem it follows the reader's root size.
+ */
+export const spaceScale = {
+  px: "1px",
+  0.5: "0.125rem",
+  1: "0.25rem",
+  1.5: "0.375rem",
+  2: "0.5rem",
+  2.5: "0.625rem",
+  3: "0.75rem",
+  3.5: "0.875rem",
+  4: "1rem",
+  4.5: "1.125rem",
+  5: "1.25rem",
+  8: "2rem",
+  10: "2.5rem",
+  16: "4rem",
+  30: "7.5rem",
+} as const;
+const s = spaceScale;
+
+/** Spacing, by role: each a step of `spaceScale`. */
 export const space = {
   /** Between controls in a bar. */
-  barGap: "8px",
+  barGap: s[2],
   /** Between a label and its glyph inside a control. */
-  inlineGap: "6px",
+  inlineGap: s[1.5],
   /** The top bar's own padding. */
-  barPadding: "12px 0 10px",
+  barPadding: `${s[3]} 0 ${s[2.5]}`,
   /** The main column's padding: wide, then narrow. */
-  mainPadding: "0 20px 120px",
-  mainPaddingNarrow: "0 12px 120px",
+  mainPadding: `0 ${s[5]} ${s[30]}`,
+  mainPaddingNarrow: `0 ${s[3]} ${s[30]}`,
   /** The navigation rail's padding. */
-  railPadding: "14px 10px 40px",
+  railPadding: `${s[3.5]} ${s[2.5]} ${s[10]}`,
   /** A navigation link's padding and vertical rhythm. */
-  navItemPadding: "6px 9px",
-  navItemGap: "1px",
+  navItemPadding: `${s[1.5]} ${s[2]}`,
+  navItemGap: s.px,
   /** A group label's margin, and the rail title's. */
-  groupLabelMargin: "14px 8px 5px",
-  navTitleMargin: "4px 8px 12px",
+  groupLabelMargin: `${s[3.5]} ${s[2]} ${s[1]}`,
+  navTitleMargin: `${s[1]} ${s[2]} ${s[3]}`,
   /** A control's horizontal padding: a search field, a toggle. */
-  inputPaddingX: "12px",
-  togglePaddingX: "11px",
+  inputPaddingX: s[3],
+  togglePaddingX: s[3],
   /** A popover's inner padding and its distance from its toggle. */
-  menuPadding: "5px",
-  menuOffset: "6px",
+  menuPadding: s[1],
+  menuOffset: s[1.5],
   /** A popover option's padding, and the gap between its label and hint. */
-  optionPadding: "6px 10px",
-  optionLineGap: "1px",
+  optionPadding: `${s[1.5]} ${s[2.5]}`,
+  optionLineGap: s.px,
   /** The gap between a title and its small print. */
-  metaGap: "2px",
+  metaGap: s[0.5],
   /** A small action button's horizontal padding (copy). */
-  actionPaddingX: "8px",
+  actionPaddingX: s[2],
   /** The gap between a code block and the toolbar above it. */
-  toolbarGap: "4px",
+  toolbarGap: s[1],
   /** A code block's padding, and the gap between consecutive blocks. */
-  codePadding: "9px 10px",
-  codeStackGap: "7px",
+  codePadding: `${s[2]} ${s[2.5]}`,
+  codeStackGap: s[2],
 } as const;
 
 /** Letter spacing, by role. */
@@ -193,6 +223,10 @@ export const size = {
   /** A popover's minimum width, and its margin from the viewport edge. */
   menuMin: "240px",
   menuViewportMargin: "24px",
+  /** An icon: one em, so it follows the text of the control it sits in. */
+  icon: "1em",
+  /** The stripe that marks the current link in a navigation list. */
+  currentStripe: "3px",
   /** Where a long current value is clipped on narrow screens so the search keeps its width. */
   clipNarrow: "7.5em",
 } as const;
@@ -237,6 +271,6 @@ export const focusRing = {
  * import the named groups; a runtime override (a provider) is not part of this contract.
  */
 export const tokens = {
-  media, wideQuery, color, colorVar, typeScale, typeRoles, fontSize, lineHeight, letterSpacing, space, radius, size, layer, overlay, paper, motion, focusRing,
+  media, wideQuery, color, colorVar, typeScale, typeRoles, fontSize, lineHeight, letterSpacing, spaceScale, space, radius, size, layer, overlay, paper, motion, focusRing,
 } as const;
 export type Tokens = typeof tokens;

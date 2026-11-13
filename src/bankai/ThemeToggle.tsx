@@ -5,7 +5,7 @@
  * hydration reads the scheme.
  */
 import { IconButton } from "@chakra-ui/react";
-import { barButton, narrowTarget } from "./controls";
+import { barButton, touchTarget } from "./controls";
 import { MoonIcon, SunIcon } from "./icons";
 import type { ColorScheme } from "./scheme";
 import { media } from "./tokens";
@@ -29,7 +29,7 @@ export function ThemeToggle({ scheme, onToggle, id, labels = LABELS }: ThemeTogg
       onClick={onToggle}
       {...barButton}
       css={{
-        [media.narrow]: narrowTarget,
+        [media.touch]: touchTarget,
         "& .to-dark": { display: "none" },
         [LIGHT]: { "& .to-light": { display: "none" }, "& .to-dark": { display: "block" } },
       }}

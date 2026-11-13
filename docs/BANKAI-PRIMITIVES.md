@@ -238,9 +238,9 @@ top of the same names.
 | Group | Shape | Since #5 |
 | --- | --- | --- |
 | `color` | role → Chakra semantic path (`fg: "cs.fg"`); the palette behind it is the consumer's (`Palette`, 20 roles: surfaces, tones, syntax) | **`edge`** is a control's boundary — the search field, the bar buttons, the selector toggle, the copy button, the notice's chips and Dismiss — at 3:1 or more against the page, a control's fill and a card in both schemes (WCAG 1.4.11); `line` stays the quieter divider for cards and tables |
-| `typeScale`, `typeRoles`, `fontSize` | eight **rem steps** (`2xs` 11px … `display` 21px at the default root); each **role** (`body`, `control`, `input`, `hint`, `meta`, `groupLabel`, `navTitle`, `code`, `icon`) names a step for the wide and the narrow layout; `fontSize.<role>` is `var(--fs-<role>)` | the system emits every role as `--fs-<role>` on `:root`, with one narrow-screen block re-flooring them: desktop keeps the dense scale, narrow screens get nothing under 12px and 16px body text (OQ-1). Every size is in rem, so it follows the reader's root size. A consumer adds its own roles through `definePrimitivesConfig({ type })` and reads them with `fontSizeOf(role)` — this reference adds `sheetTitle`, `heading`, `prose`, `table`, `small` and `label` |
+| `typeScale`, `typeRoles`, `fontSize` | eight **rem steps** (`2xs` 11px … `display` 21px at the default root); each **role** (`body`, `control`, `input`, `hint`, `meta`, `groupLabel`, `navTitle`, `code`, `icon`) names a step for the wide and the narrow layout; `fontSize.<role>` is `var(--fs-<role>)` | the system emits every role as `--fs-<role>` on `:root`, with one narrow-screen block re-flooring them: desktop keeps the dense scale, narrow screens get nothing under 12px and 16px body text (OQ-1). Every size is in rem, so it follows the reader's root size. Diagrams are drawn images and keep their SVG's own label sizes, outside the scale (the maintainer's ruling on #5; their legibility is #13). A consumer adds its own roles — never one of the primitives' names, which is refused — through `definePrimitivesConfig({ type })` and reads them through a map built with `fontSizeOf(role)` — this reference adds `sheetTitle`, `heading`, `prose`, `table`, `small` and `label` |
 | `lineHeight`, `letterSpacing` | semantic roles | unchanged |
-| `space` | roles: `barGap`, `barPadding`, `mainPadding(Narrow)`, `railPadding`, `navItemPadding`, `optionPadding`, `menuPadding`, `codePadding`, `toolbarGap`, `actionPaddingX`, … | unchanged; the product's own components use Chakra's spacing steps (`"2"` is 0.5rem) |
+| `spaceScale`, `space` | **one spacing scale** in rem (`px`, `0.5` … `30`; a step is 0.25rem, Chakra's own keys and values), and roles — `barGap`, `barPadding`, `mainPadding(Narrow)`, `railPadding`, `navItemPadding`, `optionPadding`, `menuPadding`, `codePadding`, `toolbarGap`, `actionPaddingX`, … — each composed from its steps | `definePrimitivesConfig` hands the scale to Chakra as its `spacing` tokens, so the primitives' roles and every step the product's components name (`"2"`) read one definition; a few one-off values moved to the nearest step (9 → 8px, 11 → 12px, 5 → 4px, 7 → 8px) |
 | `radius` | `option`, `code`, `control`, `menu`, `pill` | unchanged |
 | `size` | `control` (38px), `option` (40px), `touch` (44px), `rail`, `menuMin`, `clipNarrow` | `touch` is already the UX-3 floor |
 | `layer` | one z-index ladder: `topbar` 20 < `menu` 30 < `scrim` 50 < `drawer` 60 | overlays never fight |
@@ -258,9 +258,10 @@ Roles rather than steps are a deliberate choice. A primitive asks *what a value 
 indirection lets #5 replace the dense one-off sizes with a real scale, and lets
 `bankai-site` map the same roles onto its own `tokens.json`, without touching a component.
 Since #5 the product's components write no colour, font-size or spacing literal either: they
-name a type role, a Chakra spacing step or a token from `src/ui/theme.ts` (`textSize`,
-`pageSize`, `pageRadius`, `pageOverlay`). `test/accessibility.test.tsx` holds both folders
-to it.
+name a type role, a spacing step or a token from `src/ui/theme.ts` (`textSize`, `pageSize`,
+`pageRadius`, `pageOverlay`, `pageText`). `test/accessibility.test.tsx` holds every component
+under `src/ui/` and `src/pages/` to that, and every primitive to having no colour or length
+literal outside `tokens.ts` (a 1px hairline border excepted).
 
 **Icons.** [`src/bankai/icons.tsx`](../src/bankai/icons.tsx) holds the primitives' vector
 icons — menu, sun, moon, search, check, caret — as inline `currentColor` strokes sized in
@@ -272,10 +273,11 @@ the sun and the moon and shows the one for the scheme it switches *to*, keyed on
 
 **The page.** The reference itself now renders through the primitives:
 `CatalogPage` composes `AppShell`, `TopicNav`, `SearchField`, `ThemeToggle` and the
-selector, and every snippet is a `CodeBlock`. **The server-rendered markup and its CSS are
-byte-identical to `main` (`a6f14a1`)** for the Swift catalog and all four fixture
-catalogs, with and without the registry: ten renders, compared with `cmp`. All 139 tests
-that existed before this change pass unchanged.
+selector, and every snippet is a `CodeBlock`. **#4's proof: when the primitives landed, the
+server-rendered markup and its CSS were byte-identical to `main` (`a6f14a1`)** for the Swift
+catalog and all four fixture catalogs, with and without the registry: ten renders, compared
+with `cmp`, and all 139 tests that existed before pass unchanged. #5 then changed the rendered
+output on purpose (§ 4).
 
 **The primitives on their own.** [`test/bankai.test.tsx`](../test/bankai.test.tsx) renders
 them for the **TypeScript and Kotlin fixtures**, through a consumer adapter written in the

@@ -4,6 +4,7 @@
  * its text (UX-6). Each is decorative — the control carries the accessible name.
  */
 import type { ReactNode, SVGProps } from "react";
+import { size } from "./tokens";
 
 type IconProps = Omit<SVGProps<SVGSVGElement>, "children">;
 
@@ -11,8 +12,8 @@ function Icon({ children, ...props }: IconProps & { children: ReactNode }) {
   return (
     <svg
       viewBox="0 0 24 24"
-      width="1em"
-      height="1em"
+      width={size.icon}
+      height={size.icon}
       fill="none"
       stroke="currentColor"
       strokeWidth={2}

@@ -11,7 +11,7 @@
 import { Box, chakra, Flex, IconButton } from "@chakra-ui/react";
 import type { ReactNode } from "react";
 import { useDrawer } from "./behaviour";
-import { barButton, narrowTarget } from "./controls";
+import { barButton, touchTarget } from "./controls";
 import { MenuIcon } from "./icons";
 import { color, layer, media, motion, overlay, size, space, wideQuery } from "./tokens";
 
@@ -103,6 +103,8 @@ export function AppShell({ nav, navLabel, menuLabel, bar, children, open, onOpen
           borderColor={color.line}
           gap={space.barGap}
           align="center"
+          // A narrow bar wraps: the consumer's search can take a full-width row of its own (SearchField).
+          css={{ [media.narrow]: { flexWrap: "wrap" } }}
         >
           <IconButton
             id={ids.menu}
@@ -113,7 +115,8 @@ export function AppShell({ nav, navLabel, menuLabel, bar, children, open, onOpen
             onClick={() => onOpenChange(!open)}
             display="none"
             {...barButton}
-            css={{ [media.narrow]: { display: "inline-flex", ...narrowTarget } }}
+            // On the narrow layout the menu leads the bar's first row and pushes the other controls to its end.
+            css={{ [media.narrow]: { display: "inline-flex", marginInlineEnd: "auto" }, [media.touch]: touchTarget }}
           >
             <MenuIcon />
           </IconButton>

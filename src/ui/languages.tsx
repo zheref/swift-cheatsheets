@@ -9,7 +9,7 @@
  */
 import { Box, chakra, Heading, Text } from "@chakra-ui/react";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { color, colorVar, DisclosureSelector, focusRing, fontSize, media, radius, type SelectorOption, size } from "../bankai";
+import { color, colorVar, DisclosureSelector, focusRing, fontSize, lineHeight, media, radius, type SelectorOption, size } from "../bankai";
 import { type Arrival, relatedTopics, switchLink, topicsOf } from "../content/languages";
 import type { Catalog, SiteLanguage } from "../content/schema";
 import { pageRadius, pageSize, textSize } from "./theme";
@@ -101,11 +101,11 @@ export function AbsenceNotice({
       bg="cs.bg2"
       border="1px solid"
       borderColor="cs.line"
-      borderLeft={`3px solid ${colorVar.caution}`}
+      borderLeft={`${pageSize.accentRule} solid ${colorVar.caution}`}
       borderRadius={pageRadius.notice}
-      _focusVisible={{ ...focusRing.outside, outlineOffset: "2px" }}
+      _focusVisible={focusRing.outside}
     >
-      <Heading as="h2" id="absence-title" m={0} fontSize={textSize.heading} lineHeight="1.4" fontWeight={700} color="cs.fg">
+      <Heading as="h2" id="absence-title" m={0} fontSize={textSize.heading} lineHeight={lineHeight.title} fontWeight={700} color="cs.fg">
         No {name} equivalent for “{missing?.title ?? arrival.concept}”
       </Heading>
       <Text m={0} mt="1" mb="2" fontSize={textSize.prose} color="cs.dim">
@@ -154,7 +154,7 @@ export function AbsenceNotice({
             // the control that brought the reader here, rather than dropping it on <body> (WCAG 2.4.3).
             document.getElementById(TOGGLE_ID)?.focus({ preventScroll: true });
           }}
-          h={pageSize.chip}
+          minH={pageSize.chip}
           px="2.5"
           bg="transparent"
           border="1px solid"
@@ -165,7 +165,7 @@ export function AbsenceNotice({
           cursor="pointer"
           _hover={{ color: "cs.fg" }}
           _focusVisible={focusRing.outside}
-          css={{ [TOUCH]: { height: size.touch } }}
+          css={{ [TOUCH]: { minHeight: size.touch } }}
         >
           Dismiss
         </chakra.button>

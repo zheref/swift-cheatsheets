@@ -7,6 +7,8 @@
  * The field's purpose stays visible while the reader types (UX-10): a search
  * icon and a short visible label sit inside the boundary, before the text, and
  * the boundary — not the bare input — carries the edge colour and the focus ring.
+ * On the narrow layout the field takes a full-width row of its own below the
+ * bar's other controls (AppShell wraps there), so the label never squeezes the text.
  */
 import { Box, chakra, Input } from "@chakra-ui/react";
 import { useSearchKeys } from "./behaviour";
@@ -37,14 +39,15 @@ export function SearchField({ id, value, onValueChange, label, visibleLabel = "S
       minW={0}
       display="flex"
       alignItems="center"
-      h={size.control}
+      minH={size.control}
       bg={color.surface}
       border="1px solid"
       borderColor={color.edge}
       borderRadius={radius.control}
       pl={space.inputPaddingX}
       css={{
-        [media.narrow]: { height: size.touch },
+        [media.narrow]: { order: 1, flexBasis: "100%" },
+        [media.touch]: { minHeight: size.touch },
         "&:has(input:focus-visible)": { borderColor: colorVar.accent, ...focusRing.outside },
       }}
     >
@@ -75,7 +78,8 @@ export function SearchField({ id, value, onValueChange, label, visibleLabel = "S
         spellCheck={false}
         flex="1"
         minW={0}
-        h="100%"
+        alignSelf="stretch"
+        h="auto"
         bg="transparent"
         border={0}
         borderRadius={radius.control}
@@ -84,7 +88,9 @@ export function SearchField({ id, value, onValueChange, label, visibleLabel = "S
         pr={space.inputPaddingX}
         fontSize={fontSize.input}
         _placeholder={{ color: color.faint }}
+        // The ring is the boundary's (above); where `:has()` is unsupported the input keeps its own.
         _focusVisible={{ outline: "none", boxShadow: "none" }}
+        css={{ "@supports not selector(:has(*))": { "&:focus-visible": focusRing.inside } }}
       />
     </Box>
   );

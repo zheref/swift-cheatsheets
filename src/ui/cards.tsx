@@ -1,9 +1,9 @@
 import { Box, chakra, Heading, Text } from "@chakra-ui/react";
 import { memo, type ReactNode } from "react";
-import { radius } from "../bankai";
+import { lineHeight, radius } from "../bankai";
 import type { Applicability, Card, Highlight, Source, Validation } from "../content/schema";
 import { CodeBlock, InlineText } from "./text";
-import { pageRadius, pageSize, textSize } from "./theme";
+import { pageRadius, pageSize, pageText, textSize } from "./theme";
 
 /** Comparison, table and diagram cards take the full row; a one-column comparison does not. */
 export const isWide = (card: Card) =>
@@ -26,7 +26,7 @@ export function AppliesLine({ applies, runtimeless }: { applies?: Applicability;
           key={c.k}
           title={c.title}
           fontSize={textSize.small}
-          lineHeight="1.4"
+          lineHeight={lineHeight.title}
           px="1.5"
           py="0.5"
           borderRadius={radius.pill}
@@ -50,7 +50,7 @@ export function SourcesLine({ sources }: { sources?: Source[] }) {
       {sources.map((s, i) => (
         <span key={s.url}>
           {i > 0 && " · "}
-          <chakra.a href={s.url} color="cs.dim" textDecoration="underline" textUnderlineOffset="2px" rel="noopener noreferrer">
+          <chakra.a href={s.url} color="cs.dim" textDecoration="underline" textUnderlineOffset={pageText.underlineOffset} rel="noopener noreferrer">
             {s.title}
           </chakra.a>
         </span>
@@ -230,7 +230,7 @@ export const CardView = memo(function CardView({
       gridColumn={wide ? "1 / -1" : undefined}
       minW={0}
     >
-      <Heading as="h3" id={`${anchor}-title`} m={0} mb="1" fontSize={textSize.heading} lineHeight="1.5" fontWeight={700} color="cs.fg" letterSpacing="-.005em">
+      <Heading as="h3" id={`${anchor}-title`} m={0} mb="1" fontSize={textSize.heading} lineHeight={lineHeight.body} fontWeight={700} color="cs.fg" letterSpacing={pageText.headingTracking}>
         {card.title}
       </Heading>
       {card.note ? <p className="note">{card.note}</p> : null}

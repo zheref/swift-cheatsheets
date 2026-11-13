@@ -143,7 +143,7 @@ export const DisclosureSelector = memo(function DisclosureSelector({ label, valu
           display="flex"
           alignItems="center"
           gap={space.inlineGap}
-          h={size.control}
+          minH={size.control}
           px={space.togglePaddingX}
           bg={color.surface}
           border="1px solid"
@@ -157,7 +157,7 @@ export const DisclosureSelector = memo(function DisclosureSelector({ label, valu
           userSelect="none"
           listStyle="none"
           _focusVisible={focusRing.outside}
-          css={{ "&::-webkit-details-marker": { display: "none" }, [media.touch]: { height: size.touch } }}
+          css={{ "&::-webkit-details-marker": { display: "none" }, [media.touch]: { minHeight: size.touch } }}
         >
           <VisuallyHidden>{`${label}: `}</VisuallyHidden>
           {/* A long value is clipped on narrow screens so the bar keeps its width; the full value stays in the accessible name. */}

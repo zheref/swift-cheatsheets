@@ -34,7 +34,7 @@ export const DEFAULT_THEME: ThemeMode = "dark";
 // --faint and --com were lifted from the legacy #6b7a90 / #79879b so every text use clears
 // WCAG 1.4.3's 4.5:1 on all three surfaces in both themes (hanten, UX-1). --edge, a control's
 // boundary, clears WCAG 1.4.11's 3:1 against the page, a control's fill and a card in both
-// (dark ≥ 3.38:1, light ≥ 3.37:1); --line stays the quieter divider (zheref/swift-cheatsheets#5).
+// (dark ≥ 3.37:1, light ≥ 3.37:1); --line stays the quieter divider (zheref/swift-cheatsheets#5).
 const dark: Palette = {
   bg: "#0e1117", bg2: "#151a23", card: "#161b25", line: "#262d3a", edge: "#606f85",
   fg: "#e6edf3", dim: "#93a1b5", faint: "#8493a8",
@@ -90,8 +90,8 @@ export const textSize = Object.fromEntries(Object.keys(pageType).map((role) => [
 
 /** The reference's own sizes and washes, by role. Spacing is Chakra's step scale (`"2"` is 0.5rem). */
 export const pageSize = {
-  /** How far below the sticky top bar an anchored sheet or card lands. */
-  anchorOffset: "64px",
+  /** How far below the sticky top bar an anchored sheet or card lands: the bar is two rows on the narrow layout. */
+  anchorOffset: "var(--anchor-offset)",
   /** The narrowest a card is before the grid drops a column, and a comparison column. */
   cardMin: "370px",
   columnMin: "300px",
@@ -99,6 +99,20 @@ export const pageSize = {
   chip: "8",
   /** The match-count line while empty: a hairline, so the live region is laid out before it speaks. */
   statusLine: "1px",
+  /** Rule widths: the line under a sheet's title, and the accent stripe on a notice or a comparison column. */
+  dividerRule: "2px",
+  accentRule: "3px",
+} as const;
+
+/** Line heights and tracking the page's titles and chips use, beside the primitives' `lineHeight`. */
+export const pageText = {
+  displayLeading: "1.3",
+  displayTracking: "-.01em",
+  headingTracking: "-.005em",
+  /** Uppercase labels: column labels and table headers. */
+  labelTracking: ".06em",
+  /** How far a source link's underline sits below its text. */
+  underlineOffset: "2px",
 } as const;
 
 export const pageOverlay = {
@@ -117,6 +131,8 @@ const config = definePrimitivesConfig({
   fonts: { sans: SANS, mono: MONO },
   type: pageType,
   globalCss: {
+    // The sticky top bar's height, for anchored sheets and cards: one row wide, two rows narrow.
+    html: { "--anchor-offset": "64px", [media.narrow]: { "--anchor-offset": "120px" } },
     // ---------- cards ----------
     ".card .note": { margin: 0, marginBottom: "2", fontSize: textSize.prose, color: "var(--dim)", lineHeight: 1.45 },
     ...codeBlockCss(".card"),
@@ -127,13 +143,13 @@ const config = definePrimitivesConfig({
     ".cols": { display: "grid", gridTemplateColumns: `repeat(auto-fit,minmax(${pageSize.columnMin},1fr))`, gap: "2" },
     ".col": { minWidth: 0 },
     ".collabel": {
-      display: "inline-block", fontSize: textSize.label, fontWeight: 800, letterSpacing: ".06em", textTransform: "uppercase",
+      display: "inline-block", fontSize: textSize.label, fontWeight: 800, letterSpacing: pageText.labelTracking, textTransform: "uppercase",
       marginBottom: "1", paddingBlock: "0.5", paddingInline: "1.5", borderRadius: radius.pill,
       color: "var(--tc)", background: pageOverlay.toneWash,
     },
     ".tone-good": tone("--good"), ".tone-bad": tone("--bad"), ".tone-modern": tone("--modern"),
     ".tone-legacy": tone("--legacy"), ".tone-neutral": tone("--faint"),
-    ".col pre": { borderLeft: "3px solid var(--tc)" },
+    ".col pre": { borderLeft: `${pageSize.accentRule} solid var(--tc)` },
     "ul.rules": { margin: 0, padding: 0, listStyle: "none" },
     "ul.rules li": {
       position: "relative", paddingBlock: "1.5", paddingInlineStart: "5", fontSize: textSize.prose, lineHeight: 1.5, borderBottom: "1px solid var(--line)",
@@ -146,6 +162,8 @@ const config = definePrimitivesConfig({
     "li.tone-good .bullet": { borderRadius: "8px" },
     "li.tone-bad .bullet": { borderRadius: "1px" },
     // ---------- diagrams ----------
+    // Diagrams are drawn images: their labels keep the SVG's own sizes and scroll with it, outside
+    // the type scale (the maintainer's ruling on zheref/swift-cheatsheets#5; their legibility is #13).
     ".dgwrap": { overflowX: "auto", WebkitOverflowScrolling: "touch" },
     "svg.dg": { display: "block", width: "100%", minWidth: "720px", height: "auto", [media.narrow]: { minWidth: "820px" } },
     "svg.dg text": { fontFamily: SANS, fill: "var(--dim)" },
@@ -154,13 +172,13 @@ const config = definePrimitivesConfig({
     ".tablewrap": { overflowX: "auto" },
     ".tablewrap table": { borderCollapse: "collapse", width: "100%", fontSize: textSize.table },
     ".tablewrap th, .tablewrap td": { textAlign: "left", paddingBlock: "1.5", paddingInline: "2", borderBottom: "1px solid var(--line)", verticalAlign: "top" },
-    ".tablewrap th": { color: "var(--faint)", fontSize: textSize.label, textTransform: "uppercase", letterSpacing: ".06em", fontWeight: 700 },
+    ".tablewrap th": { color: "var(--faint)", fontSize: textSize.label, textTransform: "uppercase", letterSpacing: pageText.labelTracking, fontWeight: 700 },
     ".tablewrap tbody tr:hover": { background: pageOverlay.rowHover },
     // ---------- syntax ----------
     ...syntaxCss,
     // ---------- print ----------
-    "#side, #topbar, #scrim": { "@media print": { display: "none" } },
-    ".card": { "@media print": { breakInside: "avoid", pageBreakInside: "avoid" } },
+    "#side, #topbar, #scrim": { [media.print]: { display: "none" } },
+    ".card": { [media.print]: { breakInside: "avoid", pageBreakInside: "avoid" } },
   },
 });
 

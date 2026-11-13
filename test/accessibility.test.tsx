@@ -12,7 +12,7 @@ import { act } from "react";
 import { hydrateRoot } from "react-dom/client";
 import { renderToString } from "react-dom/server";
 import { beforeAll, describe, expect, it } from "vitest";
-import { typeRoles, typeScale } from "../src/bankai";
+import { space, spaceScale, typeRoles, typeScale } from "../src/bankai";
 import { loadCatalog } from "../src/content/load";
 import type { Catalog } from "../src/content/schema";
 import { CatalogPage } from "../src/ui/CatalogPage";
@@ -49,6 +49,11 @@ async function hydrate() {
 }
 
 const styles = () => [...document.querySelectorAll("style")].map((s) => s.textContent).join("");
+const NARROW = "@media (max-width: 900px)";
+const TOUCH = "@media (max-width: 900px),(pointer: coarse)";
+/** The declarations an element's own Chakra class carries inside one media query (vendor-prefixed forms included). */
+const inMedia = (el: Element, query: string) =>
+  [...styles().matchAll(new RegExp(`${query.replace(/[()]/g, "\\$&")}\\{\\.${classOf(el)}\\{([^}]*)\\}`, "g"))].map((m) => m[1]).join(";");
 const classOf = (el: Element) => [...el.classList].find((c) => c.startsWith("css-"))!;
 /** The declarations of an element's own Chakra class, at the top level of the sheet. */
 const declarations = (el: Element) => {
@@ -116,7 +121,27 @@ describe("a type scale that follows the reader (AC-2)", () => {
   });
 });
 
+describe("controls a reader can reach on any touch screen (UX-3)", () => {
+  it("sizes the search field, the bar buttons and the rail links for touch on the narrow layout and any coarse pointer", async () => {
+    await hydrate();
+    expect(inMedia(document.querySelector("[role='search']")!, TOUCH)).toContain("min-height:44px");
+    for (const id of ["menu", "theme"]) expect(inMedia(document.getElementById(id)!, TOUCH), id).toContain("min-height:44px;min-width:44px");
+    expect(inMedia(document.querySelector("#side a")!, TOUCH)).toContain("min-height:44px");
+  });
+});
+
 describe("a search field that keeps its label (AC-3)", () => {
+  it("gives the field a full-width row of its own on the narrow layout, so the label never squeezes the text", async () => {
+    await hydrate();
+    const search = inMedia(document.querySelector("[role='search']")!, NARROW);
+    expect(search).toContain(";order:1;");
+    expect(search).toContain(";flex-basis:100%;");
+    expect(inMedia(document.getElementById("topbar")!, NARROW)).toContain("flex-wrap:wrap");
+    // Anchored sheets clear the taller two-row bar.
+    expect(styles()).toMatch(/@media \(max-width: 900px\)\{html\{--anchor-offset:120px;\}\}/);
+  });
+
+
   it("shows a visible label inside the field, tied to the input, that typing does not remove", async () => {
     await hydrate();
     const q = document.getElementById("q") as HTMLInputElement;
@@ -133,6 +158,15 @@ describe("a search field that keeps its label (AC-3)", () => {
       q.dispatchEvent(new Event("input", { bubbles: true }));
     });
     expect(document.querySelector(`label[for='q']`)!.textContent).toBe("Search");
+  });
+
+  it("draws the focus ring on the field's boundary, with the input's own ring where :has() is unsupported (WCAG 2.4.7)", async () => {
+    await hydrate();
+    const css = styles();
+    const box = classOf(document.querySelector("[role='search']")!);
+    const input = classOf(document.getElementById("q")!);
+    expect(css).toMatch(new RegExp(`\\.${box}:has\\(input:focus-visible\\)\\{[^}]*outline:2px solid var\\(--accent\\)`));
+    expect(css).toMatch(new RegExp(`@supports not selector\\(:has\\(\\*\\)\\)\\{\\.${input}:focus-visible\\{outline:2px solid var\\(--accent\\)`));
   });
 });
 
@@ -160,23 +194,38 @@ describe("vector icons and a theme control that shows its target (AC-4)", () => 
 });
 
 describe("one token definition (AC-5)", () => {
-  const PAGE = ["src/ui/CatalogPage.tsx", "src/ui/cards.tsx", "src/ui/languages.tsx", "src/pages/404.tsx"];
   const source = (file: string) => fs.readFileSync(path.join(ROOT, file), "utf8");
+  const tsx = (dir: string) => fs.readdirSync(path.join(ROOT, dir)).filter((f) => f.endsWith(".tsx")).map((f) => `${dir}/${f}`);
+  /** A quoted length (px, em, rem) anywhere in source — a prop, a template, a style object; a 1px hairline border excepted. */
+  const lengths = (text: string) =>
+    (text.match(/["`][^"`\n]*\b\d+(?:\.\d+)?(?:px|em|rem)\b[^"`\n]*["`]/g) ?? []).filter((m) => !/^["`]1px solid\b[^"`]*["`]$/.test(m));
 
-  it("leaves no raw colour, font-size or spacing literal in the page components", () => {
-    for (const file of PAGE) {
+  it("leaves no raw colour, font-size, length, line-height or tracking literal in any page component", () => {
+    const page = [...tsx("src/ui"), ...tsx("src/pages")];
+    expect(page).toContain("src/ui/CatalogPage.tsx");
+    for (const file of page) {
       const text = source(file);
       expect(text.match(/#[0-9a-f]{3,8}\b|rgba?\(/gi) ?? [], file).toEqual([]);
       expect(text.match(/fontSize="[^"]*"/g) ?? [], file).toEqual([]);
-      expect(text.match(/\b(?:m|mt|mb|mx|my|p|pt|pb|px|py|pl|pr|gap|borderRadius|minH|h|scrollMarginTop)="[^"]*\dpx[^"]*"/g) ?? [], file).toEqual([]);
+      expect(lengths(text), file).toEqual([]);
+      expect(text.match(/\b(?:lineHeight|letterSpacing)="[^"]*"/g) ?? [], file).toEqual([]);
     }
   });
 
-  it("keeps the primitives free of length and colour literals outside the token file", () => {
-    const dir = path.join(ROOT, "src/bankai");
-    for (const file of fs.readdirSync(dir).filter((f) => f !== "tokens.ts" && f !== "icons.tsx")) {
-      const text = fs.readFileSync(path.join(dir, file), "utf8");
+  it("keeps the primitives free of colour and length literals outside the token file", () => {
+    for (const file of [...tsx("src/bankai"), "src/bankai/controls.ts", "src/bankai/system.ts"]) {
+      const text = source(file);
       expect(text.match(/"#[0-9a-f]{3,8}"|rgba?\(/gi) ?? [], file).toEqual([]);
+      expect(lengths(text), file).toEqual([]);
     }
+  });
+
+  it("gives Chakra the token file's spacing scale, so a step means one thing to the page and the primitives", async () => {
+    await hydrate();
+    const css = styles();
+    for (const [step, value] of Object.entries(spaceScale)) {
+      expect(css, step).toContain(`--chakra-spacing-${step.replace(".", "\\.")}:${value}`);
+    }
+    expect(space.barGap).toBe(spaceScale[2]);
   });
 });

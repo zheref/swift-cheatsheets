@@ -539,8 +539,8 @@ describe("the selector by keyboard and screen reader (AC-5)", () => {
     const rule = (el: Element, body: string) => css.includes(`.${el.classList[0]}${body}`);
     const touch = (el: Element, decl: string) => css.includes(`@media (max-width: 900px),(pointer: coarse){.${el.classList[0]}{${decl};}}`);
     // UX-3: 44px on the ≤900px layout and on any coarse pointer — the toggle, every option, every offered topic, Dismiss.
-    expect(touch(toggle(), "height:44px")).toBe(true);
-    expect(touch(document.getElementById("absence-dismiss")!, "height:44px")).toBe(true);
+    expect(touch(toggle(), "min-height:44px")).toBe(true);
+    expect(touch(document.getElementById("absence-dismiss")!, "min-height:44px")).toBe(true);
     const targets = [...document.querySelectorAll("#langlist > li > *"), ...document.querySelectorAll("#absence li > a")];
     expect(targets).toHaveLength(6);
     for (const el of targets) expect(touch(el, "min-height:44px"), el.textContent!).toBe(true);

@@ -18,7 +18,7 @@ import { buildIndex, cardKey, hitsLabel, search } from "../content/search";
 import { AppliesLine, CardView, SourcesLine } from "./cards";
 import { readingTopic, useActiveSection, useArrival, useThemeMode } from "./hooks";
 import { AbsenceNotice, LanguageSelector } from "./languages";
-import { pageSize, textSize } from "./theme";
+import { pageSize, pageText, textSize } from "./theme";
 
 const NARROW = media.narrow;
 
@@ -46,8 +46,8 @@ const SheetSection = memo(function SheetSection({
       pt="4"
       scrollMarginTop={pageSize.anchorOffset}
     >
-      <chakra.header className="sheethead" mt="2.5" mb="3.5" pb="2" borderBottom="2px solid" borderColor="cs.line">
-        <Heading as="h2" m={0} fontSize={textSize.sheetTitle} lineHeight="1.3" fontWeight={700} letterSpacing="-.01em" color="cs.fg">
+      <chakra.header className="sheethead" mt="2.5" mb="3.5" pb="2" borderBottom={`${pageSize.dividerRule} solid`} borderColor="cs.line">
+        <Heading as="h2" m={0} fontSize={textSize.sheetTitle} lineHeight={pageText.displayLeading} fontWeight={700} letterSpacing={pageText.displayTracking} color="cs.fg">
           {sheet.title}
         </Heading>
         {sheet.subtitle ? (
@@ -159,7 +159,7 @@ export function CatalogPage({ catalog, languages: given }: { catalog: Catalog; l
       }
     >
       {language.status === "fixture" ? (
-        <Text id="fixture-note" role="note" m={0} mt="3" py="2" px="3" fontSize={textSize.prose} color="cs.fg" bg="cs.bg2" borderRadius={radius.code} borderLeft={`3px solid ${colorVar.caution}`}>
+        <Text id="fixture-note" role="note" m={0} mt="3" py="2" px="3" fontSize={textSize.prose} color="cs.fg" bg="cs.bg2" borderRadius={radius.code} borderLeft={`${pageSize.accentRule} solid ${colorVar.caution}`}>
           Fixture catalog — test data that proves the page renders any language. It is not reference material.
         </Text>
       ) : null}
