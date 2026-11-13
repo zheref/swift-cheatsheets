@@ -3,6 +3,7 @@
 # render + hydration, the offline file opened from disk), the Gatsby build, the
 # offline export, structural verification, the TypeScript and C# catalogs' examples
 # run for real — and that the committed offline files are exactly what the sources produce.
+# A green push to main then publishes public/ to GitHub Pages (swiftcheats.zheref.dev).
 name: site
 
 on:
@@ -10,8 +11,11 @@ on:
   push:
     branches: [main]
 
+# The widest token any job needs. The check job narrows this back to contents: read.
 permissions:
   contents: read
+  pages: write
+  id-token: write
 
 concurrency:
   group: site-${{ github.ref }}
@@ -19,6 +23,8 @@ concurrency:
 
 jobs:
   check:
+    permissions:
+      contents: read
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
@@ -71,3 +77,44 @@ jobs:
             echo "$stale"
             exit 1
           fi
+
+  deploy:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: check
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    env:
+      GATSBY_TELEMETRY_DISABLED: "1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Install pinned dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Build site
+        run: npm run build:site
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: public
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1
