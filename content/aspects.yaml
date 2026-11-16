@@ -12,7 +12,7 @@
 # not exist there — never "not written yet".
 #
 # `pending` lists catalogs still being brought up to this registry; it only ever shrinks.
-pending: [swift, kotlin, csharp]
+pending: [kotlin, csharp]
 
 aspects:
   - id: ui-layers

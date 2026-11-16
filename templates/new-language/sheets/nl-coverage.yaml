@@ -38,6 +38,18 @@ cards:
         - no counterpart
         - —
         - "TODO: does the topic not exist here, or is it not written yet?"
+      - - UIKit — Programmatic UI
+        - equivalent
+        - Programmatic UI — Building the Tree by Hand
+        - "TODO: what this catalog's sheet covers of it"
+      - - SwiftUI — Styling, Design Tokens & Theming
+        - equivalent
+        - Styling — Tokens, Themes & Reusable Styles
+        - "TODO: what this catalog's sheet covers of it"
+      - - MVVM — View Models, Bindings & Observation
+        - equivalent
+        - MVVM — View Models, Bindings & Observation
+        - "TODO: what this catalog's sheet covers of it"
       - - TCA — Core Loop
         - equivalent
         - Unidirectional State — Store, Actions, Reducer, Effects
@@ -82,6 +94,10 @@ cards:
         - no counterpart
         - —
         - "TODO: does the topic not exist here, or is it not written yet?"
+      - - RxSwift — Core
+        - no counterpart
+        - —
+        - "TODO: does the topic not exist here, or is it not written yet?"
       - - Clean Code in Swift
         - equivalent
         - Clean Code
@@ -106,6 +122,14 @@ cards:
         - equivalent
         - Collections — Operation Cookbook
         - "TODO: what this catalog's sheet covers of it"
+      - - Strings — Characters, Unicode & Operations
+        - equivalent
+        - Strings — Standard Operations
+        - "TODO: what this catalog's sheet covers of it"
+      - - Serialization — Codable, JSON & Friends
+        - equivalent
+        - Serialization — JSON & Friends
+        - "TODO: what this catalog's sheet covers of it"
       - - Swift Engineering Best Practices
         - no counterpart
         - —
@@ -121,6 +145,22 @@ cards:
       - - Testing Approaches on iOS
         - equivalent
         - Testing — Unit & Integration
+        - "TODO: what this catalog's sheet covers of it"
+      - - UI & End-to-End Testing
+        - equivalent
+        - UI & End-to-End Testing
+        - "TODO: what this catalog's sheet covers of it"
+      - - Security, Authentication & Privacy
+        - equivalent
+        - Security, Authentication & Privacy
+        - "TODO: what this catalog's sheet covers of it"
+      - - Accessibility on Apple Platforms
+        - equivalent
+        - Accessibility Practices
+        - "TODO: what this catalog's sheet covers of it"
+      - - Localization & Internationalization
+        - equivalent
+        - Localization & Internationalization
         - "TODO: what this catalog's sheet covers of it"
       - - AI Workflows for Swift (Cursor + Claude)
         - no counterpart
@@ -138,6 +178,18 @@ cards:
         - no counterpart
         - —
         - "TODO: does the topic not exist here, or is it not written yet?"
+      - - Networking — REST with URLSession
+        - equivalent
+        - Networking — REST over HTTP
+        - "TODO: what this catalog's sheet covers of it"
+      - - Networking — SOAP, gRPC & GraphQL
+        - equivalent
+        - Networking — SOAP, gRPC & GraphQL
+        - "TODO: what this catalog's sheet covers of it"
+      - - Video Streaming — HLS & AVPlayer
+        - equivalent
+        - Video Streaming — HLS, DASH & Playback
+        - "TODO: what this catalog's sheet covers of it"
       - - Core Bluetooth (BLE)
         - no counterpart
         - —

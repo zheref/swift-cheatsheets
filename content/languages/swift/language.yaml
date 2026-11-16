@@ -3,7 +3,7 @@ name: Swift
 title: Swift Interview Cheat Sheets
 route: /
 status: published
-description: Dense Swift and Apple-platform cheat sheets — SwiftUI, TCA, concurrency, Combine, collections, principles, testing, algorithms and I/O — for a second screen while you code.
+description: Dense Swift and Apple-platform cheat sheets — SwiftUI, UIKit, TCA, MVVM, concurrency, Combine, RxSwift, networking, video, security, accessibility, localization, collections, strings, principles, testing, algorithms and I/O — for a second screen while you code.
 locale: en
 codeLanguage: swift
 highlight:
@@ -99,6 +99,9 @@ sheets:
   - swiftui-state
   - swiftui-views
   - swiftui-uikit
+  - uikit-programmatic
+  - swiftui-styling
+  - mvvm-state
   - tca-core
   - tca-compose
   - tca-nav
@@ -110,18 +113,28 @@ sheets:
   - async-patterns
   - swiftui-combine
   - timing
+  - rxswift-core
   - clean-code
   - solid
   - fp
   - lang
   - collections
   - collection-ops
+  - strings
+  - serialization
   - best-practices
   - architecture
   - modularization
   - testing
+  - ui-testing
+  - security
+  - accessibility
+  - localization
   - ai-workflows
   - algorithms
   - streams
   - files
+  - networking
+  - networking-protocols
+  - video-streaming
   - core-bluetooth

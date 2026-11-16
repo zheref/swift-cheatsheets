@@ -14,6 +14,7 @@ import { loadCatalog } from "../src/content/load";
 import type { Catalog } from "../src/content/schema";
 import { CatalogPage } from "../src/ui/CatalogPage";
 import { UiProvider } from "../src/ui/Provider";
+import { buildIndex, search } from "../src/content/search";
 import { FIXTURE_DIR, ROOT, swiftCatalog } from "./helpers";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -68,22 +69,29 @@ describe("Swift page: static render then hydration (AC-3)", () => {
     const { errors, consoleErrors } = await hydrate(swiftCatalog());
     expect(errors).toEqual([]);
     expect(consoleErrors).toEqual([]);
-    expect(document.querySelectorAll("section.sheet")).toHaveLength(29);
-    expect(document.querySelectorAll("article.card")).toHaveLength(289);
+    const { sheets } = swiftCatalog();
+    expect(sheets.length).toBeGreaterThanOrEqual(29);
+    expect(document.querySelectorAll("section.sheet")).toHaveLength(sheets.length);
+    expect(document.querySelectorAll("article.card")).toHaveLength(sheets.flatMap((s) => s.cards).length);
     expect(document.querySelectorAll("svg.dg")).toHaveLength(17);
-    expect(document.querySelectorAll("#side a[href^='#']")).toHaveLength(29);
+    expect(document.querySelectorAll("#side a[href^='#']")).toHaveLength(sheets.length);
   });
 
   it("searches, clears with Escape, and toggles the theme after hydration", async () => {
     await hydrate(swiftCatalog());
+    // What the page shows must be what the search index says (its parity with the legacy page is content.test's).
+    const total = swiftCatalog().sheets.flatMap((s) => s.cards).length;
+    const hits = search(buildIndex(swiftCatalog()), "actor sendable").count;
+    expect(hits).toBeGreaterThanOrEqual(18);
+    expect(hits).toBeLessThan(total);
     await typeQuery("actor sendable");
-    expect(visible("article.card")).toHaveLength(18);
-    expect(document.getElementById("hits")!.textContent).toBe("18 cards matching “actor sendable”");
+    expect(visible("article.card")).toHaveLength(hits);
+    expect(document.getElementById("hits")!.textContent).toBe(`${hits} cards matching “actor sendable”`);
 
     await act(async () => {
       document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
     });
-    expect(visible("article.card")).toHaveLength(289);
+    expect(visible("article.card")).toHaveLength(total);
     expect((document.getElementById("q") as HTMLInputElement).value).toBe("");
 
     await act(async () => {
@@ -211,7 +219,7 @@ describe("offline artifact opened from disk (AC-5)", () => {
     const root = d.getElementById("root")!;
     await vi.waitFor(() => expect(Object.keys(root).some((k) => k.startsWith("__reactContainer"))).toBe(true), settle);
     expect(errors).toEqual([]);
-    expect(d.querySelectorAll("section.sheet")).toHaveLength(29);
+    expect(d.querySelectorAll("section.sheet")).toHaveLength(swiftCatalog().sheets.length);
     expect(d.querySelectorAll("svg.dg")).toHaveLength(17);
     expect(d.querySelectorAll("pre code .t-kw").length).toBeGreaterThan(1000);
     expect([...d.querySelectorAll("#side a")].map((a) => a.getAttribute("href"))).toEqual(
@@ -237,7 +245,9 @@ describe("offline artifact opened from disk (AC-5)", () => {
     const setter = Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype, "value")!.set!;
     setter.call(q, "debounce");
     q.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
-    await vi.waitFor(() => expect(d.getElementById("hits")!.textContent).toBe("23 cards matching “debounce”"), settle);
+    const hits = search(buildIndex(swiftCatalog()), "debounce").count;
+    expect(hits).toBeGreaterThanOrEqual(23);
+    await vi.waitFor(() => expect(d.getElementById("hits")!.textContent).toBe(`${hits} cards matching “debounce”`), settle);
     dom.window.close();
   });
 });

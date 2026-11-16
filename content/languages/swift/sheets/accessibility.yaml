@@ -1,0 +1,569 @@
+id: accessibility
+concept: accessibility.practices
+scope: platform
+title: Accessibility on Apple Platforms
+group: iOS Practice
+subtitle: What VoiceOver reads, how focus moves, how text and motion adapt — and how to prove it in a test.
+applies:
+  platforms:
+    - ios
+    - ipados
+    - macos
+    - visionos
+  requires:
+    - SwiftUI
+    - UIKit
+  versions:
+    swift: ">=6.0"
+    ios: ">=17"
+sources:
+  - title: Accessibility — Apple Developer Documentation
+    url: https://developer.apple.com/documentation/accessibility
+  - title: SwiftUI — Apple Developer Documentation
+    url: https://developer.apple.com/documentation/swiftui
+  - title: UIKit — Apple Developer Documentation
+    url: https://developer.apple.com/documentation/uikit
+  - title: Accessibility — Human Interface Guidelines
+    url: https://developer.apple.com/design/human-interface-guidelines/accessibility
+  - title: XCTest — Apple Developer Documentation
+    url: https://developer.apple.com/documentation/xctest
+cards:
+  - id: what-voiceover-reads
+    kind: table
+    title: What VoiceOver reads — SwiftUI ↔ UIKit
+    note: "VoiceOver speaks label, value, traits, then hint: \"Episode 42, 12 minutes left, button. Double-tap to play.\""
+    headers:
+      - Concept
+      - SwiftUI
+      - UIKit
+      - Write it as
+    rows:
+      - - Label — what it is
+        - "`.accessibilityLabel(_:)`"
+        - "`accessibilityLabel`"
+        - '"Download", never "Download button" (the trait says button)'
+      - - Value — its current state
+        - "`.accessibilityValue(_:)`"
+        - "`accessibilityValue`"
+        - '"12 minutes left", "1.5 times"'
+      - - Hint — the result of acting
+        - "`.accessibilityHint(_:)`"
+        - "`accessibilityHint`"
+        - '"Plays the episode." Optional; users can turn hints off'
+      - - Traits — role and state
+        - "`.accessibilityAddTraits(.isButton)`, `.isHeader`, `.isSelected`"
+        - "`accessibilityTraits = [.button, .selected]`"
+        - the role a custom view lacks; standard controls already have theirs
+      - - One element for many views
+        - "`.accessibilityElement(children: .combine)` / `.ignore`"
+        - "`isAccessibilityElement = true` on the container"
+        - one swipe per row, not one per label
+      - - A container that keeps its children
+        - "`.accessibilityElement(children: .contain)`"
+        - "`accessibilityContainerType`, `shouldGroupAccessibilityChildren`"
+        - groups reading order without merging
+      - - Extra actions
+        - "`.accessibilityAction(named:_:)`, `.accessibilityActions { }`"
+        - "`accessibilityCustomActions`"
+        - swipe up/down in VoiceOver, a menu in Switch Control
+      - - Adjustable value
+        - "`.accessibilityAdjustableAction { direction in }`"
+        - "`.adjustable` trait + `accessibilityIncrement()` / `accessibilityDecrement()`"
+        - swipe up/down changes the value
+      - - Not there at all
+        - "`.accessibilityHidden(true)`, `Image(decorative:)`"
+        - "`isAccessibilityElement = false`, `accessibilityElementsHidden`"
+        - decoration, duplicated information
+      - - A stable handle for UI tests
+        - "`.accessibilityIdentifier(_:)`"
+        - "`accessibilityIdentifier`"
+        - never spoken; never localized
+      - - Names Voice Control accepts
+        - "`.accessibilityInputLabels(_:)`"
+        - "`accessibilityUserInputLabels`"
+        - short spoken alternatives to a long label
+  - id: an-episode-row-read-as-one-element
+    kind: compare
+    title: An episode row, read as one control
+    note: The row is a real button with one spoken summary, a value and named actions, and the download button stays its own target beside it.
+    columns:
+      - label: SwiftUI
+        tone: modern
+        code: |-
+          struct EpisodeRow: View {
+            let episode: Episode
+            let open: () -> Void
+            let download: () -> Void
+            let togglePlayed: () -> Void
+
+            var body: some View {
+              HStack(spacing: 12) {
+                // A real Button: the trait, keyboard focus and a Switch Control target come free
+                Button(action: open) {
+                  HStack(spacing: 12) {
+                    Image(decorative: episode.artworkName)        // the title already says it
+                      .resizable().frame(width: 56, height: 56)
+                    VStack(alignment: .leading) {
+                      Text(episode.title).font(.headline)
+                      Text(episode.publishedAt, format: .dateTime.day().month()).font(.subheadline)
+                    }
+                    Spacer()
+                  }
+                  .contentShape(Rectangle())                      // the whole row is tappable
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(episode.spokenSummary)        // "Episode 42, explicit, 3 March"
+                .accessibilityValue(episode.isPlayed ? "Played" : "\(episode.minutesLeft) minutes left")
+                .accessibilityAction(named: "Download", download)   // without leaving the row
+                .accessibilityAction(named: episode.isPlayed ? "Mark as unplayed" : "Mark as played",
+                                     togglePlayed)
+
+                // Outside the row button, so touch, Voice Control and keyboards can reach it directly
+                Button(action: download) { Image(systemName: "arrow.down.circle") }
+                  .buttonStyle(.plain)
+                  .accessibilityLabel("Download")                 // icon-only: always label it
+              }
+            }
+          }
+      - label: UIKit
+        tone: legacy
+        code: |-
+          final class EpisodeCell: UITableViewCell {
+            var download: (() -> Void)?
+            var togglePlayed: (() -> Void)?
+
+            func configure(with episode: Episode) {
+              titleLabel.text = episode.title
+              artworkView.image = UIImage(named: episode.artworkName)
+
+              isAccessibilityElement = true                     // the cell, not its subviews
+              accessibilityLabel = episode.spokenSummary
+              accessibilityValue = episode.isPlayed
+                ? String(localized: "Played")
+                : String(localized: "\(episode.minutesLeft) minutes left")
+              accessibilityTraits.insert(.button)            // double-tap → didSelectRowAt opens it
+
+              let downloadAction = UIAccessibilityCustomAction(name: String(localized: "Download")) {
+                [weak self] _ in
+                self?.download?()
+                return true
+              }
+
+              let playedTitle = episode.isPlayed ? String(localized: "Mark as unplayed")
+                                                 : String(localized: "Mark as played")
+              let playedAction = UIAccessibilityCustomAction(name: playedTitle) { [weak self] _ in
+                self?.togglePlayed?()
+                return true
+              }
+              accessibilityCustomActions = [downloadAction, playedAction]
+            }
+          }
+  - id: images-and-decorative-content
+    kind: code
+    title: Images and decorative content
+    note: Label what an image means in context; hide what only decorates.
+    code: |-
+      struct ShowHeader: View {
+        let show: Show
+
+        var body: some View {
+          VStack(alignment: .leading, spacing: 8) {
+            Image(decorative: show.artworkName)              // the title below names it
+              .resizable().scaledToFit()
+              .accessibilityIgnoresInvertColors()             // Smart Invert must not negate artwork
+
+            Text(show.title).font(.title.bold())
+              .accessibilityAddTraits(.isHeader)              // reachable with the Headings rotor
+
+            // Symbols get an automatic label from their NAME ("star, fill") — replace it with the meaning
+            Image(systemName: "star.fill")
+              .accessibilityLabel("Editor's pick")
+
+            // A chart or map: say the takeaway, not the pixels
+            Image(uiImage: show.listenerChart)
+              .accessibilityLabel("Weekly listeners")
+              .accessibilityValue("Up 12 percent since March")
+
+            // Animation that carries no information leaves the tree
+            WaveformView().accessibilityHidden(true)
+
+            // Label: the title is read, the icon is decoration
+            Label("Subscribed", systemImage: "checkmark.circle")
+          }
+        }
+      }
+
+      // UIKit: imageView.isAccessibilityElement = false for decoration; for a meaningful
+      // image set isAccessibilityElement = true, accessibilityLabel, and the .image trait.
+  - id: containers-reading-order-and-rotors
+    kind: code
+    title: Containers, reading order and rotors
+    note: Rotors let a user jump between the 3 rows that matter instead of swiping through 300.
+    code: |-
+      struct EpisodeList: View {
+        let episodes: [Episode]
+        @Bindable var player: Player
+
+        var body: some View {
+          VStack(spacing: 0) {
+            List(episodes) { episode in
+              EpisodeRow(episode: episode)
+            }
+            // Rotor → "Unplayed", then swipe up/down to jump between only these rows
+            .accessibilityRotor("Unplayed") {
+              ForEach(episodes.filter { !$0.isPlayed }) { episode in
+                AccessibilityRotorEntry(episode.title, id: episode.id)
+              }
+            }
+            .accessibilityRotor("Downloaded") {
+              ForEach(episodes.filter(\.isDownloaded)) { episode in
+                AccessibilityRotorEntry(episode.title, id: episode.id)
+              }
+            }
+
+            // The mini player: one named group whose children stay separately reachable
+            MiniPlayerBar(player: player)
+              .accessibilityElement(children: .contain)
+              .accessibilityLabel("Now playing")
+              .accessibilitySortPriority(1)       // higher is read first within the same container
+          }
+        }
+      }
+
+      // UIKit: accessibilityCustomRotors = [UIAccessibilityCustomRotor(name:itemSearch:)],
+      // and accessibilityElements = [title, playButton, progress] to fix the reading order.
+  - id: focus-and-announcements
+    kind: code
+    title: Focus and announcements
+    note: Announce what changed off-screen and move focus when the user must deal with it now (`AccessibilityNotification` is iOS 17+).
+    code: |-
+      struct DownloadsView: View {
+        @State private var model = DownloadsModel()
+        @AccessibilityFocusState private var errorIsFocused: Bool
+
+        var body: some View {
+          VStack(alignment: .leading, spacing: 16) {
+            if let message = model.errorMessage {
+              Label(message, systemImage: "exclamationmark.triangle")
+                .accessibilityFocused($errorIsFocused)
+            }
+            Button("Download all unplayed") { Task { await downloadAll() } }
+          }
+        }
+
+        private func downloadAll() async {
+          do {
+            let count = try await model.downloadAllUnplayed()
+            // Default priority: interrupts current speech; VoiceOver focus stays where it is.
+            AccessibilityNotification.Announcement("\(count) episodes downloaded").post()
+          } catch {
+            model.errorMessage = String(localized: "Not enough storage to download.")
+            errorIsFocused = true                       // read it now, and land on it
+          }
+        }
+      }
+
+      // UIKit equivalents
+      UIAccessibility.post(notification: .announcement, argument: "3 episodes downloaded")
+      UIAccessibility.post(notification: .screenChanged, argument: headerLabel)  // a new screen: focus its title
+      UIAccessibility.post(notification: .layoutChanged, argument: errorLabel)   // part of this screen changed
+
+      // Priority (iOS 17): .high interrupts AND cannot itself be interrupted;
+      // .low queues until other speech finishes — right for results nobody is waiting on.
+      var urgent = AttributedString("Connection lost")
+      urgent.accessibilitySpeechAnnouncementPriority = .high
+      AccessibilityNotification.Announcement(urgent).post()
+      var quiet = AttributedString("Sync complete")
+      quiet.accessibilitySpeechAnnouncementPriority = .low
+      AccessibilityNotification.Announcement(quiet).post()
+  - id: dynamic-type-done-properly
+    kind: code
+    title: Dynamic Type done properly
+    note: Text styles scale, `@ScaledMetric` scales what sits beside text, and the layout changes axis at accessibility sizes.
+    code: |-
+      struct NowPlayingHeader: View {
+        let episode: Episode
+        @Environment(\.dynamicTypeSize) private var typeSize
+        @ScaledMetric(relativeTo: .title3) private var artworkSide: CGFloat = 64  // grows with the title
+
+        var body: some View {
+          // Side by side normally; stacked at AX1–AX5 so nothing truncates
+          let layout = typeSize.isAccessibilitySize
+            ? AnyLayout(VStackLayout(alignment: .leading, spacing: 8))
+            : AnyLayout(HStackLayout(spacing: 12))
+
+          layout {
+            Image(decorative: episode.artworkName)
+              .resizable().frame(width: artworkSide, height: artworkSide)
+            VStack(alignment: .leading, spacing: 4) {
+              Text(episode.title).font(.title3.bold())          // a text style, never a point size
+              Text(episode.showName)
+                .font(.custom("Avenir Next", size: 15, relativeTo: .subheadline))  // brand font that scales
+                .foregroundStyle(.secondary)
+            }
+            .fixedSize(horizontal: false, vertical: true)       // wrap, don't truncate
+          }
+        }
+      }
+
+      // Space that genuinely cannot grow (a badge): clamp, and offer the large content viewer
+      Text(unplayedCount, format: .number)
+        .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
+        .accessibilityShowsLargeContentViewer()
+
+      // UIKit
+      titleLabel.font = UIFontMetrics(forTextStyle: .subheadline)
+        .scaledFont(for: UIFont(name: "AvenirNext-Regular", size: 15)!)
+      titleLabel.adjustsFontForContentSizeCategory = true
+      titleLabel.numberOfLines = 0
+  - id: motion-transparency-colour-and-contrast
+    kind: code
+    title: Motion, transparency, colour and contrast
+    note: Each setting is an environment value; honour it where the effect is, not app-wide.
+    code: |-
+      struct MiniPlayerBar: View {
+        @Bindable var player: Player
+        @State private var expanded = false
+        @Environment(\.accessibilityReduceMotion) private var reduceMotion
+        @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+        @Environment(\.accessibilityDifferentiateWithoutColor) private var withoutColor
+        @Environment(\.colorSchemeContrast) private var contrast
+
+        var body: some View {
+          VStack {
+            Button {
+              // Keep the state change; swap the slide for a fade (or nothing)
+              withAnimation(reduceMotion ? .easeInOut(duration: 0.2) : .spring(duration: 0.45)) {
+                expanded.toggle()
+              }
+            } label: {
+              HStack {
+                Circle().fill(player.status.color).frame(width: 10, height: 10)
+                if withoutColor { Image(systemName: player.status.symbolName) }  // a shape, not only a hue
+                Text(player.status.title)                                         // and a word
+              }
+            }
+            if expanded {
+              PlayerControls(player: player)
+                .transition(reduceMotion ? .opacity : .move(edge: .bottom))
+            }
+          }
+          .padding()
+          .background(reduceTransparency ? AnyShapeStyle(Color(.secondarySystemBackground))
+                                         : AnyShapeStyle(.ultraThinMaterial))
+          .overlay { if contrast == .increased { RoundedRectangle(cornerRadius: 12).stroke(.primary) } }
+        }
+      }
+
+      // Contrast: 4.5:1 for body text, 3:1 for large text and icons. Semantic colours (.primary,
+      // Color(.label)) adapt; custom colours need a High Contrast variant in the asset catalog.
+      // UIKit: UIAccessibility.isReduceMotionEnabled + reduceMotionStatusDidChangeNotification.
+  - id: custom-controls-made-accessible
+    kind: code
+    title: "Custom controls: describe them as a standard one"
+    note: "`accessibilityRepresentation` (iOS 15+) hands VoiceOver, Voice Control and Switch Control a real control in place of your drawing."
+    code: |-
+      /// A drawn waveform scrubber: assistive technologies get a real Slider in its place.
+      struct WaveformScrubber: View {
+        @Binding var position: Double                  // seconds
+        let duration: Double
+
+        var body: some View {
+          GeometryReader { proxy in
+            WaveformView(progress: position / duration)
+              .gesture(DragGesture(minimumDistance: 0).onChanged { drag in
+                position = duration * min(max(drag.location.x / proxy.size.width, 0), 1)
+              })
+          }
+          .frame(height: 44)
+          .accessibilityRepresentation {
+            // The Slider is never drawn: it only supplies the label, value, trait and adjust actions
+            Slider(value: $position, in: 0...duration, step: 15) { Text("Playback position") }
+              .accessibilityValue(Duration.seconds(position).formatted(.units(allowed: [.minutes, .seconds])))
+          }
+        }
+      }
+
+      // Same idea for a custom toggle: .accessibilityRepresentation { Toggle("Autoplay", isOn: $autoplay) }
+      // UIKit has no representation API: set the traits, label and value yourself (next card).
+  - id: adjustable-controls
+    kind: code
+    title: Adjustable controls
+    note: When no standard control fits, implement the adjustable contract — VoiceOver says "adjustable" and swipe up/down changes the value.
+    code: |-
+      /// Segmented speed buttons, exposed as ONE adjustable element.
+      struct SpeedPicker: View {
+        @Binding var speed: Double
+        private let speeds = [0.75, 1.0, 1.25, 1.5, 2.0]
+
+        var body: some View {
+          HStack {
+            ForEach(speeds, id: \.self) { option in Button("\(option.formatted())×") { speed = option } }
+          }
+          .accessibilityElement(children: .ignore)
+          .accessibilityLabel("Playback speed")
+          .accessibilityValue("\(speed.formatted()) times")
+          .accessibilityAdjustableAction { direction in
+            guard let index = speeds.firstIndex(of: speed) else { return }
+            switch direction {
+            case .increment: speed = speeds[min(index + 1, speeds.count - 1)]
+            case .decrement: speed = speeds[max(index - 1, 0)]
+            @unknown default: break
+            }
+          }
+        }
+      }
+
+      // UIKit: the same contract on a custom UIControl
+      final class SpeedControl: UIControl {
+        private let speeds = [0.75, 1.0, 1.25, 1.5, 2.0]
+        var speed = 1.0 { didSet { sendActions(for: .valueChanged) } }
+
+        override var isAccessibilityElement: Bool { get { true } set {} }
+        override var accessibilityTraits: UIAccessibilityTraits { get { .adjustable } set {} }
+        override var accessibilityLabel: String? { get { String(localized: "Playback speed") } set {} }
+        override var accessibilityValue: String? { get { String(localized: "\(speed.formatted()) times") } set {} }
+        override func accessibilityIncrement() { step(by: 1) }
+        override func accessibilityDecrement() { step(by: -1) }
+
+        private func step(by delta: Int) {
+          guard let index = speeds.firstIndex(of: speed) else { return }
+          speed = speeds[min(max(index + delta, 0), speeds.count - 1)]
+        }
+      }
+  - id: voice-control-switch-control-and-keyboards
+    kind: code
+    title: Voice Control, Switch Control and keyboards
+    note: Users who never touch the screen can only use what has a name, a target, and a non-gesture path.
+    code: |-
+      struct PlayerControls: View {
+        @Bindable var player: Player
+
+        var body: some View {
+          HStack(spacing: 24) {
+            Button { player.skip(by: -15) } label: {
+              Image(systemName: "gobackward.15")
+                .frame(width: 44, height: 44).contentShape(Rectangle())   // ≥ 44 × 44 pt target
+            }
+            .accessibilityLabel("Skip back 15 seconds")
+            .accessibilityInputLabels(["Skip back", "Back"])    // "Tap Skip back" in Voice Control
+            .keyboardShortcut(.leftArrow, modifiers: [])          // Full Keyboard Access, iPad keyboards
+
+            Button { player.togglePlayback() } label: {
+              Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
+                .frame(width: 44, height: 44).contentShape(Rectangle())
+            }
+            .accessibilityLabel(player.isPlaying ? "Pause" : "Play")
+            .keyboardShortcut(.space, modifiers: [])
+          }
+          // Two-finger double-tap anywhere: VoiceOver's "Magic Tap" plays or pauses
+          .accessibilityAction(.magicTap) { player.togglePlayback() }
+        }
+      }
+
+      // A custom drag-to-dismiss or long-press-only feature is invisible to Switch Control and
+      // Voice Control: give it a Button or an .accessibilityAction too. List .swipeActions and
+      // .contextMenu are exposed as actions automatically. Avoid timeouts that auto-dismiss UI.
+  - id: voiceover-gestures-and-the-inspector
+    kind: table
+    title: VoiceOver gestures and the Inspector
+    note: Test on a device with VoiceOver on and Screen Curtain on — if you can finish the task by ear, it works.
+    headers:
+      - Gesture or tool
+      - What it does
+      - Check that…
+    rows:
+      - - Swipe right / left
+        - next / previous element in reading order
+        - the order matches the visual order; no stop is empty or duplicated
+      - - Double-tap
+        - activates the focused element
+        - every stop that sounds like a button does something
+      - - Swipe up / down
+        - next custom action, or adjusts an adjustable element
+        - row actions and steppers are reachable without precise taps
+      - - Rotate two fingers (the rotor)
+        - "picks the swipe-up/down mode: Headings, Actions, custom rotors"
+        - section titles have `.isHeader`; custom rotors appear
+      - - Two-finger swipe up / tap
+        - read the whole screen from the top / pause speech
+        - nothing is skipped behind a decorative element
+      - - Two-finger scrub (a Z shape)
+        - back / dismiss
+        - "custom modals respond (`accessibilityPerformEscape()`, `.accessibilityAction(.escape)`)"
+      - - Two-finger double-tap (Magic Tap)
+        - the screen's primary action
+        - play / pause, answer, or send
+      - - Three-finger triple-tap
+        - Screen Curtain — the display goes dark
+        - the task is still completable
+      - - Accessibility Inspector (Xcode → Open Developer Tool)
+        - "point at any element: label, value, traits, identifier, frame"
+        - what the audit tab flags, and live toggles for text size, Reduce Motion, contrast on the simulator
+      - - Settings → Accessibility → Per-App Settings
+        - text size, bold text, reduce motion for one app
+        - each environment value from the motion card above
+  - id: an-automated-audit-in-xcuitest
+    kind: code
+    title: An automated audit in XCUITest
+    note: "`performAccessibilityAudit` (Xcode 15, iOS 17+) fails the test with one issue per problem it finds on the current screen."
+    code: |-
+      import XCTest
+
+      final class AccessibilityAuditTests: XCTestCase {
+        @MainActor
+        func testEpisodeListPassesTheFullAudit() throws {
+          let app = XCUIApplication()
+          app.launchArguments = ["-UITestFixtures", "episodes"]         // deterministic content
+          app.launch()
+
+          try app.performAccessibilityAudit()                           // every audit type
+        }
+
+        @MainActor
+        func testPlayerAtTheLargestAccessibilityTextSize() throws {
+          let app = XCUIApplication()
+          // Undocumented but long-standing UIKit defaults override; the value is the raw value
+          // of UIContentSizeCategory.accessibilityExtraExtraExtraLarge.
+          app.launchArguments = ["-UITestFixtures", "episodes",
+                                 "-UIPreferredContentSizeCategoryName",
+                                 "UICTContentSizeCategoryAccessibilityXXXL"]
+          app.launch()
+          app.cells["episode-row-0"].tap()
+
+          try app.performAccessibilityAudit(for: [.dynamicType, .textClipped, .hitRegion, .contrast]) { issue in
+            // Return true to IGNORE an issue — narrowly, with a ticket, never by audit type alone.
+            issue.auditType == .contrast && issue.element?.identifier == "waveform"
+          }
+        }
+      }
+
+      // The audit sees one screen: navigate to each screen worth auditing and call it again.
+      // It cannot judge whether a label is *right* — only VoiceOver on a device can.
+  - id: pitfalls
+    kind: rules
+    title: Pitfalls
+    note: ""
+    items:
+      - tone: bad
+        text: "**Putting the role in the label** — \"Play button\" is read \"Play button, button\". Let the trait say it."
+      - tone: bad
+        text: "**`.onTapGesture` alone on a custom view**: no button trait, no VoiceOver activation, no keyboard focus. Prefer a `Button`; when the view can't be one, add `.isButton` and a default `.accessibilityAction` — and it still gets no keyboard focus."
+      - tone: bad
+        text: "**Fixed font sizes** (`.font(.system(size: 15))`) and fixed-height rows. Use text styles and let rows grow."
+      - tone: bad
+        text: "**Colour as the only signal** — a red dot for \"failed\". Add a symbol or a word, always, not just when Differentiate Without Color is on."
+      - tone: bad
+        text: "**Localizing the accessibility identifier**, or using the label as the identifier. Identifiers are for tests and never change."
+      - tone: bad
+        text: "**Unlabelled SF Symbols.** The automatic name-based label (\"square and arrow up\") is not \"Share\"."
+      - tone: bad
+        text: "**Announcing everything.** Announcements interrupt; use them for results the user did not see, not for every tap."
+      - tone: good
+        text: "**Prefer standard controls** — `Button`, `Toggle`, `Slider`, `Picker` come with traits, values, actions and keyboard support for free."
+      - tone: good
+        text: "**Test at AX5 and with Bold Text**, and in both appearances. Most breakage is truncation and overlap, not VoiceOver."
+      - tone: good
+        text: "**Run `performAccessibilityAudit` on every key screen in CI**; it catches regressions in contrast, clipping and missing labels for free."
+      - tone: neutral
+        text: "SwiftUI's default labels come from `Text` content and `Label` titles, so plain views are often right without any modifier — check before adding one."

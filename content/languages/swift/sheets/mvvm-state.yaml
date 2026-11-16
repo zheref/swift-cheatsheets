@@ -1,0 +1,651 @@
+id: mvvm-state
+concept: ui.mvvm-state
+scope: platform
+title: "MVVM — View Models, Bindings & Observation"
+group: SwiftUI
+subtitle: "A view model is a testable class of screen state and intents: no UI types inside, services injected, isolated to the main actor."
+applies:
+  platforms:
+    - ios
+    - ipados
+    - macos
+    - watchos
+    - visionos
+  requires:
+    - SwiftUI
+    - Observation
+  versions:
+    swift: ">=6.0"
+    ios: ">=17"
+sources:
+  - title: Observation — Apple Developer Documentation
+    url: https://developer.apple.com/documentation/observation
+  - title: Managing model data in your app — Apple Developer Documentation
+    url: https://developer.apple.com/documentation/swiftui/managing-model-data-in-your-app
+  - title: Bindable — Apple Developer Documentation
+    url: https://developer.apple.com/documentation/swiftui/bindable
+  - title: Swift Testing — Apple Developer Documentation
+    url: https://developer.apple.com/documentation/testing
+  - title: Updating views automatically with observation tracking in UIKit — Apple Developer Documentation
+    url: https://developer.apple.com/documentation/uikit/updating-views-automatically-with-observation-tracking-in-uikit
+cards:
+  - id: who-owns-what
+    kind: table
+    title: Who owns what
+    note: If the view model needs `import SwiftUI` to compile, something UI-shaped has leaked into it.
+    headers:
+      - Layer
+      - In Swift
+      - Rule
+    rows:
+      - - Model
+        - "`struct Order`, plus services behind a protocol"
+        - no observation, no UI, no knowledge of screens
+      - - View model
+        - "`@MainActor @Observable final class`"
+        - "state as `private(set) var`; one method per user intent; imports `Foundation` only"
+      - - View
+        - "SwiftUI `View` or a `UIViewController`"
+        - reads state, calls intents, picks colours and layout — no business rules
+      - - Dependencies
+        - "`protocol OrdersService: Sendable`, passed to `init`"
+        - the live one in the app, a stub in tests and previews
+      - - One-way binding
+        - "the view reads `model.state`"
+        - "Observation re-renders only the views that read the property that changed"
+      - - Two-way binding
+        - "`$model.query` via `@State` / `@Bindable`"
+        - only for values the user edits directly; rules go through an intent
+  - id: a-standard-view-model
+    kind: code
+    title: A standard view model
+    note: The shape to type from memory — a state enum, an injected protocol, and intents that are `async` and testable.
+    code: |-
+      enum LoadState<Value: Equatable>: Equatable {
+        case idle
+        case loading
+        case loaded(Value)
+        case failed(message: String)
+
+        var value: Value? {
+          guard case .loaded(let value) = self else { return nil }
+          return value
+        }
+      }
+
+      protocol OrdersService: Sendable {
+        func orders(matching query: String) async throws -> [Order]
+        func cancel(_ id: Order.ID) async throws
+      }
+
+      @MainActor @Observable
+      final class OrdersViewModel {
+        private(set) var state: LoadState<[Order]> = .idle
+        private(set) var alert: String?               // a one-off message; the view dismisses it
+        var query = ""                                // the one value a view may write directly
+
+        private let service: any OrdersService
+
+        init(service: any OrdersService) { self.service = service }   // no work here
+
+        func load(isRefresh: Bool = false) async {
+          let keepsRows = isRefresh && state.value != nil   // a new query or a retry starts over
+          if !keepsRows { state = .loading }
+
+          do {
+            let orders = try await service.orders(matching: query)
+            guard !Task.isCancelled else { return }   // superseded: the newer load owns `state`
+            state = .loaded(orders)
+          } catch {
+            // Cancelled: leave `state` to the load that replaced this one, or the next .task run.
+            guard !Task.isCancelled else { return }
+            if keepsRows {
+              alert = "Couldn't refresh. Showing your last results."
+            } else {
+              state = .failed(message: "Couldn't load your orders.")
+            }
+          }
+        }
+
+        func dismissAlert() { alert = nil }
+      }
+  - id: optimistic-intent-with-rollback
+    kind: code
+    title: An optimistic intent that rolls back
+    note: The row disappears at once, and only that row comes back if the server refuses.
+    code: |-
+      // Same file as OrdersViewModel: extensions there can use its private(set) setters.
+      extension OrdersViewModel {
+        func cancel(_ order: Order) async {
+          guard var orders = state.value, let index = orders.firstIndex(of: order) else { return }
+          orders.remove(at: index)
+          state = .loaded(orders)                        // optimistic: gone before the server answers
+
+          do {
+            try await service.cancel(order.id)
+          } catch {
+            alert = "Couldn't cancel \(order.title)."
+            // Put back just this order: a refresh may have replaced the list in the meantime.
+            guard var current = state.value, !current.contains(order) else { return }
+            current.insert(order, at: min(index, current.count))
+            state = .loaded(current)
+          }
+        }
+      }
+  - id: migrating-a-view-model-to-observable
+    kind: compare
+    title: Migrating one view model to @Observable in place
+    note: "The basic side-by-side is on the swiftui-state and swiftui-combine sheets; this is what changes when you migrate a real view model, `$query` pipelines included."
+    columns:
+      - label: ObservableObject (iOS 13+)
+        tone: legacy
+        code: |-
+          @MainActor
+          final class OrderListModel: ObservableObject {
+            @Published private(set) var orders: [Order] = []
+            @Published private(set) var errorMessage: String?
+            @Published var query = ""
+            private var cancellables = Set<AnyCancellable>()
+
+            init(service: any OrdersService) {
+              $query                                     // @Published gives you a publisher
+                .debounce(for: .milliseconds(300), scheduler: RunLoop.main)
+                .removeDuplicates()
+                .sink { [weak self] query in
+                  Task { await self?.search(query, service: service) }
+                }
+                .store(in: &cancellables)
+            }
+
+            func search(_ query: String, service: any OrdersService) async {
+              do {
+                orders = try await service.orders(matching: query)
+              } catch {
+                errorMessage = "Search failed."
+              }
+            }
+          }
+
+          struct OrdersScreen: View {
+            @StateObject private var model: OrderListModel
+
+            init(service: any OrdersService) {
+              _model = StateObject(wrappedValue: OrderListModel(service: service))
+            }
+
+            var body: some View {
+              OrdersList(model: model).searchable(text: $model.query)
+            }
+          }
+
+          struct OrdersList: View {
+            @ObservedObject var model: OrderListModel
+            var body: some View { List(model.orders) { Text($0.title) } }
+          }
+      - label: "@Observable (iOS 17+)"
+        tone: modern
+        code: |-
+          @MainActor @Observable
+          final class OrderListModel {
+            private(set) var orders: [Order] = []
+            private(set) var errorMessage: String?
+            var query = ""                               // no $query publisher any more
+
+            private let service: any OrdersService
+
+            init(service: any OrdersService) { self.service = service }
+
+            func search() async {
+              do {
+                let found = try await service.orders(matching: query)
+                guard !Task.isCancelled else { return }  // a newer query owns `orders` now
+                orders = found
+              } catch {
+                if !Task.isCancelled { errorMessage = "Search failed." }
+              }
+            }
+          }
+
+          struct OrdersScreen: View {
+            @State private var model: OrderListModel      // @StateObject -> @State
+
+            init(service: any OrdersService) {
+              _model = State(initialValue: OrderListModel(service: service))
+            }
+
+            var body: some View {
+              OrdersList(model: model)                   // the child takes a plain let
+                .searchable(text: $model.query)
+                // The debounce now lives in the view; see cancellation-owned-by-the-model for UIKit.
+                .task(id: model.query) {
+                  do {
+                    try await Task.sleep(for: .milliseconds(300))
+                  } catch {
+                    return                               // a newer query cancelled this one
+                  }
+                  await model.search()
+                }
+            }
+          }
+
+          struct OrdersList: View {
+            let model: OrderListModel                    // @ObservedObject -> let
+            var body: some View { List(model.orders) { Text($0.title) } }
+          }
+  - id: binding-the-view
+    kind: code
+    title: Binding the view — one way for state, two ways for input
+    note: "`.task(id:)` restarts and cancels the load whenever the query changes, and pull-to-refresh says it is a refresh."
+    code: |-
+      struct OrdersScreen: View {
+        @State private var model: OrdersViewModel
+
+        init(service: any OrdersService) {
+          _model = State(initialValue: OrdersViewModel(service: service))
+        }
+
+        var body: some View {
+          NavigationStack {
+            content                                                // one-way: see the next card
+              .navigationTitle("Orders")
+              .searchable(text: $model.query)                      // two-way
+              .task(id: model.query) {
+                do {
+                  try await Task.sleep(for: .milliseconds(300))    // debounce
+                } catch {
+                  return                                           // cancelled by a newer query
+                }
+                await model.load()
+              }
+              .refreshable { await model.load(isRefresh: true) }
+              .alert(model.alert ?? "", isPresented: isShowingAlert) {}
+          }
+        }
+
+        private var isShowingAlert: Binding<Bool> {
+          Binding(
+            get: { model.alert != nil },
+            set: { isShowing in
+              if !isShowing { model.dismissAlert() }
+            }
+          )
+        }
+      }
+  - id: rendering-each-load-state
+    kind: code
+    title: Rendering each load state — with a way out of the failure
+    note: The failed state needs its own retry, because `.refreshable` can't pull a `ContentUnavailableView` and `.task(id:)` waits for a new query.
+    code: |-
+      // Same file as OrdersScreen: the extension reads its private `model`.
+      extension OrdersScreen {
+        @ViewBuilder var content: some View {
+          switch model.state {
+          case .idle, .loading:
+            ProgressView()
+
+          case .loaded(let orders) where orders.isEmpty:
+            ContentUnavailableView.search(text: model.query)
+
+          case .loaded(let orders):
+            List(orders) { order in
+              OrderRow(order: order).swipeActions {                // swipeActions: not on tvOS
+                Button("Cancel", role: .destructive) { Task { await model.cancel(order) } }
+              }
+            }
+
+          case .failed(let message):
+            ContentUnavailableView {
+              Label(message, systemImage: "wifi.exclamationmark")
+            } actions: {
+              Button("Try again") { Task { await model.load() } }
+            }
+          }
+        }
+      }
+  - id: bindable-two-way
+    kind: code
+    title: "@Bindable and two-way bindings"
+    note: Bind plain fields directly; route a write that has a rule through an intent.
+    code: |-
+      @MainActor @Observable
+      final class AddressFormModel {
+        var street = ""
+        var postalCode = ""
+        var country = "US"
+        var isGift = false
+        private(set) var isExpress = false
+        var canSave: Bool { !street.isEmpty && postalCode.count == 5 }
+
+        func setExpress(_ wantsExpress: Bool) {
+          isExpress = wantsExpress && country == "US"     // a rule the UI can't bypass
+        }
+      }
+
+      struct AddressForm: View {
+        @Bindable var model: AddressFormModel             // passed in; @Bindable only adds `$`
+        let onSave: () -> Void
+
+        var body: some View {
+          Form {
+            TextField("Street", text: $model.street)
+            TextField("Postal code", text: $model.postalCode)
+            Toggle("Express shipping", isOn: Binding(
+              get: { model.isExpress },
+              set: { model.setExpress($0) }
+            ))
+            Button("Save", action: onSave).disabled(!model.canSave)
+          }
+        }
+      }
+
+      struct GiftToggle: View {
+        @Environment(AddressFormModel.self) private var model   // the environment gives no `$`
+        var body: some View {
+          @Bindable var model = model                         // so re-wrap it locally
+          Toggle("This is a gift", isOn: $model.isGift)
+        }
+      }
+  - id: cancellation-owned-by-the-model
+    kind: code
+    title: "@MainActor isolation and cancellation owned by the view model"
+    note: When the view can't own the task (UIKit, or several triggers), the model keeps it and cancels it.
+    code: |-
+      @MainActor @Observable
+      final class OrderSearchModel {
+        private(set) var state: LoadState<[Order]> = .idle
+
+        private let service: any OrdersService
+        private let clock: any Clock<Duration>            // tests pass one that doesn't sleep,
+                                                          // e.g. ImmediateClock from swift-clocks
+        @ObservationIgnored private var searchTask: Task<Void, Never>?   // nothing renders it
+
+        init(service: any OrdersService, clock: any Clock<Duration> = ContinuousClock()) {
+          self.service = service
+          self.clock = clock
+        }
+
+        /// Every keystroke — from SwiftUI's onChange or a UISearchBar delegate alike.
+        func queryChanged(to query: String) {
+          searchTask?.cancel()                            // the newest query wins
+          searchTask = Task {                             // inherits @MainActor: state writes are safe
+            do {
+              try await clock.sleep(for: .milliseconds(300), tolerance: nil)   // debounce
+              state = .loading
+              let orders = try await service.orders(matching: query)
+              try Task.checkCancellation()                // a late, stale response must not win
+              state = .loaded(orders)
+            } catch {
+              if !Task.isCancelled { state = .failed(message: "Search failed.") }
+            }
+          }
+        }
+
+        func screenDisappeared() { searchTask?.cancel() }
+      }
+  - id: same-view-model-in-uikit
+    kind: compare
+    title: The same view model driving a UIKit screen
+    note: "`updateProperties()` needs iOS 26; on iOS 18 the same tracking runs in `viewWillLayoutSubviews` with `UIObservationTrackingEnabled` in Info.plist."
+    columns:
+      - label: ObservableObject + Combine sink
+        tone: legacy
+        code: |-
+          @MainActor
+          final class LegacyOrdersViewModel: ObservableObject {
+            @Published private(set) var state: LoadState<[Order]> = .idle
+          }
+
+          final class OrdersViewController: UIViewController {
+            private let model: LegacyOrdersViewModel
+            private let messageLabel = UILabel()
+            private var cancellables = Set<AnyCancellable>()
+
+            init(model: LegacyOrdersViewModel) {
+              self.model = model
+              super.init(nibName: nil, bundle: nil)
+            }
+            required init?(coder: NSCoder) { fatalError() }
+
+            override func viewDidLoad() {
+              super.viewDidLoad()
+              model.$state                         // fires in willSet: use the value passed in
+                .sink { [weak self] state in self?.render(state) }
+                .store(in: &cancellables)
+            }
+
+            private func render(_ state: LoadState<[Order]>) {
+              switch state {
+              case .idle, .loading: messageLabel.text = "Loading…"
+              case .loaded(let orders): messageLabel.text = "\(orders.count) orders"
+              case .failed(let message): messageLabel.text = message
+              }
+            }
+          }
+      - label: "@Observable + updateProperties()"
+        tone: modern
+        code: |-
+          // iOS 17 has no automatic tracking: use the legacy column or withObservationTracking.
+          @available(iOS 26, *)
+          final class OrdersViewController: UIViewController {
+            private let model: OrdersViewModel
+            private let messageLabel = UILabel()
+
+            init(model: OrdersViewModel) {
+              self.model = model
+              super.init(nibName: nil, bundle: nil)
+            }
+            required init?(coder: NSCoder) { fatalError() }
+
+            override func viewDidLoad() {
+              super.viewDidLoad()
+              Task { await model.load() }
+            }
+
+            // UIKit records every @Observable property read here and calls it again
+            // when one of them changes — no subscription to store or cancel.
+            override func updateProperties() {
+              super.updateProperties()
+              switch model.state {
+              case .idle, .loading: messageLabel.text = "Loading…"
+              case .loaded(let orders): messageLabel.text = "\(orders.count) orders"
+              case .failed(let message): messageLabel.text = message
+              }
+            }
+          }
+  - id: testing-the-view-model
+    kind: code
+    title: Testing the view model without any UI (Swift Testing)
+    note: Stub the protocol, call the intent, assert the state — no view, no simulator, no waiting.
+    code: |-
+      import Foundation
+      import Testing
+      @testable import Shop
+
+      struct StubOrdersService: OrdersService {
+        var orders: [Order] = []
+        var loadError: URLError?
+        var cancelError: URLError?
+
+        func orders(matching query: String) async throws -> [Order] {
+          if let loadError { throw loadError }
+          return orders
+        }
+
+        func cancel(_ id: Order.ID) async throws {
+          if let cancelError { throw cancelError }
+        }
+      }
+
+      @MainActor
+      struct OrdersViewModelTests {
+        let order = Order(id: UUID(), title: "Order #1042", total: 42)
+
+        @Test func loadShowsTheOrders() async {
+          let model = OrdersViewModel(service: StubOrdersService(orders: [order]))
+          await model.load()
+          #expect(model.state == .loaded([order]))
+        }
+
+        @Test func loadFailureShowsAFriendlyMessage() async {
+          let offline = StubOrdersService(loadError: URLError(.notConnectedToInternet))
+          let model = OrdersViewModel(service: offline)
+          await model.load()
+          #expect(model.state == .failed(message: "Couldn't load your orders."))
+        }
+
+        @Test func cancelRemovesTheOrder() async {
+          let model = OrdersViewModel(service: StubOrdersService(orders: [order]))
+          await model.load()
+          await model.cancel(order)
+          #expect(model.state == .loaded([]))
+          #expect(model.alert == nil)
+        }
+      }
+  - id: testing-an-optimistic-update
+    kind: code
+    title: Testing the optimistic step and the rollback
+    note: Hold the request open with a stream so the test can see the state while the server is still deciding.
+    code: |-
+      import Foundation
+      import Testing
+      @testable import Shop
+
+      /// Keeps `cancel` in flight until the test lets the server answer.
+      struct GatedOrdersService: OrdersService {
+        let orders: [Order]
+        let cancelStarted: AsyncStream<Void>.Continuation
+        let serverAnswer: AsyncStream<Void>
+
+        func orders(matching query: String) async throws -> [Order] { orders }
+
+        func cancel(_ id: Order.ID) async throws {
+          cancelStarted.yield()
+          for await _ in serverAnswer { break }          // suspend until the test answers
+          throw URLError(.badServerResponse)
+        }
+      }
+
+      @MainActor
+      struct OptimisticCancelTests {
+        let order = Order(id: UUID(), title: "Order #1042", total: 42)
+        let other = Order(id: UUID(), title: "Order #1043", total: 18)
+
+        // A cancel that never reaches the server would leave this waiting: the limit turns it into a failure.
+        @Test(.timeLimit(.minutes(1)))
+        func cancelRemovesAtOnceThenRollsBackWhenRefused() async {
+          let (started, cancelStarted) = AsyncStream<Void>.makeStream()
+          let (serverAnswer, answer) = AsyncStream<Void>.makeStream()
+          let service = GatedOrdersService(
+            orders: [order, other], cancelStarted: cancelStarted, serverAnswer: serverAnswer)
+          let model = OrdersViewModel(service: service)
+          await model.load()
+
+          let cancelling = Task { await model.cancel(order) }
+          for await _ in started { break }               // the request is in flight...
+          #expect(model.state == .loaded([other]))       // ...and the row is already gone
+
+          answer.yield()                                 // the server refuses
+          await cancelling.value
+          #expect(model.state == .loaded([order, other]))   // back in its own place
+          #expect(model.alert == "Couldn't cancel Order #1042.")
+        }
+      }
+  - id: testing-refresh-and-failures
+    kind: code
+    title: Testing refresh, and a failed search
+    note: An actor makes a stub whose answers the test can change between two loads, with no locks and no `@unchecked`.
+    code: |-
+      import Foundation
+      import Testing
+      @testable import Shop
+
+      actor ScriptedOrdersService: OrdersService {
+        private var orders: [Order]
+        private var loadError: URLError?
+
+        init(orders: [Order]) { self.orders = orders }
+
+        func failLoads(with error: URLError) { loadError = error }
+
+        func orders(matching query: String) async throws -> [Order] {
+          if let loadError { throw loadError }
+          return orders
+        }
+
+        func cancel(_ id: Order.ID) async throws {}
+      }
+
+      @MainActor
+      struct RefreshTests {
+        let order = Order(id: UUID(), title: "Order #1042", total: 42)
+
+        @Test func failedRefreshKeepsTheRowsAndSaysSo() async {
+          let service = ScriptedOrdersService(orders: [order])
+          let model = OrdersViewModel(service: service)
+          await model.load()
+          await service.failLoads(with: URLError(.notConnectedToInternet))
+
+          await model.load(isRefresh: true)
+          #expect(model.state == .loaded([order]))
+          #expect(model.alert == "Couldn't refresh. Showing your last results.")
+        }
+
+        @Test func failedNewSearchDoesNotShowTheOldRows() async {
+          let service = ScriptedOrdersService(orders: [order])
+          let model = OrdersViewModel(service: service)
+          await model.load()
+          await service.failLoads(with: URLError(.notConnectedToInternet))
+
+          model.query = "socks"
+          await model.load()
+          #expect(model.state == .failed(message: "Couldn't load your orders."))
+        }
+      }
+  - id: when-mvvm-is-the-wrong-tool
+    kind: table
+    title: When MVVM is the wrong tool
+    note: A view model per view is ceremony; reach for one when there is logic worth testing.
+    headers:
+      - The screen has…
+      - Reach for
+      - Why
+    rows:
+      - - a toggle, a text field, a sheet flag
+        - "plain `@State` in the view"
+        - nothing to test; a class adds indirection and nothing else
+      - - formatting a model for display
+        - "a computed property or a `FormatStyle`"
+        - pure functions need no observable object
+      - - state several screens share (cart, session)
+        - "one `@Observable` model in the `Environment`"
+        - screens observe it; view models don't talk to each other
+      - - async loading, a few intents, logic worth unit tests
+        - "**MVVM**"
+        - testable with a stubbed service and no UI
+      - - one screen mid-migration, in both SwiftUI and UIKit
+        - "**MVVM**"
+        - the same view model drives both
+      - - many effects, cancellation, deep links, exhaustive state tests
+        - "TCA — see `tca-core`"
+        - "reducer + effects, and `TestStore` asserts every state change"
+  - id: mvvm-rules
+    kind: rules
+    title: View-model rules
+    note: The review comments that come up on every MVVM pull request.
+    items:
+      - tone: bad
+        text: "`import SwiftUI` in a view model to expose `Color`, `Image` or `Binding` — now it can't drive UIKit or be tested headless. Expose `isOverdue: Bool`; the view picks the colour."
+      - tone: bad
+        text: "A public `var state` — any view can write it. Use `private(set)` and an intent per action."
+      - tone: bad
+        text: "Work in `init`. `@State private var model = OrdersViewModel(…)` runs the initialiser on every parent re-render (SwiftUI keeps the first instance). Start loading in `.task`."
+      - tone: bad
+        text: "A stale response overwriting a newer one — cancel the previous task and check `Task.isCancelled` after every `await` that precedes a state write."
+      - tone: bad
+        text: "**legacy:** `@ObservedObject var model = OrdersViewModel()` re-creates the model on every render; the owner uses `@StateObject`."
+      - tone: neutral
+        text: "Mark the view model `@MainActor`: its state is UI state, and the compiler then rejects a write from a background task."
+      - tone: neutral
+        text: "`@Observable` tracks per property — a row that reads only `state` doesn't re-render when `query` changes."
+      - tone: good
+        text: "One view model per screen, owned by that screen; services injected by protocol; previews use the same stub as the tests."

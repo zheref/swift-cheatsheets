@@ -1,8 +1,10 @@
 # Swift Interview Cheat Sheets
 
-29 dense cheat sheets — SwiftUI, TCA, Swift concurrency, Combine, timing operators,
-collections, SOLID, functional Swift, Clean Code, engineering practices, iOS architecture,
-modularization, testing, algorithms and complexity, streaming/time-series patterns,
+42 dense cheat sheets — SwiftUI, UIKit, styling and design tokens, MVVM, TCA, Swift
+concurrency, Combine, RxSwift, timing operators, collections, strings, serialization, SOLID,
+functional Swift, Clean Code, engineering practices, iOS architecture, modularization,
+testing, UI testing, security, accessibility, localization, networking (REST, SOAP, gRPC,
+GraphQL), HLS video streaming, algorithms and complexity, streaming/time-series patterns,
 AI-assisted workflows, atomic file I/O, and Core Bluetooth — including seventeen
 hand-laid-out SVG infographics.
 

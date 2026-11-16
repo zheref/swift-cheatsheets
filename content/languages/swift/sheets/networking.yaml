@@ -1,0 +1,679 @@
+id: networking
+concept: networking.rest
+scope: platform
+title: "Networking — REST with URLSession"
+group: iOS Platform
+subtitle: "Typed requests, one small client, typed errors, retry, token refresh, pagination, caching, progress and background transfers — all on URLSession."
+applies:
+  platforms:
+    - ios
+    - ipados
+    - macos
+    - tvos
+    - watchos
+    - visionos
+  runtime: Swift toolchain
+  requires:
+    - Foundation
+  versions:
+    swift: ">=6.0"
+    ios: ">=16"
+sources:
+  - title: URL Loading System — Apple Developer Documentation
+    url: https://developer.apple.com/documentation/foundation/url-loading-system
+  - title: URLSession — Apple Developer Documentation
+    url: https://developer.apple.com/documentation/foundation/urlsession
+  - title: URLCache — Apple Developer Documentation
+    url: https://developer.apple.com/documentation/foundation/urlcache
+  - title: NWPathMonitor — Apple Developer Documentation
+    url: https://developer.apple.com/documentation/network/nwpathmonitor
+cards:
+  - id: where-each-concern-lives
+    kind: table
+    title: Where each concern lives
+    note: "Name the layer before you write the code: most networking bugs are a concern living in the wrong place."
+    headers:
+      - Concern
+      - Lives in
+      - API
+    rows:
+      - - building the request (base URL, path, query, body)
+        - an `Endpoint` value
+        - "`URL.appending(path:)`, `appending(queryItems:)`, `URLRequest`"
+      - - status codes, decoding, error mapping
+        - "the one `APIClient` implementation"
+        - "`HTTPURLResponse.statusCode`, `JSONDecoder`, a typed `APIError`"
+      - - the bearer token and its refresh
+        - "an `actor` the client asks for a token"
+        - "`Authorization: Bearer …`, single-flight `Task`"
+      - - timeouts
+        - session configuration, plus a deadline for the whole operation
+        - "`timeoutIntervalForRequest` (idle), `timeoutIntervalForResource` (total)"
+      - - cancellation
+        - "the caller's `Task` — SwiftUI's `.task` cancels for you"
+        - "`Task.cancel()` cancels the in-flight `URLSessionTask`"
+      - - retry
+        - a wrapper around idempotent calls only
+        - "exponential backoff with jitter, honour `Retry-After` up to a cap"
+      - - caching
+        - "`URLCache` on the configuration, `Cache-Control` from the server"
+        - "`cachePolicy`, `ETag` / `If-None-Match` → `304`"
+      - - large or long transfers
+        - a dedicated session, background for anything that must survive the app
+        - "`upload(for:fromFile:delegate:)`, `download(from:delegate:)` + `task.progress`, `.background(withIdentifier:)`"
+      - - being offline
+        - "the session waits; the UI observes the path"
+        - "`waitsForConnectivity`, `NWPathMonitor`"
+      - - tests
+        - "a `URLProtocol` stub — see the Testing sheet"
+        - "`URLSessionConfiguration.protocolClasses`"
+  - id: typed-get-and-post
+    kind: code
+    title: A typed GET and POST with async URLSession
+    note: "Check the status yourself: URLSession only throws for transport failures — a 404 or 500 arrives as a successful response."
+    code: |-
+      struct Order: Codable, Sendable, Identifiable {
+        let id: String
+        let status: String
+        let totalCents: Int
+      }
+      struct NewOrder: Encodable, Sendable {
+        let sku: String
+        let quantity: Int
+      }
+
+      let baseURL = URL(string: "https://api.example.com/v1")!
+
+      let decoder: JSONDecoder = {                 // configured once: total_cents → totalCents
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        return decoder
+      }()
+
+      func fetchOrders(status: String, session: URLSession = .shared) async throws -> [Order] {
+        let query = [URLQueryItem(name: "status", value: status)]          // percent-encoded for you
+        var request = URLRequest(url: baseURL.appending(path: "orders").appending(queryItems: query))
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        let (data, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+          throw URLError(.badServerResponse)
+        }
+        return try decoder.decode([Order].self, from: data)
+      }
+
+      /// `idempotencyKey` comes from the caller: ONE key per user intent, reused by every retry,
+      /// so the server can tell a repeat from a new order. (A UUID made in here would differ per try.)
+      func placeOrder(_ order: NewOrder, idempotencyKey: UUID,
+                      session: URLSession = .shared) async throws -> Order {
+        var request = URLRequest(url: baseURL.appending(path: "orders"))
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue(idempotencyKey.uuidString, forHTTPHeaderField: "Idempotency-Key")
+        request.httpBody = try JSONEncoder().encode(order)   // one-word keys; else .convertToSnakeCase
+        let (data, response) = try await session.data(for: request)
+        guard (response as? HTTPURLResponse)?.statusCode == 201 else { throw URLError(.badServerResponse) }
+        return try decoder.decode(Order.self, from: data)
+      }
+  - id: api-client-and-typed-errors
+    kind: code
+    title: A small generic API client behind a protocol, with a typed error
+    note: "One place maps transport, status and decoding failures, so views and view models only ever see `APIError` (typed throws, Swift 6)."
+    code: |-
+      enum APIError: Error, Equatable {
+        case cancelled, unauthorized, decoding(String)
+        case transport(URLError.Code)                        // .notConnectedToInternet, .timedOut…
+        case server(status: Int, retryAfter: Duration?)     // Retry-After: see the retry card
+      }
+
+      struct Endpoint<Response: Decodable & Sendable>: Sendable {
+        var method = "GET"
+        var path: String
+        var query: [URLQueryItem] = []
+        var headers = ["Accept": "application/json"]     // + Idempotency-Key, If-None-Match…
+        var body: Data? = nil
+      }
+
+      protocol APIClient: Sendable {
+        func send<Response>(_ endpoint: Endpoint<Response>) async throws(APIError) -> Response
+      }
+
+      struct URLSessionAPIClient: APIClient {
+        let baseURL: URL
+        var session: URLSession = .shared
+
+        func send<Response>(_ endpoint: Endpoint<Response>) async throws(APIError) -> Response {
+          let path = baseURL.appending(path: endpoint.path)
+          let url = endpoint.query.isEmpty ? path : path.appending(queryItems: endpoint.query)   // no stray "?"
+          var request = URLRequest(url: url)
+          request.httpMethod = endpoint.method
+          request.httpBody = endpoint.body
+          if endpoint.body != nil { request.setValue("application/json", forHTTPHeaderField: "Content-Type") }
+          for (name, value) in endpoint.headers { request.setValue(value, forHTTPHeaderField: name) }
+
+          let data: Data, response: URLResponse
+          do { (data, response) = try await session.data(for: request) }
+          catch let error as URLError { throw error.code == .cancelled ? .cancelled : .transport(error.code) }
+          catch { throw .transport(.unknown) }        // unreachable: URLSession throws only URLError
+
+          guard let http = response as? HTTPURLResponse else { throw .transport(.badServerResponse) }
+          switch http.statusCode {
+          case 200..<300: break
+          case 401: throw .unauthorized
+          case let status: throw .server(status: status, retryAfter: http.retryAfter)
+          }
+
+          do { return try decoder.decode(Response.self, from: data) }   // the shared snake_case decoder
+          catch { throw .decoding(String(describing: error)) }
+        }
+      }
+  - id: timeouts-and-cancellation
+    kind: code
+    title: Timeouts and cancellation
+    note: "Session timeouts limit one transfer, a deadline for a whole operation is a race, and cancellation travels down to the socket."
+    code: |-
+      extension URLSession {
+        /// The request value is an IDLE timeout (no bytes for N seconds); the resource
+        /// value caps the whole transfer, the session's own retries included.
+        static let orders: URLSession = {
+          let configuration = URLSessionConfiguration.default
+          configuration.timeoutIntervalForRequest = 15
+          configuration.timeoutIntervalForResource = 60
+          return URLSession(configuration: configuration)
+        }()
+      }
+
+      /// A deadline for an operation made of several requests: race it against a sleep.
+      func withDeadline<T: Sendable>(_ limit: Duration,
+                                     _ work: @escaping @Sendable () async throws -> T) async throws -> T {
+        try await withThrowingTaskGroup(of: T.self) { group in
+          group.addTask { try await work() }
+          group.addTask {
+            try await Task.sleep(for: limit)
+            throw APIError.transport(.timedOut)
+          }
+          defer { group.cancelAll() }                 // the loser is cancelled, its request too
+          return try await group.next()!
+        }
+      }
+
+      // Cancelling the Task cancels the URLSessionTask, and data(for:) throws
+      // URLError(.cancelled). In SwiftUI, .task { } cancels when the view disappears.
+      @MainActor final class OrderSearch {
+        private var current: Task<Void, Never>?
+        private(set) var results: [Order] = []
+
+        func queryChanged(_ text: String, client: any APIClient) {
+          current?.cancel()                           // the previous request stops on the wire
+          current = Task {
+            let endpoint = Endpoint<[Order]>(path: "orders", query: [URLQueryItem(name: "q", value: text)])
+            guard let found = try? await client.send(endpoint) else { return }   // cancelled or failed
+            results = found
+          }
+        }
+      }
+
+  - id: retry-with-backoff
+    kind: code
+    title: Retry with exponential backoff, jitter and Retry-After
+    note: "Retry only what is safe to repeat (the required `Repeatable` says why), only transient failures, and wait as long as the server asks, up to a cap."
+    code: |-
+      enum Repeatable {                       // why a repeat is safe; there is no case for a plain POST
+        case idempotentMethod                 // GET, HEAD, PUT, DELETE
+        case idempotencyKey(UUID)             // POST/PATCH the server deduplicates by this key
+      }
+
+      extension HTTPURLResponse {
+        var retryAfter: Duration? {              // seconds form only; an HTTP-date falls back to backoff
+          value(forHTTPHeaderField: "Retry-After").flatMap { Int($0) }.map { .seconds(max(0, $0)) }
+        }
+      }
+
+      extension APIError {
+        var isTransient: Bool {
+          switch self {
+          case .transport(let code): [.notConnectedToInternet, .networkConnectionLost, .timedOut].contains(code)
+          case .server(let status, _): [408, 429, 500, 502, 503, 504].contains(status)
+          default: false
+          }
+        }
+      }
+
+      func withRetry<T>(_ safety: Repeatable, maxAttempts: Int = 4, baseDelay: Duration = .milliseconds(300),
+                        maxWait: Duration = .seconds(20), clock: some Clock<Duration> = ContinuousClock(),
+                        isolation: isolated (any Actor)? = #isolation,      // runs on the caller's actor
+                        _ operation: () async throws -> T) async throws -> T {
+        var attempt = 1
+        while true {
+          do { return try await operation() }
+          catch let error as APIError where error.isTransient && attempt < maxAttempts {
+            let serverWait: Duration? = if case .server(_, let after) = error { after } else { nil }
+            let wait = serverWait ?? baseDelay * (1 << (attempt - 1)) * Double.random(in: 0.5...1.5)  // jitter
+            guard wait <= maxWait else { throw error }     // asked to wait longer than a person will
+            try await clock.sleep(for: wait)               // throws CancellationError if cancelled
+            attempt += 1
+          }
+        }
+      }
+
+      func submitOrder(_ order: NewOrder, client: some APIClient) async throws -> Order {
+        let key = UUID()                                   // one key per tap, reused by every attempt
+        var endpoint = Endpoint<Order>(method: "POST", path: "orders", body: try JSONEncoder().encode(order))
+        endpoint.headers["Idempotency-Key"] = key.uuidString
+        return try await withRetry(.idempotencyKey(key)) { try await client.send(endpoint) }
+      }
+  - id: bearer-auth-single-flight-refresh
+    kind: code
+    title: Bearer auth with a single-flight token refresh
+    note: "When ten requests hit 401 at once exactly one refresh runs, all ten get its result, and only a refusal from the auth server signs the user out."
+    code: |-
+      struct Token: Sendable {
+        let access: String
+        let refresh: String
+        let expiresAt: Date
+      }
+
+      actor TokenStore {
+        private var token: Token?
+        private var refreshing: Task<Token, any Error>?
+        /// Contract: throws APIError.unauthorized ONLY when the server rejects the refresh token.
+        private let refreshCall: @Sendable (_ refreshToken: String) async throws -> Token
+
+        init(token: Token?, refreshCall: @escaping @Sendable (String) async throws -> Token) {
+          self.token = token
+          self.refreshCall = refreshCall
+        }
+
+        func validToken() async throws -> Token {
+          if let refreshing { return try await refreshing.value }     // join the one in flight
+          guard let token else { throw APIError.unauthorized }
+          if token.expiresAt > .now.addingTimeInterval(30) { return token }
+          return try await refresh(replacing: token.access)
+        }
+
+        /// Refreshes unless `stale` was already replaced — a late 401 must not refresh twice.
+        func refresh(replacing stale: String) async throws -> Token {
+          if let refreshing { return try await refreshing.value }
+          guard let current = token else { throw APIError.unauthorized }
+          if current.access != stale { return current }
+          let task = Task { try await refreshCall(current.refresh) }
+          refreshing = task                   // set BEFORE awaiting: re-entrant callers join it
+          defer { refreshing = nil }
+          do {
+            let fresh = try await task.value  // starter and joiners get the same value or error
+            token = fresh
+            return fresh
+          } catch APIError.unauthorized {
+            token = nil                       // refused by the auth server: sign out
+            throw APIError.unauthorized
+          }                                   // offline, timeout, 5xx: token kept, error rethrown
+        }
+      }
+  - id: bearer-attach-and-retry-once
+    kind: code
+    title: Attaching the token, and retrying once after a 401
+    note: "The refresh call decides what counts as signed out; the request path refreshes at most once per request."
+    code: |-
+      /// The refreshCall given to TokenStore: only a 400/401 from the token endpoint means
+      /// "this refresh token is dead". A URLError (offline, timeout) propagates unchanged.
+      func refreshTokens(_ refreshToken: String, session: URLSession) async throws -> Token {
+        struct Response: Decodable {
+          let accessToken: String
+          let refreshToken: String
+          let expiresIn: Int
+        }
+        var form = URLComponents()
+        form.queryItems = [URLQueryItem(name: "grant_type", value: "refresh_token"),
+                           URLQueryItem(name: "refresh_token", value: refreshToken)]
+        var request = URLRequest(url: URL(string: "https://auth.example.com/oauth/token")!)
+        request.httpMethod = "POST"
+        request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
+        request.httpBody = Data((form.percentEncodedQuery ?? "").utf8)
+
+        let (data, response) = try await session.data(for: request)
+        switch (response as? HTTPURLResponse)?.statusCode ?? -1 {
+        case 200:
+          let decoder = JSONDecoder()
+          decoder.keyDecodingStrategy = .convertFromSnakeCase       // access_token → accessToken
+          let body = try decoder.decode(Response.self, from: data)
+          return Token(access: body.accessToken, refresh: body.refreshToken,
+                       expiresAt: .now.addingTimeInterval(TimeInterval(body.expiresIn)))
+        case 400, 401: throw APIError.unauthorized                   // invalid_grant: sign out
+        case let status: throw APIError.server(status: status, retryAfter: nil)
+        }
+      }
+
+      /// Every authorized request: attach the token; on a 401, refresh once and retry once.
+      func authorizedData(for request: URLRequest, tokens: TokenStore,
+                          session: URLSession) async throws -> (Data, URLResponse) {
+        var request = request
+        var token = try await tokens.validToken()
+        for attempt in 1...2 {
+          request.setValue("Bearer \(token.access)", forHTTPHeaderField: "Authorization")
+          let (data, response) = try await session.data(for: request)
+          guard (response as? HTTPURLResponse)?.statusCode == 401 else { return (data, response) }
+          if attempt == 1 { token = try await tokens.refresh(replacing: token.access) }
+        }
+        throw APIError.unauthorized
+      }
+  - id: cursor-pagination-asyncsequence
+    kind: code
+    title: Cursor pagination as an AsyncSequence
+    note: "Pull-based: the next page is fetched only when the consumer asks, and breaking out of the loop stops the paging."
+    code: |-
+      struct Page<Item: Decodable & Sendable>: Decodable, Sendable {
+        let items: [Item]
+        let nextCursor: String?
+      }
+
+      struct PagedRequest<Item: Decodable & Sendable>: AsyncSequence {
+        let client: any APIClient
+        let endpoint: @Sendable (_ cursor: String?) -> Endpoint<Page<Item>>
+
+        func makeAsyncIterator() -> AsyncIterator { AsyncIterator(source: self) }
+
+        struct AsyncIterator: AsyncIteratorProtocol {
+          let source: PagedRequest
+          var cursor: String? = nil
+          var finished = false
+
+          mutating func next() async throws -> [Item]? {
+            guard !finished else { return nil }
+            try Task.checkCancellation()
+            let page = try await source.client.send(source.endpoint(cursor))
+            cursor = page.nextCursor
+            finished = page.nextCursor == nil
+            return page.items
+          }
+        }
+      }
+
+      extension APIClient {
+        func orderPages(status: String) -> PagedRequest<Order> {
+          PagedRequest(client: self) { cursor in
+            var query = [URLQueryItem(name: "status", value: status), URLQueryItem(name: "limit", value: "50")]
+            if let cursor { query.append(URLQueryItem(name: "cursor", value: cursor)) }
+            return Endpoint(path: "orders", query: query)
+          }
+        }
+      }
+
+      // Stop as soon as you have enough: no further pages are requested
+      func firstHundredShipped(client: some APIClient) async throws -> [Order] {
+        var result: [Order] = []
+        for try await page in client.orderPages(status: "shipped") {
+          result += page
+          if result.count >= 100 { break }
+        }
+        return Array(result.prefix(100))
+      }
+  - id: caching-etag-and-policies
+    kind: code
+    title: "Caching: URLCache, ETag / If-None-Match and cache policies"
+    note: "With a URLCache, URLSession revalidates ETags itself and hands you the cached 200 for a 304, so do it by hand only for your own store."
+    code: |-
+      // 1. Give the session a cache sized for your API; the shared default is small.
+      extension URLSession {
+        static let cached: URLSession = {
+          let configuration = URLSessionConfiguration.default
+          configuration.urlCache = URLCache(memoryCapacity: 10 << 20, diskCapacity: 100 << 20,
+                                            directory: URL.cachesDirectory.appending(path: "http"))
+          configuration.requestCachePolicy = .useProtocolCachePolicy    // obey Cache-Control / ETag
+          return URLSession(configuration: configuration)
+        }()
+      }
+
+      // 2. Pick the policy per request
+      func catalogRequest(refreshing: Bool) -> URLRequest {
+        var request = URLRequest(url: URL(string: "https://api.example.com/v1/catalog")!)
+        request.cachePolicy = refreshing
+          ? .reloadIgnoringLocalCacheData                     // pull-to-refresh: always the network
+          : .returnCacheDataElseLoad                          // offline-first: stale is fine
+        return request
+      }
+
+      // 3. Conditional GET against your own store (database, file), not URLCache
+      struct Cached: Codable {
+        let etag: String?                                     // nil when the server sent no validator
+        let body: Data
+      }
+
+      func conditionalGet(_ url: URL, stored: Cached?, session: URLSession) async throws -> Cached {
+        var request = URLRequest(url: url)
+        request.cachePolicy = .reloadIgnoringLocalCacheData   // or URLCache answers before you do
+        if let etag = stored?.etag { request.setValue(etag, forHTTPHeaderField: "If-None-Match") }
+
+        let (data, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse else { throw URLError(.badServerResponse) }
+        switch http.statusCode {
+        case 304:
+          guard let stored else { throw URLError(.badServerResponse) }
+          return stored                                       // unchanged: zero body bytes downloaded
+        case 200:
+          return Cached(etag: http.value(forHTTPHeaderField: "ETag"), body: data)
+        default:
+          throw URLError(.badServerResponse)
+        }
+      }
+  - id: upload-download-with-progress
+    kind: code
+    title: Upload and download with progress
+    note: "Both stream through a file rather than memory, and progress comes from the task's own `Progress`, handed over by a per-task delegate (iOS 16)."
+    code: |-
+      /// didCreateTask hands over the URLSessionTask that the async call creates; its
+      /// `progress` (a Foundation Progress, observable) counts bytes sent or received.
+      final class TransferProgress: NSObject, URLSessionTaskDelegate, Sendable {
+        private let onStart: @Sendable (Progress) -> Void
+        init(onStart: @escaping @Sendable (Progress) -> Void) { self.onStart = onStart }
+
+        func urlSession(_ session: URLSession, didCreateTask task: URLSessionTask) {
+          onStart(task.progress)
+        }
+      }
+
+      func uploadReceipt(_ file: URL, to url: URL, session: URLSession,
+                         onStart: @escaping @Sendable (Progress) -> Void) async throws {
+        var request = URLRequest(url: url)
+        request.httpMethod = "PUT"
+        request.setValue("image/jpeg", forHTTPHeaderField: "Content-Type")
+        let (_, response) = try await session.upload(for: request, fromFile: file,   // read from disk
+                                                     delegate: TransferProgress(onStart: onStart))
+        guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw URLError(.badServerResponse) }
+      }
+
+      func downloadInvoice(_ url: URL, to destination: URL, session: URLSession,
+                           onStart: @escaping @Sendable (Progress) -> Void) async throws {
+        let (temporary, response) = try await session.download(          // written to disk as it arrives
+          from: url, delegate: TransferProgress(onStart: onStart))
+        guard (response as? HTTPURLResponse)?.statusCode == 200 else {
+          try? FileManager.default.removeItem(at: temporary)            // the async API leaves it to you
+          throw URLError(.badServerResponse)
+        }
+        _ = try FileManager.default.replaceItemAt(destination, withItemAt: temporary)   // folder must exist
+      }
+
+      // In SwiftUI: store the Progress and show ProgressView(progress).
+      // A per-task delegate gets NO didWriteData from async download(from:delegate:) — measured:
+      // 0 callbacks for 50 MB, against 135 for a session-level URLSessionDownloadDelegate.
+      // bytes(for:) is for streamed bodies (lines, server-sent events), not for files.
+  - id: background-sessions
+    kind: code
+    title: Background sessions — transfers that outlive the app
+    note: "The system runs the transfer even if your app is suspended or killed, and only the delegate API works (an async or completion-handler call crashes with an NSGenericException)."
+    code: |-
+      import os
+
+      final class BackgroundTransfers: NSObject, URLSessionDownloadDelegate, Sendable {
+        static let shared = BackgroundTransfers()
+        /// A static let is created once, thread-safely: the same session at launch and on relaunch.
+        static let session: URLSession = {
+          let configuration = URLSessionConfiguration.background(withIdentifier: "com.example.shop.bg")
+          configuration.isDiscretionary = true              // let the system pick Wi-Fi and power
+          configuration.sessionSendsLaunchEvents = true     // relaunch the app when it finishes
+          return URLSession(configuration: configuration, delegate: shared, delegateQueue: nil)
+        }()
+        @MainActor var finishedEvents: (() -> Void)?        // the app delegate's handler, used once
+        private let log = Logger(subsystem: "com.example.shop", category: "transfers")
+
+        func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask,
+                        didFinishDownloadingTo location: URL) {
+          // Also called for a 404, and the file is deleted when this returns: check, then move NOW.
+          do {
+            let status = (downloadTask.response as? HTTPURLResponse)?.statusCode
+            guard status == 200 else { throw URLError(.badServerResponse) }
+            let folder = URL.applicationSupportDirectory   // not created for you on iOS
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            _ = try FileManager.default.replaceItemAt(folder.appending(path: "catalog.json"),
+                                                      withItemAt: location)
+          } catch { failed(error) }
+        }
+
+        func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: (any Error)?) {
+          if let error { failed(error) }                    // offline too long, cancelled, refused
+        }
+
+        private func failed(_ error: any Error) {
+          log.error("catalog download lost: \(error.localizedDescription, privacy: .public)")
+          UserDefaults.standard.set(true, forKey: "catalog.needsDownload")   // re-queued at next launch
+        }
+
+        func urlSessionDidFinishEvents(forBackgroundURLSession session: URLSession) {
+          Task { @MainActor in                              // lets the system snapshot and suspend you
+            finishedEvents?()
+            finishedEvents = nil
+          }
+        }
+      }
+      // In the app delegate's handleEventsForBackgroundURLSession: store completionHandler in
+      // finishedEvents, then touch BackgroundTransfers.session to reconnect to the identifier.
+  - id: completion-handlers-vs-async
+    kind: compare
+    title: Completion handlers vs async/await
+    note: "Interviews still ask for the callback version, so know where its bugs hide: a missed call, a double call, the wrong thread."
+    columns:
+      - label: Completion handler
+        tone: legacy
+        code: |-
+          func fetchOrder(id: String,
+                          completion: @escaping @Sendable (Result<Order, any Error>) -> Void) {
+            let url = baseURL.appending(path: "orders/\(id)")
+            let task = URLSession.shared.dataTask(with: url) { data, response, error in
+              // Runs on a background queue: hop to main before touching UI
+              if let error { return completion(.failure(error)) }
+              guard let data,
+                    let http = response as? HTTPURLResponse,
+                    (200..<300).contains(http.statusCode) else {
+                return completion(.failure(URLError(.badServerResponse)))
+              }
+              completion(Result { try decoder.decode(Order.self, from: data) })   // the shared snake_case one
+              // Forget one `return` above and completion runs twice.
+            }
+            task.resume()                     // forget this and nothing happens
+          }
+
+          // Cancelling means keeping the URLSessionDataTask around:
+          // task.cancel()  -> completion(.failure(URLError(.cancelled)))
+      - label: async/await
+        tone: modern
+        code: |-
+          func fetchOrder(id: String) async throws -> Order {
+            let url = baseURL.appending(path: "orders/\(id)")
+            let (data, response) = try await URLSession.shared.data(from: url)
+            guard let http = response as? HTTPURLResponse,
+                  (200..<300).contains(http.statusCode) else {
+              throw URLError(.badServerResponse)
+            }
+            return try decoder.decode(Order.self, from: data)                 // the shared snake_case one
+          }
+
+          // Exactly one result, enforced by the compiler; the caller's actor is kept;
+          // cancelling the calling Task cancels this request.
+
+          // Wrapping a callback API you don't own:
+          func fetchOrderAsync(id: String) async throws -> Order {
+            try await withCheckedThrowingContinuation { continuation in
+              fetchOrder(id: id) { continuation.resume(with: $0) }   // resume exactly once
+            }
+            // A continuation does NOT forward cancellation: keep the URLSessionDataTask and
+            // cancel it from withTaskCancellationHandler if the caller needs that.
+          }
+  - id: reachability-done-right
+    kind: code
+    title: Reachability done right
+    note: "Never preflight a request with a reachability check: let the session wait, and observe the path only to tell the user (`@Observable` needs iOS 17)."
+    applies:
+      versions:
+        ios: ">=17"
+    code: |-
+      import Network
+      import Observation
+
+      // 1. Requests: wait for a connection instead of failing at once
+      extension URLSessionConfiguration {
+        static var waiting: URLSessionConfiguration {
+          let configuration = URLSessionConfiguration.default
+          configuration.waitsForConnectivity = true           // offline → waits, not -1009
+          configuration.timeoutIntervalForResource = 120      // ...but not forever
+          return configuration
+        }
+
+        /// For prefetching: no cellular or personal hotspot, and no Low Data Mode
+        static var prefetch: URLSessionConfiguration {
+          let configuration = URLSessionConfiguration.waiting
+          configuration.allowsExpensiveNetworkAccess = false
+          configuration.allowsConstrainedNetworkAccess = false
+          return configuration
+        }
+      }
+
+      // 2. UI: observe the path as an AsyncStream
+      extension NWPathMonitor {
+        static func paths() -> AsyncStream<NWPath> {
+          AsyncStream { continuation in
+            let monitor = NWPathMonitor()
+            monitor.pathUpdateHandler = { continuation.yield($0) }
+            continuation.onTermination = { _ in monitor.cancel() }
+            monitor.start(queue: DispatchQueue(label: "path-monitor"))
+          }
+        }
+      }
+
+      @MainActor @Observable final class ConnectionBanner {
+        private(set) var isOffline = false
+        private(set) var isExpensive = false
+
+        func observe() async {                                 // call from .task { await banner.observe() }
+          for await path in NWPathMonitor.paths() {
+            isOffline = path.status != .satisfied
+            isExpensive = path.isExpensive || path.isConstrained
+          }
+        }
+      }
+
+      // "satisfied" means a route exists, not that your server answers: the request decides.
+  - id: networking-pitfalls
+    kind: rules
+    title: Pitfalls and rules worth saying out loud
+    note: ""
+    items:
+      - tone: bad
+        text: "Treating a returned response as success: URLSession does not throw for `404` or `500`. Always check `statusCode`."
+      - tone: bad
+        text: "Retrying a non-idempotent `POST` without an `Idempotency-Key` — a timeout after the server committed creates a duplicate order."
+      - tone: bad
+        text: "Refreshing the token per request: ten parallel `401`s become ten refreshes, and the second invalidates the first."
+      - tone: bad
+        text: "Building URLs with string interpolation: `?q=\\(text)` breaks on spaces and `&`. Use `appending(queryItems:)` or `URLComponents`."
+      - tone: bad
+        text: "Checking reachability before a request (it races), or blocking the UI on it. Use `waitsForConnectivity` and handle the error."
+      - tone: bad
+        text: "Creating a `URLSession` per request: each one has its own connection pool, cache and TLS handshake. Create one per configuration and keep it."
+      - tone: good
+        text: "Map every failure once, in the client, into a small typed `APIError`; the UI switches over a handful of cases."
+      - tone: good
+        text: "Give every request a cancellation owner — a SwiftUI `.task`, or a stored `Task` you cancel when the input changes."
+      - tone: good
+        text: "Log method, path, status and duration; never the `Authorization` header, tokens, or request bodies with personal data."
+      - tone: good
+        text: "Test the client against a `URLProtocol` stub (see the Testing sheet) — status codes, malformed JSON, timeouts — no real server."
+      - tone: neutral
+        text: "App Transport Security requires HTTPS by default. An `NSExceptionDomains` entry is a reviewable decision, not a fix."

@@ -113,7 +113,7 @@ describe("the registry", () => {
       { id: "kotlin", href: "/kotlin/" },
       { id: "csharp", href: "/csharp/" },
     ]);
-    expect(published.languages[0]!.topics).toHaveLength(29);
+    expect(published.languages[0]!.topics.length).toBeGreaterThanOrEqual(29);
     expect(published.languages.every((l) => l.topics.length > 0)).toBe(true);
   });
 

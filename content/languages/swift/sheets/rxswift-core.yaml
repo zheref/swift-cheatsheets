@@ -1,0 +1,555 @@
+id: rxswift-core
+concept: reactive.rx
+scope: platform
+title: "RxSwift — Core"
+group: Combine
+subtitle: "Observable -> operators -> subscribe, owned by a DisposeBag. Errors are untyped, sources are cold, and RxCocoa's traits keep the UI safe."
+applies:
+  platforms:
+    - ios
+    - ipados
+    - macos
+    - tvos
+    - watchos
+    - visionos
+  requires:
+    - RxSwift
+    - RxCocoa
+    - RxRelay
+  versions:
+    swift: ">=6.0"
+    rxswift: ">=6.5"
+sources:
+  - title: RxSwift — GitHub (ReactiveX)
+    url: https://github.com/ReactiveX/RxSwift
+  - title: RxSwift Documentation folder — Getting Started, Traits, Subjects
+    url: https://github.com/ReactiveX/RxSwift/tree/main/Documentation
+  - title: ReactiveX — Operators
+    url: https://reactivex.io/documentation/operators.html
+cards:
+  - id: mental-model
+    kind: table
+    title: Mental model — the types
+    note: "Every stream is `next`* followed by **either** `error` **or** `completed` — never both, nothing after."
+    headers:
+      - Type
+      - What it is
+      - Reach for it when
+    rows:
+      - - "`Observable<Element>`"
+        - "a stream; **cold** — the work runs once per subscriber; errors are untyped (`any Error`)"
+        - the default return type of anything asynchronous
+      - - "`Disposable` / `DisposeBag`"
+        - the subscription / the owner that disposes all of them on `deinit`
+        - every `subscribe`, `bind` or `drive` — store it with `.disposed(by:)`
+      - - "`PublishSubject`"
+        - hot; new subscribers get only future events; can error or complete
+        - an event bus that has an end
+      - - "`BehaviorSubject`"
+        - hot; replays the latest value; `try value()`
+        - "state that can fail (rare — prefer a relay)"
+      - - "`ReplaySubject`"
+        - "hot; replays the last N — `create(bufferSize:)`"
+        - late subscribers need history (recent searches)
+      - - "`PublishRelay` / `BehaviorRelay`"
+        - "subjects that **can't** error or complete; `accept(_:)`, `BehaviorRelay.value`"
+        - UI inputs and view-model state
+      - - "`Single`"
+        - exactly one value or an error
+        - an HTTP request
+      - - "`Maybe` / `Completable`"
+        - one value, none, or an error / only completion or an error
+        - a cache lookup / a save or delete
+      - - "`Infallible`"
+        - never errors
+        - non-UI streams you want to bind without a `catch`
+      - - "`Driver` (RxCocoa)"
+        - never errors, delivers on main, shares and replays the latest
+        - UI state — `drive(label.rx.text)`
+      - - "`Signal` (RxCocoa)"
+        - never errors, delivers on main, shares, **no** replay
+        - one-off UI events — a toast, a navigation
+      - - "`ControlProperty` / `ControlEvent`"
+        - "`textField.rx.text`, `button.rx.tap` — main thread, never error"
+        - the UI side of every binding
+  - id: creating-observables
+    kind: code
+    title: Creating observables
+    note: "`create` and `deferred` are lazy — nothing runs until someone subscribes, and it runs again for every subscriber."
+    code: |-
+      let orderIDs = Observable.of(1042, 1043, 1044)        // fixed values, then completed
+      let fromCache = Observable.from(cachedOrders)        // any Sequence
+      let nothing = Observable<Order>.empty()              // completes at once
+      let unauthorized = Observable<Order>.error(APIError.unauthorized)
+      let polling = Observable<Int>.interval(.seconds(30), scheduler: MainScheduler.instance)
+      let foreground = NotificationCenter.default.rx
+        .notification(UIApplication.willEnterForegroundNotification)
+
+      // Wrap a callback API: one call per subscriber, cancelled on dispose.
+      func order(id: Int, client: LegacyOrdersClient) -> Observable<Order> {
+        Observable.create { observer in
+          let request = client.fetchOrder(id: id) { result in
+            switch result {
+            case .success(let order):
+              observer.onNext(order)
+              observer.onCompleted()
+            case .failure(let error):
+              observer.onError(error)
+            }
+          }
+          return Disposables.create { request.cancel() }
+        }
+      }
+
+      // Decide WHAT to emit at subscribe time, not at creation time.
+      let freshOrders = Observable.deferred { isOffline ? Observable.from(cachedOrders) : fetchAll() }
+  - id: subjects-and-relays
+    kind: code
+    title: Subjects and relays — the hot sources
+    note: Relays are subjects minus termination, which is exactly what UI state needs.
+    code: |-
+      let statusUpdates = PublishSubject<OrderStatus>()
+      statusUpdates.onNext(.placed)                     // nobody listening: lost
+      statusUpdates
+        .subscribe(onNext: { print("status", $0) }, onCompleted: { print("done") })
+        .disposed(by: disposeBag)
+      statusUpdates.onNext(.shipped)                    // → status shipped
+      statusUpdates.onCompleted()                       // → done; later onNext calls are ignored
+
+      let cartCount = BehaviorSubject(value: 0)
+      cartCount.onNext(2)
+      cartCount.subscribe(onNext: { print("cart", $0) })    // → cart 2 (replayed)
+        .disposed(by: disposeBag)
+      let current = try cartCount.value()               // throws if it already errored
+
+      let recentSearches = ReplaySubject<String>.create(bufferSize: 3)
+      ["shoes", "socks", "hats", "bags"].forEach(recentSearches.onNext)
+      recentSearches.subscribe(onNext: { print($0) })   // → socks, hats, bags (one per line)
+        .disposed(by: disposeBag)
+
+      // RxRelay: accept(_:) instead of onNext — no onError, no onCompleted.
+      let query = BehaviorRelay(value: "")
+      query.accept("running shoes")
+      print(query.value, current)                       // → running shoes 2
+      let checkoutTapped = PublishRelay<Void>()
+      checkoutTapped.accept(())
+  - id: operators-you-actually-need
+    kind: table
+    title: Operators you actually need
+    note: Names follow RxSwift 6 (`observe(on:)`, `catchAndReturn`, `retry(when:)`); the 5.x spellings are deprecated.
+    headers:
+      - Category
+      - Operators
+    rows:
+      - - Transform
+        - "`map` `compactMap` `flatMap` `flatMapLatest` `flatMapFirst` `concatMap` `scan` `reduce` `enumerated` `toArray`"
+      - - Filter
+        - "`filter` `distinctUntilChanged` `take` `take(until:)` `skip` `first` `ignoreElements` `element(at:)`"
+      - - Combine
+        - "`combineLatest` `zip` `withLatestFrom` `merge` `startWith` `concat` `switchLatest` `amb`"
+      - - Timing
+        - "`debounce` `throttle` `delay` `timeout` `interval` `timer` `buffer(timeSpan:count:scheduler:)`"
+      - - Errors
+        - "`catch` `catchAndReturn` `retry` `retry(when:)` `materialize`"
+      - - Scheduling
+        - "`observe(on:)` `subscribe(on:)`"
+      - - Sharing
+        - "`share(replay:scope:)` `publish` `replay` `refCount` `connect`"
+      - - Side effects
+        - "`do(onNext:onError:onCompleted:onSubscribe:onDispose:)` `debug(_:)`"
+      - - Ending
+        - "`subscribe` `subscribe(with:onNext:)` `bind(to:)` `drive` `emit` `disposed(by:)`"
+      - - Traits
+        - "`asSingle` `asMaybe` `asCompletable` `asInfallible` `asDriver(onErrorJustReturn:)` `asSignal(onErrorSignalWith:)`"
+  - id: flatmap-family-and-combining
+    kind: compare
+    title: flatMap vs flatMapLatest vs concatMap — and combineLatest vs zip vs withLatestFrom vs merge
+    note: The most-asked RxSwift question, and the answer is always about what happens to the PREVIOUS inner stream.
+    columns:
+      - label: Flattening one stream into another
+        tone: neutral
+        code: |-
+          // flatMap: every inner request stays alive — a stale response can arrive last
+          let racy = query.flatMap { api.search($0).asObservable() }
+
+          // flatMapLatest: disposes the previous inner — search-as-you-type
+          let latest = query.flatMapLatest { api.search($0).asObservable() }
+
+          // concatMap: one at a time, in order — an upload queue
+          let uploads = pendingReceipts.concatMap { api.upload($0).asObservable() }
+
+          // flatMapFirst: ignores new values while one runs — a double-tapped "Pay"
+          let payment = payTapped.flatMapFirst { api.pay(orderID: 1042).asObservable() }
+      - label: Combining several streams
+        tone: neutral
+        code: |-
+          // combineLatest: emits on ANY change, once every source has emitted
+          let canPay = Observable.combineLatest(cardNumber, cvv) { card, cvv in
+            card.count == 16 && cvv.count == 3
+          }
+
+          // zip: pairs by index and waits for both — 1 + 1 -> 1 emission
+          let receipt = Observable.zip(api.order(id: 1042).asObservable(),
+                                       api.invoice(orderID: 1042).asObservable())
+
+          // withLatestFrom: the TRIGGER decides when; the other only supplies its latest value
+          let submitted = searchTapped.withLatestFrom(query)
+
+          // merge: interleaves sources of the same element type
+          let statuses = Observable.merge(pushUpdates, polledUpdates)
+  - id: networking-pipeline
+    kind: code
+    title: Networking pipeline — retry with backoff, recover inside flatMapLatest
+    note: The canonical whiteboard answer, from the API call to a `Driver` the screen can bind.
+    code: |-
+      /// Retry only what a second attempt can fix; HTTP and decoding errors fail at once.
+      func isTransient(_ error: any Error) -> Bool {
+        if case RxError.timeout = error { return true }        // our own .timeout below
+        guard let urlError = error as? URLError else { return false }
+        return [.timedOut, .networkConnectionLost, .notConnectedToInternet].contains(urlError.code)
+      }
+
+      struct OrdersAPI {
+        var session = URLSession.shared
+
+        func search(_ query: String) -> Single<[Order]> {
+          var components = URLComponents(string: "https://api.example.com/orders")!
+          components.queryItems = [URLQueryItem(name: "q", value: query)]
+          return session.rx.data(request: URLRequest(url: components.url!))  // non-2xx -> error
+            .map { try JSONDecoder().decode([Order].self, from: $0) }
+            .timeout(.seconds(10), scheduler: MainScheduler.instance)
+            .retry(when: { errors in        // 2 retries, after 1 s and 2 s
+              // Debug builds may log "Reentrancy anomaly" when the last error is rethrown; it's benign.
+              errors.enumerated().flatMap { attempt, error -> Observable<Int> in
+                guard attempt < 2, isTransient(error) else { return .error(error) }
+                return .timer(.seconds(1 << attempt), scheduler: MainScheduler.instance)
+              }
+            })
+            .asSingle()
+        }
+      }
+
+      final class OrderSearchViewModel {
+        let query = BehaviorRelay(value: "")              // inputs: the UI can't error a relay
+        let refresh = PublishRelay<Void>()
+        let orders: Driver<[Order]>                       // output: main thread, never errors
+
+        init(api: OrdersAPI) {
+          let typed = query.debounce(.milliseconds(300), scheduler: MainScheduler.instance)
+          orders = Observable.merge(typed.distinctUntilChanged(), refresh.withLatestFrom(query))
+            .flatMapLatest { query -> Observable<[Order]> in
+              // Short queries still answer, so the list clears and a refresh spinner stops.
+              guard query.count >= 2 else { return .just([]) }
+              return api.search(query).asObservable()
+                .catchAndReturn([])   // INSIDE: one failed request doesn't end the search box
+            }
+            .asDriver(onErrorJustReturn: [])
+        }
+      }
+  - id: schedulers
+    kind: code
+    title: "Schedulers — observe(on:) vs subscribe(on:)"
+    note: "`subscribe(on:)` moves where the source starts its work wherever you put it, and `observe(on:)` moves everything below it."
+    code: |-
+      func receiptThumbnail(for order: Order) -> Observable<UIImage?> {
+        Observable.deferred {
+          // Runs on the subscribe(on:) scheduler below: a blocking disk read is fine here.
+          let data = try Data(contentsOf: order.receiptFileURL)     // throws if the file is missing
+          return .just(data)
+        }
+        .subscribe(on: ConcurrentDispatchQueueScheduler(qos: .userInitiated))
+        .map { UIImage(data: $0)?.preparingThumbnail(of: CGSize(width: 120, height: 160)) }
+        .observe(on: MainScheduler.instance)        // from here down: the main thread
+      }
+
+      final class ReceiptViewController: UIViewController {
+        private let imageView = UIImageView()
+        private let disposeBag = DisposeBag()
+        var order: Order?
+
+        override func viewDidLoad() {
+          super.viewDidLoad()
+          guard let order else { return }
+
+          receiptThumbnail(for: order)
+            .catchAndReturn(nil)                    // bind(to:) and drive crash in debug on an error
+            .bind(to: imageView.rx.image)           // Binder: never errors; delivers on main for you
+            .disposed(by: disposeBag)
+        }
+      }
+      // MainScheduler.instance runs inline when already on main; .asyncInstance always hops.
+      // Driver and Signal already deliver on main — no observe(on:) needed after asDriver.
+  - id: rxcocoa-bindings
+    kind: code
+    title: RxCocoa — binding a UIKit screen to the view model
+    note: Inputs `bind(to:)` relays and outputs `drive` UI properties, with no delegate and no reloadData.
+    code: |-
+      final class OrderSearchViewController: UIViewController {
+        private let searchField = UITextField()
+        private let refreshControl = UIRefreshControl()
+        private let tableView = UITableView()
+        private let emptyLabel = UILabel()
+        private let viewModel: OrderSearchViewModel
+        private let disposeBag = DisposeBag()
+        var onSelect: ((Order) -> Void)?
+
+        init(viewModel: OrderSearchViewModel) {
+          self.viewModel = viewModel
+          super.init(nibName: nil, bundle: nil)
+        }
+        required init?(coder: NSCoder) { fatalError() }
+
+        override func viewDidLoad() {
+          super.viewDidLoad()
+          tableView.register(UITableViewCell.self, forCellReuseIdentifier: "order")
+          tableView.refreshControl = refreshControl
+
+          searchField.rx.text.orEmpty.bind(to: viewModel.query).disposed(by: disposeBag)
+          refreshControl.rx.controlEvent(.valueChanged).bind(to: viewModel.refresh).disposed(by: disposeBag)
+
+          viewModel.orders
+            .drive(tableView.rx.items(cellIdentifier: "order")) { _, order, cell in
+              var content = cell.defaultContentConfiguration()
+              content.text = order.title
+              cell.contentConfiguration = content
+            }
+            .disposed(by: disposeBag)
+          viewModel.orders.map { !$0.isEmpty }.drive(emptyLabel.rx.isHidden).disposed(by: disposeBag)
+          viewModel.orders.map { _ in false }.drive(refreshControl.rx.isRefreshing).disposed(by: disposeBag)
+
+          tableView.rx.modelSelected(Order.self)
+            .subscribe(with: self, onNext: { owner, order in owner.onSelect?(order) })
+            .disposed(by: disposeBag)
+        }
+      }
+  - id: lifetime-and-retain-cycles
+    kind: compare
+    title: Lifetime and the retain-cycle traps
+    note: The bag lives on `self`, so a closure in it that holds `self` strongly keeps both alive forever.
+    columns:
+      - label: Leaks
+        tone: bad
+        code: |-
+          final class OrderDetailViewController: UIViewController {
+            private let viewModel: OrderDetailViewModel
+            private let disposeBag = DisposeBag()
+
+            init(viewModel: OrderDetailViewModel) {
+              self.viewModel = viewModel
+              super.init(nibName: nil, bundle: nil)
+            }
+            required init?(coder: NSCoder) { fatalError() }
+
+            override func viewDidLoad() {
+              super.viewDidLoad()
+              // self -> disposeBag -> subscription -> closure -> self
+              viewModel.status
+                .subscribe(onNext: { status in self.render(status) })
+                .disposed(by: disposeBag)
+
+              // Never disposed: a timer never completes, so this polls forever
+              _ = Observable<Int>.interval(.seconds(30), scheduler: MainScheduler.instance)
+                .subscribe(onNext: { _ in self.viewModel.reload() })
+            }
+
+            private func render(_ status: OrderStatus) { title = "\(status)" }
+          }
+      - label: Released with the screen
+        tone: good
+        code: |-
+          final class OrderDetailViewController: UIViewController {
+            private let viewModel: OrderDetailViewModel
+            private let statusLabel = UILabel()
+            private let disposeBag = DisposeBag()
+            private var pollingBag = DisposeBag()
+
+            init(viewModel: OrderDetailViewModel) {
+              self.viewModel = viewModel
+              super.init(nibName: nil, bundle: nil)
+            }
+            required init?(coder: NSCoder) { fatalError() }
+
+            override func viewDidLoad() {
+              super.viewDidLoad()
+              viewModel.statusText.drive(statusLabel.rx.text)    // Binder holds the label weakly
+                .disposed(by: disposeBag)
+            }
+
+            override func viewDidAppear(_ animated: Bool) {
+              super.viewDidAppear(animated)
+              Observable<Int>.interval(.seconds(30), scheduler: MainScheduler.instance)
+                .subscribe(with: self, onNext: { owner, _ in owner.viewModel.reload() })  // weak self
+                .disposed(by: pollingBag)
+            }
+
+            override func viewDidDisappear(_ animated: Bool) {
+              super.viewDidDisappear(animated)
+              pollingBag = DisposeBag()      // a new bag disposes everything in the old one
+            }
+          }
+  - id: bridging-async-await-and-combine
+    kind: compare
+    title: Bridging to async/await and to Combine
+    note: RxSwift bridges to async/await itself, while Combine needs the RxCombine package and only unlimited-demand subscribers.
+    applies:
+      platforms:
+        - ios
+        - ipados
+        - macos
+        - tvos
+        - watchos
+        - visionos
+      requires:
+        - RxSwift
+        - RxCombine
+      versions:
+        swift: ">=6.2"
+        rxswift: ">=6.8"
+        rxcombine: ">=2.0"
+    sources:
+      - title: RxSwift — GitHub (ReactiveX)
+        url: https://github.com/ReactiveX/RxSwift
+      - title: RxCombine — GitHub (CombineCommunity)
+        url: https://github.com/CombineCommunity/RxCombine
+    columns:
+      - label: async/await
+        tone: modern
+        code: |-
+          // Rx -> async: a Single is one awaited value (RxSwift 6.5+). Single isn't Sendable,
+          // so @MainActor code can't await it directly: @concurrent (Swift 6.2) leaves the actor.
+          @concurrent nonisolated func newestOrder(api: OrdersAPI) async throws -> Order? {
+            try await api.search("newest").value.first
+          }
+
+          // Rx -> async: any Observable is an AsyncThrowingStream
+          @concurrent nonisolated func waitForDelivery(of updates: Observable<OrderStatus>) async throws {
+            for try await status in updates.values {    // leaving the loop disposes
+              if case .delivered = status { return }
+            }
+          }
+
+          // async -> Rx: one async call (RxSwift 6.8+); disposing cancels the task
+          func orderSingle(client: any OrdersClient, id: Int) -> Single<Order> {
+            Single.create { try await client.order(id: id) }
+          }
+
+          // async -> Rx: any AsyncSequence; it iterates on a detached task, so hop before the UI
+          func liveStatuses(client: any OrdersClient) -> Observable<OrderStatus> {
+            client.statusUpdates(orderID: 1042).asObservable()
+              .observe(on: MainScheduler.instance)
+          }
+      - label: Combine (RxCombine)
+        tone: neutral
+        code: |-
+          // CombineCommunity/RxCombine: last release 2.0.1, April 2021 — unmaintained since.
+          // RxSwift has no Combine bridge of its own; the alternative is copying RxCombine's DemandBuffer.
+          import RxCombine
+
+          final class CartBadgeModel: ObservableObject {
+            @Published private(set) var badge = ""
+            private var cancellables = Set<AnyCancellable>()
+
+            init(cartCount: Observable<Int>) {
+              // Rx -> Combine: safe behind sink and assign, which ask for unlimited values.
+              cartCount.asPublisher()
+                .map { $0 == 0 ? "" : "\($0)" }
+                .replaceError(with: "")
+                .receive(on: DispatchQueue.main)
+                .assign(to: &$badge)
+            }
+          }
+
+          // NOT behind limited demand (.values, flatMap(maxPublishers:), zip): RxCombine sends
+          // `finished` as soon as Rx completes and drops what is still buffered —
+          // Observable.of(1, 2, 3).asPublisher().values yields only 1. In async code use the
+          // left column's `.values` instead.
+
+          // Combine -> Rx: one Combine subscription per Rx subscriber, cancelled on dispose.
+          func foregrounds() -> Observable<Notification> {
+            NotificationCenter.default
+              .publisher(for: UIApplication.willEnterForegroundNotification)
+              .asObservable()
+          }
+  - id: combine-rxswift-mapping
+    kind: table
+    title: Combine ↔ RxSwift
+    note: Same ideas, different names — and Rx has no typed `Failure`.
+    headers:
+      - Combine
+      - RxSwift 6
+    rows:
+      - - "`Publisher<Output, Failure>`"
+        - "`Observable<Element>` — errors are `any Error`"
+      - - "`AnyCancellable` / `Set<AnyCancellable>`"
+        - "`Disposable` / `DisposeBag`"
+      - - "`.store(in: &cancellables)`"
+        - "`.disposed(by: disposeBag)`"
+      - - "`sink(receiveCompletion:receiveValue:)`"
+        - "`subscribe(onNext:onError:onCompleted:)`"
+      - - "`assign(to:on:)`"
+        - "`bind(to:)` with a RxCocoa `Binder`"
+      - - "`PassthroughSubject`"
+        - "`PublishSubject`, or `PublishRelay` when it never ends"
+      - - "`CurrentValueSubject` / `@Published`"
+        - "`BehaviorSubject` / `BehaviorRelay`"
+      - - "`Just` / `Empty` / `Fail`"
+        - "`.just` / `.empty()` / `.error`"
+      - - "`Future` (eager)"
+        - "`Single.create` (lazy)"
+      - - "`Deferred`"
+        - "`Observable.deferred`"
+      - - "`map { … }.switchToLatest()`"
+        - "`flatMapLatest`"
+      - - "`flatMap(maxPublishers: .max(1))` — put `.buffer(size:prefetch:whenFull:)` before it when the upstream is a subject, or values sent meanwhile are dropped"
+        - "`concatMap` (buffers by itself)"
+      - - "`combineLatest` / `zip` / `merge`"
+        - "`Observable.combineLatest` / `.zip` / `.merge`"
+      - - no direct equivalent
+        - "`withLatestFrom`"
+      - - "`removeDuplicates()`"
+        - "`distinctUntilChanged()`"
+      - - "`receive(on:)` / `subscribe(on:)`"
+        - "`observe(on:)` / `subscribe(on:)`"
+      - - "`catch` / `replaceError(with:)`"
+        - "`catch` / `catchAndReturn`"
+      - - "`share()`"
+        - "`share()` — neither replays to a late subscriber"
+      - - "`multicast { CurrentValueSubject(initial) }.autoconnect()`"
+        - "`share(replay: 1)` — a late subscriber gets the latest value"
+      - - "`handleEvents(…)`"
+        - "`do(onNext:…)`"
+      - - "`DispatchQueue.main` / `RunLoop.main`"
+        - "`MainScheduler.instance`"
+      - - "`Failure == Never` + `receive(on: .main)`"
+        - "`Driver` / `Signal`"
+      - - "`publisher.values`"
+        - "`observable.values` / `single.value`"
+  - id: rxswift-gotchas
+    kind: rules
+    title: RxSwift gotchas
+    note: What breaks RxSwift code in review, in production, and since Swift 6.
+    items:
+      - tone: bad
+        text: "An error terminates the stream for good. A failed request inside `flatMapLatest` with no `catch` kills the search box — recover **inside** the inner observable."
+      - tone: bad
+        text: "`bind(to:)` and `drive` crash in debug builds on an error (`Binding error`). Catch first — `catchAndReturn`, or `asDriver(onErrorJustReturn:)`."
+      - tone: bad
+        text: "Observables are cold: two `bind`s to the same `api.search(…)` fire two requests. Share it with `share(replay: 1)` or convert to a `Driver`."
+      - tone: bad
+        text: "`subscribe(onNext: { self.… })` stored in `self.disposeBag` is a retain cycle. Use `subscribe(with: self, onNext:)`, `[weak self]`, or bind straight to a `Binder`."
+      - tone: bad
+        text: "`_ = observable.subscribe(…)` silences the unused-result warning and leaks the subscription until the source ends — which a timer never does."
+      - tone: bad
+        text: "**Swift 6:** a `subscribe` or `bind(onNext:)` closure written in a `@MainActor` type (any view controller) is treated as main-actor code, and **traps at runtime** if an event arrives off main. Put `.observe(on: MainScheduler.instance)`, `asDriver` or `asSignal` right before every subscription made from UI code."
+      - tone: neutral
+        text: "To await a `Single` from main-actor code, call it from a `@concurrent nonisolated` helper (see bridging). `@preconcurrency import RxSwift` makes those errors disappear, but it hides **every** RxSwift `Sendable` diagnostic, real races included — a migration stopgap, not a fix."
+      - tone: bad
+        text: "`relay.accept(relay.value + [line])` is a read-modify-write: two threads can lose an update. Mutate state from one scheduler."
+      - tone: neutral
+        text: "Cancel early by replacing the bag (`bag = DisposeBag()`) or with `take(until: rx.deallocated)`; there is no `cancel()` on the bag itself."
+      - tone: neutral
+        text: "`MainScheduler.instance` runs inline when already on main, which can re-enter your code; `MainScheduler.asyncInstance` always hops."
+      - tone: good
+        text: "Test pipelines with **RxTest** (`TestScheduler`, `createHotObservable`, virtual time for `debounce` and `retry`) and **RxBlocking** (`toBlocking().first()`) — both ship in the RxSwift repository."
+      - tone: good
+        text: "Debug a pipeline with `.debug(\"search\")` — it prints every subscribe, event and dispose with a timestamp."
