@@ -1,0 +1,41 @@
+id: nl-accessibility
+concept: accessibility.practices
+scope: platform
+title: Accessibility Practices
+group: Platform
+subtitle: "TODO: one line saying what this sheet answers."
+applies:
+  platforms:
+    - todo
+  runtime: "TODO: the runtime in words"
+  versions:
+    todo: ">=0"
+sources:
+  - title: "TODO: the primary documentation"
+    url: https://example.com/
+cards:
+  - id: must-cover
+    kind: rules
+    title: What this sheet must cover
+    note: Required by content/aspects.yaml (accessibility / accessibility). Replace this card with real ones that answer every point.
+    items:
+      - tone: neutral
+        text: labels, roles and values the assistive technology reads
+      - tone: neutral
+        text: focus order, keyboard or switch operation, and announcements for changes
+      - tone: neutral
+        text: text scaling, contrast and reduced motion
+      - tone: neutral
+        text: testing with the platform's screen reader and its automated audit
+  - id: example
+    kind: code
+    title: "TODO: a practical example"
+    note: "TODO: one line on when a reader reaches for this."
+    prerequisites:
+      - "TODO: the toolchain and version"
+      - "TODO: where to save the snippet and the command that runs it"
+    code: "// TODO: the whole program — what is on the page is what runs"
+    expected: "TODO: the output it prints, or the effect in words"
+    validation:
+      status: excerpt
+      host: "TODO: replace with 'ran' or 'compiled' plus toolchain and date once it is proved"

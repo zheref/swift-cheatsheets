@@ -19,3 +19,8 @@ node_modules/
 public/
 .offline-build/
 coverage/
+
+# Example-only libraries (scripts/run-examples.mts)
+examples/node_modules/
+examples/.work/
+examples/kotlin/lib/

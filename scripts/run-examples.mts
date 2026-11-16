@@ -13,10 +13,17 @@
  *
  * Toolchains, each found on PATH unless named by an environment variable:
  *   typescript  `tsc` from this repository's node_modules, then `node` (22.18+ strips types);
- *               each example is a `.mts` module, as its setup tells the reader
- *   kotlin      `kotlinc` and the `kotlin` runner beside it ($KOTLINC), plus $KOTLIN_CLASSPATH
- *               (colon-separated jars, e.g. kotlinx-coroutines-core-jvm) for library examples
- *   csharp      `dotnet` ($DOTNET, else ~/.dotnet/dotnet, the install script's default)
+ *               each example is a `.mts` module, as its setup tells the reader. The libraries an
+ *               example imports come from `examples/node_modules` (`npm ci --prefix examples`):
+ *               the site never depends on them. `validation.jsx` makes an example a `.tsx` file
+ *               (`react`: bundled-free transform with esbuild, then run; `solid`: type-checked
+ *               only), and `validation.conditions` are Node export conditions for the run
+ *   kotlin      `kotlinc` and the `kotlin` runner beside it ($KOTLINC), plus the jars the examples
+ *               import: $KOTLIN_CLASSPATH (colon-separated), else every jar in
+ *               `examples/kotlin/lib` (`node scripts/fetch-example-jars.mts`)
+ *   csharp      `dotnet` ($DOTNET, else ~/.dotnet/dotnet, the install script's default); an
+ *               example whose code matches a package's `when` in `examples/csharp/packages.json`
+ *               gets that pinned NuGet package, every other example the SDK alone
  * A missing toolchain skips its examples and says so — it never counts as a pass. With
  * `--require-all`, a skipped example fails the run.
  *
@@ -46,6 +53,10 @@ export interface Example {
   check: "stdout" | "exit-code";
   code: string;
   expected?: string;
+  /** TypeScript only: the example is a `.tsx` file in this JSX dialect. */
+  jsx?: "react" | "solid";
+  /** TypeScript only: Node export conditions the run needs, e.g. `browser`. */
+  conditions?: string[];
 }
 
 export interface Outcome {
@@ -61,7 +72,7 @@ interface RawCard {
   code?: string;
   columns?: { label: string; code: string }[];
   expected?: string;
-  validation?: { status: string; check?: string };
+  validation?: { status: string; check?: string; jsx?: "react" | "solid"; conditions?: string[] };
 }
 
 /** Every example of the catalogs under `root/content/languages` that claims to compile or run. */
@@ -89,6 +100,8 @@ export function collectExamples(root: string): Example[] {
           status,
           check: card.validation?.check === "exit-code" ? ("exit-code" as const) : ("stdout" as const),
           ...(card.expected === undefined ? {} : { expected: card.expected }),
+          ...(card.validation?.jsx ? { jsx: card.validation.jsx } : {}),
+          ...(card.validation?.conditions?.length ? { conditions: card.validation.conditions } : {}),
         };
         const id = `${dir.name}/${sheet}--${card.id}`;
         if (card.kind === "code" && card.code) out.push({ id, code: card.code, ...base });
@@ -197,69 +210,119 @@ export interface Runner {
   run(examples: Example[], work: string): Promise<Outcome[]>;
 }
 
-/** TypeScript: one strict type-check over every example, then each `ran` one under Node's type stripping. */
+/** Where the example-only libraries live: `<root>/examples`, its own package and lockfile. */
+export const examplesDir = (root: string) => path.join(root, "examples");
+
+/**
+ * TypeScript: one strict type-check over every example, then each `ran` one under Node's type
+ * stripping. When the repository has an `examples/` package the files are written beneath it, so
+ * `import "rxjs"` resolves exactly as it would in a reader's project.
+ */
 export function typescriptRunner(root: string): Runner {
   const tsc = path.join(root, "node_modules/typescript/bin/tsc");
+  const libs = examplesDir(root);
+  const hasLibs = fs.existsSync(path.join(libs, "package.json"));
   return {
     async probe() {
       if (!fs.existsSync(tsc)) return { missing: "typescript is not installed in node_modules (run `npm ci`)" };
+      if (hasLibs && !fs.existsSync(path.join(libs, "node_modules"))) return { missing: "the example libraries are not installed (run `npm ci --prefix examples`)" };
       const [t, n] = await Promise.all([exec(process.execPath, [tsc, "--version"]), exec(process.execPath, ["--version"])]);
       return { toolchain: `Node ${n.stdout.trim().replace(/^v/, "")}, TypeScript ${t.stdout.trim().replace(/^Version /, "")}` };
     },
-    async run(examples, work) {
-      const files = examples.map((e, i) => {
-        const file = path.join(work, `${fileName(e.id, i)}.mts`);
-        fs.writeFileSync(file, e.code.endsWith("\n") ? e.code : `${e.code}\n`);
-        return file;
-      });
-      const config = {
-        compilerOptions: {
-          strict: true,
-          noUncheckedIndexedAccess: true,
-          noEmit: true,
-          target: "ES2023",
-          lib: ["ESNext", "DOM", "DOM.Iterable"],
-          module: "NodeNext",
-          moduleResolution: "NodeNext",
-          moduleDetection: "force",
-          erasableSyntaxOnly: true,
-          verbatimModuleSyntax: true,
-          allowImportingTsExtensions: true,
-          skipLibCheck: true,
-          types: ["node"],
-          typeRoots: [path.join(root, "node_modules/@types")],
-        },
-        files: files.map((f) => path.basename(f)),
-      };
-      fs.writeFileSync(path.join(work, "tsconfig.json"), JSON.stringify(config, null, 2));
-      const check = await exec(process.execPath, [tsc, "-p", work], { cwd: work });
-      // tsc names each file relative to its cwd, which may differ from `work` by a symlink
-      // (macOS /var → /private/var): key the errors by file name, never by the printed path.
-      const errors = new Map<string, string[]>();
-      for (const line of check.stdout.split("\n")) {
-        const m = /^(.+?\.mts)\(\d+,\d+\): error/.exec(line);
-        if (!m) continue;
-        const file = path.basename(m[1]!);
-        errors.set(file, [...(errors.get(file) ?? []), line.trim().replace(m[1]!, file)]);
+    async run(examples, scratch) {
+      // Under examples/ so Node and tsc find its node_modules; without that package, the caller's scratch folder.
+      if (hasLibs) fs.mkdirSync(path.join(libs, ".work"), { recursive: true });
+      const work = hasLibs ? fs.mkdtempSync(path.join(libs, ".work", "run-")) : scratch;
+      try {
+        return await runTypescript(examples, work, tsc, path.join(hasLibs ? libs : root, "node_modules/@types"));
+      } finally {
+        if (hasLibs) fs.rmSync(work, { recursive: true, force: true });
       }
-      // A failure no file is blamed for (a bad option, a missing @types package) fails every example.
-      const unattributed = check.code !== 0 && !errors.size ? `tsc exited ${check.code}: ${(check.stdout + check.stderr).trim().split("\n").slice(0, 4).join(" | ")}` : null;
-      return pool(examples, 6, async (e, i) => {
-        if (unattributed) return { id: e.id, status: e.status, result: "fail" as const, detail: unattributed };
-        const typeErrors = errors.get(path.basename(files[i]!));
-        if (typeErrors) return { id: e.id, status: e.status, result: "fail" as const, detail: `tsc: ${typeErrors.slice(0, 4).join(" | ")}` };
-        if (e.status === "compiled") return { id: e.id, status: e.status, result: "pass" as const };
-        return judge(e, await exec(process.execPath, [files[i]!], { cwd: work, env: snippetEnv(process.env, work), timeout: 60_000 }));
-      });
     },
   };
 }
 
+async function runTypescript(examples: Example[], work: string, tsc: string, typeRoot: string): Promise<Outcome[]> {
+  const files = examples.map((e, i) => {
+    const file = path.join(work, `${fileName(e.id, i)}.${e.jsx ? "tsx" : "mts"}`);
+    fs.writeFileSync(file, e.code.endsWith("\n") ? e.code : `${e.code}\n`);
+    return file;
+  });
+  // A `.tsx` file is a module only when its package says so (a `.mts` file always is).
+  fs.writeFileSync(path.join(work, "package.json"), `${JSON.stringify({ type: "module", private: true })}\n`);
+  const options = {
+    strict: true,
+    noUncheckedIndexedAccess: true,
+    noEmit: true,
+    target: "ES2023",
+    lib: ["ESNext", "DOM", "DOM.Iterable"],
+    module: "NodeNext",
+    moduleResolution: "NodeNext",
+    moduleDetection: "force",
+    erasableSyntaxOnly: true,
+    verbatimModuleSyntax: true,
+    allowImportingTsExtensions: true,
+    skipLibCheck: true,
+    types: ["node"],
+    typeRoots: [typeRoot],
+  };
+  // Two JSX dialects cannot share one compilation: Solid's files get their own project.
+  const projects = [
+    { name: "tsconfig.json", jsx: { jsx: "react-jsx" }, files: files.filter((_, i) => examples[i]!.jsx !== "solid") },
+    { name: "tsconfig.solid.json", jsx: { jsx: "preserve", jsxImportSource: "solid-js" }, files: files.filter((_, i) => examples[i]!.jsx === "solid") },
+  ].filter((p) => p.files.length);
+  // tsc names each file relative to its cwd, which may differ from `work` by a symlink
+  // (macOS /var → /private/var): key the errors by file name, never by the printed path.
+  const errors = new Map<string, string[]>();
+  let unattributed: string | null = null;
+  for (const project of projects) {
+    fs.writeFileSync(path.join(work, project.name), JSON.stringify({ compilerOptions: { ...options, ...project.jsx }, files: project.files.map((f) => path.basename(f)) }, null, 2));
+    const check = await exec(process.execPath, [tsc, "-p", path.join(work, project.name)], { cwd: work });
+    let blamed = 0;
+    for (const line of check.stdout.split("\n")) {
+      const m = /^(.+?\.(?:mts|tsx))\(\d+,\d+\): error/.exec(line);
+      if (!m) continue;
+      blamed++;
+      const file = path.basename(m[1]!);
+      errors.set(file, [...(errors.get(file) ?? []), line.trim().replace(m[1]!, file)]);
+    }
+    // A failure no file is blamed for (a bad option, a missing @types package) fails every example.
+    if (check.code !== 0 && !blamed) unattributed ??= `tsc exited ${check.code}: ${(check.stdout + check.stderr).trim().split("\n").slice(0, 4).join(" | ")}`;
+  }
+  return pool(examples, 6, async (e, i) => {
+    if (unattributed) return { id: e.id, status: e.status, result: "fail" as const, detail: unattributed };
+    const typeErrors = errors.get(path.basename(files[i]!));
+    if (typeErrors) return { id: e.id, status: e.status, result: "fail" as const, detail: `tsc: ${typeErrors.slice(0, 4).join(" | ")}` };
+    if (e.status === "compiled") return { id: e.id, status: e.status, result: "pass" as const };
+    let entry = files[i]!;
+    if (e.jsx === "solid") return { id: e.id, status: e.status, result: "fail" as const, detail: "Solid JSX needs Solid's own compiler: mark the example `compiled`, not `ran`" };
+    if (e.jsx === "react") {
+      // Node strips types but not JSX: the automatic runtime's transform, nothing bundled.
+      const { transform } = await import("esbuild");
+      entry = entry.replace(/\.tsx$/, ".mjs");
+      fs.writeFileSync(entry, (await transform(e.code, { loader: "tsx", jsx: "automatic", format: "esm", target: "es2023" })).code);
+    }
+    const flags = (e.conditions ?? []).map((c) => `--conditions=${c}`);
+    return judge(e, await exec(process.execPath, [...flags, entry], { cwd: work, env: snippetEnv(process.env, work), timeout: 60_000 }));
+  });
+}
+
 /** Kotlin/JVM: each example compiled on its own (each has its own `main`), then run with the `kotlin` runner. */
-export function kotlinRunner(env: NodeJS.ProcessEnv = process.env): Runner {
+export function kotlinRunner(env: NodeJS.ProcessEnv = process.env, root?: string): Runner {
   const kotlinc = findExecutable([env.KOTLINC, "kotlinc"], env);
   const kotlin = kotlinc ? path.join(path.dirname(kotlinc), "kotlin") : null;
-  const classpath = (env.KOTLIN_CLASSPATH ?? "").split(":").filter(Boolean);
+  // $KOTLIN_CLASSPATH wins; otherwise the jars `scripts/fetch-example-jars.mts` verified and placed.
+  const jarDir = root ? path.join(examplesDir(root), "kotlin/lib") : null;
+  const fetched = jarDir && fs.existsSync(jarDir) ? fs.readdirSync(jarDir).filter((f) => f.endsWith(".jar")).sort().map((f) => path.join(jarDir, f)) : [];
+  const classpath = env.KOTLIN_CLASSPATH ? env.KOTLIN_CLASSPATH.split(":").filter(Boolean) : fetched;
+  // `@Serializable` needs the compiler plugin that ships in the distribution's lib/ folder.
+  // (a zip install keeps lib/ beside bin/, Homebrew under libexec/), or $KOTLIN_SERIALIZATION_PLUGIN names it.
+  const home = kotlinc && fs.existsSync(kotlinc) ? path.dirname(path.dirname(fs.realpathSync(kotlinc))) : null;
+  const plugin = [
+    env.KOTLIN_SERIALIZATION_PLUGIN,
+    ...(home ? ["lib", "libexec/lib"].flatMap((d) => ["kotlinx-serialization-compiler-plugin.jar", "kotlin-serialization-compiler-plugin.jar"].map((f) => path.join(home, d, f))) : []),
+  ].find((f) => f && fs.existsSync(f));
+  const plugins = plugin ? [`-Xplugin=${plugin}`] : [];
   return {
     async probe() {
       if (!kotlinc || !kotlin || !fs.existsSync(kotlin)) return { missing: "kotlinc not found (put it on PATH or set KOTLINC)" };
@@ -277,7 +340,7 @@ export function kotlinRunner(env: NodeJS.ProcessEnv = process.env): Runner {
         const src = path.join(dir, "main.kt");
         fs.writeFileSync(src, e.code);
         const cp = classpath.join(":");
-        const compile = await exec(kotlinc!, [...(cp ? ["-cp", cp] : []), "-nowarn", src, "-d", path.join(dir, "out")], { env, timeout: 240_000 });
+        const compile = await exec(kotlinc!, [...(cp ? ["-cp", cp] : []), ...plugins, "-nowarn", src, "-d", path.join(dir, "out")], { env, timeout: 240_000 });
         if (compile.code !== 0) return { id: e.id, status: e.status, result: "fail" as const, detail: `kotlinc: ${compile.stderr.trim().split("\n").slice(0, 4).join(" | ")}` };
         if (e.status === "compiled") return { id: e.id, status: e.status, result: "pass" as const };
         const run = snippetEnv(env, dir, ["JAVA_HOME"]);
@@ -288,8 +351,25 @@ export function kotlinRunner(env: NodeJS.ProcessEnv = process.env): Runner {
 }
 
 /** C#/.NET: each example is the Program.cs of its own console project (top-level statements). */
-export function csharpRunner(env: NodeJS.ProcessEnv = process.env): Runner {
+export interface NugetPackage {
+  id: string;
+  version: string;
+  /** A regular expression: an example whose code matches it references the package. */
+  when: string;
+}
+
+/** The pinned NuGet packages examples may reference, from `examples/csharp/packages.json`. */
+export function nugetPackages(root: string | undefined): NugetPackage[] {
+  const file = root ? path.join(examplesDir(root), "csharp/packages.json") : null;
+  if (!file || !fs.existsSync(file)) return [];
+  const { packages } = JSON.parse(fs.readFileSync(file, "utf8")) as { packages: NugetPackage[] };
+  for (const p of packages) if (!/^[A-Za-z0-9_.-]+$/.test(p.id) || !/^\d+\.\d+\.\d+(?:[-.][A-Za-z0-9.]+)?$/.test(p.version)) throw new Error(`${file}: '${p.id}' '${p.version}' is not a package id and an exact version`);
+  return packages;
+}
+
+export function csharpRunner(env: NodeJS.ProcessEnv = process.env, root?: string): Runner {
   const dotnet = findExecutable([env.DOTNET, "dotnet", path.join(env.HOME ?? os.homedir(), ".dotnet/dotnet")], env);
+  const allowed = nugetPackages(root);
   let framework = "net8.0";
   return {
     async probe() {
@@ -302,14 +382,19 @@ export function csharpRunner(env: NodeJS.ProcessEnv = process.env): Runner {
       return pool(examples, 3, async (e, i) => {
         const dir = path.join(work, fileName(e.id, i));
         fs.mkdirSync(dir, { recursive: true });
+        const packages = allowed.filter((p) => new RegExp(p.when).test(e.code));
         fs.writeFileSync(
           path.join(dir, "Example.csproj"),
           `<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><OutputType>Exe</OutputType><TargetFramework>${framework}</TargetFramework>` +
-            `<Nullable>enable</Nullable><ImplicitUsings>enable</ImplicitUsings><TreatWarningsAsErrors>true</TreatWarningsAsErrors></PropertyGroup></Project>\n`,
+            `<Nullable>enable</Nullable><ImplicitUsings>enable</ImplicitUsings><TreatWarningsAsErrors>true</TreatWarningsAsErrors></PropertyGroup>` +
+            (packages.length ? `<ItemGroup>${packages.map((p) => `<PackageReference Include="${p.id}" Version="[${p.version}]" />`).join("")}</ItemGroup>` : "") +
+            `</Project>\n`,
         );
         fs.writeFileSync(path.join(dir, "Program.cs"), e.code);
-        // No package source either: the examples use the SDK alone, and a NuGet.Config above the folder is ignored.
-        fs.writeFileSync(path.join(dir, "nuget.config"), `<?xml version="1.0" encoding="utf-8"?>\n<configuration><packageSources><clear /></packageSources></configuration>\n`);
+        // The SDK alone has no package source at all; an allowlisted package gets nuget.org and nothing else.
+        // Either way a NuGet.Config above the folder is ignored.
+        const sources = packages.length ? `<clear /><add key="nuget.org" value="https://api.nuget.org/v3/index.json" protocolVersion="3" />` : `<clear />`;
+        fs.writeFileSync(path.join(dir, "nuget.config"), `<?xml version="1.0" encoding="utf-8"?>\n<configuration><packageSources>${sources}</packageSources></configuration>\n`);
         const denv = { ...env, DOTNET_CLI_TELEMETRY_OPTOUT: "1", DOTNET_NOLOGO: "1", DOTNET_SKIP_FIRST_TIME_EXPERIENCE: "1" };
         const out = path.join(dir, "out");
         const build = await exec(dotnet!, ["build", dir, "-o", out, "-nologo", "-v", "q", "-clp:ErrorsOnly", ...MSBUILD_ISOLATION], { env: denv, timeout: 240_000 });
@@ -335,7 +420,7 @@ export async function runExamples(
 ): Promise<Report> {
   const log = opts.log ?? console.log;
   const languages = opts.languages ?? EXAMPLE_LANGUAGES;
-  const runners: Record<ExampleLanguage, Runner> = { typescript: typescriptRunner(root), kotlin: kotlinRunner(), csharp: csharpRunner(), ...opts.runners };
+  const runners: Record<ExampleLanguage, Runner> = { typescript: typescriptRunner(root), kotlin: kotlinRunner(process.env, root), csharp: csharpRunner(process.env, root), ...opts.runners };
   const all = collectExamples(root);
   const report: Report = { toolchains: {}, outcomes: [] };
   const work = fs.mkdtempSync(path.join(os.tmpdir(), "cheatsheet-examples-"));

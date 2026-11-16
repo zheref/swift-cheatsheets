@@ -1,0 +1,39 @@
+id: nl-collection-ops
+concept: collections.operations
+scope: shared
+title: Collections — Operation Cookbook
+group: Shared concepts
+subtitle: "TODO: one line saying what this sheet answers."
+applies:
+  platforms:
+    - todo
+  runtime: "TODO: the runtime in words"
+  versions:
+    todo: ">=0"
+sources:
+  - title: "TODO: the primary documentation"
+    url: https://example.com/
+cards:
+  - id: must-cover
+    kind: rules
+    title: What this sheet must cover
+    note: Required by content/aspects.yaml (collections-and-strings / collection-ops). Replace this card with real ones that answer every point.
+    items:
+      - tone: neutral
+        text: transform, filter and fold; search and test
+      - tone: neutral
+        text: sort by several keys; group, index and count
+      - tone: neutral
+        text: chunk, window, zip and dedupe; lazy pipelines
+  - id: example
+    kind: code
+    title: "TODO: a practical example"
+    note: "TODO: one line on when a reader reaches for this."
+    prerequisites:
+      - "TODO: the toolchain and version"
+      - "TODO: where to save the snippet and the command that runs it"
+    code: "// TODO: the whole program — what is on the page is what runs"
+    expected: "TODO: the output it prints, or the effect in words"
+    validation:
+      status: excerpt
+      host: "TODO: replace with 'ran' or 'compiled' plus toolchain and date once it is proved"

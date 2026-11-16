@@ -5,6 +5,11 @@
  * that the Python generator produced at 1093188 — independently of the
  * migration's own converter — and records, per sheet and card, the visible text
  * and every code block and diagram as SHA-256 digests.
+ *
+ * The catalog grows by APPENDING sheets (content/aspects.yaml asks every catalog for topics
+ * the legacy page never had). So parity is held on the 29 legacy sheets: each is still
+ * there, byte for byte, in the same relative order — and nothing new is checked against
+ * an inventory that never contained it.
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -35,33 +40,41 @@ const codeBlocks = (c: Card) => (c.kind === "code" ? [c.code] : c.kind === "comp
 
 describe("Swift catalog parity with the pre-migration page (AC-1, AC-2, SC-1)", () => {
   const catalog = swiftCatalog();
+  /** The sheets the legacy page had, in the catalog's current order; sheets added since are not parity's business. */
+  const kept = catalog.sheets.filter((s) => legacy.anchors.includes(s.id));
 
-  it("keeps the inventory totals: 29 sheets, 289 cards, 17 diagrams, 256 code blocks", () => {
-    const cards = catalog.sheets.flatMap((s) => s.cards);
-    expect(catalog.sheets).toHaveLength(29);
+  it("keeps the legacy inventory whole: 29 sheets, 289 cards, 17 diagrams, 256 code blocks", () => {
+    const cards = kept.flatMap((s) => s.cards);
+    expect(kept).toHaveLength(29);
     expect(cards).toHaveLength(289);
     expect(cards.filter((c) => c.kind === "diagram")).toHaveLength(17);
     expect(cards.flatMap(codeBlocks)).toHaveLength(256);
     expect(legacy.sheets.flatMap((s) => s.cards)).toHaveLength(289);
   });
 
-  it("keeps every anchor, in the same order (saved #links still land)", () => {
-    expect(catalog.sheets.map((s) => s.id)).toEqual(legacy.anchors);
+  it("keeps every legacy anchor, in the same relative order (saved #links still land)", () => {
+    expect(kept.map((s) => s.id)).toEqual(legacy.anchors);
   });
 
-  it("keeps the sidebar: same links, labels and order", () => {
-    expect(catalog.sheets.map((s) => ({ href: `#${s.id}`, label: s.title }))).toEqual(legacy.nav);
+  it("keeps the legacy sidebar entries: same links, labels and relative order", () => {
+    expect(kept.map((s) => ({ href: `#${s.id}`, label: s.title }))).toEqual(legacy.nav);
   });
 
-  it("keeps each sheet's group, title and subtitle", () => {
-    expect(catalog.sheets.map(({ id, group, title, subtitle }) => ({ id, group, title, subtitle }))).toEqual(
+  it("keeps each legacy sheet's group, title and subtitle", () => {
+    expect(kept.map(({ id, group, title, subtitle }) => ({ id, group, title, subtitle }))).toEqual(
       legacy.sheets.map(({ id, group, title, subtitle }) => ({ id, group, title, subtitle })),
     );
   });
 
-  for (const [i, sheet] of legacy.sheets.entries()) {
+  it("adds sheets without reusing a legacy anchor", () => {
+    const ids = catalog.sheets.map((s) => s.id);
+    expect(new Set(ids).size).toBe(ids.length);
+    expect(catalog.sheets.length).toBeGreaterThanOrEqual(29);
+  });
+
+  for (const sheet of legacy.sheets) {
     it(`keeps every card of #${sheet.id} intact`, () => {
-      const migrated = catalog.sheets[i]!;
+      const migrated = catalog.sheets.find((s) => s.id === sheet.id)!;
       expect(migrated.cards).toHaveLength(sheet.cards.length);
       sheet.cards.forEach((old, j) => {
         const card = migrated.cards[j]!;

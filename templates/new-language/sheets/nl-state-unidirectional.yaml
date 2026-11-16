@@ -1,0 +1,41 @@
+id: nl-state-unidirectional
+concept: architecture.unidirectional-core
+scope: platform
+title: Unidirectional State — Store, Actions, Reducer, Effects
+group: Platform
+subtitle: "TODO: one line saying what this sheet answers."
+applies:
+  platforms:
+    - todo
+  runtime: "TODO: the runtime in words"
+  versions:
+    todo: ">=0"
+sources:
+  - title: "TODO: the primary documentation"
+    url: https://example.com/
+cards:
+  - id: must-cover
+    kind: rules
+    title: What this sheet must cover
+    note: Required by content/aspects.yaml (state-management / state-unidirectional). Replace this card with real ones that answer every point.
+    items:
+      - tone: neutral
+        text: "the loop: state, action, reducer, effect — with a minimal feature end to end (TCA, Redux, Redux Toolkit, MVI…)"
+      - tone: neutral
+        text: side effects and cancellation, and how dependencies are injected
+      - tone: neutral
+        text: deriving and selecting state without recomputing everything
+      - tone: neutral
+        text: testing a reducer and an effect
+  - id: example
+    kind: code
+    title: "TODO: a practical example"
+    note: "TODO: one line on when a reader reaches for this."
+    prerequisites:
+      - "TODO: the toolchain and version"
+      - "TODO: where to save the snippet and the command that runs it"
+    code: "// TODO: the whole program — what is on the page is what runs"
+    expected: "TODO: the output it prints, or the effect in words"
+    validation:
+      status: excerpt
+      host: "TODO: replace with 'ran' or 'compiled' plus toolchain and date once it is proved"

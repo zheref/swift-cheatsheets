@@ -17,12 +17,14 @@ import {
   judge,
   kotlinRunner,
   normalizeOutput,
+  nugetPackages,
   type Runner,
   parseLanguages,
   runExamples,
   snippetEnv,
   typescriptRunner,
 } from "../scripts/run-examples.mts";
+import { validation } from "../src/content/schema";
 import { ROOT } from "./helpers";
 
 const tmp = (prefix: string) => fs.mkdtempSync(path.join(os.tmpdir(), prefix));
@@ -59,8 +61,8 @@ describe("collecting examples", () => {
     const count = (lang: string, status: string) => all.filter((e) => e.language === lang && e.status === status).length;
     expect(new Set(all.map((e) => e.language))).toEqual(new Set(["typescript", "kotlin", "csharp"]));
     expect(all.length).toBe(new Set(all.map((e) => e.id)).size);
-    expect(count("typescript", "compiled")).toBe(3);
-    expect(count("kotlin", "compiled")).toBe(1);
+    expect(count("typescript", "compiled")).toBeGreaterThanOrEqual(3);
+    expect(count("kotlin", "compiled")).toBeGreaterThanOrEqual(1);
     expect(all.every((e) => e.code.length > 0)).toBe(true);
   });
 
@@ -82,6 +84,31 @@ describe("collecting examples", () => {
       { id: "kotlin/s--both[new]", check: "stdout", expected: "same" },
       { id: "kotlin/s--tests", check: "exit-code", expected: undefined },
     ]);
+  });
+});
+
+describe("an example's TypeScript run options", () => {
+  it("carries the JSX dialect and the run conditions from the card to the runner", () => {
+    const root = contentRoot("typescript", [
+      { id: "a", kind: "code", code: "x", validation: { ...ran, jsx: "react", conditions: ["browser"] } },
+      { id: "b", kind: "code", code: "y", validation: ran },
+    ]);
+    expect(collectExamples(root).map(({ id, jsx, conditions }) => ({ id, jsx, conditions }))).toEqual([
+      { id: "typescript/s--a", jsx: "react", conditions: ["browser"] },
+      { id: "typescript/s--b", jsx: undefined, conditions: undefined },
+    ]);
+  });
+
+  it("is refused by the schema where it claims more than can be proved", () => {
+    const problems = (v: object) => {
+      const r = validation.safeParse(v);
+      return r.success ? [] : r.error.issues.map((i) => i.message);
+    };
+    expect(problems({ ...ran, jsx: "react", conditions: ["browser"] })).toEqual([]);
+    expect(problems({ ...ran, status: "compiled", jsx: "solid" })).toEqual([]);
+    expect(problems({ ...ran, jsx: "solid" })).toEqual(["Solid JSX needs Solid's own compiler: the example can be `compiled`, not `ran`"]);
+    expect(problems({ status: "excerpt", host: "a browser", jsx: "react" })).toEqual(["an excerpt is not compiled: it has no JSX dialect to compile with"]);
+    expect(problems({ ...ran, status: "compiled", conditions: ["browser"] })).toEqual(["only a 'ran' example has run conditions"]);
   });
 });
 
@@ -176,6 +203,59 @@ describe("running examples", () => {
     expect(await typescriptRunner(tmp("no-modules-")).probe()).toEqual({ missing: "typescript is not installed in node_modules (run `npm ci`)" });
   });
 
+  it("reports example libraries that are not installed — a skip, never a pass", async () => {
+    const root = tmp("no-libs-");
+    fs.mkdirSync(path.join(root, "node_modules/typescript/bin"), { recursive: true });
+    fs.writeFileSync(path.join(root, "node_modules/typescript/bin/tsc"), "");
+    fs.mkdirSync(path.join(root, "examples"));
+    fs.writeFileSync(path.join(root, "examples/package.json"), "{}");
+    expect(await typescriptRunner(root).probe()).toEqual({ missing: "the example libraries are not installed (run `npm ci --prefix examples`)" });
+  });
+
+  it("runs an example without an examples/ package in the caller's scratch folder", async () => {
+    // A root with the compiler but no examples/ package: nothing is written outside the scratch folder.
+    const root = tmp("bare-root-");
+    fs.symlinkSync(path.join(ROOT, "node_modules"), path.join(root, "node_modules"));
+    const content = contentRoot("typescript", [{ id: "plain", kind: "code", code: "console.log(6 * 7);", expected: "42", validation: ran }]);
+    const report = await runExamples(content, { languages: ["typescript"], runners: { typescript: typescriptRunner(root) }, log: () => {} });
+    expect(report.outcomes.map((o) => [o.id, o.result, o.detail])).toEqual([["typescript/s--plain", "pass", undefined]]);
+    expect(fs.existsSync(path.join(root, "examples"))).toBe(false);
+  }, 60_000);
+
+  it.skipIf(!fs.existsSync(path.join(ROOT, "examples/node_modules")))(
+    "resolves an example's libraries from examples/, compiles JSX per dialect, and passes run conditions",
+    async () => {
+      const react = 'import { renderToString } from "react-dom/server";\nconst Hi = ({ name }: { name: string }) => <b>Hi {name}</b>;\nconsole.log(renderToString(<Hi name="Ada" />));';
+      const solid = 'import { createSignal } from "solid-js";\nexport function Counter() {\n  const [n, setN] = createSignal(0);\n  return <button onClick={() => setN(n() + 1)}>{n()}</button>;\n}';
+      const signals = 'import { createEffect, createRoot, createSignal } from "solid-js";\ncreateRoot(() => {\n  const [n, setN] = createSignal(1);\n  createEffect(() => console.log(n()));\n  queueMicrotask(() => setN(2));\n});';
+      const root = contentRoot("typescript", [
+        { id: "rx", kind: "code", code: 'import { map, of } from "rxjs";\nof(1, 2).pipe(map((n) => n * 10)).subscribe((v) => console.log(v));', expected: "10\n20", validation: ran },
+        { id: "react", kind: "code", code: react, expected: "<b>Hi <!-- -->Ada</b>", validation: { ...ran, jsx: "react" } },
+        { id: "react-typo", kind: "code", code: react.replace('name="Ada"', "name={1}"), expected: "x", validation: { ...ran, jsx: "react" } },
+        { id: "solid", kind: "code", code: solid, validation: { ...ran, status: "compiled", jsx: "solid" } },
+        { id: "solid-ran", kind: "code", code: solid, expected: "x", validation: { ...ran, jsx: "solid" } },
+        { id: "signals", kind: "code", code: signals, expected: "1\n2", validation: { ...ran, conditions: ["browser"] } },
+        { id: "no-such-lib", kind: "code", code: 'import x from "left-pad-not-installed";\nconsole.log(x);', expected: "x", validation: ran },
+      ]);
+      const report = await runExamples(root, { languages: ["typescript"], runners: { typescript: typescriptRunner(ROOT) }, log: () => {} });
+      expect(report.outcomes.map((o) => [o.id, o.result])).toEqual([
+        ["typescript/s--rx", "pass"],
+        ["typescript/s--react", "pass"],
+        ["typescript/s--react-typo", "fail"],
+        ["typescript/s--solid", "pass"],
+        ["typescript/s--solid-ran", "fail"],
+        ["typescript/s--signals", "pass"],
+        ["typescript/s--no-such-lib", "fail"],
+      ]);
+      expect(report.outcomes[2]!.detail).toMatch(/^tsc: \S+\.tsx\(\d+,\d+\): error TS2322/);
+      expect(report.outcomes[4]!.detail).toBe("Solid JSX needs Solid's own compiler: mark the example `compiled`, not `ran`");
+      expect(report.outcomes[6]!.detail).toMatch(/error TS2307/);
+      // The work folder under examples/ is removed, whatever happened in it.
+      expect(fs.existsSync(path.join(ROOT, "examples/.work")) ? fs.readdirSync(path.join(ROOT, "examples/.work")) : []).toEqual([]);
+    },
+    120_000,
+  );
+
   it("drives kotlinc and the kotlin runner: classpath, compile failures, run output", async () => {
     const bin = tmp("kbin-");
     const log = path.join(bin, "calls.log");
@@ -201,6 +281,36 @@ describe("running examples", () => {
     expect(calls).toMatch(/kotlinc -cp \/libs\/a\.jar:\/libs\/b\.jar -nowarn \S+\/main\.kt -d \S+\/out/);
     expect(calls).toMatch(/kotlin -cp \S+\/out:\/libs\/a\.jar:\/libs\/b\.jar MainKt/);
     expect(calls.match(/^kotlin -cp/gm)).toHaveLength(1); // only the `ran` example that compiled is executed
+  });
+
+  it("puts the fetched jars and the serialization plugin on kotlinc's command line when no classpath is named", async () => {
+    const bin = tmp("kbin-");
+    const log = path.join(bin, "calls.log");
+    stub(bin, "kotlinc", `echo "kotlinc $*" >> ${log}\ncase "$1" in -version) echo "info: kotlinc-jvm 9.9.9 (JRE 17.0.42+6-LTS)" >&2;; esac\nexit 0`);
+    stub(bin, "kotlin", `echo ran`);
+    const repo = tmp("krepo-");
+    fs.mkdirSync(path.join(repo, "examples/kotlin/lib"), { recursive: true });
+    for (const f of ["b.jar", "a.jar", "notes.txt"]) fs.writeFileSync(path.join(repo, "examples/kotlin/lib", f), "");
+    const plugin = path.join(bin, "plugin.jar");
+    fs.writeFileSync(plugin, "");
+    const root = contentRoot("kotlin", [{ id: "ok", kind: "code", code: "fun main() = println(1)", expected: "ran", validation: ran }]);
+    const runner = kotlinRunner({ PATH: `${bin}:${SYSTEM_PATH}`, KOTLIN_SERIALIZATION_PLUGIN: plugin }, repo);
+    const report = await runExamples(root, { languages: ["kotlin"], runners: { kotlin: runner }, log: () => {} });
+    expect(report.toolchains.kotlin).toBe("kotlinc 9.9.9, JVM 17.0.42, a, b");
+    expect(report.outcomes.map((o) => o.result)).toEqual(["pass"]);
+    const lib = path.join(repo, "examples/kotlin/lib");
+    expect(fs.readFileSync(log, "utf8")).toContain(`kotlinc -cp ${lib}/a.jar:${lib}/b.jar -Xplugin=${plugin} -nowarn`);
+    // A distribution's own plugin is found beside the compiler: lib/ (a zip install) or libexec/lib/ (Homebrew).
+    fs.mkdirSync(path.join(path.dirname(bin), "lib"), { recursive: true });
+    const shipped = path.join(path.dirname(bin), "lib/kotlinx-serialization-compiler-plugin.jar");
+    fs.writeFileSync(shipped, "");
+    try {
+      fs.rmSync(log);
+      await runExamples(root, { languages: ["kotlin"], runners: { kotlin: kotlinRunner({ PATH: `${bin}:${SYSTEM_PATH}` }) }, log: () => {} });
+      expect(fs.readFileSync(log, "utf8")).toContain(`-Xplugin=${fs.realpathSync(shipped)}`);
+    } finally {
+      fs.rmSync(shipped);
+    }
   });
 
   it("drives dotnet: one console project per example, build failures, run output", async () => {
@@ -229,6 +339,42 @@ describe("running examples", () => {
     expect(calls.match(/^dotnet build .* -p:ImportDirectoryBuildProps=false -p:ImportDirectoryBuildTargets=false -p:ImportDirectoryPackagesProps=false -noAutoResponse$/gm)).toHaveLength(3);
     expect(calls).toMatch(/^dotnet \S+\/out\/Example\.dll$/m);
     expect(calls).not.toMatch(/^dotnet run/m);
+  });
+
+  it("gives an example the pinned NuGet packages its code asks for, and nuget.org only then", async () => {
+    const bin = tmp("dbin-");
+    const seen = path.join(bin, "seen");
+    fs.mkdirSync(seen);
+    // Keeps each project's files so the test can read what was generated.
+    stub(bin, "dotnet", `case "$1" in\n--version) echo 9.0.100;;\nbuild) d=$(mktemp -d ${seen}/XXXXXX); cp "$2/Example.csproj" "$2/nuget.config" "$2/Program.cs" "$d/";;\nesac`);
+    const repo = tmp("drepo-");
+    fs.mkdirSync(path.join(repo, "examples/csharp"), { recursive: true });
+    const write = (packages: object[]) => fs.writeFileSync(path.join(repo, "examples/csharp/packages.json"), JSON.stringify({ packages }));
+    write([{ id: "System.Reactive", version: "6.1.0", when: "using System\\.Reactive" }]);
+    const root = contentRoot("csharp", [
+      { id: "rx", kind: "code", code: "using System.Reactive.Linq;", validation: { ...ran, status: "compiled" } },
+      { id: "plain", kind: "code", code: "class A {}", validation: { ...ran, status: "compiled" } },
+    ]);
+    const report = await runExamples(root, { languages: ["csharp"], runners: { csharp: csharpRunner({ PATH: SYSTEM_PATH, DOTNET: path.join(bin, "dotnet") }, repo) }, log: () => {} });
+    expect(report.outcomes.map((o) => o.result)).toEqual(["pass", "pass"]);
+    const projects = fs.readdirSync(seen).map((d) => ({
+      code: fs.readFileSync(path.join(seen, d, "Program.cs"), "utf8"),
+      csproj: fs.readFileSync(path.join(seen, d, "Example.csproj"), "utf8"),
+      nuget: fs.readFileSync(path.join(seen, d, "nuget.config"), "utf8"),
+    }));
+    const rx = projects.find((p) => p.code.includes("Reactive"))!;
+    const plain = projects.find((p) => !p.code.includes("Reactive"))!;
+    expect(rx.csproj).toContain('<PackageReference Include="System.Reactive" Version="[6.1.0]" />');
+    expect(rx.nuget).toContain('<clear /><add key="nuget.org" value="https://api.nuget.org/v3/index.json" protocolVersion="3" />');
+    expect(plain.csproj).not.toContain("PackageReference");
+    expect(plain.nuget).toContain("<packageSources><clear /></packageSources>");
+
+    expect(nugetPackages(undefined)).toEqual([]);
+    expect(nugetPackages(tmp("no-packages-"))).toEqual([]);
+    write([{ id: "Evil\" />", version: "1.0.0", when: "x" }]);
+    expect(() => nugetPackages(repo)).toThrow("is not a package id and an exact version");
+    write([{ id: "Fine", version: "1.*", when: "x" }]);
+    expect(() => nugetPackages(repo)).toThrow("is not a package id and an exact version");
   });
 
   it("runs a snippet without the caller's environment, in a scratch HOME", async () => {

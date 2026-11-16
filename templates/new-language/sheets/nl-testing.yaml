@@ -1,0 +1,41 @@
+id: nl-testing
+concept: testing.approaches
+scope: shared
+title: Testing — Unit & Integration
+group: Shared concepts
+subtitle: "TODO: one line saying what this sheet answers."
+applies:
+  platforms:
+    - todo
+  runtime: "TODO: the runtime in words"
+  versions:
+    todo: ">=0"
+sources:
+  - title: "TODO: the primary documentation"
+    url: https://example.com/
+cards:
+  - id: must-cover
+    kind: rules
+    title: What this sheet must cover
+    note: Required by content/aspects.yaml (unit-and-integration-testing / testing). Replace this card with real ones that answer every point.
+    items:
+      - tone: neutral
+        text: the standard runner and assertions; a tooling matrix
+      - tone: neutral
+        text: test doubles, and designing for testability by injecting the seam
+      - tone: neutral
+        text: async tests and controlled time
+      - tone: neutral
+        text: an integration test that crosses a real boundary (HTTP, a database, the file system) deterministically
+  - id: example
+    kind: code
+    title: "TODO: a practical example"
+    note: "TODO: one line on when a reader reaches for this."
+    prerequisites:
+      - "TODO: the toolchain and version"
+      - "TODO: where to save the snippet and the command that runs it"
+    code: "// TODO: the whole program — what is on the page is what runs"
+    expected: "TODO: the output it prints, or the effect in words"
+    validation:
+      status: excerpt
+      host: "TODO: replace with 'ran' or 'compiled' plus toolchain and date once it is proved"

@@ -14,6 +14,8 @@
     "build:offline": "node scripts/build-offline.mts",
     "verify": "node scripts/verify.mts",
     "examples": "node scripts/run-examples.mts",
+    "examples:install": "npm ci --prefix examples --no-audit --no-fund && node scripts/fetch-example-jars.mts",
+    "template": "rm -rf templates/new-language && node scripts/new-language.mts new-language \"New Language\" --prefix nl --out templates/new-language",
     "lint": "tsc --noEmit && node scripts/verify.mts",
     "serve": "node scripts/serve.mts",
     "typecheck": "tsc --noEmit",

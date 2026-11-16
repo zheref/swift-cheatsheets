@@ -71,6 +71,10 @@ export const validation = z
     host: z.string().min(1).optional(),
     /** How a `ran` example's result is checked: its standard output (default) or its exit status. */
     check: z.enum(["stdout", "exit-code"]).optional(),
+    /** TypeScript only: the example is a `.tsx` file in this JSX dialect (`solid` is type-checked, never run). */
+    jsx: z.enum(["react", "solid"]).optional(),
+    /** TypeScript only: Node export conditions the run needs, e.g. `browser` for a library's browser build. */
+    conditions: z.array(slug).min(1).optional(),
   })
   .strict()
   .superRefine((v, ctx) => {
@@ -83,6 +87,9 @@ export const validation = z
       if (!v.date) fail("date", `a '${v.status}' example must say when it was proved`);
     }
     if (v.check && v.status !== "ran") fail("check", "only a 'ran' example has a checked result");
+    if (v.jsx && v.status === "excerpt") fail("jsx", "an excerpt is not compiled: it has no JSX dialect to compile with");
+    if (v.jsx === "solid" && v.status === "ran") fail("jsx", "Solid JSX needs Solid's own compiler: the example can be `compiled`, not `ran`");
+    if (v.conditions && v.status !== "ran") fail("conditions", "only a 'ran' example has run conditions");
   });
 
 /** Fields an example (a `code` or `compare` card) may carry to say how to reproduce it. */

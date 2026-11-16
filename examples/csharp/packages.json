@@ -1,0 +1,8 @@
+{
+  "$comment": "The NuGet packages a C# example may reference, pinned exactly. scripts/run-examples.mts adds a package (and nuget.org as the only source) to an example whose code matches `when`; every other example builds with the SDK alone and no package source. Adding a library is adding an entry here.",
+  "packages": [
+    { "id": "System.Reactive", "version": "6.1.0", "when": "using System\\.Reactive" },
+    { "id": "CommunityToolkit.Mvvm", "version": "8.4.2", "when": "using CommunityToolkit\\.Mvvm" },
+    { "id": "Microsoft.Extensions.DependencyInjection", "version": "10.0.15", "when": "using Microsoft\\.Extensions\\.DependencyInjection" }
+  ]
+}

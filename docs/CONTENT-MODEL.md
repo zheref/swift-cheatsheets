@@ -7,6 +7,7 @@ file and field named.
 
 ```
 content/registry.yaml    the languages the selector offers, in order
+content/aspects.yaml     the aspects every published catalog covers
 content/languages/<id>/
 ├── language.yaml        the language definition
 ├── sheets/<sheet>.yaml  one file per sheet, named by its id
@@ -128,6 +129,13 @@ validation:
 | `compiled` | compiled or type-checked only | `toolchain`, `date`; `host` says what running it needs |
 | `excerpt` | a fragment that needs an application host; neither compiled nor run here | `host` (e.g. `an Android app with Jetpack Compose`); no toolchain or date |
 
+Two more `validation` fields are for the TypeScript runner alone. `jsx: react` or
+`jsx: solid` makes the example a `.tsx` file in that dialect: a React one is type-checked
+and can run (the runner applies the automatic JSX transform, nothing else); a Solid one is
+type-checked only, because Solid's JSX needs its own compiler, so it can be `compiled` but
+not `ran`. `conditions: [browser]` lists the Node export conditions a `ran` example needs —
+the example's own setup tells the reader the same flag (`node --conditions=browser main.mts`).
+
 A `ran` example's `expected` is its printed output and renders as code. Otherwise —
 `check: exit-code`, `compiled`, `excerpt` — `expected` describes the effect in words and
 renders as text (inline markup allowed). The schema refuses a status that claims more than
@@ -141,7 +149,10 @@ not. The Swift catalog does not set it and is unchanged.
 `npm run examples` (`scripts/run-examples.mts`) re-proves the claims: it compiles every
 `ran` and `compiled` example with the real toolchain — the snippet on the page is the whole
 program, nothing is wrapped around it — runs the `ran` ones, and compares their output
-with `expected`. A missing toolchain skips its language and says so; it never counts as a
+with `expected`. The libraries an example imports are pinned and example-only — the site
+never depends on them: `examples/package.json` (TypeScript), `examples/kotlin/jars.txt`
+(Maven coordinates with each jar's SHA-256) and `examples/csharp/packages.json` (NuGet
+packages, added only to an example whose code names them). A missing toolchain skips its language and says so; it never counts as a
 pass. It therefore **executes every `ran` card** on the machine that runs it — a diff adding
 or editing one is a code change and is reviewed as one; the runner gives snippets a scratch
 `HOME`/`TMPDIR` and none of the caller's environment beyond `PATH` and `LANG`. The README's
@@ -162,7 +173,25 @@ table gives every Swift sheet, in the Swift catalog's order, one disposition:
 equivalent sharing the concept id, a partial not, and no sheet reusing a Swift concept id
 without being that topic's equivalent. A gap is stated, never filled with a translation.
 
+## Required aspects
+
+[`content/aspects.yaml`](../content/aspects.yaml) lists the aspects every published catalog
+covers — UI layers, styling, state management, concurrency, async flows, timers, networking,
+video streaming, security, accessibility, localization, serialization, collections and
+strings, testing, architecture, clean code, SOLID, functional programming, modularization.
+Each aspect has parts; a part names the concept ids that cover it (the first is canonical)
+and a checklist of the least such a sheet answers.
+
+A catalog covers a part with a sheet whose `concept` is one of the part's concepts, or —
+where the topic does not exist on that stack — with a `waivers` entry giving the reason.
+`test/aspects.test.ts` holds every published catalog to that. `pending` names catalogs
+still being brought up to the registry; it only shrinks.
+
 ## Adding a language
+
+[ADDING-A-LANGUAGE.md](ADDING-A-LANGUAGE.md) is the walk-through, and
+`node scripts/new-language.mts <id> <Name>` scaffolds the folder with one stub sheet per
+required part (its committed output is `templates/new-language/`). In short:
 
 1. Create `content/languages/<id>/language.yaml` with a unique `route` (`/<id>/`) and the
    language's `highlight` keywords. Start at `status: draft` until the catalog is real. If

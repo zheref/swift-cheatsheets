@@ -1,0 +1,319 @@
+# The aspects EVERY published catalog covers, whatever its language or stack.
+#
+# Part ids are unique across the registry: `<prefix>-<part>` is the stub sheet's id.
+# A catalog covers a part when it has a sheet whose `concept` is one of the part's `concepts`
+# (the first one listed is the canonical id: reuse it, so the language selector lands on the
+# equivalent sheet). `covers` is the least such a sheet must answer — the checklist a new
+# catalog is written against (docs/ADDING-A-LANGUAGE.md) and the body of the stub that
+# `node scripts/new-language.mts` generates for it (templates/new-language/).
+#
+# test/aspects.test.ts fails a published catalog with a part that has neither a sheet nor a
+# waiver. A waiver names the language, the aspect, the part and the reason the topic does
+# not exist there — never "not written yet".
+#
+# `pending` lists catalogs still being brought up to this registry; it only ever shrinks.
+pending: [swift, typescript, kotlin, csharp]
+
+aspects:
+  - id: ui-layers
+    title: Main UI layers — programmatic and declarative
+    parts:
+      - id: ui-declarative
+        title: Declarative UI — Views, Layout & Composition
+        scope: platform
+        concepts: [ui.views-layout-animation]
+        covers:
+          - "the stack's main declarative UI layer (SwiftUI, React, Jetpack Compose, MAUI XAML, Blazor…): a component, its inputs and its local state"
+          - "layout containers, lists with stable identity, conditional rendering"
+          - "navigation between screens, and animation or transitions"
+          - "the performance rules that matter: what re-renders and how to keep it cheap"
+      - id: ui-programmatic
+        title: Programmatic UI — Building the Tree by Hand
+        scope: platform
+        concepts: [ui.programmatic]
+        covers:
+          - "the stack's imperative UI layer (UIKit, the DOM and jQuery, Android Views, code-behind): creating, configuring and inserting elements in code"
+          - "events and handlers, and keeping the screen in sync with the data by hand"
+          - "lists that recycle or update in place, and layout constraints in code"
+          - "the same small screen as the declarative sheet, so the two can be compared"
+
+  - id: styling
+    title: Styling and design tokens
+    parts:
+      - id: styling
+        title: Styling — Tokens, Themes & Reusable Styles
+        scope: platform
+        concepts: [ui.styling]
+        covers:
+          - "design tokens: colour, type, spacing and radius defined once and consumed everywhere"
+          - "light and dark themes, and how a component reads the current one"
+          - "reusable styles or variants (view modifiers, style props, utility classes, XAML styles)"
+          - "responsive or adaptive layout: size classes, breakpoints, dynamic type"
+
+  - id: state-management
+    title: State management
+    parts:
+      - id: state-unidirectional
+        title: Unidirectional State — Store, Actions, Reducer, Effects
+        scope: platform
+        concepts: [architecture.unidirectional-core]
+        covers:
+          - "the loop: state, action, reducer, effect — with a minimal feature end to end (TCA, Redux, Redux Toolkit, MVI…)"
+          - "side effects and cancellation, and how dependencies are injected"
+          - "deriving and selecting state without recomputing everything"
+          - "testing a reducer and an effect"
+      - id: state-mvvm
+        title: MVVM — View Models, Bindings & Observation
+        scope: platform
+        concepts: [ui.mvvm-state]
+        covers:
+          - "a standard view model: observable state, intents as methods, no UI types inside it"
+          - "binding the view to it, one-way and two-way"
+          - "async loading with loading, loaded and failed states"
+          - "testing the view model without the UI"
+
+  - id: structured-concurrency
+    title: Structured concurrency
+    parts:
+      - id: async-await
+        title: Async/Await, Structured Concurrency & Cancellation
+        scope: shared
+        concepts: [concurrency.async-await]
+        covers:
+          - "sequential versus concurrent awaits, and structured fan-out"
+          - "cancellation and timeouts"
+          - "async sequences: async streams, async iterators, channels or their equivalent"
+          - "bridging callback APIs, and where work runs (main thread, pools, the event loop)"
+
+  - id: async-flows
+    title: Async flows — publishers, observables, flows and their operators
+    parts:
+      - id: reactive-streams
+        title: Reactive Streams — Core & Operators
+        scope: platform
+        concepts: [reactive.streams-core]
+        covers:
+          - "the stack's stream type (Combine, RxSwift, RxJS, Flow, Rx.NET…): creating one, cold versus hot, subjects or state holders"
+          - "the operators that matter: map, filter, flatMap and switch-to-latest, combineLatest, zip, merge, scan, distinct"
+          - "error handling, retry and completion"
+          - "subscription lifetime and cancellation, and bridging to async/await"
+
+  - id: timers-and-scheduling
+    title: Timers, scheduling and recurring operations
+    parts:
+      - id: timers
+        title: Timers, Scheduling & Recurring Work
+        scope: platform
+        concepts: [reactive.timers-and-async]
+        covers:
+          - "a one-shot delay and a repeating timer, cancelled correctly and without drift"
+          - "timeout on an operation; polling until a condition holds"
+          - "debounce and throttle"
+          - "background or scheduled work that outlives the screen, and injecting time so tests are instant"
+
+  - id: networking
+    title: Standard networking — REST, SOAP, gRPC, GraphQL
+    parts:
+      - id: networking-rest
+        title: Networking — REST over HTTP
+        scope: platform
+        concepts: [networking.rest]
+        covers:
+          - "a typed GET and POST with the standard client: status checks, decoding, headers"
+          - "errors, timeouts, cancellation and retry with backoff"
+          - "authentication headers and token refresh; pagination"
+          - "caching and conditional requests; uploading and downloading with progress"
+      - id: networking-protocols
+        title: Networking — SOAP, gRPC & GraphQL
+        scope: platform
+        concepts: [networking.protocols]
+        covers:
+          - "SOAP: building an envelope, sending it, parsing the response and a fault"
+          - "gRPC: a unary call and a server stream from generated stubs, deadlines and status codes"
+          - "GraphQL: a query with variables, a mutation, and reading `errors` beside `data`"
+          - "a table choosing between REST, SOAP, gRPC and GraphQL"
+
+  - id: video-streaming
+    title: Video streaming — HLS, DASH and playback
+    parts:
+      - id: video-streaming
+        title: Video Streaming — HLS, DASH & Playback
+        scope: platform
+        concepts: [media.video-streaming]
+        covers:
+          - "playing an HLS stream with the platform player, and what DASH needs there"
+          - "adaptive bitrate: what the manifest holds and how the player picks a rendition"
+          - "player state, buffering, errors and recovery; live versus on-demand"
+          - "DRM and protected content at the level of which system applies; a table of protocol against platform support"
+
+  - id: security
+    title: Security, authentication and data privacy
+    parts:
+      - id: security
+        title: Security, Authentication & Privacy
+        scope: platform
+        concepts: [security.auth-and-data]
+        covers:
+          - "where secrets and tokens are stored, and where they must never be"
+          - "the standard sign-in flow: OAuth 2.0 authorization code with PKCE, tokens, refresh"
+          - "transport security, input and output handling (injection, XSS or the platform's equivalent)"
+          - "hashing and encryption with the platform's crypto API; biometrics or passkeys where the platform has them"
+          - "privacy: data minimisation, consent, what never goes to logs"
+
+  - id: accessibility
+    title: Accessibility
+    parts:
+      - id: accessibility
+        title: Accessibility Practices
+        scope: platform
+        concepts: [accessibility.practices]
+        covers:
+          - "labels, roles and values the assistive technology reads"
+          - "focus order, keyboard or switch operation, and announcements for changes"
+          - "text scaling, contrast and reduced motion"
+          - "testing with the platform's screen reader and its automated audit"
+
+  - id: localization
+    title: Localization
+    parts:
+      - id: localization
+        title: Localization & Internationalization
+        scope: platform
+        concepts: [localization.practices]
+        covers:
+          - "where strings live and how one is looked up, with interpolation"
+          - "plurals and grammatical agreement"
+          - "dates, numbers, currencies and units formatted by locale"
+          - "right-to-left layout, pseudo-localization and testing a locale"
+
+  - id: serialization
+    title: Serialization and deserialization
+    parts:
+      - id: serialization
+        title: Serialization — JSON & Friends
+        scope: shared
+        concepts: [serialization.codecs]
+        covers:
+          - "encode and decode a typed model to and from JSON with the standard codec"
+          - "key naming, optional and missing fields, defaults, unknown keys"
+          - "dates, enums, nested and polymorphic types; a custom codec"
+          - "validating untrusted input, and a binary or schema-first format where the stack has one"
+
+  - id: collections-and-strings
+    title: Collections and strings
+    parts:
+      - id: collections
+        title: Collections — Types & Costs
+        scope: shared
+        concepts: [collections.types]
+        covers:
+          - "which container to pick, and what each operation costs"
+          - "arrays or lists, sets, maps or dictionaries, queues"
+          - "value versus identity equality for keys; read-only versus immutable"
+      - id: collection-ops
+        title: Collections — Operation Cookbook
+        scope: shared
+        concepts: [collections.operations]
+        covers:
+          - "transform, filter and fold; search and test"
+          - "sort by several keys; group, index and count"
+          - "chunk, window, zip and dedupe; lazy pipelines"
+      - id: strings
+        title: Strings — Standard Operations
+        scope: shared
+        concepts: [strings.operations]
+        covers:
+          - "what a character is: code units, code points and grapheme clusters, and the length each gives"
+          - "search, split, join, trim, replace, pad; slicing safely"
+          - "comparison and sorting by locale, case folding and normalization"
+          - "building strings efficiently, formatting and interpolation, regular expressions"
+
+  - id: unit-and-integration-testing
+    title: Unit and integration testing
+    parts:
+      - id: testing
+        title: Testing — Unit & Integration
+        scope: shared
+        concepts: [testing.approaches]
+        covers:
+          - "the standard runner and assertions; a tooling matrix"
+          - "test doubles, and designing for testability by injecting the seam"
+          - "async tests and controlled time"
+          - "an integration test that crosses a real boundary (HTTP, a database, the file system) deterministically"
+
+  - id: ui-and-e2e-testing
+    title: UI and end-to-end testing
+    parts:
+      - id: ui-testing
+        title: UI & End-to-End Testing
+        scope: platform
+        concepts: [testing.ui-e2e]
+        covers:
+          - "a component or screen test that renders, interacts and asserts on what the user sees"
+          - "an end-to-end test that drives the real app (XCUITest, Playwright, Espresso, Appium…)"
+          - "selecting elements by role or accessibility identifier, never by layout"
+          - "waiting without sleeps, isolating network and state, and keeping the suite from flaking"
+
+  - id: architecture
+    title: Architectural approaches
+    parts:
+      - id: architecture
+        title: Architectural Approaches
+        scope: shared
+        concepts: [architecture.approaches]
+        covers:
+          - "the common approaches for the stack compared: data flow, where logic lives, testability"
+          - "MVVM done properly, and a layered (clean) core with a repository and a use case"
+          - "navigation or routing as its own concern"
+          - "how to answer 'which architecture would you use?'"
+
+  - id: clean-code
+    title: Clean code
+    parts:
+      - id: clean-code
+        title: Clean Code
+        scope: shared
+        concepts: [practice.clean-code]
+        covers:
+          - "naming, small functions, one level of abstraction"
+          - "arguments and flag parameters; comments that earn their place"
+          - "error handling over sentinel values; guard clauses"
+          - "a code-smell checklist, and clean tests"
+
+  - id: solid
+    title: SOLID principles
+    parts:
+      - id: solid
+        title: SOLID Principles
+        scope: shared
+        concepts: [principles.solid]
+        covers:
+          - "each of the five principles as a before and after in the language's own idiom"
+          - "the one-line version of each"
+          - "related principles an interviewer may also ask (DRY, KISS, YAGNI, composition over inheritance, Law of Demeter)"
+
+  - id: functional-programming
+    title: Functional programming capabilities
+    parts:
+      - id: fp
+        title: Functional Programming
+        scope: shared
+        concepts: [principles.functional]
+        covers:
+          - "pure functions and immutability in the language; imperative to declarative"
+          - "higher-order functions, composition, currying or partial application"
+          - "optional and result types as containers; making illegal states unrepresentable"
+          - "laziness and memoization; the trade-offs to say out loud"
+
+  - id: modularization
+    title: Modularization approaches
+    parts:
+      - id: modularization
+        title: Modularization Approaches
+        scope: shared
+        concepts: [architecture.modularization]
+        covers:
+          - "why modularize, and the unit of modularity for the stack (packages, modules, projects, workspaces)"
+          - "a feature module with a public surface and hidden internals; the enforcement mechanism"
+          - "interface modules and the composition root; avoiding cycles"
+          - "choosing a strategy, and the pitfalls"

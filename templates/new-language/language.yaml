@@ -1,0 +1,51 @@
+# A catalog scaffolded by scripts/new-language.mts from content/aspects.yaml.
+# docs/ADDING-A-LANGUAGE.md walks through what to replace; search for TODO.
+id: new-language
+name: New Language
+title: New Language Cheat Sheets
+route: /new-language/
+# draft = validated but not built. Flip to published when no TODO is left.
+status: draft
+description: "TODO: one sentence naming what the catalog covers."
+locale: en
+# The code blocks' language name. scripts/run-examples.mts needs a Runner for it before
+# requireExampleMetadata can be switched on.
+codeLanguage: new-language
+# requireExampleMetadata: true
+highlight:
+  # TODO: the language's reserved words; quote "true", "false" and "null".
+  keywords: [if, else, return]
+  lineComment: //
+  blockComment: [/*, "*/"]
+  capitalisedTypes: true
+  members: true
+applies:
+  runtime: "TODO: the runtime in words"
+sheets:
+  - nl-async-await
+  - nl-serialization
+  - nl-collections
+  - nl-collection-ops
+  - nl-strings
+  - nl-testing
+  - nl-architecture
+  - nl-clean-code
+  - nl-solid
+  - nl-fp
+  - nl-modularization
+  - nl-essentials
+  - nl-ui-declarative
+  - nl-ui-programmatic
+  - nl-styling
+  - nl-state-unidirectional
+  - nl-state-mvvm
+  - nl-reactive-streams
+  - nl-timers
+  - nl-networking-rest
+  - nl-networking-protocols
+  - nl-video-streaming
+  - nl-security
+  - nl-accessibility
+  - nl-localization
+  - nl-ui-testing
+  - nl-coverage
