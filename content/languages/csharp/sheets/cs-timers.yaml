@@ -1,0 +1,569 @@
+id: cs-timers
+concept: reactive.timers-and-async
+scope: platform
+title: "Timers, Delays & Scheduled Work"
+group: .NET
+subtitle: "Delays, PeriodicTimer, polling, timeouts, backoff, concurrency limits, debounce and throttle — cancelled with a CancellationToken and made testable with an injected TimeProvider."
+applies:
+  platforms: [dotnet]
+  runtime: .NET (System.Threading, TimeProvider)
+  versions: { csharp: ">=12", dotnet: ">=8" }
+sources:
+  - title: Timers — .NET
+    url: https://learn.microsoft.com/en-us/dotnet/standard/threading/timers
+  - title: PeriodicTimer — .NET API
+    url: https://learn.microsoft.com/en-us/dotnet/api/system.threading.periodictimer
+  - title: What is TimeProvider? — .NET
+    url: https://learn.microsoft.com/en-us/dotnet/standard/datetime/timeprovider-overview
+  - title: Cancellation in managed threads — .NET
+    url: https://learn.microsoft.com/en-us/dotnet/standard/threading/cancellation-in-managed-threads
+cards:
+  - id: which-timer
+    kind: table
+    title: Which timer — and which scheduler for work that outlives the screen
+    note: "In new code: `Task.Delay` for once, `PeriodicTimer` for repeating, a dispatcher timer only for short UI work, and the OS or a job scheduler for anything that must survive the process."
+    headers: [Tool, Callback runs on, Overlapping ticks?, Reach for it when]
+    rows:
+      - ["`Task.Delay(t, time, token)`", "wherever the `await` resumes", "n/a (one-shot)", "a one-shot delay, a backoff wait"]
+      - ["`PeriodicTimer` (.NET 6+)", "your own `async` loop: `await timer.WaitForNextTickAsync(token)`", "never: missed ticks are coalesced into one", "repeating async work in a view model or service"]
+      - ["`System.Threading.Timer`, `TimeProvider.CreateTimer`", "a thread-pool thread", "**yes**, when a callback outlasts the period", "low-level callbacks; `ITimer.Change` reschedules (a debounce)"]
+      - ["`System.Timers.Timer`", "the thread pool (or its `SynchronizingObject`)", "yes: `Elapsed` re-enters while a slow handler runs", "legacy code only"]
+      - ["`DispatcherTimer` (WPF), `DispatcherQueueTimer` (WinUI), `IDispatcherTimer` (MAUI)", "the UI thread", "no, but a slow tick freezes the UI", "a clock label, a blinking caret — short UI work"]
+      - ["`BackgroundService` + `PeriodicTimer`", "your `ExecuteAsync` loop (thread pool), for the life of the host", "no", "recurring work in a worker, server or desktop process"]
+      - ["Quartz.NET, Hangfire", "a job scheduler (Hangfire stores jobs in a database)", "configurable", "cron schedules, persisted jobs, retries, a dashboard"]
+      - ["Android `WorkManager`, iOS `BGTaskScheduler` (from MAUI)", "the OS, when it chooses", "—", "mobile work that must run after the app is suspended or killed"]
+      - ["Windows Task Scheduler, a `systemd` timer, a cloud timer trigger", "the OS or the cloud", "—", "a job that must run when your process is not running at all"]
+  - id: one-shot-delay
+    kind: code
+    title: A one-shot delay, cancelled correctly
+    note: "`Task.Delay` holds no thread while it waits, and a cancelled token ends the wait at once with `OperationCanceledException`."
+    prerequisites: &run
+      - .NET 8 SDK or later
+      - "`dotnet new console -o Demo`, replace `Demo/Program.cs` with the example, then `dotnet run --project Demo`"
+    code: |-
+      var time = TimeProvider.System;                    // tests pass a fake (see below)
+
+      // The "Saved" toast hides itself after a short delay
+      var saved = HideToastAfterAsync("Saved", TimeSpan.FromMilliseconds(50), time, CancellationToken.None);
+      Console.WriteLine(await saved);
+
+      // The user leaves the screen long before the 30 s "Undo?" toast would hide
+      using var screen = new CancellationTokenSource();
+      var undo = HideToastAfterAsync("Undo?", TimeSpan.FromSeconds(30), time, screen.Token);
+      screen.Cancel();
+      Console.WriteLine(await undo);
+
+      static async Task<string> HideToastAfterAsync(
+          string message, TimeSpan after, TimeProvider time, CancellationToken token)
+      {
+          try
+          {
+              await Task.Delay(after, time, token);      // never Thread.Sleep: it blocks a thread for the wait
+              return $"'{message}' hidden after {after.TotalMilliseconds} ms";
+          }
+          catch (OperationCanceledException)
+          {
+              return $"'{message}' cancelled: the screen is gone";
+          }
+      }
+    expected: |-
+      'Saved' hidden after 50 ms
+      'Undo?' cancelled: the screen is gone
+    validation: &ran
+      status: ran
+      toolchain: .NET SDK 9.0.304 (net9.0, C# 13)
+      date: "2026-11-16"
+  - id: repeating-timer
+    kind: compare
+    title: "A repeating job: Task.Delay loop vs PeriodicTimer"
+    note: "Both count a reservation down and print the same thing — the difference is the schedule: the Delay loop waits after the work and drifts by its cost every tick, while PeriodicTimer keeps a fixed grid and never overlaps (the Rx timing sheet's interval-without-drift card measures the drift)."
+    prerequisites: *run
+    columns:
+      - label: Task.Delay loop
+        tone: legacy
+        code: |-
+          using var leaving = new CancellationTokenSource();
+          await CountdownAsync(3, TimeSpan.FromMilliseconds(20), leaving.Token);
+
+          static async Task CountdownAsync(int from, TimeSpan every, CancellationToken token)
+          {
+              for (var remaining = from; ; remaining--)
+              {
+                  Console.WriteLine(remaining > 0 ? $"reservation expires in {remaining}" : "expired");
+                  if (remaining == 0) return;
+                  // The wait starts only after the work: interval + work time, every tick
+                  await Task.Delay(every, token);
+              }
+          }
+      - label: PeriodicTimer
+        tone: modern
+        code: |-
+          using var leaving = new CancellationTokenSource();
+          await CountdownAsync(3, TimeSpan.FromMilliseconds(20), leaving.Token);
+
+          static async Task CountdownAsync(int from, TimeSpan every, CancellationToken token)
+          {
+              using var timer = new PeriodicTimer(every);  // ticks on a fixed grid from its creation
+              var remaining = from;
+              Console.WriteLine($"reservation expires in {remaining}");
+              // One tick at a time: a slow iteration delays the next, it never runs beside it
+              while (await timer.WaitForNextTickAsync(token))
+              {
+                  remaining--;
+                  Console.WriteLine(remaining > 0 ? $"reservation expires in {remaining}" : "expired");
+                  if (remaining == 0) return;
+              }
+          }
+    expected: |-
+      reservation expires in 3
+      reservation expires in 2
+      reservation expires in 1
+      expired
+    validation: *ran
+  - id: poll-with-timeout
+    kind: code
+    title: Polling until a condition, with a timeout
+    note: "CancelAfter on a token linked to the screen cancels the work itself; WaitAsync only stops waiting for a call that ignores tokens."
+    prerequisites: *run
+    code: |-
+      var every = TimeSpan.FromMilliseconds(20);
+      var exports = new ExportApi(readyOnCheck: 3);
+
+      using var screen = new CancellationTokenSource();                  // cancelled if the user leaves
+      using var deadline = CancellationTokenSource.CreateLinkedTokenSource(screen.Token);
+      deadline.CancelAfter(TimeSpan.FromSeconds(5));                     // whichever comes first
+      Console.WriteLine(await PollUntilReadyAsync(exports, every, deadline.Token));
+
+      using var tight = new CancellationTokenSource(TimeSpan.FromMilliseconds(30));   // CancelAfter, built in
+      try { await PollUntilReadyAsync(new ExportApi(readyOnCheck: 1000), every, tight.Token); }
+      catch (OperationCanceledException) { Console.WriteLine("gave up: the export took too long"); }
+
+      try { await exports.LegacyArchiveAsync().WaitAsync(TimeSpan.FromMilliseconds(30)); }
+      catch (TimeoutException) { Console.WriteLine("archive timed out (and keeps running: it takes no token)"); }
+
+      static async Task<string> PollUntilReadyAsync(ExportApi api, TimeSpan every, CancellationToken token)
+      {
+          using var timer = new PeriodicTimer(every);
+          while (true)
+          {
+              if (await api.CheckAsync(token) is { } url) return $"ready: {url}";
+              await timer.WaitForNextTickAsync(token);               // throws when the token is cancelled
+          }
+      }
+
+      sealed class ExportApi(int readyOnCheck)
+      {
+          private int checks;
+          public Task<string?> CheckAsync(CancellationToken token) =>
+              Task.FromResult(++checks >= readyOnCheck ? $"/exports/orders.csv (check {checks})" : null);
+          public Task LegacyArchiveAsync() => Task.Delay(TimeSpan.FromSeconds(10));
+      }
+    expected: |-
+      ready: /exports/orders.csv (check 3)
+      gave up: the export took too long
+      archive timed out (and keeps running: it takes no token)
+    sources:
+      - title: Task.WaitAsync — .NET API
+        url: https://learn.microsoft.com/en-us/dotnet/api/system.threading.tasks.task.waitasync
+    validation: *ran
+  - id: retry-with-backoff
+    kind: code
+    title: Retry with exponential backoff and jitter
+    note: "Retry only what is transient (408, 429, 500, 502–504, or no response at all), double the wait each time with jitter, and give up after a fixed number of attempts."
+    prerequisites: *run
+    code: |-
+      using System.Net;
+
+      var server = new ScriptedHandler(HttpStatusCode.ServiceUnavailable, HttpStatusCode.TooManyRequests,
+          HttpStatusCode.OK);
+      using var http = new HttpClient(server) { BaseAddress = new Uri("https://api.shop.example/") };
+
+      var orders = await RetryAsync(token => http.GetStringAsync("orders", token),
+          maxAttempts: 4, baseDelay: TimeSpan.FromMilliseconds(10), TimeProvider.System, CancellationToken.None);
+      Console.WriteLine(orders);
+
+      static async Task<T> RetryAsync<T>(Func<CancellationToken, Task<T>> operation, int maxAttempts,
+          TimeSpan baseDelay, TimeProvider time, CancellationToken token)
+      {
+          for (var attempt = 1; ; attempt++)
+          {
+              try
+              {
+                  return await operation(token);
+              }
+              catch (HttpRequestException e) when (attempt < maxAttempts && IsTransient(e.StatusCode))
+              {
+                  // 10, 20, 40 ms… each ±20 %, so a thousand clients do not retry in lockstep
+                  var delay = baseDelay * Math.Pow(2, attempt - 1) * (0.8 + 0.4 * Random.Shared.NextDouble());
+                  Console.WriteLine($"attempt {attempt} got {(int?)e.StatusCode}: backing off");
+                  await Task.Delay(delay, time, token);
+              }
+          }
+      }
+
+      // 501 or 505 never succeed on a retry; null means no response arrived at all
+      static bool IsTransient(HttpStatusCode? status) => status is null
+          or HttpStatusCode.RequestTimeout or HttpStatusCode.TooManyRequests or HttpStatusCode.InternalServerError
+          or HttpStatusCode.BadGateway or HttpStatusCode.ServiceUnavailable or HttpStatusCode.GatewayTimeout;
+
+      sealed class ScriptedHandler(params HttpStatusCode[] replies) : HttpMessageHandler
+      {
+          private int calls;
+          protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
+          {
+              var body = new StringContent("[1041, 1042]");
+              return Task.FromResult(new HttpResponseMessage(replies[calls++]) { Content = body });
+          }
+      }
+    expected: |-
+      attempt 1 got 503: backing off
+      attempt 2 got 429: backing off
+      [1041, 1042]
+    sources:
+      - title: Make HTTP requests with the HttpClient class — .NET
+        url: https://learn.microsoft.com/en-us/dotnet/fundamentals/networking/http/httpclient
+    validation: *ran
+  - id: serial-parallel-limited
+    kind: code
+    title: N jobs — one at a time, or at most two in flight
+    note: "Uploading six photos: serially, with Parallel.ForEachAsync's degree of parallelism, or with a SemaphoreSlim around any shape of work (all at once with `Task.WhenAll` is on the async sheet)."
+    prerequisites: *run
+    code: |-
+      var photos = Enumerable.Range(1, 6).Select(i => $"photo-{i}.jpg").ToArray();
+      var uploader = new Uploader();
+
+      foreach (var photo in photos) await uploader.UploadAsync(photo, CancellationToken.None);
+      Console.WriteLine($"serial            peak {uploader.TakePeak()} in flight");
+
+      // On the first failure it stops taking new photos and cancels the token it passes to the others
+      var options = new ParallelOptions { MaxDegreeOfParallelism = 2 };
+      await Parallel.ForEachAsync(photos, options, uploader.UploadAsync);
+      Console.WriteLine($"ForEachAsync(2)   peak {uploader.TakePeak()} in flight");
+
+      // The same limit for any shape of work; after a failure the rest still run unless you pass a token
+      using var gate = new SemaphoreSlim(2);
+      await Task.WhenAll(photos.Select(async photo =>
+      {
+          await gate.WaitAsync();
+          try { await uploader.UploadAsync(photo, CancellationToken.None); }
+          finally { gate.Release(); }
+      }));
+      Console.WriteLine($"SemaphoreSlim(2)  peak {uploader.TakePeak()} in flight");
+
+      sealed class Uploader
+      {
+          private readonly object gate = new();
+          private int inFlight, peak;
+
+          public async ValueTask UploadAsync(string photo, CancellationToken token)
+          {
+              lock (gate) peak = Math.Max(peak, ++inFlight);
+              await Task.Delay(20, token);                       // stand-in for the upload
+              lock (gate) inFlight--;
+          }
+
+          public int TakePeak()
+          {
+              lock (gate)
+              {
+                  var result = peak;
+                  peak = 0;
+                  return result;
+              }
+          }
+      }
+    expected: |-
+      serial            peak 1 in flight
+      ForEachAsync(2)   peak 2 in flight
+      SemaphoreSlim(2)  peak 2 in flight
+    sources:
+      - title: Parallel.ForEachAsync — .NET API
+        url: https://learn.microsoft.com/en-us/dotnet/api/system.threading.tasks.parallel.foreachasync
+    validation: *ran
+  - id: debounce-autosave
+    kind: code
+    title: "Debounce without Rx: one ITimer re-armed per keystroke"
+    note: "Every keystroke pushes a single one-shot ITimer back with Change, and closing the editor flushes the pending edit instead of dropping it."
+    prerequisites: *run
+    code: |-
+      var firstSave = new SemaphoreSlim(0);
+      var quiet = TimeSpan.FromMilliseconds(50);
+      var debouncer = new DraftDebouncer(quiet, TimeProvider.System, text =>
+      {
+          Console.WriteLine($"save '{text}'");                 // hand it to the saver (next card)
+          firstSave.Release();
+      });
+
+      foreach (var text in new[] { "H", "He", "Hello" }) debouncer.TextChanged(text);   // one burst, one save
+      await firstSave.WaitAsync();
+      debouncer.TextChanged("Hello, world");
+      debouncer.Dispose();                                     // closed inside the quiet period: flushed, not lost
+
+      sealed class DraftDebouncer(TimeSpan quiet, TimeProvider time, Action<string> onQuiet) : IDisposable
+      {
+          private ITimer? timer;
+          private string? pending;                             // the newest edit not handed over yet
+
+          public void TextChanged(string text)                // called on the UI thread
+          {
+              Volatile.Write(ref pending, text);
+              var once = Timeout.InfiniteTimeSpan;             // no period: one shot, re-armed per keystroke
+              timer ??= time.CreateTimer(state => Flush(), null, once, once);   // fires on the thread pool
+              timer.Change(quiet, once);                       // every keystroke pushes the save back
+          }
+
+          public void Dispose()
+          {
+              timer?.Dispose();
+              Flush();
+          }
+
+          private void Flush()                                 // the timer and Dispose can race: Exchange picks one
+          {
+              if (Interlocked.Exchange(ref pending, null) is { } text) onQuiet(text);
+          }
+      }
+    expected: |-
+      save 'Hello'
+      save 'Hello, world'
+    validation: *ran
+  - id: autosave-saver
+    kind: code
+    title: "An autosave that never loses or reorders a draft"
+    note: "Saves run one at a time so an older draft never lands last, and a failed save puts its draft back so the next tick or the close flush retries it."
+    prerequisites: *run
+    code: |-
+      var attempts = 0;
+      async Task UploadDraftAsync(string text)                 // 150 ms; the first attempt fails
+      {
+          Console.WriteLine($"uploading '{text}'");
+          await Task.Delay(150);
+          if (++attempts == 1) throw new HttpRequestException("network down");
+          Console.WriteLine($"stored '{text}'");
+      }
+
+      var saver = new DraftSaver(UploadDraftAsync);
+      saver.Changed("Hello");
+      var debounced = saver.SaveLatestAsync();                 // the debounce fired: the upload starts…
+      var onClose = saver.SaveLatestAsync();                   // …and the user closes while it runs: this waits
+      await Task.WhenAll(debounced, onClose);
+
+      sealed class DraftSaver(Func<string, Task> save)
+      {
+          private readonly SemaphoreSlim oneAtATime = new(1, 1);
+          private string? unsaved;                             // the newest edit not saved yet
+
+          public void Changed(string text) => Volatile.Write(ref unsaved, text);
+
+          public async Task SaveLatestAsync()
+          {
+              await oneAtATime.WaitAsync();                    // one save at a time: an older one never lands last
+              try
+              {
+                  if (Interlocked.Exchange(ref unsaved, null) is not { } draft) return;
+                  try
+                  {
+                      await save(draft);
+                  }
+                  catch (Exception e)                          // put it back, unless a newer edit arrived meanwhile
+                  {
+                      Interlocked.CompareExchange(ref unsaved, draft, null);
+                      Console.WriteLine($"autosave failed: {e.Message}");
+                  }
+              }
+              finally
+              {
+                  oneAtATime.Release();
+              }
+          }
+      }
+    expected: |-
+      uploading 'Hello'
+      autosave failed: network down
+      uploading 'Hello'
+      stored 'Hello'
+    validation: *ran
+  - id: throttle-refresh
+    kind: code
+    title: "A leading-edge throttle: pull-to-refresh at most every two seconds"
+    note: "The first call in a window runs and the rest are dropped, measured with the monotonic `GetTimestamp` of an injected TimeProvider so a tiny fake clock tests it."
+    prerequisites: *run
+    code: |-
+      using System.Globalization;
+
+      CultureInfo.CurrentCulture = CultureInfo.InvariantCulture;
+      var clock = new ManualClock();
+      var refresh = new RefreshThrottle(TimeSpan.FromSeconds(2), clock);
+
+      foreach (var second in new[] { 0.0, 0.5, 1.9, 2.0, 3.0, 4.5 })   // when the user pulls to refresh
+      {
+          clock.Seconds = second;
+          Console.WriteLine($"{second:0.0} s: {(refresh.TryEnter() ? "refresh" : "skipped")}");
+      }
+
+      sealed class RefreshThrottle(TimeSpan window, TimeProvider time)
+      {
+          private long? lastAccepted;
+
+          public bool TryEnter()                                    // UI thread only; lock it otherwise
+          {
+              var now = time.GetTimestamp();                        // monotonic, unlike DateTime.Now
+              if (lastAccepted is { } last && time.GetElapsedTime(last, now) < window) return false;
+              lastAccepted = now;
+              return true;
+          }
+      }
+
+      sealed class ManualClock : TimeProvider                       // only the timestamp is faked here
+      {
+          public double Seconds { get; set; }
+          public override long GetTimestamp() => (long)(Seconds * TimestampFrequency);
+          public override long TimestampFrequency => TimeSpan.TicksPerSecond;
+      }
+    expected: |-
+      0.0 s: refresh
+      0.5 s: skipped
+      1.9 s: skipped
+      2.0 s: refresh
+      3.0 s: skipped
+      4.5 s: refresh
+    validation: *ran
+  - id: inject-time-provider
+    kind: code
+    title: Inject TimeProvider — fifteen minutes of timer in no time
+    note: "Every timer API here takes a TimeProvider, so a test passes a fake that fires timers only when told — this one fakes the clock and one timer slot on one thread but leaves `GetTimestamp` (and so `GetElapsedTime`) on the real clock, and `FakeTimeProvider` (Microsoft.Extensions.TimeProvider.Testing) is the general version."
+    prerequisites: *run
+    code: |-
+      var time = new ManualTimeProvider();
+      using var everyFiveMinutes = new PeriodicTimer(TimeSpan.FromMinutes(5), time);   // takes the fake
+
+      time.Advance(TimeSpan.FromMinutes(15));       // three ticks fall due; PeriodicTimer keeps one; ':' is quoted
+      Console.WriteLine($"ticked {await everyFiveMinutes.WaitForNextTickAsync()} at {time.GetUtcNow():HH':'mm}");
+
+      sealed class ManualTimeProvider : TimeProvider, ITimer      // one timer slot, one thread: a test fake
+      {
+          private DateTimeOffset now = new(2026, 11, 16, 9, 0, 0, TimeSpan.Zero), next = DateTimeOffset.MaxValue;
+          private TimeSpan period;
+          private Action? tick;                                    // null once disposed
+
+          public override DateTimeOffset GetUtcNow() => now;
+
+          public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan due, TimeSpan period)
+          {
+              tick = () => callback(state);
+              Change(due, period);
+              return this;                                         // the fake is its own (only) timer
+          }
+
+          public void Advance(TimeSpan by)                         // fire the timer each time it falls due
+          {
+              var end = now + by;
+              while (tick is not null && next <= end)
+              {
+                  now = next;
+                  next = period > TimeSpan.Zero ? next + period : DateTimeOffset.MaxValue;
+                  tick();
+              }
+              now = end;
+          }
+
+          public bool Change(TimeSpan due, TimeSpan newPeriod)
+          {
+              next = due == Timeout.InfiniteTimeSpan ? DateTimeOffset.MaxValue : now + due;
+              period = newPeriod;
+              return tick is not null;                             // false once disposed, like a real timer
+          }
+
+          public void Dispose() => tick = null;
+
+          public ValueTask DisposeAsync()
+          {
+              Dispose();
+              return ValueTask.CompletedTask;
+          }
+      }
+    expected: |-
+      ticked True at 09:15
+    validation: *ran
+  - id: background-service
+    kind: code
+    title: Recurring work that outlives a screen — BackgroundService
+    note: "A hosted service runs for the life of the process, not of a page, and the host cancels `stoppingToken` on shutdown — so that is the only cancellation allowed to end the loop."
+    prerequisites:
+      - "A .NET Worker Service project: `dotnet new worker -o OrderSync` (it references `Microsoft.Extensions.Hosting`)"
+      - "Two files: `OrderSyncWorker.cs` (replacing the template's `Worker.cs`) and `Program.cs`, plus your own `OrderSync : IOrderSync`; then `dotnet run --project OrderSync`"
+    code: |-
+      // OrderSyncWorker.cs
+      using Microsoft.Extensions.Hosting;
+      using Microsoft.Extensions.Logging;
+
+      public interface IOrderSync
+      {
+          Task PushPendingOrdersAsync(CancellationToken token);
+      }
+
+      public sealed class OrderSyncWorker(IOrderSync sync, TimeProvider time, ILogger<OrderSyncWorker> logger)
+          : BackgroundService
+      {
+          protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+          {
+              await Task.Yield();                             // hand back at once: start-up never waits on a sync
+              using var timer = new PeriodicTimer(TimeSpan.FromMinutes(5), time);
+              do
+              {
+                  try
+                  {
+                      await sync.PushPendingOrdersAsync(stoppingToken);
+                  }
+                  catch (Exception e) when (!stoppingToken.IsCancellationRequested)
+                  {
+                      // Anything but shutdown is logged, including an HttpClient timeout (a TaskCanceledException);
+                      // an exception that escapes ExecuteAsync stops the whole host (the default since .NET 6)
+                      logger.LogError(e, "Order sync failed; trying again on the next tick");
+                  }
+              }
+              while (await timer.WaitForNextTickAsync(stoppingToken));
+          }
+      }
+
+      // Program.cs
+      var builder = Host.CreateApplicationBuilder(args);
+      builder.Services.AddSingleton(TimeProvider.System);     // tests register a fake instead
+      builder.Services.AddSingleton<IOrderSync, OrderSync>();
+      builder.Services.AddHostedService<OrderSyncWorker>();
+      await builder.Build().RunAsync();
+    expected: "Pushes pending orders at start-up and every five minutes until the process stops; a failed push, an HttpClient timeout included, is logged and retried on the next tick, and Ctrl+C or SIGTERM stops it cleanly."
+    applies:
+      requires: [Microsoft.Extensions.Hosting]
+      versions: { csharp: ">=12", dotnet: ">=8", microsoft-extensions-hosting: ">=8.0" }
+    sources:
+      - title: Worker services in .NET
+        url: https://learn.microsoft.com/en-us/dotnet/core/extensions/workers
+      - title: Background tasks with hosted services in ASP.NET Core
+        url: https://learn.microsoft.com/en-us/aspnet/core/fundamentals/host/hosted-services
+    validation:
+      status: excerpt
+      host: a .NET Worker Service project (`Microsoft.Extensions.Hosting`), with your own `OrderSync` class
+  - id: timer-pitfalls
+    kind: rules
+    title: Pitfalls
+    note: Timer bugs are lifetime and thread bugs far more often than timing bugs.
+    items:
+      - tone: bad
+        text: "`async void` timer callbacks (`timer.Elapsed += async (_, _) => …`): exceptions crash the process and ticks overlap. Use a `PeriodicTimer` loop you `await`."
+      - tone: bad
+        text: "A `System.Threading.Timer` that nothing references can be garbage-collected and silently stop. Keep it in a field and dispose it."
+      - tone: bad
+        text: "The opposite leak: a timer callback that captures a view model keeps the closed screen alive. Dispose the timer (or cancel the loop) when the screen goes away."
+      - tone: bad
+        text: "Touching UI from a thread-pool timer callback: WPF and WinUI throw, and Android and iOS views under MAUI fail too. Use the dispatcher timer, or marshal with `Dispatcher.Dispatch` (MAUI), `DispatcherQueue.TryEnqueue` (WinUI) or `Dispatcher.InvokeAsync` (WPF)."
+      - tone: bad
+        text: "`DateTime.Now` differences for elapsed time: the wall clock jumps (NTP, daylight saving). Use `TimeProvider.GetTimestamp()` with `GetElapsedTime`, or a `Stopwatch`."
+      - tone: bad
+        text: "Real sleeps in tests: inject `TimeProvider` everywhere (`Task.Delay`, `PeriodicTimer`, `CancellationTokenSource`, `WaitAsync` all accept one)."
+      - tone: good
+        text: "Honour `Retry-After` on 429/503, cap the backoff, and in production prefer a policy library (`Microsoft.Extensions.Http.Resilience`, Polly) over a hand-rolled loop."
+      - tone: good
+        text: "Pass the token to the work, not only to the wait: `CancelAfter` stops the request; `WaitAsync` merely abandons it."
+      - tone: neutral
+        text: "`PeriodicTimer` allows one waiter at a time, and its `Period` can be changed while it runs (.NET 8+) — handy for backing a poll off."

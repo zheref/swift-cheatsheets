@@ -202,7 +202,8 @@ cards:
       const latinKey = (text: string) =>
         text.normalize("NFD").replace(/[\u0300-\u036f]/g, "").normalize("NFC").toLowerCase();
       console.log(latinKey("Crème Brûlée"), latinKey("Zoë") === latinKey("ZOE"));
-      console.log(latinKey("コーヒー"), latinKey("がっこう"), latinKey("C^2"));   // non-Latin text survives intact
+      console.log(latinKey("コーヒー"), latinKey("がっこう"), latinKey("C^2"));   // kana and ASCII survive intact
+      // Latin text only: Cyrillic й and Greek ά decompose into this range too, and would lose their marks.
       // letters without a decomposition (đ, ø, ł, ß) stay as they are: "Đà Nẵng" keys to "đa nang", not "da nang".
       // A base-sensitivity collator matches them: new Intl.Collator(locale, { sensitivity: "base" })
     expected: |-

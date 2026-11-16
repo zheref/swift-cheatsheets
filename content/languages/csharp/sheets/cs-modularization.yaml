@@ -1,0 +1,433 @@
+id: cs-modularization
+concept: architecture.modularization
+scope: platform
+title: "Modularization — Projects, Assemblies & NuGet"
+group: .NET
+subtitle: "Class-library projects and ProjectReference, `internal`, InternalsVisibleTo and `file` types, contracts projects and the composition root, Directory.Build.props and central package management, packaging for NuGet, architecture tests, trimming and AOT."
+applies:
+  platforms: [dotnet]
+  runtime: .NET SDK (MSBuild, NuGet); the same projects back .NET MAUI, WPF, WinUI, Blazor and ASP.NET Core apps
+  versions: { csharp: ">=12", dotnet: ">=8" }
+sources:
+  - title: MSBuild reference for .NET SDK projects
+    url: https://learn.microsoft.com/en-us/dotnet/core/project-sdk/msbuild-props
+  - title: Central Package Management — NuGet
+    url: https://learn.microsoft.com/en-us/nuget/consume-packages/central-package-management
+  - title: Customize your build by folder — MSBuild
+    url: https://learn.microsoft.com/en-us/visualstudio/msbuild/customize-by-directory
+  - title: Friend assemblies — .NET
+    url: https://learn.microsoft.com/en-us/dotnet/standard/assembly/friend
+cards:
+  - id: units-of-modularity
+    kind: table
+    title: The units of modularity in .NET
+    note: The project — one assembly — is the unit the compiler enforces; everything smaller is convention, everything larger is distribution.
+    headers: [Unit, Boundary it gives you, Reach for it when]
+    rows:
+      - ["feature folder + namespace", "none enforced — only naming", "a small app or service; start here"]
+      - ["`file` type (C# 11)", "visible only inside one source file", "a helper that must not leak even inside its assembly, such as a generator's output"]
+      - ["project (`.csproj` → one `.dll`)", "`internal` is invisible outside it; references are explicit and acyclic", "a feature, a layer or an adapter that deserves its own public surface"]
+      - ["solution (`.sln` / `.slnx`)", "none — a list of projects to build and open together", "one repository's apps, libraries and tests"]
+      - ["NuGet package", "versioned with SemVer; consumers upgrade on their own schedule", "code shared across repositories or teams"]
+  - id: why-modularize
+    kind: rules
+    title: Why modularize at all
+    note: Have concrete reasons ready; "cleanliness" is not one.
+    items:
+      - tone: good
+        text: "**Enforced boundaries** — `internal` and the reference graph make a forbidden dependency a compile error instead of a review comment."
+      - tone: good
+        text: "**Incremental builds** — MSBuild rebuilds only projects whose inputs changed, and a project whose public API did not change does not force its dependents to recompile (reference assemblies)."
+      - tone: good
+        text: "**Parallel teams and ownership** — a project per feature gives each team a surface to own, review and version."
+      - tone: good
+        text: "**Reuse across apps** — the same `Shop.Checkout` library serves the MAUI app, the WPF back-office and the ASP.NET Core API."
+      - tone: good
+        text: "**Faster, focused tests** — a test project references one library and its fakes, not the whole app."
+      - tone: neutral
+        text: "**The cost is real** — every project adds build-graph overhead, restore time and a `.csproj` to maintain; the answer is a few meaningful projects, not one per folder."
+  - id: solution-of-projects
+    kind: code
+    title: "A solution of class libraries with ProjectReference"
+    note: "Each feature is a class library with an explicit reference list; the app project is the only one that references everything."
+    prerequisites:
+      - .NET 8 SDK or later
+      - "`dotnet new sln -n Shop`, `dotnet new classlib -o src/Shop.Checkout`, `dotnet sln add src/Shop.Checkout`"
+      - "`dotnet add src/Shop.Checkout reference src/Shop.Payments.Abstractions`"
+    code: |-
+      Shop.sln
+      Directory.Build.props                 ← shared build settings (see the Directory.Build.props card)
+      Directory.Packages.props              ← one version per NuGet package
+      src/
+        Shop.App/                           ← MAUI, WPF or ASP.NET Core: the composition root
+        Shop.Checkout/                      ← a feature: public surface + internals
+        Shop.Payments.Abstractions/         ← contracts only: interfaces and records
+        Shop.Payments.Card/                 ← an adapter implementing the contracts
+      tests/
+        Shop.Checkout.Tests/
+
+      <!-- src/Shop.Checkout/Shop.Checkout.csproj -->
+      <Project Sdk="Microsoft.NET.Sdk">
+        <PropertyGroup>
+          <TargetFramework>net9.0</TargetFramework>
+          <RootNamespace>Shop.Checkout</RootNamespace>
+        </PropertyGroup>
+        <ItemGroup>
+          <!-- depends on the contract, never on Shop.Payments.Card -->
+          <ProjectReference Include="..\Shop.Payments.Abstractions\Shop.Payments.Abstractions.csproj" />
+        </ItemGroup>
+        <ItemGroup>
+          <!-- generates [assembly: InternalsVisibleTo("Shop.Checkout.Tests")] -->
+          <InternalsVisibleTo Include="Shop.Checkout.Tests" />
+        </ItemGroup>
+      </Project>
+    expected: "`dotnet build Shop.sln` builds the projects in dependency order; a `ProjectReference` that would close a cycle fails the build."
+    validation:
+      status: excerpt
+      host: a multi-project .NET solution
+  - id: internal-and-file-types
+    kind: code
+    title: "`internal` and `file` types: the enforcement mechanism"
+    note: "A project exposes a small `public` surface; `internal` hides the rest from other projects, and `file` hides a helper from the rest of its own project."
+    prerequisites: &run
+      - .NET 8 SDK or later
+      - "`dotnet new console -o Demo`, replace `Demo/Program.cs` with the example, then `dotnet run --project Demo`"
+      - "In a real solution the `Shop.Orders` namespace is its own class-library project"
+    code: |-
+      using Shop.Orders;
+
+      var checkout = OrdersModule.CreateCheckout();          // the public surface
+      Console.WriteLine(checkout.Place("ada"));
+      Console.WriteLine(checkout.Place("grace"));
+      // From another project:  new OrderNumbers()  → error CS0122: inaccessible due to its protection level
+      // From another file:     OrderNumberFormat   → error CS0103: the name does not exist in the current context
+
+      namespace Shop.Orders
+      {
+          public interface ICheckout
+          {
+              string Place(string customer);
+          }
+
+          public static class OrdersModule
+          {
+              public static ICheckout CreateCheckout() => new Checkout(new OrderNumbers());
+          }
+
+          internal sealed class Checkout(OrderNumbers numbers) : ICheckout
+          {
+              public string Place(string customer) => $"{numbers.Next()} placed for {customer}";
+          }
+
+          internal sealed class OrderNumbers                 // tests reach it through InternalsVisibleTo
+          {
+              private int last;
+              public string Next() => OrderNumberFormat.Format(++last);
+          }
+
+          file static class OrderNumberFormat                // only this file can name it
+          {
+              public static string Format(int sequence) => $"A-{sequence:0000}";
+          }
+      }
+    expected: |-
+      A-0001 placed for ada
+      A-0002 placed for grace
+    sources:
+      - title: file — C# reference
+        url: https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/keywords/file
+      - title: Access modifiers — C# programming guide
+        url: https://learn.microsoft.com/en-us/dotnet/csharp/programming-guide/classes-and-structs/access-modifiers
+    validation: &ran
+      status: ran
+      toolchain: .NET SDK 9.0.304 (net9.0, C# 13)
+      date: "2026-11-16"
+  - id: contracts-and-composition-root
+    kind: code
+    title: "A contracts project and the composition root"
+    note: "Features depend on an abstractions project, adapters implement it, and each project offers one `Add…` extension so the app's composition root wires modules without knowing their internals."
+    prerequisites:
+      - .NET 8 SDK or later
+      - "`dotnet new console -o Demo`, then `dotnet add Demo package Microsoft.Extensions.DependencyInjection`"
+      - "Replace `Demo/Program.cs` with the example, then `dotnet run --project Demo` — each namespace stands for one project"
+    code: |-
+      using Microsoft.Extensions.DependencyInjection;
+      using Shop.Checkout;
+      using Shop.Payments.Card;
+
+      // Shop.App — the only project that references every module
+      var services = new ServiceCollection().AddCheckout().AddCardPayments();
+      using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateOnBuild = true });
+      Console.WriteLine(provider.GetRequiredService<ICheckout>().Pay("A-1"));
+
+      namespace Shop.Payments.Abstractions                    // references nothing
+      {
+          public interface IPaymentGateway { string Charge(string orderId); }
+      }
+
+      namespace Shop.Checkout                                 // references Abstractions only
+      {
+          using Shop.Payments.Abstractions;
+
+          public interface ICheckout { string Pay(string orderId); }
+
+          internal sealed class Checkout(IPaymentGateway gateway) : ICheckout
+          {
+              public string Pay(string orderId) => $"{orderId} paid: {gateway.Charge(orderId)}";
+          }
+
+          public static class CheckoutModule
+          {
+              public static IServiceCollection AddCheckout(this IServiceCollection services) =>
+                  services.AddTransient<ICheckout, Checkout>();
+          }
+      }
+
+      namespace Shop.Payments.Card                            // references Abstractions only
+      {
+          using Shop.Payments.Abstractions;
+
+          internal sealed class CardGateway : IPaymentGateway
+          {
+              public string Charge(string orderId) => $"card charged for {orderId}";
+          }
+
+          public static class CardPaymentsModule
+          {
+              public static IServiceCollection AddCardPayments(this IServiceCollection services) =>
+                  services.AddSingleton<IPaymentGateway, CardGateway>();
+          }
+      }
+    expected: |-
+      A-1 paid: card charged for A-1
+    applies:
+      requires: [Microsoft.Extensions.DependencyInjection]
+      versions: { csharp: ">=12", dotnet: ">=8", microsoft-extensions-dependencyinjection: ">=8.0" }
+    validation:
+      status: ran
+      toolchain: .NET SDK 9.0.304 (net9.0, C# 13), Microsoft.Extensions.DependencyInjection 10.0.15
+      date: "2026-11-16"
+  - id: build-props-and-central-packages
+    kind: code
+    title: "Directory.Build.props: shared settings, and a test-project override"
+    note: "Settings every project shares live in one root `Directory.Build.props`; a nested one for `tests/` imports it and relaxes only what tests need, such as CA1707 for underscore test names."
+    prerequisites:
+      - .NET 8 SDK or later
+      - "`dotnet new buildprops` creates the file; MSBuild imports only the nearest one above each project"
+    code: |-
+      <!-- Directory.Build.props at the root — imported into every project in this folder and below -->
+      <Project>
+        <PropertyGroup>
+          <Nullable>enable</Nullable>
+          <ImplicitUsings>enable</ImplicitUsings>
+          <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+          <AnalysisLevel>latest-recommended</AnalysisLevel>
+          <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
+          <!-- Each project sees only its direct references. The cost: a project must then also reference every
+               project whose types it uses, including types in a referenced project's public API (else CS0012). -->
+          <DisableTransitiveProjectReferences>true</DisableTransitiveProjectReferences>
+        </PropertyGroup>
+      </Project>
+
+      <!-- tests/Directory.Build.props — only the nearest file is imported, so pull in the root one first -->
+      <Project>
+        <Import Project="../Directory.Build.props" />                 <!-- relative to this file -->
+        <PropertyGroup>
+          <IsPackable>false</IsPackable>
+          <!-- Test names like Rejects_an_expired_order read as sentences; CA1707 forbids underscores -->
+          <NoWarn>$(NoWarn);CA1707</NoWarn>
+        </PropertyGroup>
+      </Project>
+    expected: "The whole solution builds with `latest-recommended` analyzers as errors, and the tests build too — without the `tests/` file, `Rejects_an_expired_order` fails with `error CA1707: Remove the underscores from member name`."
+    sources:
+      - title: Customize your build by folder — MSBuild
+        url: https://learn.microsoft.com/en-us/visualstudio/msbuild/customize-by-directory
+    validation:
+      status: excerpt
+      host: a multi-project .NET solution
+  - id: central-package-management
+    kind: code
+    title: "Central package management and PrivateAssets"
+    note: "One `Directory.Packages.props` holds every package version, test packages included, and projects list package names only; build-time packages are marked `PrivateAssets=\"all\"`."
+    prerequisites:
+      - .NET 8 SDK or later (central package management needs NuGet 6.2 or later)
+      - "`dotnet new packagesprops` at the repository root creates the file"
+    code: |-
+      <!-- Directory.Packages.props — one version of each package for the whole repository -->
+      <Project>
+        <PropertyGroup>
+          <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
+          <CentralPackageTransitivePinningEnabled>true</CentralPackageTransitivePinningEnabled>
+        </PropertyGroup>
+        <ItemGroup>
+          <PackageVersion Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="9.0.0" />
+          <PackageVersion Include="Roslynator.Analyzers" Version="4.12.9" />
+          <!-- every package a test project references needs its version here too -->
+          <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="17.12.0" />
+          <PackageVersion Include="xunit" Version="2.9.2" />
+          <PackageVersion Include="xunit.runner.visualstudio" Version="2.8.2" />
+        </ItemGroup>
+      </Project>
+
+      <!-- src/Shop.Checkout/Shop.Checkout.csproj — names only; VersionOverride="…" is the escape hatch -->
+      <ItemGroup>
+        <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" />
+        <!-- an analyzer runs at build time only: PrivateAssets="all" keeps it out of consumers and the .nupkg -->
+        <PackageReference Include="Roslynator.Analyzers" PrivateAssets="all" />
+      </ItemGroup>
+    expected: "Every project restores the same versions; a `Version` attribute left on a `PackageReference` fails restore with NU1008, and `Shop.Checkout.nuspec` lists `Microsoft.Extensions.DependencyInjection.Abstractions` but not the analyzer."
+    sources:
+      - title: Central Package Management — NuGet
+        url: https://learn.microsoft.com/en-us/nuget/consume-packages/central-package-management
+      - title: Controlling dependency assets — NuGet PackageReference
+        url: https://learn.microsoft.com/en-us/nuget/consume-packages/package-references-in-project-files
+    validation:
+      status: excerpt
+      host: a multi-project .NET solution
+  - id: nuget-package
+    kind: code
+    title: "Packaging a library as NuGet: versions, multi-targeting, AOT"
+    note: "Pack a library when another repository needs it: SemVer the public API, multi-target the frameworks your consumers run, validate against the last release, and declare it trim- and AOT-safe."
+    prerequisites:
+      - .NET 8 SDK or later
+      - "`dotnet pack src/Shop.Money -c Release` writes `Shop.Money.2.1.0.nupkg` and a `.snupkg` symbols package"
+    code: |-
+      <Project Sdk="Microsoft.NET.Sdk">
+        <PropertyGroup>
+          <TargetFrameworks>netstandard2.0;net8.0;net9.0</TargetFrameworks>
+          <!-- netstandard2.0 would default to C# 7.3; records, init and required also need polyfills there -->
+          <LangVersion>latest</LangVersion>
+          <PackageId>Shop.Money</PackageId>
+          <Version>2.1.0</Version>                          <!-- MAJOR breaks, MINOR adds, PATCH fixes -->
+          <Description>Money and currency types shared by the shop's apps and services.</Description>
+          <PackageLicenseExpression>MIT</PackageLicenseExpression>
+          <PackageReadmeFile>README.md</PackageReadmeFile>
+          <GenerateDocumentationFile>true</GenerateDocumentationFile>
+          <IncludeSymbols>true</IncludeSymbols>
+          <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+          <!-- fails the pack if 2.1.0 breaks the public API of 2.0.0 -->
+          <EnablePackageValidation>true</EnablePackageValidation>
+          <PackageValidationBaselineVersion>2.0.0</PackageValidationBaselineVersion>
+          <!-- turns on the trim, single-file and AOT analyzers; they need net8.0 or later -->
+          <IsAotCompatible Condition="$([MSBuild]::IsTargetFrameworkCompatible('$(TargetFramework)', 'net8.0'))"
+              >true</IsAotCompatible>
+        </PropertyGroup>
+        <ItemGroup>
+          <None Include="README.md" Pack="true" PackagePath="\" />
+        </ItemGroup>
+      </Project>
+
+      // Money.cs — every API exists on every target; the span overload is added where the framework has Span
+      using System;                                     // explicit: the project may not enable ImplicitUsings
+      using System.Globalization;
+
+      namespace Shop.Money;
+
+      /// <summary>Formats amounts held as whole cents.</summary>
+      public static class MoneyFormat
+      {
+          /// <summary>Formats <paramref name="cents"/> as an amount such as <c>42.50</c>.</summary>
+          public static string FormatCents(long cents) =>
+              (cents / 100m).ToString("0.00", CultureInfo.InvariantCulture);
+
+      #if NET8_0_OR_GREATER
+          /// <summary>Formats into <paramref name="destination"/> without allocating a string.</summary>
+          public static bool TryFormatCents(long cents, Span<char> destination, out int written) =>
+              (cents / 100m).TryFormat(destination, out written, "0.00", CultureInfo.InvariantCulture);
+      #endif
+      }
+    expected: "`dotnet pack` produces one package with a `lib/` folder per target framework; consumers on .NET 8+ also get the span-based overload and an AOT-analysed build, everyone else the `netstandard2.0` build, and package validation fails the pack if an API disappears between versions or targets."
+    sources:
+      - title: Native AOT deployment — AOT-compatibility analyzers
+        url: https://learn.microsoft.com/en-us/dotnet/core/deploying/native-aot/
+      - title: Package validation — .NET
+        url: https://learn.microsoft.com/en-us/dotnet/fundamentals/apicompat/package-validation/overview
+    validation:
+      status: excerpt
+      host: a .NET class-library project packed with `dotnet pack`
+  - id: architecture-tests
+    kind: code
+    title: "Architecture tests: a red test when a dependency points outward"
+    note: "When layers share one assembly nothing stops `Domain` from using `Infrastructure`; NetArchTest reads the IL, so even a `new` inside a method body fails the test (reflection over signatures cannot see method bodies)."
+    prerequisites:
+      - .NET 8 SDK or later
+      - "`dotnet new xunit -o Shop.ArchitectureTests`, then `dotnet add Shop.ArchitectureTests package NetArchTest.Rules` and a reference to the project under test"
+      - "Add the file and run `dotnet test Shop.ArchitectureTests`"
+    code: |-
+      using NetArchTest.Rules;
+      using Xunit;
+
+      namespace Shop.ArchitectureTests;
+
+      public class LayeringTests
+      {
+          // NetArchTest reads the compiled IL (with Mono.Cecil): it sees `new` and calls inside method bodies,
+          // generic arguments and base types, which reflection over signatures misses.
+          private static readonly Types ShopTypes = Types.InAssembly(typeof(Shop.Domain.Order).Assembly);
+
+          [Fact]
+          public void Domain_does_not_depend_on_infrastructure()
+          {
+              var result = ShopTypes
+                  .That().ResideInNamespace("Shop.Domain")
+                  .ShouldNot().HaveDependencyOn("Shop.Infrastructure")
+                  .GetResult();
+
+              Assert.True(result.IsSuccessful, $"Domain types using Infrastructure: {Names(result)}");
+          }
+
+          [Fact]
+          public void Infrastructure_types_are_sealed()
+          {
+              var result = ShopTypes
+                  .That().ResideInNamespace("Shop.Infrastructure")
+                  .Should().BeSealed()
+                  .GetResult();
+
+              Assert.True(result.IsSuccessful, $"Not sealed: {Names(result)}");
+          }
+
+          private static string Names(TestResult result) => string.Join(", ", result.FailingTypeNames ?? []);
+      }
+    expected: "With `PricingService.PriceOf` doing `new Shop.Infrastructure.SqlPriceTable()`, the first test fails with `Domain types using Infrastructure: Shop.Domain.PricingService`; injecting an `IPriceTable` port makes both pass."
+    applies:
+      requires: [xUnit, NetArchTest.Rules]
+      versions: { csharp: ">=12", dotnet: ">=8", netarchtest-rules: ">=1.3" }
+    sources:
+      - title: NetArchTest — GitHub
+        url: https://github.com/BenMorris/NetArchTest
+    validation:
+      status: excerpt
+      host: an xUnit test project referencing NetArchTest.Rules
+  - id: choosing-a-strategy
+    kind: table
+    title: Choosing a strategy
+    note: "Start with folders in one project; promote a folder to a project when one of these reasons appears, and to a package only when another repository needs it."
+    headers: [Situation, Strategy, Why]
+    rows:
+      - ["one small app or service, one team", "feature folders in one project", "no build-graph cost; vertical slices still read cleanly"]
+      - ["a boundary keeps being crossed in review", "promote the feature to a project; make its internals `internal`", "the compiler enforces what reviews could not"]
+      - ["two apps (MAUI and WPF, or app and API) share logic", "a shared class library per feature, referenced by both", "one implementation, two hosts"]
+      - ["a feature needs a vendor SDK (payments, maps)", "an `*.Abstractions` project plus one adapter project", "the SDK stays out of every other project and every test"]
+      - ["layers in one assembly", "architecture tests in CI (NetArchTest, ArchUnitNET)", "cheaper than projects, still a red build on violation; separate projects remain the stronger guarantee"]
+      - ["code shared across repositories", "a NuGet package with SemVer and package validation", "consumers upgrade deliberately"]
+      - ["a trimmed or Native AOT app", "`IsAotCompatible` on every library it references", "reflection and dynamic loading surface as build warnings, not run-time crashes"]
+  - id: pitfalls
+    kind: rules
+    title: Pitfalls
+    note: Most module graphs fail in one of these ways.
+    items:
+      - tone: bad
+        text: "**Cycles** — MSBuild refuses a `ProjectReference` cycle, so teams \"fix\" it by merging projects or adding a `Common`; extract the shared contract into an `*.Abstractions` project instead."
+      - tone: bad
+        text: "**The god `Common` / `Shared` / `Utils` project** — everything references it, so every change rebuilds everything; split it by what it is about (`Shop.Money`, `Shop.Time`)."
+      - tone: bad
+        text: "**Too many tiny projects** — a project per folder slows restore, build and the IDE; a project has to earn its place with a boundary, a reuse or a team."
+      - tone: bad
+        text: "**`InternalsVisibleTo` to production assemblies** — it is for test projects; a second consumer of internals means they are really a public API."
+      - tone: bad
+        text: "**Transitive leakage** — without `DisableTransitiveProjectReferences`, the app can use `Domain` types through `Infrastructure` without ever referencing `Domain`; the graph you see is not the one you get."
+      - tone: bad
+        text: "**Reflection-driven modules under trimming or AOT** — `Assembly.Load` plugins and assembly scanning for DI registration break; prefer explicit `Add…Module()` extension methods."
+      - tone: good
+        text: "**Dependencies point one way** — app → features → abstractions → nothing; adapters point at abstractions; tests point at what they test."

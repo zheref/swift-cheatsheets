@@ -1,0 +1,722 @@
+id: cs-security
+concept: security.auth-and-data
+scope: platform
+title: "Security, Authentication & Privacy"
+group: "Quality & reach"
+subtitle: "Where each secret lives, OAuth 2.0 with PKCE, what validating a JWT really checks, AES-GCM, HMAC and PBKDF2 with System.Security.Cryptography, injection and XSS in SQL and Razor, certificate pinning, and logs without secrets — for MAUI, WPF, WinUI and Blazor."
+applies:
+  platforms: [dotnet]
+  runtime: .NET (System.Security.Cryptography, System.Net.Http); sign-in and storage cards need their app host
+  versions: { csharp: ">=12", dotnet: ">=9" }
+sources:
+  - title: Cryptographic services — .NET
+    url: https://learn.microsoft.com/en-us/dotnet/standard/security/cryptographic-services
+  - title: Safe storage of app secrets in development in ASP.NET Core
+    url: https://learn.microsoft.com/en-us/aspnet/core/security/app-secrets
+  - title: Secure storage — .NET MAUI
+    url: https://learn.microsoft.com/en-us/dotnet/maui/platform-integration/storage/secure-storage
+  - title: "RFC 7636: Proof Key for Code Exchange"
+    url: https://www.rfc-editor.org/rfc/rfc7636
+  - title: "RFC 8252: OAuth 2.0 for Native Apps"
+    url: https://www.rfc-editor.org/rfc/rfc8252
+  - title: "RFC 9700: OAuth 2.0 Security Best Current Practice"
+    url: https://www.rfc-editor.org/rfc/rfc9700
+  - title: OWASP Cheat Sheet Series
+    url: https://cheatsheetseries.owasp.org/
+cards:
+  - id: where-secrets-live
+    kind: table
+    title: Where does this secret go?
+    note: "Anything compiled into an app or shipped to a browser is public: a client app holds only the user's own tokens, never the API's keys."
+    headers: [Secret, Put it in, Never in]
+    rows:
+      - - "an API key or connection string, in development"
+        - "`dotnet user-secrets set \"Payments:ApiKey\" \"…\"` (a file in your profile) or an environment variable"
+        - "`appsettings.json` committed to source control"
+      - - "the same, in production"
+        - "a vault (Azure Key Vault, AWS Secrets Manager) read with a managed identity, or the host's secret store"
+        - "the container image, a config file in the repo, the build log"
+      - - "the user's refresh token on a phone (MAUI)"
+        - "`SecureStorage.Default.SetAsync` — iOS Keychain, Android Keystore-encrypted preferences"
+        - "`Preferences`, a file, a SQLite table in clear"
+      - - "a token or credential in a Windows desktop app (WPF, WinUI unpackaged)"
+        - "`ProtectedData.Protect(…, DataProtectionScope.CurrentUser)` (DPAPI; the `System.Security.Cryptography.ProtectedData` package), or the Credential Locker"
+        - "the registry or a settings file in clear"
+      - - "a value your server hands out and reads back (a reset link, an auth cookie)"
+        - "ASP.NET Core Data Protection: `provider.CreateProtector(\"PasswordReset\").Protect(…)`, its key ring persisted to shared storage"
+        - "a home-made cipher with a key in the code"
+      - - "anything for a Blazor WebAssembly app"
+        - "nothing secret: keep tokens in memory, or keep them on a server and use a cookie (the backend-for-frontend pattern)"
+        - "the `wwwroot` bundle or `appsettings.json` in `wwwroot` — both are downloaded by every visitor"
+      - - "a key the user unlocks with a fingerprint or face"
+        - "a key that only user presence unlocks — platform code, as MAUI has no biometric API: Android `BiometricPrompt` with a `CryptoObject` over a Keystore key, iOS a Keychain item with `SecAccessControl` (`.BiometryCurrentSet`), Windows Hello `KeyCredentialManager`"
+        - "`SecureStorage` alone (it never prompts); a yes/no prompt such as `UserConsentVerifier` or a plugin's `AuthenticateAsync` that guards no key — patching the app skips it"
+      - - "passwords of your users"
+        - "a slow salted hash on the server (PBKDF2, Argon2id), or passkeys — ASP.NET Core Identity has them from .NET 10"
+        - "anywhere reversible, any log, the client"
+  - id: oauth-pkce
+    kind: code
+    title: OAuth 2.0 authorization code with PKCE
+    note: "A public client (MAUI, WPF, WinUI, Blazor WebAssembly) redirects to a reverse-DNS scheme it owns, checks `state` and `error` on the way back, and proves with a one-time verifier that it started the sign-in, so a stolen code is useless."
+    prerequisites: &run
+      - .NET 9 SDK or later (`Base64Url` is new in .NET 9)
+      - "`dotnet new console -o Demo`, replace `Demo/Program.cs` with the example, then `dotnet run --project Demo`"
+    code: |-
+      using System.Buffers.Text;
+      using System.Security.Cryptography;
+      using System.Text;
+      using System.Web;
+
+      // RFC 7636, appendix B: this verifier must give this challenge.
+      var rfcChallenge = Challenge("dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk");
+      Console.WriteLine(rfcChallenge == "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM");
+
+      const string Redirect = "com.shop.app:/callback";              // RFC 8252: a reverse-DNS scheme you own
+      var verifier = NewSecret();                                      // kept in memory until the callback
+      var state = NewSecret();
+      var authorize = "https://login.shop.example/authorize?response_type=code&client_id=shop-app"
+          + $"&redirect_uri={Uri.EscapeDataString(Redirect)}&scope=openid%20orders%20offline_access"
+          + $"&state={state}&code_challenge={Challenge(verifier)}&code_challenge_method=S256";
+      var seenByServer = HttpUtility.ParseQueryString(new Uri(authorize).Query)["code_challenge"]!;
+
+      // The browser returns to the redirect URI; WebAuthenticator or MSAL hands its query back.
+      string[] callbacks =
+          [$"error=access_denied&state={state}", "code=c-1&state=forged", $"code=c-1&state={state}"];
+      foreach (var query in callbacks)
+      {
+          var callback = HttpUtility.ParseQueryString(query);
+          if (callback["state"] != state) Console.WriteLine("rejected: state mismatch, not our sign-in");
+          else if (callback["error"] is { } error) Console.WriteLine($"sign-in failed: {error}");
+          else
+          {
+              Console.WriteLine($"stolen code, no verifier: {Redeem(callback["code"]!, NewSecret())}");
+              Console.WriteLine($"our code and verifier: {Redeem(callback["code"]!, verifier)}");
+          }
+      }
+
+      // The app POSTs grant_type=authorization_code, code, redirect_uri, client_id and code_verifier to /token;
+      // the server answers only if SHA-256(code_verifier) equals the code_challenge it saw at /authorize.
+      // Later it POSTs grant_type=refresh_token: for a public client the server must rotate that token.
+      string Redeem(string code, string codeVerifier) =>
+          code == "c-1" && Challenge(codeVerifier) == seenByServer ? "200 tokens" : "400 invalid_grant";
+
+      static string NewSecret() => Base64Url.EncodeToString(RandomNumberGenerator.GetBytes(32));   // 43 characters
+
+      static string Challenge(string verifier) =>
+          Base64Url.EncodeToString(SHA256.HashData(Encoding.ASCII.GetBytes(verifier)));
+    expected: |-
+      True
+      sign-in failed: access_denied
+      rejected: state mismatch, not our sign-in
+      stolen code, no verifier: 400 invalid_grant
+      our code and verifier: 200 tokens
+    sources:
+      - title: "RFC 7636: Proof Key for Code Exchange"
+        url: https://www.rfc-editor.org/rfc/rfc7636
+      - title: "RFC 8252: OAuth 2.0 for Native Apps — private-use URI schemes"
+        url: https://www.rfc-editor.org/rfc/rfc8252#section-7.1
+      - title: RandomNumberGenerator — .NET API
+        url: https://learn.microsoft.com/en-us/dotnet/api/system.security.cryptography.randomnumbergenerator
+    validation: &ran
+      status: ran
+      toolchain: .NET SDK 9.0.304 (net9.0, C# 13)
+      date: "2026-11-16"
+  - id: msal-webauthenticator
+    kind: code
+    title: "Sign-in against Microsoft Entra ID with MSAL"
+    note: "MSAL runs the authorization-code flow with PKCE, caches the tokens and refreshes them, so try the silent call first and show the interactive sign-in only when MSAL says it must."
+    prerequisites:
+      - "MSAL: `dotnet add package Microsoft.Identity.Client`; a public-client registration with the redirect URI `msal{client-id}://auth`. Android: a `BrowserTabActivity` intent filter for that scheme and `AuthenticationContinuationHelper.SetAuthenticationContinuationEventArgs` in `MainActivity.OnActivityResult`; iOS: the `com.microsoft.adalcache` keychain access group in `Entitlements.plist`. On Windows use MSAL's WAM broker or an `http://localhost` redirect instead"
+    code: |-
+      using Microsoft.Identity.Client;
+
+      // Silent first (the cache, or a refresh), interactive only when it must.
+      public sealed class EntraSignIn
+      {
+          private static readonly string[] Scopes = ["api://orders-api/Orders.Read"];
+          private readonly IPublicClientApplication app = PublicClientApplicationBuilder
+              .Create("11111111-2222-3333-4444-555555555555")
+              .WithAuthority(AzureCloudInstance.AzurePublic, "contoso.onmicrosoft.com")
+              .WithRedirectUri("msal11111111-2222-3333-4444-555555555555://auth")   // Android and iOS
+              .WithIosKeychainSecurityGroup("com.microsoft.adalcache")              // the iOS token cache
+              .Build();
+
+          public async Task<string> GetAccessTokenAsync(object parentWindow, CancellationToken ct)
+          {
+              var account = (await app.GetAccountsAsync()).FirstOrDefault();
+              try { return (await app.AcquireTokenSilent(Scopes, account).ExecuteAsync(ct)).AccessToken; }
+              catch (MsalUiRequiredException)
+              {
+                  var interactive = app.AcquireTokenInteractive(Scopes).WithParentActivityOrWindow(parentWindow);
+                  return (await interactive.ExecuteAsync(ct)).AccessToken;
+              }
+          }
+      }
+    expected: "MSAL returns an access token silently while its cached refresh token is valid, and shows the Entra sign-in only when it throws `MsalUiRequiredException`."
+    applies:
+      platforms: [android, ios, maccatalyst]
+      requires: [Microsoft.Identity.Client, .NET MAUI]
+      versions: { csharp: ">=12", dotnet: "9", maui: "9.0", microsoft-identity-client: "4.92" }
+    sources:
+      - title: Web Authenticator — .NET MAUI
+        url: https://learn.microsoft.com/en-us/dotnet/maui/platform-integration/communication/authentication
+      - title: Acquire tokens with MSAL.NET
+        url: https://learn.microsoft.com/en-us/entra/msal/dotnet/acquiring-tokens/overview
+    validation:
+      status: excerpt
+      host: a .NET MAUI app project (the MAUI workload) with Microsoft.Identity.Client and a registered app (compiled here against Microsoft.Identity.Client 4.92.0)
+  - id: webauthenticator-pkce
+    kind: code
+    title: "Sign-in against your own backend: WebAuthenticator, bound by PKCE"
+    note: "The backend runs the provider's flow and redirects back with a one-time code, and the PKCE verifier that never left the app is what makes an intercepted code useless to another app that claimed the scheme."
+    prerequisites:
+      - "WebAuthenticator (.NET MAUI, Android and iOS only — it does not work on Windows today): a `WebAuthenticatorCallbackActivity` with an intent filter for `com.shop.app` on Android, the scheme in `CFBundleURLSchemes` on iOS; an App Link or Universal Link (`https`) is better still"
+      - "The PKCE card's `NewSecret` and `Challenge` helpers, kept in a `static class Pkce`; the backend's `/mobileauth/redeem` answers only when SHA-256 of `code_verifier` matches the challenge it saw at `/start`"
+    code: |-
+      using System.Net.Http.Json;
+      using Microsoft.Maui.Authentication;
+
+      // Your backend runs the provider's flow and redirects back to the app with a short-lived one-time code.
+      public sealed class BackendSignIn(HttpClient api)
+      {
+          public async Task<string> SignInAsync()
+          {
+              var verifier = Pkce.NewSecret();                        // the PKCE card's helpers; it stays in memory
+              // No state parameter: PKCE, enforced by the backend, already gives the CSRF protection (RFC 9700).
+              var start = "https://shop.example/mobileauth/start"
+                  + $"?code_challenge={Pkce.Challenge(verifier)}&code_challenge_method=S256";
+              var result = await WebAuthenticator.Default.AuthenticateAsync(new WebAuthenticatorOptions
+              {
+                  Url = new Uri(start),
+                  CallbackUrl = new Uri("com.shop.app://callback"),       // RFC 8252: a reverse-DNS scheme you own
+                  PrefersEphemeralWebBrowserSession = true,               // iOS: no cookies shared between sign-ins
+              });
+
+              // An app that intercepts the scheme gets the code but not the verifier, so it cannot redeem it:
+              // the backend answers only if SHA-256(code_verifier) equals the challenge sent to /start.
+              var redeem = new { code = result.Properties["code"], code_verifier = verifier };
+              using var redeemed = await api.PostAsJsonAsync("mobileauth/redeem", redeem);
+              redeemed.EnsureSuccessStatusCode();
+              return await redeemed.Content.ReadAsStringAsync();       // keep the refresh token in SecureStorage
+          }
+      }
+    expected: "The system browser runs the sign-in and returns a one-time code; the app redeems it with its verifier for tokens over HTTPS (a `TaskCanceledException` if the user closes the browser), and an app that intercepted the callback holds a code it cannot redeem."
+    applies:
+      platforms: [android, ios, maccatalyst]
+      requires: [.NET MAUI]
+      versions: { csharp: ">=12", dotnet: "9", maui: "9.0" }
+    sources:
+      - title: Web Authenticator — .NET MAUI
+        url: https://learn.microsoft.com/en-us/dotnet/maui/platform-integration/communication/authentication
+      - title: "RFC 8252: OAuth 2.0 for Native Apps — protecting the code (PKCE)"
+        url: https://www.rfc-editor.org/rfc/rfc8252#section-8.1
+    validation:
+      status: excerpt
+      host: a .NET MAUI app project (the MAUI workload) and a backend that checks the PKCE verifier (compiled here against Microsoft.Maui.Essentials 9.0.120, with the Pkce helpers as a class)
+  - id: verify-jwt-by-hand
+    kind: code
+    title: "What validating a JWT means, 1: the signature, by hand"
+    note: "To see what the vetted handler (the third card from here) checks, never to replace it: pin the algorithm, verify ECDsa over `header.payload`, and trust nothing in the payload until that passes."
+    prerequisites: *run
+    code: |-
+      using System.Buffers.Text;
+      using System.Security.Cryptography;
+      using System.Text;
+      using System.Text.Json;
+
+      using var idp = ECDsa.Create(ECCurve.NamedCurves.nistP256);              // the identity provider's key
+      const string Claims = """{"iss":"https://id.example","sub":"u-42","aud":"orders-api","exp":1800000300}""";
+
+      var good = Sign(Claims).Split('.');
+      foreach (var (label, jwt) in new[]
+      {
+          ("valid", string.Join('.', good)),
+          ("payload edited", $"{good[0]}.{B64(Claims.Replace("u-42", "admin"))}.{good[2]}"),
+          ("alg none", $"{B64("""{"alg":"none"}""")}.{good[1]}."),
+          ("alg as a number", $"{B64("""{"alg":256}""")}.{good[1]}.{good[2]}"),
+          ("header is an array", $"{B64("""["ES256"]""")}.{good[1]}.{good[2]}"),
+          ("garbage", "a.b!.c"),
+      })
+          Console.WriteLine($"{label}: {VerifySignature(jwt, idp) ?? "rejected"}");
+
+      string Sign(string claims)
+      {
+          var input = $"{B64("""{"alg":"ES256","typ":"JWT"}""")}.{B64(claims)}";
+          var signature = idp.SignData(Encoding.ASCII.GetBytes(input), HashAlgorithmName.SHA256);   // r||s
+          return $"{input}.{Base64Url.EncodeToString(signature)}";
+      }
+
+      static string B64(string json) => Base64Url.EncodeToString(Encoding.UTF8.GetBytes(json));
+
+      // The payload's JSON once the signature over "head.body" verifies, else null; until then it is all hostile.
+      static string? VerifySignature(string jwt, ECDsa key)
+      {
+          if (jwt.Split('.') is not [var head, var body, var sig]) return null;
+          try
+          {
+              using var header = JsonDocument.Parse(Base64Url.DecodeFromChars(head));
+              var h = header.RootElement;
+              if (h.ValueKind != JsonValueKind.Object || !h.TryGetProperty("alg", out var alg)) return null;
+              if (alg.ValueKind != JsonValueKind.String || alg.GetString() != "ES256") return null;   // pinned
+              var signed = Encoding.ASCII.GetBytes($"{head}.{body}");
+              if (!key.VerifyData(signed, Base64Url.DecodeFromChars(sig), HashAlgorithmName.SHA256)) return null;
+              return Encoding.UTF8.GetString(Base64Url.DecodeFromChars(body));
+          }
+          catch (Exception e) when (e is FormatException or JsonException) { return null; }   // bad base64 or JSON
+      }
+    expected: |-
+      valid: {"iss":"https://id.example","sub":"u-42","aud":"orders-api","exp":1800000300}
+      payload edited: rejected
+      alg none: rejected
+      alg as a number: rejected
+      header is an array: rejected
+      garbage: rejected
+    sources:
+      - title: "RFC 7515: JSON Web Signature"
+        url: https://www.rfc-editor.org/rfc/rfc7515
+      - title: "RFC 8725: JSON Web Token Best Current Practices"
+        url: https://www.rfc-editor.org/rfc/rfc8725
+    validation: *ran
+  - id: verify-jwt-claims
+    kind: code
+    title: "What validating a JWT means, 2: the claims"
+    note: "After the signature, the issuer must match, the audience (a string or an array) must name this API, `exp` must be present and in the future and `nbf` in the past, each within a small clock skew, and a payload of the wrong shape (not JSON, an array, a missing `sub`, an unreadable `exp` or `nbf`) is a rejection, not a crash, while a fractional NumericDate is accepted."
+    prerequisites: *run
+    code: |-
+      using System.Text.Json;
+
+      const long Now = 1_800_000_000;                                           // an injected clock, Unix seconds
+      foreach (var claims in new[]
+      {
+          """{"iss":"https://id.example","sub":"u-42","aud":"orders-api","exp":1800000300}""",
+          """{"iss":"https://id.example","sub":"u-42","aud":["web","orders-api"],"exp":1800000300}""",
+          """{"iss":"https://id.example","sub":"u-42","aud":"orders-api","exp":1800000300.5}""",
+          """{"iss":"https://id.example","sub":"u-42","aud":"billing","exp":1800000300}""",
+          """{"iss":"https://id.example","sub":"u-42","aud":"orders-api","exp":1799999000}""",
+          """{"iss":"https://id.example","sub":"u-42","aud":"orders-api"}""",
+          """{"iss":"https://id.example","sub":"u-42","aud":"orders-api","exp":1800000300,"nbf":1830000000}""",
+          """{"iss":"https://id.example","sub":"u-42","aud":"orders-api","exp":1800000300,"nbf":"soon"}""",
+          """{"iss":"https://id.example","aud":"orders-api","exp":1800000300}""",
+          """["https://id.example","u-42"]""", "{",
+      })
+          Console.WriteLine(CheckClaims(claims, Now));
+
+      // Run only on a payload whose signature verified (previous card); its shapes are still not trusted.
+      static string CheckClaims(string json, long now)
+      {
+          const long Skew = 30;                                                 // seconds of clock drift allowed
+          JsonElement c;
+          try { c = JsonSerializer.Deserialize<JsonElement>(json); }            // no document to dispose
+          catch (JsonException) { return "rejected: not JSON"; }
+          if (c.ValueKind != JsonValueKind.Object) return "rejected: not a claims object";
+          if (Text(c, "iss") != "https://id.example") return "rejected: issuer";
+          if (!c.TryGetProperty("aud", out var aud)) return "rejected: no audience";
+          JsonElement[] audiences = aud.ValueKind == JsonValueKind.Array ? [.. aud.EnumerateArray()] : [aud];
+          if (!audiences.Any(a => a.ValueKind == JsonValueKind.String && a.GetString() == "orders-api"))
+              return "rejected: audience";
+          if (Seconds(c, "exp") is not { } exp) return "rejected: no usable exp";   // required, a NumericDate
+          if (exp + Skew < now) return "rejected: expired";
+          var nbf = c.TryGetProperty("nbf", out _) ? Seconds(c, "nbf") ?? long.MaxValue : long.MinValue;
+          if (nbf > now + Skew) return "rejected: not valid yet";          // an unreadable nbf fails closed
+          return Text(c, "sub") is { } sub ? $"valid: sub={sub}" : "rejected: no subject";
+      }
+
+      static string? Text(JsonElement claims, string name) =>
+          claims.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
+
+      static long? Seconds(JsonElement claims, string name) =>
+          claims.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.Number && v.TryGetDouble(out var s)
+              && Math.Abs(s) < 1e12 ? (long)Math.Floor(s) : null;
+    expected: |-
+      valid: sub=u-42
+      valid: sub=u-42
+      valid: sub=u-42
+      rejected: audience
+      rejected: expired
+      rejected: no usable exp
+      rejected: not valid yet
+      rejected: not valid yet
+      rejected: no subject
+      rejected: not a claims object
+      rejected: not JSON
+    sources:
+      - title: "RFC 7519: JSON Web Token — registered claims"
+        url: https://www.rfc-editor.org/rfc/rfc7519#section-4.1
+    validation: *ran
+  - id: token-validation-parameters
+    kind: code
+    title: "The real thing: JwtBearer and TokenValidationParameters"
+    note: "In the ASP.NET Core API behind a MAUI or Blazor app, `Authority` fetches and rotates the signing keys, and the handler makes every check of the previous two cards plus the algorithm list (and `typ`, once you set `ValidTypes` for an issuer that types its tokens), so leave each `Validate…` switch on."
+    prerequisites:
+      - "An ASP.NET Core project: `dotnet add package Microsoft.AspNetCore.Authentication.JwtBearer`"
+    code: |-
+      using System.Security.Claims;
+      using Microsoft.AspNetCore.Authentication.JwtBearer;
+      using Microsoft.IdentityModel.Tokens;
+
+      var builder = WebApplication.CreateBuilder(args);
+      builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
+          .AddJwtBearer(options =>
+          {
+              options.Authority = "https://login.shop.example/";        // discovery document + signing keys (JWKS)
+              options.Audience = "orders-api";
+              options.MapInboundClaims = false;                         // keep "sub", not a long XML claim type
+              options.TokenValidationParameters = new TokenValidationParameters
+              {
+                  ValidateIssuer = true,                                // off: tokens from any tenant are accepted
+                  ValidIssuer = "https://login.shop.example/",
+                  ValidateAudience = true,                              // off: another API's token works here
+                  ValidateLifetime = true,                              // off: a leaked token works forever
+                  ClockSkew = TimeSpan.FromSeconds(30),                 // the default is 5 minutes
+                  ValidateIssuerSigningKey = true,
+                  RequireSignedTokens = true,                           // never accept alg "none"
+                  RequireExpirationTime = true,
+                  ValidAlgorithms = [SecurityAlgorithms.EcdsaSha256, SecurityAlgorithms.RsaSha256],
+                  // ValidTypes = ["at+jwt"]: only if your issuer types access tokens per RFC 9068.
+                  // Microsoft Entra ID sends typ "JWT", so with Entra leave it unset (null: any typ).
+              };
+              // Never: options.RequireHttpsMetadata = false outside local development,
+              // or a SignatureValidator that returns the token unchecked.
+          });
+      builder.Services.AddAuthorization();
+
+      var app = builder.Build();
+      app.UseAuthentication();
+      app.UseAuthorization();
+      app.MapGet("/orders", (ClaimsPrincipal user) => $"orders of {user.FindFirst("sub")?.Value}")
+          .RequireAuthorization();
+      app.Run();
+    expected: "Requests to `/orders` without a valid bearer token get 401; a token with the wrong issuer, audience, type or algorithm, an expired one, or one whose signature does not match the issuer's published keys is rejected."
+    applies:
+      requires: [ASP.NET Core, Microsoft.AspNetCore.Authentication.JwtBearer]
+      versions: { csharp: ">=12", dotnet: "9", aspnetcore: "9.0", microsoft-aspnetcore-authentication-jwtbearer: "9.0" }
+    sources:
+      - title: Configure JWT bearer authentication in ASP.NET Core
+        url: https://learn.microsoft.com/en-us/aspnet/core/security/authentication/configure-jwt-bearer-authentication
+      - title: TokenValidationParameters — API
+        url: https://learn.microsoft.com/en-us/dotnet/api/microsoft.identitymodel.tokens.tokenvalidationparameters
+    validation:
+      status: excerpt
+      host: an ASP.NET Core project (compiled here with the web SDK against Microsoft.AspNetCore.Authentication.JwtBearer 9.0.8)
+  - id: aes-gcm-hmac-sha256
+    kind: code
+    title: AES-GCM encryption, bound to its owner
+    note: "AES-GCM gives secrecy and tamper detection in one call with a fresh 12-byte nonce every time, and a record that was changed, belongs to someone else or is too short is rejected (not in Blazor WebAssembly, where `AesGcm.IsSupported` is false)."
+    prerequisites: *run
+    code: |-
+      using System.Security.Cryptography;
+      using System.Text;
+
+      var key = RandomNumberGenerator.GetBytes(32);                    // from a vault or SecureStorage, never code
+      const string Address = "221B Baker Street, London";
+      var first = Seal(key, Address, userId: "u-42");
+      Console.WriteLine($"same text, same ciphertext? {first.SequenceEqual(Seal(key, Address, "u-42"))}");
+      Console.WriteLine(Open(key, first, userId: "u-42"));
+
+      try { Open(key, first, userId: "u-7"); }                              // bound to its owner by associated data
+      catch (AuthenticationTagMismatchException) { Console.WriteLine("another user's record: rejected"); }
+
+      var flipped = first.ToArray();
+      flipped[^1] ^= 1;
+      try { Open(key, flipped, userId: "u-42"); }
+      catch (AuthenticationTagMismatchException) { Console.WriteLine("one flipped bit: rejected"); }
+
+      try { Open(key, first[..20], userId: "u-42"); }                       // shorter than nonce + tag
+      catch (AuthenticationTagMismatchException) { Console.WriteLine("a truncated record: rejected"); }
+
+      static byte[] Seal(byte[] key, string plaintext, string userId)
+      {
+          var nonce = RandomNumberGenerator.GetBytes(AesGcm.NonceByteSizes.MaxSize);       // 12 bytes, never reused
+          var data = Encoding.UTF8.GetBytes(plaintext);
+          var (cipher, tag) = (new byte[data.Length], new byte[AesGcm.TagByteSizes.MaxSize]);
+          using var aes = new AesGcm(key, tag.Length);
+          aes.Encrypt(nonce, data, cipher, tag, Encoding.UTF8.GetBytes(userId));
+          return [.. nonce, .. tag, .. cipher];                                            // stored together
+      }
+
+      static string Open(byte[] key, byte[] box, string userId)
+      {
+          if (box.Length < 28) throw new AuthenticationTagMismatchException();             // 12 nonce + 16 tag
+          var plain = new byte[box.Length - 28];
+          using var aes = new AesGcm(key, tagSizeInBytes: 16);
+          aes.Decrypt(box[..12], box[28..], box[12..28], plain, Encoding.UTF8.GetBytes(userId));
+          return Encoding.UTF8.GetString(plain);                                           // never tampered data
+      }
+    expected: |-
+      same text, same ciphertext? False
+      221B Baker Street, London
+      another user's record: rejected
+      one flipped bit: rejected
+      a truncated record: rejected
+    sources:
+      - title: AesGcm — .NET API
+        url: https://learn.microsoft.com/en-us/dotnet/api/system.security.cryptography.aesgcm
+      - title: Cross-platform cryptography in .NET
+        url: https://learn.microsoft.com/en-us/dotnet/standard/security/cross-platform-cryptography
+    validation: *ran
+  - id: hmac-webhook
+    kind: code
+    title: An HMAC-signed webhook, verified without throwing
+    note: "An HMAC over `timestamp.body` proves a webhook came from whoever holds the secret, and a malformed signature header is a `false`, never an exception."
+    prerequisites: *run
+    code: |-
+      using System.Buffers;
+      using System.Security.Cryptography;
+
+      var secret = "whsec-test-only"u8.ToArray();
+      var signed = """1800000000.{"order":"o-1","status":"paid"}"""u8.ToArray();   // "timestamp.body"
+      var header = Convert.ToHexStringLower(HMACSHA256.HashData(secret, signed));        // the sender's X-Signature
+
+      Console.WriteLine($"genuine: {VerifyWebhook(secret, signed, header)}");
+      Console.WriteLine($"body altered: {VerifyWebhook(secret, [.. signed, (byte)' '], header)}");
+      Console.WriteLine($"header not hex: {VerifyWebhook(secret, signed, "zz")}");
+      Console.WriteLine($"header too short: {VerifyWebhook(secret, signed, header[..62])}");
+
+      // Also reject a timestamp older than a few minutes, or a captured request can be replayed.
+      static bool VerifyWebhook(byte[] secret, byte[] body, string signatureHex)
+      {
+          var claimed = new byte[32];
+          var status = Convert.FromHexString(signatureHex, claimed, out _, out var written);   // never throws
+          return status == OperationStatus.Done && written == 32
+              && CryptographicOperations.FixedTimeEquals(HMACSHA256.HashData(secret, body), claimed);
+      }
+    expected: |-
+      genuine: True
+      body altered: False
+      header not hex: False
+      header too short: False
+    sources:
+      - title: HMACSHA256.HashData — .NET API
+        url: https://learn.microsoft.com/en-us/dotnet/api/system.security.cryptography.hmacsha256.hashdata
+      - title: CryptographicOperations.FixedTimeEquals — .NET API
+        url: https://learn.microsoft.com/en-us/dotnet/api/system.security.cryptography.cryptographicoperations.fixedtimeequals
+    validation: *ran
+  - id: password-hashing
+    kind: code
+    title: "Passwords: PBKDF2 with a salt, parsed defensively, compared in constant time"
+    note: "On the server only, store the algorithm, iteration count, salt and hash together, fail closed on any record that does not parse, and rehash on sign-in when the count goes up (OWASP prefers Argon2id, which .NET lacks, so use PBKDF2 where FIPS matters or ASP.NET Core Identity's `PasswordHasher<TUser>`)."
+    prerequisites: *run
+    code: |-
+      using System.Security.Cryptography;
+
+      const string Secret = "correct horse battery staple";
+      var stored = Passwords.Hash(Secret);
+      Console.WriteLine($"right password: {Passwords.Verify(Secret, stored, out var rehash)}");
+      Console.WriteLine($"wrong password: {Passwords.Verify("Correct horse battery staple", stored, out _)}");
+      Console.WriteLine($"same password, same record: {Passwords.Hash(Secret) == stored}");
+
+      var older = Passwords.Hash("hunter2!", iterations: 210_000);             // written by an older release
+      Console.WriteLine($"older record: {Passwords.Verify("hunter2!", older, out rehash)}, rehash: {rehash}");
+
+      // A damaged or forged record never verifies, and never throws.
+      string[] broken = ["pbkdf2-sha256$600000$AAAAAAAAAAAAAAAAAAAAAA==$", "", "pbkdf2-sha1$600000$AA$AA", "x$1$y"];
+      foreach (var record in broken)
+          Console.WriteLine($"[{record}] -> {Passwords.Verify("anything", record, out _)}");
+
+      static class Passwords
+      {
+          public const int CurrentIterations = 600_000;                       // OWASP's PBKDF2-HMAC-SHA256 figure
+
+          public static string Hash(string password, int iterations = CurrentIterations)
+          {
+              var salt = RandomNumberGenerator.GetBytes(16);
+              var hash = Rfc2898DeriveBytes.Pbkdf2(password, salt, iterations, HashAlgorithmName.SHA256, 32);
+              return $"pbkdf2-sha256${iterations}${Convert.ToBase64String(salt)}${Convert.ToBase64String(hash)}";
+          }
+
+          public static bool Verify(string password, string stored, out bool needsRehash)
+          {
+              needsRehash = false;
+              var parts = stored.Split('$');
+              if (parts.Length != 4 || parts[0] != "pbkdf2-sha256") return false;          // the algorithm, checked
+              if (!int.TryParse(parts[1], out var rounds) || rounds is < 100_000 or > 10_000_000) return false;
+              Span<byte> salt = stackalloc byte[64];
+              Span<byte> expected = stackalloc byte[64];
+              if (!Convert.TryFromBase64String(parts[2], salt, out var saltLength) || saltLength < 16) return false;
+              if (!Convert.TryFromBase64String(parts[3], expected, out var hashLength) || hashLength != 32)
+                  return false;                                                     // an empty hash lands here
+              Span<byte> actual = stackalloc byte[32];
+              Rfc2898DeriveBytes.Pbkdf2(password, salt[..saltLength], actual, rounds, HashAlgorithmName.SHA256);
+              var ok = CryptographicOperations.FixedTimeEquals(actual, expected[..hashLength]);   // constant time
+              needsRehash = ok && rounds < CurrentIterations;
+              return ok;
+          }
+      }
+    expected: |-
+      right password: True
+      wrong password: False
+      same password, same record: False
+      older record: True, rehash: True
+      [pbkdf2-sha256$600000$AAAAAAAAAAAAAAAAAAAAAA==$] -> False
+      [] -> False
+      [pbkdf2-sha1$600000$AA$AA] -> False
+      [x$1$y] -> False
+    sources:
+      - title: Rfc2898DeriveBytes.Pbkdf2 — .NET API
+        url: https://learn.microsoft.com/en-us/dotnet/api/system.security.cryptography.rfc2898derivebytes.pbkdf2
+      - title: Password Storage Cheat Sheet — OWASP
+        url: https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html
+    validation: *ran
+  - id: injection-xss-logs
+    kind: compare
+    title: "SQL: concatenated versus parameterised"
+    note: "Input becomes code when it is pasted into SQL, so send it as a parameter, which EF Core's `FromSql` and LINQ do for you (its analyzer, EF1002, flags `FromSqlRaw` with interpolation)."
+    prerequisites:
+      - "`dotnet add package Microsoft.Data.SqlClient` or `Microsoft.EntityFrameworkCore.SqlServer`; both columns run inside an async method with `email`, `connection`, `db` and `ct`"
+    columns:
+      - label: The input runs as SQL
+        tone: bad
+        code: |-
+          // email = "x' OR '1'='1" returns every order; "x'; DROP TABLE Orders;--" is worse.
+          var sql = $"SELECT Id, Total FROM Orders WHERE Email = '{email}'";
+          using var command = new SqlCommand(sql, connection);
+          using var reader = await command.ExecuteReaderAsync(ct);
+
+          // EF Core: FromSqlRaw takes a plain string, so the value is pasted in first.
+          var orders = await db.Orders.FromSqlRaw($"SELECT * FROM Orders WHERE Email = '{email}'").ToListAsync(ct);
+      - label: The input stays a value
+        tone: good
+        code: |-
+          // A parameter travels beside the statement, never inside it.
+          using var command = new SqlCommand("SELECT Id, Total FROM Orders WHERE Email = @email", connection);
+          command.Parameters.Add("@email", SqlDbType.NVarChar, 256).Value = email;
+          using var reader = await command.ExecuteReaderAsync(ct);
+
+          // EF Core: FromSql turns each interpolated value into a DbParameter (LINQ queries do the same).
+          var orders = await db.Orders.FromSql($"SELECT * FROM Orders WHERE Email = {email}").ToListAsync(ct);
+    expected: "The parameterised query and `FromSql` return only the orders for that exact email; the concatenated ones run whatever the input contains."
+    applies:
+      requires: [Microsoft.Data.SqlClient, EF Core]
+      versions: { csharp: ">=12", dotnet: "9", microsoft-data-sqlclient: "6.1", efcore: "9.0" }
+    sources:
+      - title: SQL queries — EF Core
+        url: https://learn.microsoft.com/en-us/ef/core/querying/sql-queries
+      - title: SqlCommand.Parameters — API
+        url: https://learn.microsoft.com/en-us/dotnet/api/microsoft.data.sqlclient.sqlcommand.parameters
+    validation:
+      status: excerpt
+      host: a .NET app with a SQL Server database (both columns compiled here against Microsoft.Data.SqlClient 6.1.1 and EF Core 9.0.8; the bad one only with EF1002 suppressed)
+  - id: razor-xss
+    kind: compare
+    title: "Razor: encoded text versus MarkupString and javascript: links"
+    note: "`@value` HTML-encodes everything in Blazor and Razor, so XSS comes back only through `MarkupString` (raw HTML) or an attribute that takes a URL, which needs an `http`/`https` allow-list."
+    prerequisites:
+      - "A Blazor component (`.razor`) with a `Review review` parameter whose `Body` and `Website` come from users"
+    columns:
+      - label: The input runs as script
+        tone: bad
+        code: |-
+          @* A review body of <img src=x onerror="…"> runs script in every reader's browser. *@
+          <p>@((MarkupString)review.Body)</p>
+
+          @* Encoded, yet a website of javascript:… still runs when clicked. *@
+          <a href="@review.Website">website</a>
+      - label: The input stays text
+        tone: good
+        code: |-
+          @* @ HTML-encodes text; if markup is a feature, sanitize it with an allow-list library first. *@
+          <p>@review.Body</p>
+
+          <a href="@SafeLink(review.Website)">website</a>
+
+          @code {
+              // Only http and https links; anything else (javascript:, data:) becomes a dead link.
+              static string SafeLink(string url) =>
+                  Uri.TryCreate(url, UriKind.Absolute, out var uri) && uri.Scheme is "https" or "http"
+                      ? uri.ToString()
+                      : "#";
+          }
+    expected: "The review renders as visible text, and a `javascript:` or `data:` website becomes a dead `#` link instead of running script."
+    applies:
+      platforms: [dotnet, browser]
+      requires: [Blazor]
+      versions: { csharp: ">=12", dotnet: "9", aspnetcore: "9.0" }
+    sources:
+      - title: ASP.NET Core Razor components — raw HTML (MarkupString)
+        url: https://learn.microsoft.com/en-us/aspnet/core/blazor/components/
+      - title: Cross Site Scripting Prevention Cheat Sheet — OWASP
+        url: https://cheatsheetseries.owasp.org/cheatsheets/Cross_Site_Scripting_Prevention_Cheat_Sheet.html
+    validation:
+      status: excerpt
+      host: a Blazor Web App (both columns compiled here as components of a Razor class library, Microsoft.AspNetCore.Components.Web 9.0.8)
+  - id: certificate-pinning
+    kind: code
+    title: Transport security and certificate pinning with SocketsHttpHandler
+    note: "On desktop and server, run the normal chain checks first and then pin the public key, with a backup pin, never returning `true` blindly (Blazor WebAssembly cannot pin, and MAUI pins in Android's Network Security Config `<pin-set>` or iOS's `NSPinnedDomains`)."
+    prerequisites: *run
+    code: |-
+      using System.Net.Security;
+      using System.Security.Cryptography;
+      using System.Security.Cryptography.X509Certificates;
+
+      using var ours = SelfSigned("api.shop.example");
+      using var impostor = SelfSigned("api.shop.example");                // valid for our name, someone else's key
+      string[] pins = [SpkiSha256(ours), "backup-pin-of-a-key-kept-offline="];
+
+      // Desktop and server apps (SocketsHttpHandler). On MAUI Android/iOS pin in the platform config instead.
+      var handler = new SocketsHttpHandler();
+      handler.SslOptions.RemoteCertificateValidationCallback = (_, certificate, _, errors) =>
+          errors == SslPolicyErrors.None                                  // the normal checks first: chain, name
+          && certificate is X509Certificate2 leaf && pins.Contains(SpkiSha256(leaf));
+      using var http = new HttpClient(handler);                           // every TLS handshake now checks the pin
+
+      // No TLS connection is made here: the callback is called directly with the errors a handshake would report.
+      // A real handshake would flag these self-signed certificates as RemoteCertificateChainErrors (so: false).
+      var check = handler.SslOptions.RemoteCertificateValidationCallback;
+      Console.WriteLine($"our key, valid chain: {check(http, ours, null, SslPolicyErrors.None)}");
+      Console.WriteLine($"another key, valid chain: {check(http, impostor, null, SslPolicyErrors.None)}");
+      var wrongName = SslPolicyErrors.RemoteCertificateNameMismatch;
+      Console.WriteLine($"our key, wrong host name: {check(http, ours, null, wrongName)}");
+
+      // Pin the key (SubjectPublicKeyInfo), not the certificate: a renewal with the same key keeps working.
+      static string SpkiSha256(X509Certificate2 cert) =>
+          Convert.ToBase64String(SHA256.HashData(cert.PublicKey.ExportSubjectPublicKeyInfo()));
+
+      static X509Certificate2 SelfSigned(string host)
+      {
+          using var key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+          var request = new CertificateRequest($"CN={host}", key, HashAlgorithmName.SHA256);
+          var now = DateTimeOffset.UtcNow;
+          return request.CreateSelfSigned(now.AddMinutes(-5), now.AddDays(1));
+      }
+    expected: |-
+      our key, valid chain: True
+      another key, valid chain: False
+      our key, wrong host name: False
+    applies:
+      platforms: [dotnet, windows]
+    sources:
+      - title: SocketsHttpHandler.SslOptions — .NET API
+        url: https://learn.microsoft.com/en-us/dotnet/api/system.net.http.socketshttphandler.ssloptions
+      - title: Certificate and Public Key Pinning — OWASP
+        url: https://owasp.org/www-community/controls/Certificate_and_Public_Key_Pinning
+    validation: *ran
+  - id: security-privacy-rules
+    kind: rules
+    title: Security and privacy rules
+    note: The ones reviewers and auditors ask about first.
+    items:
+      - tone: bad
+        text: "A `RemoteCertificateValidationCallback` (or `ServerCertificateCustomValidationCallback`) that returns `true`: it turns HTTPS into plain text for anyone on the network. Fix the certificate instead."
+      - tone: bad
+        text: "Reusing an AES-GCM nonce with the same key: it leaks the XOR of both plaintexts and lets an attacker forge tags. Generate it with `RandomNumberGenerator` every time, and rotate the key long before 2^32 messages, the limit for random 96-bit nonces (NIST SP 800-38D)."
+      - tone: bad
+        text: "`System.Random`, MD5, SHA-1 or a plain SHA-256 for anything secret: tokens and salts come from `RandomNumberGenerator`, passwords from a slow KDF. `SHA256.HashData` only fingerprints (a file, a cache key)."
+      - tone: bad
+        text: "Comparing secrets, MACs or hashes with `==` or `SequenceEqual`: use `CryptographicOperations.FixedTimeEquals`."
+      - tone: bad
+        text: "A client secret in a MAUI, WPF, WinUI or Blazor WebAssembly app: it can be extracted. Public clients use PKCE; secrets stay on a server."
+      - tone: bad
+        text: "`Process.Start(\"convert\", $\"{input} out.png\")`: the string is split into arguments by the receiving program, so input can add flags. Use `ProcessStartInfo.ArgumentList.Add(input)` and never a shell."
+      - tone: bad
+        text: "`Path.Combine(uploads, userFileName)` alone: `../../appsettings.json` or an absolute path escapes the folder. Take `Path.GetFileName`, or check that `Path.GetFullPath(combined)` still starts with the full root plus a separator."
+      - tone: good
+        text: "**Data minimisation**: collect only what a feature needs, keep it only as long as it needs it, and delete it on account deletion — including backups and analytics."
+      - tone: good
+        text: "**Consent** before analytics, crash reports with user data, location or contacts; the app works without it, and the choice can be changed in settings."
+      - tone: good
+        text: "**Never log** passwords, tokens, keys, full card or ID numbers, or request bodies; log opaque ids through `[LoggerMessage]` templates and redact query strings and `Authorization` headers — a structured template still does not escape a newline inside a user's value."
+      - tone: good
+        text: "Biometrics unlock a key on the device and never leave it. Passkeys replace passwords server-side: ASP.NET Core Identity supports them from .NET 10."
+      - tone: neutral
+        text: "Validate every input at the boundary (type, length, range, allow-list) even when a client already did: the client is not yours once it ships."

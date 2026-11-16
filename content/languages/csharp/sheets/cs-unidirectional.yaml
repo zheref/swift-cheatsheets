@@ -1,0 +1,553 @@
+id: cs-unidirectional
+concept: architecture.unidirectional-core
+scope: platform
+title: "Unidirectional State — Reducers, MVU & Fluxor"
+group: UI
+subtitle: "State → action → pure reducer → new state → the view; async work lives in effects that dispatch actions back. A small store written by hand, then the same feature in Fluxor."
+applies:
+  platforms: [dotnet]
+  runtime: .NET (records, System.Collections.Immutable); bound from .NET MAUI, WPF, WinUI or Blazor
+  versions: { csharp: ">=12", dotnet: ">=8" }
+sources:
+  - title: Records — C# reference
+    url: https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/builtin-types/record
+  - title: System.Collections.Immutable — .NET API
+    url: https://learn.microsoft.com/en-us/dotnet/api/system.collections.immutable
+  - title: Fluxor — mrpmorris/Fluxor
+    url: https://github.com/mrpmorris/Fluxor
+cards:
+  - id: the-nouns
+    kind: table
+    title: The nouns, and their TCA and Redux twins
+    note: "The loop is the same everywhere: a view sends an action, a pure reducer computes the next state, effects do the async work and send actions back."
+    headers: [Noun, In C#, TCA, Redux / Redux Toolkit]
+    rows:
+      - ["**State**", "an immutable `record` with `ImmutableList<T>` / `ImmutableArray<T>` inside", "`@ObservableState struct State`", "a plain object, frozen by Immer in RTK"]
+      - ["**Action**", "an `abstract record` and one `sealed record` per event", "`enum Action`", "`{ type, payload }`, `createSlice` action creators"]
+      - ["**Reducer**", "`static State Reduce(State, Action) => action switch { … }`", "`Reduce { state, action in … }`", "`(state, action) => state`, slice `reducers`"]
+      - ["**Effect**", "a `Task` that receives `dispatch` and a `CancellationToken`", "`.run { send in … }`", "thunks, listener middleware, sagas"]
+      - ["cancel in flight", "cancel the previous effect's `CancellationTokenSource`", "`.cancellable(id:cancelInFlight: true)`", "`AbortController`, `takeLatest`"]
+      - ["**Store**", "holds `State`, runs the reducer, raises `StateChanged`", "`Store` / `StoreOf<F>`", "`createStore` / `configureStore`"]
+      - ["dependencies", "constructor or parameter injection (`Microsoft.Extensions.DependencyInjection`)", "`@Dependency`", "`thunk.withExtraArgument`, `extra`"]
+      - ["selectors", "a memoised `Func<State, T>` (see the selectors card)", "computed properties on `State`", "`createSelector` (reselect)"]
+      - ["the library", "Fluxor (Blazor and plain .NET), MauiReactor for MVU views", "swift-composable-architecture", "redux, @reduxjs/toolkit"]
+  - id: minimal-feature
+    kind: code
+    title: A minimal feature, end to end
+    note: "The skeleton to type from memory: immutable state, actions as records, a pure reducer, and a store that only notifies when the state really changed."
+    prerequisites: &run
+      - .NET 8 SDK or later
+      - "`dotnet new console -o Demo`, replace `Demo/Program.cs` with the example, then `dotnet run --project Demo`"
+    code: |-
+      using System.Collections.Immutable;
+
+      var store = new Store<CartState, CartAction>(new CartState([]), CartFeature.Reduce);
+      store.StateChanged += cart =>
+          Console.WriteLine($"{cart.Lines.Count} line(s), {cart.Lines.Sum(l => l.Quantity)} item(s)");
+
+      store.Dispatch(new ItemAdded("SKU-1", "USB-C cable"));
+      store.Dispatch(new ItemAdded("SKU-1", "USB-C cable"));        // the same item: quantity 2
+      store.Dispatch(new ItemAdded("SKU-7", "Laptop stand"));
+      store.Dispatch(new ItemRemoved("SKU-404"));                    // nothing to remove: no render
+      store.Dispatch(new ItemRemoved("SKU-1"));
+
+      record CartLine(string Sku, string Name, int Quantity);
+      record CartState(ImmutableList<CartLine> Lines);
+      abstract record CartAction;
+      sealed record ItemAdded(string Sku, string Name) : CartAction;
+      sealed record ItemRemoved(string Sku) : CartAction;
+
+      static class CartFeature
+      {
+          public static CartState Reduce(CartState state, CartAction action) => action switch
+          {
+              ItemAdded added when state.Lines.Find(l => l.Sku == added.Sku) is { } line =>
+                  state with { Lines = state.Lines.Replace(line, line with { Quantity = line.Quantity + 1 }) },
+              ItemAdded added => state with { Lines = state.Lines.Add(new CartLine(added.Sku, added.Name, 1)) },
+              ItemRemoved removed => state with { Lines = state.Lines.RemoveAll(l => l.Sku == removed.Sku) },
+              _ => state,
+          };
+      }
+
+      sealed class Store<TState, TAction>(TState initial, Func<TState, TAction, TState> reducer)
+      {
+          public TState State { get; private set; } = initial;
+          public event Action<TState>? StateChanged;
+
+          public void Dispatch(TAction action)
+          {
+              var next = reducer(State, action);
+              if (EqualityComparer<TState>.Default.Equals(next, State)) return;   // record equality: no change
+              State = next;
+              StateChanged?.Invoke(next);
+          }
+      }
+    expected: |-
+      1 line(s), 1 item(s)
+      1 line(s), 2 item(s)
+      2 line(s), 3 item(s)
+      1 line(s), 1 item(s)
+    validation: &ran
+      status: ran
+      toolchain: .NET SDK 9.0.304 (net9.0, C# 13)
+      date: "2026-11-16"
+  - id: events-not-setters
+    kind: compare
+    title: "Actions are events, not setters"
+    note: "Name what happened, not what to set, so the reducer owns every rule (here, ignoring a stale answer) in one place — and both columns provably reach the same state."
+    prerequisites: *run
+    columns:
+      - label: Setters — the view decides how state changes
+        tone: bad
+        code: |-
+          using System.Collections.Immutable;
+
+          SearchAction[] dispatched =
+          [
+              new SetQuery("desk"), new SetLoading(true),               // four actions for one search
+              new SetResults(["Oak desk", "Standing desk"]), new SetLoading(false),
+          ];
+          Console.WriteLine(dispatched.Aggregate(new SearchState("", false, []), Reduce));
+
+          static SearchState Reduce(SearchState state, SearchAction action) => action switch
+          {
+              SetQuery a => state with { Query = a.Query },
+              SetLoading a => state with { IsLoading = a.IsLoading },
+              SetResults a => state with { Results = a.Results },          // a stale answer overwrites
+              _ => state,
+          };
+
+          record SearchState(string Query, bool IsLoading, ImmutableArray<string> Results)
+          {
+              public override string ToString() => $"'{Query}': {Results.Length} results, loading {IsLoading}";
+          }
+          abstract record SearchAction;
+          sealed record SetQuery(string Query) : SearchAction;
+          sealed record SetLoading(bool IsLoading) : SearchAction;
+          sealed record SetResults(ImmutableArray<string> Results) : SearchAction;
+      - label: Events — the reducer decides
+        tone: good
+        code: |-
+          using System.Collections.Immutable;
+
+          SearchAction[] dispatched =
+          [
+              new SearchSubmitted("desk"),                              // what the user did
+              new ResultsLoaded("desk", ["Oak desk", "Standing desk"]),  // what the server answered
+          ];
+          Console.WriteLine(dispatched.Aggregate(new SearchState("", false, []), Reduce));
+
+          static SearchState Reduce(SearchState state, SearchAction action) => action switch
+          {
+              SearchSubmitted a => state with { Query = a.Query, IsLoading = true },
+              ResultsLoaded a when a.Query == state.Query => state with { IsLoading = false, Results = a.Results },
+              ResultsLoaded => state,                                    // an answer to an old query
+              _ => state,
+          };
+
+          record SearchState(string Query, bool IsLoading, ImmutableArray<string> Results)
+          {
+              public override string ToString() => $"'{Query}': {Results.Length} results, loading {IsLoading}";
+          }
+          abstract record SearchAction;
+          sealed record SearchSubmitted(string Query) : SearchAction;
+          sealed record ResultsLoaded(string Query, ImmutableArray<string> Results) : SearchAction;
+    expected: |-
+      'desk': 2 results, loading False
+    validation: *ran
+  - id: immutable-updates
+    kind: code
+    title: "Immutable updates: with, immutable collections, and record equality"
+    note: "`with` copies one level, so copy every level you change; unchanged parts are shared, and records compare collections by reference."
+    prerequisites: *run
+    code: |-
+      using System.Collections.Immutable;
+
+      var checkout = new Checkout("ana@shop.example", new Address("Rua Augusta 1", "Lisbon"), ["WELCOME10"]);
+
+      var moved = checkout with { Shipping = checkout.Shipping with { City = "Porto" } };   // nested: two copies
+      Console.WriteLine($"{checkout.Shipping.City} -> {moved.Shipping.City}");
+      Console.WriteLine($"coupons shared, not copied: {ReferenceEquals(checkout.Coupons, moved.Coupons)}");
+
+      var withFreeShipping = moved with { Coupons = moved.Coupons.Add("FREESHIP") };       // a new list
+      Console.WriteLine(string.Join(", ", withFreeShipping.Coupons));
+
+      // Equal contents, different list instance: the records are NOT equal
+      var rebuilt = checkout with { Coupons = ["WELCOME10"] };
+      var sameContents = checkout.Coupons.SequenceEqual(rebuilt.Coupons);
+      Console.WriteLine($"records equal: {checkout == rebuilt}, contents equal: {sameContents}");
+
+      // Many edits at once: a builder, then one new immutable list
+      var builder = withFreeShipping.Coupons.ToBuilder();
+      builder.Remove("WELCOME10");
+      builder.Add("VIP");
+      Console.WriteLine(string.Join(", ", builder.ToImmutable()));
+
+      record Address(string Street, string City);
+      record Checkout(string Email, Address Shipping, ImmutableList<string> Coupons);
+    expected: |-
+      Lisbon -> Porto
+      coupons shared, not copied: True
+      WELCOME10, FREESHIP
+      records equal: False, contents equal: True
+      FREESHIP, VIP
+    validation: *ran
+  - id: effects-with-cancellation
+    kind: code
+    title: Effects that end in an action — superseded ones cancelled, late answers dropped, failures reported
+    note: "The reducer stays pure and returns the next state plus a description of async work, and the store runs it, cancels the one in flight, drops what a cancelled effect returns, and turns a failure into an action."
+    prerequisites: *run
+    code: |-
+      var answers = new Dictionary<string, TaskCompletionSource<string>>();   // a server that ignores tokens
+
+      var store = new Store<SearchState, SearchAction>(new("", ""), Reduce,
+          error => new Shown($"unavailable ({error.Message})"));    // a failed effect still ends in an action
+      store.StateChanged += s => Console.WriteLine($"'{s.Query}': {s.Text}");
+      store.Dispatch(new QueryChanged("d"));
+      store.Dispatch(new QueryChanged("desk"));                   // supersedes 'd' while it is in flight
+      answers["d"].SetResult("Desk lamp");                        // the late answer is dropped: nothing printed
+      answers["desk"].SetException(new HttpRequestException("503"));
+
+      (SearchState, Effect<SearchAction>?) Reduce(SearchState state, SearchAction action) => action switch
+      {
+          QueryChanged q => (state with { Query = q.Query, Text = "searching…" },
+              async token => new Shown(await (answers[q.Query] = new()).Task)),    // the search, as an effect
+          Shown r => (state with { Text = r.Text }, null),
+          _ => (state, null),
+      };
+
+      delegate Task<TAction> Effect<TAction>(CancellationToken token);    // async work that ends in one action
+
+      sealed class Store<TState, TAction>(TState state, Func<TState, TAction, (TState, Effect<TAction>?)> reducer,
+          Func<Exception, TAction> failed)
+      {
+          private CancellationTokenSource? inFlight;               // one effect at a time; key them to have more
+          public event Action<TState>? StateChanged;
+
+          public void Dispatch(TAction action) => _ = DispatchAsync(action);   // call it on the UI thread
+
+          private async Task DispatchAsync(TAction action)
+          {
+              (state, var effect) = reducer(state, action);
+              StateChanged?.Invoke(state);
+              if (effect is null) return;
+              inFlight?.Cancel();                                   // a new effect supersedes the one in flight
+              var cancel = inFlight = new CancellationTokenSource();   // no timer inside: nothing to Dispose
+              var attempt = effect(cancel.Token);
+              await Task.WhenAny(attempt);                          // wait without throwing, back on the UI thread
+              if (cancel.IsCancellationRequested) return;           // superseded: drop its answer, or its failure
+              var error = attempt.Exception?.GetBaseException() ?? new OperationCanceledException();
+              await DispatchAsync(attempt.IsCompletedSuccessfully ? attempt.Result : failed(error));   // never lost
+          }
+      }
+
+      record SearchState(string Query, string Text);
+      abstract record SearchAction;
+      sealed record QueryChanged(string Query) : SearchAction;
+      sealed record Shown(string Text) : SearchAction;
+    expected: |-
+      'd': searching…
+      'desk': searching…
+      'desk': unavailable (503)
+    validation: *ran
+  - id: selectors
+    kind: code
+    title: Selectors — derived state, recomputed only when its input changes
+    note: "A memoised selector recomputes when its input reference changes, which with immutable state is a cheap `ReferenceEquals`, but an equal new list still recomputes, so the view model compares the selected value before raising."
+    prerequisites: *run
+    code: |-
+      using System.Collections.Immutable;
+
+      var computations = 0;
+      var selectTotal = Cart.CreateTotalSelector(() => computations++);
+
+      var state = new CartState([], null);
+      CartAction[] actions =
+          [new ItemAdded(25m), new ItemAdded(15m), new CouponApplied("WELCOME10"), new PricesReloaded()];
+      foreach (var action in actions)
+      {
+          state = Cart.Reduce(state, action);
+          var total = selectTotal(state);
+          Console.WriteLine($"{action.GetType().Name,-14} total {total}, computed {computations} time(s)");
+      }
+
+      static class Cart
+      {
+          public static CartState Reduce(CartState state, CartAction action) => action switch
+          {
+              ItemAdded a => state with { Prices = state.Prices.Add(a.Price) },
+              CouponApplied c => state with { Coupon = c.Code },             // Prices untouched: the same list
+              PricesReloaded => state with { Prices = [.. state.Prices] },    // equal contents, a new list
+              _ => state,
+          };
+
+          // Recomputes only when the input reference changes: a cheap check, because state is immutable
+          public static Func<CartState, string> CreateTotalSelector(Action onCompute)
+          {
+              ImmutableList<decimal>? lastInput = null;
+              var lastOutput = "";
+              return state =>
+              {
+                  if (ReferenceEquals(state.Prices, lastInput)) return lastOutput;
+                  onCompute();
+                  (lastInput, lastOutput) = (state.Prices, $"{state.Prices.Sum()}");
+                  return lastOutput;
+              };
+          }
+      }
+
+      record CartState(ImmutableList<decimal> Prices, string? Coupon);
+      abstract record CartAction;
+      sealed record ItemAdded(decimal Price) : CartAction;
+      sealed record CouponApplied(string Code) : CartAction;
+      sealed record PricesReloaded : CartAction;
+    expected: |-
+      ItemAdded      total 25, computed 1 time(s)
+      ItemAdded      total 40, computed 2 time(s)
+      CouponApplied  total 40, computed 2 time(s)
+      PricesReloaded total 40, computed 3 time(s)
+    validation: *ran
+  - id: binding-a-view-model
+    kind: code
+    title: Binding a store to a view model
+    note: "The view model subscribes to the store, raises PropertyChanged only when the value it shows differs, sends commands as actions, and unsubscribes on Dispose so the store does not keep a closed screen alive."
+    prerequisites:
+      - .NET 8 SDK or later
+      - "`dotnet new console -o Demo`, replace `Demo/Program.cs` with the example, then `dotnet run --project Demo` (XAML binds `{Binding BadgeText}` to the same view model)"
+    code: |-
+      using System.ComponentModel;
+
+      var store = new CartStore(new CartState(ItemCount: 8));
+      var badge = new CartBadgeViewModel(store);
+      badge.PropertyChanged += (_, e) => Console.WriteLine($"{e.PropertyName} -> {badge.BadgeText}");
+
+      for (var i = 0; i < 3; i++) badge.AddItem();          // 9, 9+, then 9+ again: no third PropertyChanged
+      badge.Dispose();                                        // the screen closes and unsubscribes
+      store.Dispatch(new QuantityChanged(-5));                // 6 items: a leaked badge would print "-> 6"
+
+      sealed class CartBadgeViewModel : INotifyPropertyChanged, IDisposable
+      {
+          private readonly CartStore store;
+          public event PropertyChangedEventHandler? PropertyChanged;
+          public string BadgeText { get; private set; } = "";
+
+          public CartBadgeViewModel(CartStore store)
+          {
+              this.store = store;
+              store.StateChanged += OnState;
+          }
+
+          public void AddItem() => store.Dispatch(new QuantityChanged(+1));  // bound as a command
+          public void Dispose() => store.StateChanged -= OnState;            // else the store keeps it alive
+
+          private void OnState(CartState state)
+          {
+              var text = state.ItemCount > 9 ? "9+" : $"{state.ItemCount}";  // the selected value
+              if (text == BadgeText) return;                                  // raise only when it differs
+              BadgeText = text;
+              PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(BadgeText)));
+          }
+      }
+
+      sealed class CartStore(CartState initial)                // the minimal store, with its reducer inside
+      {
+          public CartState State { get; private set; } = initial;
+          public event Action<CartState>? StateChanged;
+
+          public void Dispatch(CartAction action)
+          {
+              State = action is QuantityChanged q ? State with { ItemCount = State.ItemCount + q.Delta } : State;
+              StateChanged?.Invoke(State);
+          }
+      }
+
+      record CartState(int ItemCount);
+      abstract record CartAction;
+      sealed record QuantityChanged(int Delta) : CartAction;
+    expected: |-
+      BadgeText -> 9
+      BadgeText -> 9+
+    validation: *ran
+  - id: fluxor-feature
+    kind: code
+    title: The same search in Fluxor — state, reducers, effect
+    note: "Fluxor finds `[FeatureState]`, `[ReducerMethod]` and `[EffectMethod]` by scanning the assembly, builds effect classes once per store with their dependencies from DI, and leaves cancelling a superseded effect to you."
+    prerequisites: &fluxor
+      - "A Blazor Web App with global interactivity: `dotnet new blazor -o Shop --interactivity Server --all-interactive` (it renders `<Routes @rendermode=\"InteractiveServer\" />` in `App.razor`; without a render mode the page is static and typing does nothing)"
+      - "`dotnet add package Fluxor.Blazor.Web` (6.x); in `Program.cs` `builder.Services.AddFluxor(o => o.ScanAssemblies(typeof(Program).Assembly));` and register your `ICatalogApi`"
+      - "`@using Fluxor` in `Components/_Imports.razor`, and `<Fluxor.Blazor.Web.StoreInitializer />` at the top of `Components/Routes.razor`"
+    code: |-
+      // Store/SearchFeature.cs
+      using System.Collections.Immutable;
+      using Fluxor;
+
+      [FeatureState]
+      public record SearchState(string Query, bool IsLoading, ImmutableList<string> Results)
+      {
+          public SearchState() : this("", false, []) { }          // Fluxor builds the initial state
+      }
+
+      public record SearchSubmitted(string Query);
+      public record ResultsLoaded(string Query, ImmutableList<string> Results);
+
+      public static class SearchReducers
+      {
+          [ReducerMethod]
+          public static SearchState OnSubmitted(SearchState state, SearchSubmitted action) =>
+              state with { Query = action.Query, IsLoading = true };
+
+          [ReducerMethod]                                          // an answer to an older query changes nothing
+          public static SearchState OnLoaded(SearchState state, ResultsLoaded action) =>
+              action.Query == state.Query ? state with { IsLoading = false, Results = action.Results } : state;
+      }
+
+      public interface ICatalogApi
+      {
+          Task<ImmutableList<string>> SearchAsync(string query, CancellationToken token);
+      }
+
+      public class SearchEffects(ICatalogApi api)                 // effects get their dependencies from DI
+      {
+          private CancellationTokenSource? inFlight;
+
+          [EffectMethod]
+          public async Task OnSubmitted(SearchSubmitted action, IDispatcher dispatcher)
+          {
+              inFlight?.Cancel();                                  // Fluxor does not cancel for you
+              inFlight = new CancellationTokenSource();
+              var token = inFlight.Token;
+              try
+              {
+                  var results = await api.SearchAsync(action.Query, token);
+                  if (!token.IsCancellationRequested) dispatcher.Dispatch(new ResultsLoaded(action.Query, results));
+              }
+              catch (OperationCanceledException) { }              // superseded by a newer query
+          }
+      }
+    expected: "Dispatching `SearchSubmitted` shows the spinner, cancels the previous search, and `ResultsLoaded` fills the list, while an answer to an older query is ignored."
+    applies: &fluxor-applies
+      platforms: [dotnet, browser]
+      requires: [Fluxor.Blazor.Web]
+      versions: { csharp: ">=12", dotnet: ">=8", fluxor: ">=6.0" }
+    sources: &fluxor-sources
+      - title: Fluxor — Blazor tutorials (state, actions, reducers, effects)
+        url: https://github.com/mrpmorris/Fluxor/tree/master/Source/Tutorials/02-Blazor
+    validation: &fluxor-excerpt
+      status: excerpt
+      host: a Blazor Web App with global InteractiveServer rendering, referencing Fluxor.Blazor.Web, with your `ICatalogApi` in DI
+  - id: fluxor-page
+    kind: code
+    title: "The Fluxor page: IState<T> in, IDispatcher out"
+    note: "A FluxorComponent re-renders when the injected `IState<T>` changes, and the page only ever dispatches actions."
+    prerequisites: *fluxor
+    code: |-
+      @* Components/Pages/SearchPage.razor *@
+      @page "/search"
+      @inherits Fluxor.Blazor.Web.Components.FluxorComponent
+      @inject IState<SearchState> SearchState
+      @inject IDispatcher Dispatcher
+
+      <input @bind="query" @bind:event="oninput" @bind:after="Submit" placeholder="Search products" />
+      @if (SearchState.Value.IsLoading) { <p>Searching…</p> }
+      <ul>@foreach (var name in SearchState.Value.Results) { <li>@name</li> }</ul>
+
+      @code {
+          private string query = "";
+          private void Submit() => Dispatcher.Dispatch(new SearchSubmitted(query));
+      }
+    expected: "Typing \"lamp\" shows Searching… and then the results for 'lamp'; the searches for the earlier keystrokes are cancelled and never shown."
+    applies: *fluxor-applies
+    sources: *fluxor-sources
+    validation: *fluxor-excerpt
+  - id: mvu-in-maui
+    kind: table
+    title: MVU-style options in .NET MAUI
+    note: "XAML MAUI is MVVM; to get a unidirectional loop you either put a store behind your view models or pick an MVU library."
+    headers: [Option, Shape, Status]
+    rows:
+      - ["A store behind MVVM view models (this sheet's `Store`, or `Fluxor` core)", "XAML binds to view models that subscribe to the store and dispatch actions", "plain .NET: works everywhere, the usual choice"]
+      - ["MauiReactor (`Reactor.Maui`)", "C# components: `Component<TState>`, `SetState(s => …)`, `Render()` builds the tree", "community, actively maintained"]
+      - ["Fabulous (`Fabulous.MauiControls`)", "F# MVU: `init`, `update`, `view`", "community; F# only"]
+      - ["Comet", "C# MVU prototype from the .NET team", "experimental, not for production"]
+      - ["Blazor Hybrid (`BlazorWebView`) + Fluxor", "Razor components inside a MAUI app; Fluxor as on the web", "Blazor Hybrid is supported by Microsoft, Fluxor is community; the UI is HTML, not native controls"]
+  - id: testing-reducer-and-effect
+    kind: code
+    title: Testing a reducer and an effect
+    note: "A reducer test is a call and an assertion, and an effect test runs the effect against a fake API — including one superseded while it awaits — and records what it dispatched (in xUnit, each check is a `[Fact]`)."
+    prerequisites: *run
+    code: |-
+      var idle = new SearchState("", false, []);
+
+      var loading = Search.Reduce(idle, new QueryChanged("desk"));
+      Check("submitting shows the spinner", loading == idle with { Query = "desk", IsLoading = true });
+
+      var stale = Search.Reduce(loading, new ResultsLoaded("de", ["Desk lamp"]));
+      Check("an answer to an older query is ignored", stale == loading);
+
+      var dispatched = new List<SearchAction>();
+      await Search.SearchEffect("desk", (_, _) => Task.FromResult<IReadOnlyList<string>>(["Oak desk", "Bench"]),
+          dispatched.Add, CancellationToken.None);
+      Check("the effect dispatches the results", dispatched is [ResultsLoaded { Query: "desk", Results.Count: 2 }]);
+
+      dispatched.Clear();
+      var answer = new TaskCompletionSource<IReadOnlyList<string>>();
+      using var superseded = new CancellationTokenSource();
+      var running = Search.SearchEffect("desk", (_, _) => answer.Task, dispatched.Add, superseded.Token);
+      superseded.Cancel();                                       // a newer query arrives while it awaits…
+      answer.SetResult(["Oak desk"]);                            // …and the server answers anyway
+      await running;
+      Check("a superseded effect dispatches nothing", dispatched.Count == 0);
+
+      static void Check(string name, bool passed) => Console.WriteLine($"{(passed ? "PASS" : "FAIL")} {name}");
+
+      static class Search
+      {
+          public static SearchState Reduce(SearchState state, SearchAction action) => action switch
+          {
+              QueryChanged q => state with { Query = q.Query, IsLoading = true },
+              ResultsLoaded r when r.Query == state.Query => state with { IsLoading = false, Results = r.Results },
+              _ => state,
+          };
+
+          public static async Task SearchEffect(string query,
+              Func<string, CancellationToken, Task<IReadOnlyList<string>>> search,
+              Action<SearchAction> dispatch, CancellationToken token)
+          {
+              var results = await search(query, token);
+              if (!token.IsCancellationRequested) dispatch(new ResultsLoaded(query, results));   // superseded: drop
+          }
+      }
+
+      record SearchState(string Query, bool IsLoading, IReadOnlyList<string> Results);
+      abstract record SearchAction;
+      sealed record QueryChanged(string Query) : SearchAction;
+      sealed record ResultsLoaded(string Query, IReadOnlyList<string> Results) : SearchAction;
+    expected: |-
+      PASS submitting shows the spinner
+      PASS an answer to an older query is ignored
+      PASS the effect dispatches the results
+      PASS a superseded effect dispatches nothing
+    validation: *ran
+  - id: unidirectional-rules
+    kind: rules
+    title: Rules and pitfalls
+    note: The loop only pays off if nothing goes around it.
+    items:
+      - tone: good
+        text: "Reducers are pure and synchronous: no `await`, no `DateTime.Now`, no `Random`, no I/O. Pass the time or an id in the action instead."
+      - tone: good
+        text: "Effects never touch state; they dispatch actions. Cancel the superseded effect **and** drop what it still sends: an answer can arrive after the cancel, so check the token after every `await`."
+      - tone: good
+        text: "Inject dependencies (API clients, `TimeProvider`) into effects, so tests pass fakes and the reducer stays dependency-free."
+      - tone: bad
+        text: "Mutating state in place (`state.Lines.Add(x)` on a `List<T>`, a settable property): the store sees the same reference and no view updates. Use records and immutable collections."
+      - tone: bad
+        text: "Comparing records that hold collections and expecting value equality: `ImmutableList<T>` and arrays compare by reference. Compare contents in tests, or keep the same instance when nothing changed."
+      - tone: bad
+        text: "Dispatching from a thread-pool continuation (an effect using `ConfigureAwait(false)`, a timer callback): marshal to the UI thread first — WinUI and MAUI on Android and iOS throw, and WPF forwards `PropertyChanged` itself but throws on collection changes."
+      - tone: bad
+        text: "Setter actions (`SetLoading`, `SetResults`): the rules leak into every view. Name events (`SearchSubmitted`, `ResultsLoaded`)."
+      - tone: neutral
+        text: "Selectors recompute only when their input reference changes; with immutable data that check is a cheap `ReferenceEquals`."
+      - tone: neutral
+        text: "One store for the app, or one per feature: both work. Keep transient UI state (a text box's caret, an expanded row) in the view, not the store."

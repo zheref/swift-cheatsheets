@@ -1,0 +1,602 @@
+id: cs-accessibility
+concept: accessibility.practices
+scope: platform
+title: "Accessibility in .NET UI"
+group: Quality & reach
+subtitle: "Names, roles and values for TalkBack, VoiceOver and Narrator. Focus, keyboard and announcements, text scaling, contrast and reduced motion, a custom control's automation peer, and how to test it in .NET MAUI, WPF, WinUI and Blazor."
+applies:
+  platforms: [dotnet, android, ios, maccatalyst, windows, browser]
+  runtime: ".NET MAUI, WPF or WinUI app, or a Blazor app in the browser; the runnable cards are plain .NET"
+  versions: { csharp: ">=13", dotnet: ">=9", maui: ">=9" }
+sources:
+  - title: Build accessible apps with semantic properties — .NET MAUI
+    url: https://learn.microsoft.com/en-us/dotnet/maui/fundamentals/accessibility?view=net-maui-9.0
+  - title: Accessibility best practices — WPF and UI Automation
+    url: https://learn.microsoft.com/en-us/dotnet/framework/ui-automation/accessibility-best-practices
+  - title: Accessibility overview — Windows apps (WinUI)
+    url: https://learn.microsoft.com/en-us/windows/apps/design/accessibility/accessibility-overview
+  - title: ARIA Authoring Practices Guide — W3C
+    url: https://www.w3.org/WAI/ARIA/apg/
+  - title: Web Content Accessibility Guidelines (WCAG) 2.2
+    url: https://www.w3.org/TR/WCAG22/
+cards:
+  - id: stack-mapping
+    kind: table
+    title: The same need in MAUI, WPF/WinUI and Blazor
+    note: "MAUI maps semantic properties onto each platform's accessibility API, WPF and WinUI talk to UI Automation, and Blazor is HTML, where semantics come first and ARIA fills the gaps."
+    headers: [Need, .NET MAUI, WPF / WinUI, Blazor (HTML)]
+    rows:
+      - ["name an element", "`SemanticProperties.Description`", "`AutomationProperties.Name`", "visible text, `<label for>`, `alt`, `aria-label`"]
+      - ["say what it does", "`SemanticProperties.Hint`", "`AutomationProperties.HelpText`", "`aria-describedby`"]
+      - ["name it from a visible label", "bind `Description` (or `Hint` on an `Entry`) to the label's `Text`", "`AutomationProperties.LabeledBy`", "`<label for=\"id\">`, `aria-labelledby`"]
+      - ["mark a heading", "`SemanticProperties.HeadingLevel=\"Level1\"`", "`AutomationProperties.HeadingLevel=\"Level1\"`", "`<h1>`…`<h6>`"]
+      - ["hide decoration", "`AutomationProperties.ExcludedWithChildren=\"True\"`", "WinUI `AutomationProperties.AccessibilityView=\"Raw\"`", "`alt=\"\"`, `aria-hidden=\"true\"`"]
+      - ["announce a change", "`SemanticScreenReader.Default.Announce(text)`", "`AutomationProperties.LiveSetting` + `LiveRegionChanged` event", "`role=\"status\"` / `aria-live=\"polite\"`"]
+      - ["move focus", "`view.Focus()`, `view.SetSemanticFocus()`", "`Focus()` (WinUI `Focus(FocusState.Programmatic)`)", "`ElementReference.FocusAsync()`, `<FocusOnNavigate>`"]
+      - ["tab order", "XAML and layout order (there is no `TabIndex`); where the markup cannot follow the reading order, CommunityToolkit.Maui `SemanticOrderView` (screen readers on Android and iOS, Tab on Windows)", "`TabIndex`, `IsTabStop`; `KeyboardNavigation.TabNavigation` (WPF), `TabFocusNavigation` (WinUI)", "DOM order; `tabindex=\"0\"` or `\"-1\"`, never positive"]
+      - ["a custom control's role and value", "a handler that sets the native accessibility properties", "an `AutomationPeer` + provider interfaces", "a native element first, else `role`, `aria-valuenow`…"]
+      - ["a stable id for UI tests (not read aloud)", "`AutomationId`", "`AutomationProperties.AutomationId` (`x:Name` by default)", "`id`, `data-testid`"]
+      - ["screen reader to test with", "TalkBack, VoiceOver, Narrator", "Narrator (Win+Ctrl+Enter), NVDA", "NVDA or Narrator, VoiceOver"]
+      - ["automated audit", "Accessibility Insights (Android, Windows), Accessibility Inspector (iOS)", "Accessibility Insights for Windows (FastPass)", "axe-core via Playwright, Accessibility Insights for Web"]
+
+  - id: naming-controls-and-images
+    kind: code
+    title: Naming controls, images and headings
+    note: "Give every control and meaningful image a name — icon-only buttons most of all — but never a `Description` on a `Label`, which would hide its own text."
+    prerequisites:
+      - "A .NET MAUI app (`dotnet new maui`), a WPF or WinUI app, or a Blazor Web App"
+      - "Put each fragment in the page or component of its stack"
+    code: |-
+      <!-- .NET MAUI -->
+      <Label Text="Order A-1042" SemanticProperties.HeadingLevel="Level1" />
+      <ImageButton Source="trash.png" Command="{Binding DeleteCommand}"
+                   SemanticProperties.Description="Delete order"
+                   SemanticProperties.Hint="Removes the order from your history" />
+      <Label x:Name="EmailLabel" Text="Email for receipts" />
+      <!-- on Android a Description on an Entry breaks TalkBack editing: use Hint or Placeholder -->
+      <Entry Text="{Binding Email}" Keyboard="Email"
+             SemanticProperties.Hint="{Binding x:DataType='Label', Source={x:Reference EmailLabel}, Path=Text}" />
+      <Image Source="confetti.png" AutomationProperties.ExcludedWithChildren="True" />   <!-- decoration -->
+
+      <!-- WPF / WinUI -->
+      <TextBlock Text="Order A-1042" AutomationProperties.HeadingLevel="Level1" />
+      <Button Command="{Binding DeleteCommand}" ToolTipService.ToolTip="Delete order"
+              AutomationProperties.Name="Delete order"
+              AutomationProperties.HelpText="Removes the order from your history">
+          <Image Source="trash.png" />
+      </Button>
+      <TextBlock x:Name="EmailLabel" Text="Email for receipts" />
+      <TextBox Text="{Binding Email}" AutomationProperties.LabeledBy="{Binding ElementName=EmailLabel}" />
+
+      @* Blazor: native elements carry role and name; ARIA only where HTML has nothing *@
+      <h1>Order A-1042</h1>
+      <button type="button" @onclick="DeleteAsync" aria-label="Delete order">
+          <img src="trash.svg" alt="" />
+      </button>
+      <label for="email">Email for receipts</label>
+      <input id="email" type="email" autocomplete="email" @bind="Email" />
+      <img src="confetti.svg" alt="" />
+    expected: "TalkBack, VoiceOver and Narrator read \"Order A-1042, heading\", \"Delete order, button\" with its hint, and \"Email for receipts, edit\". The confetti image is skipped. Accessibility Insights reports no unnamed controls."
+    sources:
+      - title: Semantic properties — .NET MAUI
+        url: https://learn.microsoft.com/en-us/dotnet/maui/fundamentals/accessibility?view=net-maui-9.0#semantic-properties
+      - title: AutomationProperties class — WPF
+        url: https://learn.microsoft.com/en-us/dotnet/api/system.windows.automation.automationproperties?view=windowsdesktop-9.0
+      - title: Basic accessibility information — Windows apps
+        url: https://learn.microsoft.com/en-us/windows/apps/design/accessibility/basic-accessibility-information
+    validation:
+      status: excerpt
+      host: "a .NET MAUI, WPF or WinUI app, or a Blazor component; checked against the MAUI semantic-properties and WPF AutomationProperties reference"
+
+  - id: spoken-descriptions
+    kind: code
+    title: What the screen reader says, built in the view model
+    note: "When a row is drawn with symbols, colour and compact numbers, give its container one spoken summary from the view model, which on iOS also makes the row a single stop."
+    prerequisites: &run
+      - .NET 9 SDK or later
+      - "`dotnet new console -o Demo`, replace `Demo/Program.cs` with the example, then `dotnet run --project Demo` (in the app, bind the row's `SemanticProperties.Description` to `Spoken`)"
+    code: |-
+      using System.Globalization;
+
+      var culture = CultureInfo.GetCultureInfo("en-US");
+      OrderRow[] rows =
+      [
+          new("A-1042", Items: 3, Total: 25.50m, Status: OrderStatus.Shipped, Rating: 4.2, Reviews: 1203),
+          new("A-1043", Items: 1, Total: 9.99m, Status: OrderStatus.PaymentFailed, Rating: 5, Reviews: 1),
+      ];
+      foreach (var row in rows)
+      {
+          Console.WriteLine($"shown:  {row.Visual(culture)}");
+          Console.WriteLine($"spoken: {row.Spoken(culture)}");
+      }
+
+      enum OrderStatus { Shipped, PaymentFailed }
+
+      // a view model for one list row: the view binds the row container's
+      // SemanticProperties.Description (MAUI) or AutomationProperties.Name (WPF/WinUI) to Spoken
+      record OrderRow(string Number, int Items, decimal Total, OrderStatus Status, double Rating, int Reviews)
+      {
+          // what sighted users see: symbols, a coloured dot, compact numbers
+          public string Visual(CultureInfo c) => string.Create(c,
+              $"#{Number} · {Items}× · {Total:C} · {Stars} ({Reviews:N0}) · {Dot}");
+
+          // what a screen reader says: words instead of symbols, and the state the colour carries.
+          // English only: a localized app picks plural forms per language (see the Localization sheet)
+          public string Spoken(CultureInfo c) => string.Create(c,
+              $"Order {Number}, {Items} {(Items == 1 ? "item" : "items")}, {Total:C}, "
+              + $"rated {Rating:0.#} out of 5 from {Reviews:N0} {(Reviews == 1 ? "review" : "reviews")}, "
+              + $"{StatusText}");
+
+          private string Stars => new('★', (int)Math.Round(Rating));
+
+          private string Dot => Status == OrderStatus.Shipped ? "✓" : "●";
+
+          private string StatusText => Status switch
+          {
+              OrderStatus.Shipped => "shipped",
+              OrderStatus.PaymentFailed => "payment failed, action needed",
+              _ => throw new ArgumentOutOfRangeException(nameof(Status)),
+          };
+      }
+    expected: |-
+      shown:  #A-1042 · 3× · $25.50 · ★★★★ (1,203) · ✓
+      spoken: Order A-1042, 3 items, $25.50, rated 4.2 out of 5 from 1,203 reviews, shipped
+      shown:  #A-1043 · 1× · $9.99 · ★★★★★ (1) · ●
+      spoken: Order A-1043, 1 item, $9.99, rated 5 out of 5 from 1 review, payment failed, action needed
+    sources:
+      - title: "Understanding Success Criterion 1.4.1: Use of Color — WCAG"
+        url: https://www.w3.org/WAI/WCAG22/Understanding/use-of-color.html
+    validation: &ran
+      status: ran
+      toolchain: .NET SDK 9.0.304 (net9.0, C# 13)
+      date: "2026-11-16"
+
+  - id: focus-and-keyboard
+    kind: code
+    title: Focus order and moving focus
+    note: "Write the markup in reading order so the default focus order follows it, and move focus only on purpose — after navigation, a dialog, an error or a user action."
+    prerequisites:
+      - "A .NET MAUI app or a Blazor Web App"
+      - "MAUI: the `CommunityToolkit.Maui` package (12.x for MAUI 9), `builder.UseMauiCommunityToolkit()` in `MauiProgram`, and `xmlns:toolkit=\"http://schemas.microsoft.com/dotnet/2022/maui/toolkit\"` on the page"
+    code: |-
+      <!-- .NET MAUI has no TabIndex: focus, Tab and reading order follow the XAML (and Grid) order -->
+      <Grid ColumnDefinitions="*,Auto">
+          <SearchBar x:Name="SearchEntry" Placeholder="Search orders" />
+          <Button x:Name="FiltersButton" Grid.Column="1" Text="Filters" />
+      </Grid>
+      <Label x:Name="ErrorLabel" IsVisible="{Binding HasError}" Text="{Binding Error}" />
+
+      <!-- only when the markup cannot follow the reading order (a reversed layout, a template you do not own):
+           SemanticOrderView (CommunityToolkit.Maui) sets the TalkBack and VoiceOver order on Android, iOS and
+           Mac Catalyst, and the Tab order on Windows -->
+      <toolkit:SemanticOrderView x:Name="PaymentRow">
+          <FlexLayout Direction="RowReverse">
+              <Button x:Name="PayButton" Text="Pay" />
+              <Entry x:Name="CouponEntry" Placeholder="Coupon code" />
+          </FlexLayout>
+      </toolkit:SemanticOrderView>
+
+      // code-behind: the coupon field before Pay, as on screen; after a failed search, read the error
+      PaymentRow.ViewOrder = [CouponEntry, PayButton];
+      ErrorLabel.SetSemanticFocus();
+
+      @* Blazor: Routes.razor moves focus to each new page's h1, so a component never focuses on first render *@
+      <FocusOnNavigate RouteData="routeData" Selector="h1" />
+
+      @* move focus only in response to the user: after "Clear filters", back to the search box *@
+      <input @ref="searchBox" type="search" aria-label="Search orders" @bind="query" />
+      <button type="button" @onclick="ClearAsync">Clear filters</button>
+      @code {
+          private ElementReference searchBox;
+          private string query = "";
+          private async Task ClearAsync()
+          {
+              query = "";
+              await searchBox.FocusAsync();
+          }
+      }
+    expected: "Tab and the screen reader go search box → Filters, as written. In the reversed payment row, TalkBack, VoiceOver and the Windows Tab key reach the coupon field before Pay, as on screen. A failed search moves the screen reader to the error. A Blazor navigation lands on the new page's heading, and Clear filters returns focus to the search box."
+    sources:
+      - title: Semantic focus — .NET MAUI
+        url: https://learn.microsoft.com/en-us/dotnet/maui/fundamentals/accessibility?view=net-maui-9.0#semantic-focus
+      - title: SemanticOrderView — .NET MAUI Community Toolkit
+        url: https://learn.microsoft.com/en-us/dotnet/communitytoolkit/maui/views/semantic-order-view
+      - title: ASP.NET Core Blazor routing and navigation (FocusOnNavigate)
+        url: https://learn.microsoft.com/en-us/aspnet/core/blazor/fundamentals/routing?view=aspnetcore-9.0
+    validation:
+      status: excerpt
+      host: "a .NET MAUI app with CommunityToolkit.Maui (XAML built with XamlC against Microsoft.Maui.Controls 9.0.120 and the toolkit 12.3.0), or a Blazor Web App"
+
+  - id: keyboard-access-keys
+    kind: code
+    title: Keyboard operation in WPF and WinUI — access keys, default buttons, accelerators
+    note: "Give every action a keyboard path: an access key for each labelled field and command, Enter and Esc for a dialog's buttons, and accelerators for frequent commands."
+    prerequisites:
+      - "A WPF app (`dotnet new wpf`) or a WinUI 3 app; put each fragment in a window or page of its stack"
+    code: |-
+      <!-- WPF: _ marks the access key (Alt+C focuses the box via Target); Enter and Esc map to the buttons;
+           TabNavigation="Cycle" keeps Tab inside the dialog and wraps around -->
+      <StackPanel KeyboardNavigation.TabNavigation="Cycle">
+          <Label Content="_Customer" Target="{Binding ElementName=CustomerBox}" />
+          <TextBox x:Name="CustomerBox" />
+          <Button Content="_Save" IsDefault="True" Command="{Binding SaveCommand}" />
+          <Button Content="Cancel" IsCancel="True" />
+      </StackPanel>
+
+      <!-- WinUI: access keys show when Alt is pressed; accelerators work without showing anything -->
+      <StackPanel TabFocusNavigation="Cycle">
+          <TextBox x:Name="CustomerBox" Header="Customer" AccessKey="C" />
+          <Button Content="Save" AccessKey="S" Command="{x:Bind ViewModel.SaveCommand}">
+              <Button.KeyboardAccelerators>
+                  <KeyboardAccelerator Modifiers="Control" Key="S" />
+              </Button.KeyboardAccelerators>
+          </Button>
+      </StackPanel>
+    expected: "Without a mouse: Alt+C reaches the customer box, Alt+S or Ctrl+S saves, Enter and Esc press Save and Cancel in WPF, and Tab cycles inside the dialog instead of leaving it."
+    sources:
+      - title: Access keys — Windows apps
+        url: https://learn.microsoft.com/en-us/windows/apps/develop/input/access-keys
+      - title: Keyboard accelerators — Windows apps
+        url: https://learn.microsoft.com/en-us/windows/apps/develop/input/keyboard-accelerators
+      - title: KeyboardNavigation.TabNavigation — WPF API
+        url: https://learn.microsoft.com/en-us/dotnet/api/system.windows.input.keyboardnavigation.tabnavigation?view=windowsdesktop-9.0
+    validation:
+      status: excerpt
+      host: "a WPF app on Windows (the WPF part built with EnableWindowsTargeting and warnings as errors) or a WinUI 3 app (its XAML needs Windows' XAML compiler)"
+
+  - id: announcements
+    kind: code
+    title: Announce changes that happen off focus
+    note: "Announce changes the user is not focused on — a result count, a confirmation, a failed payment — politely, and interrupt only for errors."
+    prerequisites:
+      - "A .NET MAUI app, a WPF or WinUI app, or a Blazor Web App"
+    code: |-
+      // .NET MAUI (Microsoft.Maui.Accessibility): spoken only while a screen reader is on.
+      // Call it once the results arrive, not on every keystroke (debounce search-as-you-type)
+      ResultsLabel.Text = $"{orders.Count} orders";
+      SemanticScreenReader.Default.Announce($"{orders.Count} orders match \"{query}\"");
+
+      <!-- WPF / WinUI: mark the region live once -->
+      <TextBlock x:Name="StatusText" AutomationProperties.LiveSetting="Polite" />
+
+      // WPF (System.Windows.Automation.Peers): change the text, then raise the event
+      StatusText.Text = "Order A-1042 paid";
+      UIElementAutomationPeer.CreatePeerForElement(StatusText)
+          .RaiseAutomationEvent(AutomationEvents.LiveRegionChanged);
+
+      // WinUI (Microsoft.UI.Xaml.Automation.Peers): the same event
+      FrameworkElementAutomationPeer.FromElement(StatusText)?
+          .RaiseAutomationEvent(AutomationEvents.LiveRegionChanged);
+
+      @* Blazor: the live region is in the page from the start; only its text changes *@
+      <div role="status" aria-live="polite" class="visually-hidden">@statusMessage</div>
+      <div role="alert">@paymentError</div>
+      @code {
+          private string statusMessage = "";
+          private string? paymentError;
+          private async Task PayAsync()
+          {
+              (statusMessage, paymentError) = ("", null);
+              StateHasChanged();                    // empty the region first, so paying twice is announced twice
+              await Task.Yield();
+              try
+              {
+                  await Payments.ChargeAsync(order);
+                  statusMessage = $"Order {order.Number} paid";
+              }
+              catch (PaymentDeclinedException declined) { paymentError = declined.Message; }
+          }
+      }
+    expected: "Once the results arrive the screen reader says: 12 orders match \"cocoa\". Paying says \"Order A-1042 paid\" without moving focus, and says it again when paying twice. A payment error is read at once because `role=\"alert\"` is assertive."
+    sources:
+      - title: Semantic screen reader — .NET MAUI
+        url: https://learn.microsoft.com/en-us/dotnet/maui/fundamentals/accessibility?view=net-maui-9.0#semantic-screen-reader
+      - title: AutomationProperties.LiveSetting — WinUI (Windows App SDK)
+        url: https://learn.microsoft.com/en-us/windows/windows-app-sdk/api/winrt/microsoft.ui.xaml.automation.automationproperties.livesetting
+      - title: "ARIA live regions — MDN"
+        url: https://developer.mozilla.org/en-US/docs/Web/Accessibility/ARIA/Guides/Live_regions
+    validation:
+      status: excerpt
+      host: "a .NET MAUI, WPF or WinUI app, or a Blazor Web App, with a screen reader running"
+
+  - id: scaling-contrast-motion
+    kind: code
+    title: Text scaling and reduced motion
+    note: "Let text grow and layouts follow it, and read the reduce-motion setting before animating — MAUI has no cross-platform API for it, so ask each platform."
+    prerequisites:
+      - "A .NET MAUI app (the helper uses the platform `#if` symbols), a WPF or WinUI app, or a Blazor Web App"
+    code: |-
+      <!-- .NET MAUI: FontAutoScalingEnabled is true by default; rows size to their text -->
+      <Grid RowDefinitions="Auto,Auto" ColumnDefinitions="*,Auto">
+          <Label Text="{Binding Customer}" LineBreakMode="WordWrap" />
+          <Label Grid.Column="1" Text="{Binding Total, StringFormat='{0:C}'}" />
+      </Grid>
+
+      // .NET MAUI has no cross-platform reduce-motion setting: ask each platform
+      public static bool PrefersReducedMotion()
+      {
+      #if IOS || MACCATALYST
+          return UIKit.UIAccessibility.IsReduceMotionEnabled;
+      #elif ANDROID
+          var resolver = Android.App.Application.Context.ContentResolver;
+          var scale = Android.Provider.Settings.Global.GetFloat(
+              resolver, Android.Provider.Settings.Global.AnimatorDurationScale, 1f);
+          return scale == 0f;                                       // "Remove animations" is on
+      #elif WINDOWS
+          return !new Windows.UI.ViewManagement.UISettings().AnimationsEnabled;
+      #else
+          return false;
+      #endif
+      }
+
+      // WPF: SystemParameters.ClientAreaAnimation is false when Windows animations are turned off
+
+      /* Blazor CSS: rem units follow the browser's text size; animate only when the user allows it */
+      .order-total { font-size: 1.125rem; }
+      @media (prefers-reduced-motion: reduce) {
+          * { animation: none !important; transition: none !important; }
+      }
+    expected: "At the largest text size the customer name wraps instead of being cut off, and with reduce motion (or Remove animations) on, the app and the page skip their transitions."
+    sources:
+      - title: Fonts in .NET MAUI (FontAutoScalingEnabled)
+        url: https://learn.microsoft.com/en-us/dotnet/maui/user-interface/fonts?view=net-maui-9.0
+      - title: UISettings.AnimationsEnabled — Windows API
+        url: https://learn.microsoft.com/en-us/uwp/api/windows.ui.viewmanagement.uisettings.animationsenabled
+      - title: "prefers-reduced-motion — MDN"
+        url: https://developer.mozilla.org/en-US/docs/Web/CSS/@media/prefers-reduced-motion
+    validation:
+      status: excerpt
+      host: "a .NET MAUI app targeting Android, iOS, Mac Catalyst and Windows; a WinUI or WPF app; a Blazor app's stylesheet"
+
+  - id: high-contrast-themes
+    kind: code
+    title: High contrast — Windows contrast themes and forced colours
+    note: "In a Windows contrast theme, take every colour from the system palette in its documented foreground/background pair, never from your brand palette."
+    prerequisites:
+      - "A WinUI 3 or WPF app on Windows, or a Blazor app's stylesheet"
+      - "Turn a contrast theme on with Left Alt + Left Shift + Print Screen, or in Settings > Accessibility > Contrast themes"
+    code: |-
+      <!-- WinUI App.xaml: in HighContrast, use the system colours the user picked, in their documented pairs -->
+      <ResourceDictionary.ThemeDictionaries>
+          <ResourceDictionary x:Key="Default">
+              <SolidColorBrush x:Key="BadgeBrush" Color="#F59E0B" />
+              <SolidColorBrush x:Key="BadgeTextBrush" Color="#111827" />
+              <SolidColorBrush x:Key="BadgeBorderBrush" Color="Transparent" />
+          </ResourceDictionary>
+          <ResourceDictionary x:Key="HighContrast">
+              <SolidColorBrush x:Key="BadgeBrush" Color="{ThemeResource SystemColorWindowColor}" />
+              <SolidColorBrush x:Key="BadgeTextBrush" Color="{ThemeResource SystemColorWindowTextColor}" />
+              <SolidColorBrush x:Key="BadgeBorderBrush" Color="{ThemeResource SystemColorWindowTextColor}" />
+          </ResourceDictionary>
+      </ResourceDictionary.ThemeDictionaries>
+
+      <!-- WinUI: {ThemeResource} re-resolves when the user switches into or between contrast themes -->
+      <Border Background="{ThemeResource BadgeBrush}" BorderBrush="{ThemeResource BadgeBorderBrush}"
+              BorderThickness="1" CornerRadius="4" Padding="6,2">
+          <TextBlock Text="Overdue" Foreground="{ThemeResource BadgeTextBrush}" />
+      </Border>
+
+      <!-- WPF: SystemColors brushes follow the contrast theme (SystemParameters.HighContrast in code) -->
+      <Border BorderBrush="{DynamicResource {x:Static SystemColors.WindowTextBrushKey}}" BorderThickness="1"
+              Background="{DynamicResource {x:Static SystemColors.WindowBrushKey}}">
+          <TextBlock Text="Overdue" Foreground="{DynamicResource {x:Static SystemColors.WindowTextBrushKey}}" />
+      </Border>
+
+      /* Blazor CSS: under Windows contrast themes the browser forces system colours; keep the edge */
+      @media (forced-colors: active) {
+          .badge { border: 1px solid CanvasText; }
+      }
+    expected: "In every built-in contrast theme (Aquatic, Desert, Dusk, Night sky) the badge shows the user's window text on the window background with a visible border, instead of the brand's dark text on amber."
+    sources:
+      - title: Contrast themes — Windows apps
+        url: https://learn.microsoft.com/en-us/windows/apps/design/accessibility/high-contrast-themes
+      - title: SystemParameters.HighContrast — WPF API
+        url: https://learn.microsoft.com/en-us/dotnet/api/system.windows.systemparameters.highcontrast?view=windowsdesktop-9.0
+      - title: "forced-colors — MDN"
+        url: https://developer.mozilla.org/en-US/docs/Web/CSS/@media/forced-colors
+    validation:
+      status: excerpt
+      host: "a WinUI 3 or WPF app on Windows (the WPF part compiled with EnableWindowsTargeting; the WinUI XAML needs Windows' XAML compiler), or a Blazor stylesheet"
+
+  - id: contrast-check
+    kind: code
+    title: Check contrast in a test
+    note: "Compute the WCAG contrast ratio for every foreground/background token pair of the theme, and in a test project assert that none fails, so a palette change cannot ship unreadable text."
+    prerequisites: *run
+    code: |-
+      using System.Globalization;
+
+      (string Use, string Foreground, string Background, bool LargeText)[] pairs =      // the theme's token pairs
+      [
+          ("body text", "#1F2937", "#FFFFFF", false),
+          ("secondary text", "#9CA3AF", "#FFFFFF", false),
+          ("button label", "#FFFFFF", "#2563EB", false),
+          ("price badge", "#FFFFFF", "#F59E0B", true),
+          ("dark theme text", "#E5E7EB", "#111827", false),
+      ];
+
+      var failures = 0;           // in a test project: Assert.True(passed, use), one [Theory] row per pair
+      foreach (var (use, foreground, background, largeText) in pairs)
+      {
+          var ratio = Contrast.Ratio(Contrast.Parse(foreground), Contrast.Parse(background));
+          var required = largeText ? 3.0 : 4.5;          // WCAG 2.2 AA: 4.5:1 text, 3:1 large text and UI parts
+          var passed = ratio >= required;
+          if (!passed) failures++;
+          var line = FormattableString.Invariant($"{use,-16} {ratio,5:F2}:1  needs {required:F1}");
+          Console.WriteLine($"{line}  {(passed ? "pass" : "FAIL")}");
+      }
+      Console.WriteLine($"{failures} of {pairs.Length} pairs fail");
+
+      static class Contrast
+      {
+          public static (byte R, byte G, byte B) Parse(string hex) => (Hex(hex, 1), Hex(hex, 3), Hex(hex, 5));
+
+          public static double Ratio((byte, byte, byte) a, (byte, byte, byte) b)
+          {
+              var (lighter, darker) = (Math.Max(Luminance(a), Luminance(b)), Math.Min(Luminance(a), Luminance(b)));
+              return (lighter + 0.05) / (darker + 0.05);
+          }
+
+          // relative luminance from sRGB, as defined by WCAG
+          private static double Luminance((byte R, byte G, byte B) c) =>
+              0.2126 * Linear(c.R) + 0.7152 * Linear(c.G) + 0.0722 * Linear(c.B);
+
+          private static double Linear(byte channel)
+          {
+              var c = channel / 255.0;
+              return c <= 0.04045 ? c / 12.92 : Math.Pow((c + 0.055) / 1.055, 2.4);
+          }
+
+          private static byte Hex(string hex, int at) =>
+              byte.Parse(hex.AsSpan(at, 2), NumberStyles.HexNumber, CultureInfo.InvariantCulture);
+      }
+    expected: |-
+      body text        14.68:1  needs 4.5  pass
+      secondary text    2.54:1  needs 4.5  FAIL
+      button label      5.17:1  needs 4.5  pass
+      price badge       2.15:1  needs 3.0  FAIL
+      dark theme text  14.33:1  needs 4.5  pass
+      2 of 5 pairs fail
+    sources:
+      - title: "Understanding Success Criterion 1.4.3: Contrast (Minimum) — WCAG"
+        url: https://www.w3.org/WAI/WCAG22/Understanding/contrast-minimum.html
+      - title: Relative luminance — WCAG 2.2 definition
+        url: https://www.w3.org/TR/WCAG22/#dfn-relative-luminance
+    validation: *ran
+
+  - id: automation-peer
+    kind: code
+    title: A custom control made accessible — AutomationPeer in outline
+    note: "A control drawn from scratch is invisible to UI Automation until a peer gives its role, name and value and lets assistive technology change it (WPF here; WinUI overrides `GetPatternCore`)."
+    prerequisites:
+      - "A WPF app on Windows (`dotnet new wpf`); the control also needs focus and arrow-key handling (`Focusable`, `OnKeyDown`)"
+    code: |-
+      using System.Windows;
+      using System.Windows.Automation;
+      using System.Windows.Automation.Peers;
+      using System.Windows.Automation.Provider;
+      using System.Windows.Controls;
+
+      public class StarRating : Control                    // a 1–5 star picker drawn by its template
+      {
+          public static readonly DependencyProperty ValueProperty = DependencyProperty.Register(
+              nameof(Value), typeof(double), typeof(StarRating), new PropertyMetadata(1.0, OnValueChanged));
+          public double Value { get => (double)GetValue(ValueProperty); set => SetValue(ValueProperty, value); }
+
+          protected override AutomationPeer OnCreateAutomationPeer() => new StarRatingAutomationPeer(this);
+
+          private static void OnValueChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+          {
+              // tell a listening screen reader the value moved
+              if (UIElementAutomationPeer.FromElement((StarRating)d) is StarRatingAutomationPeer peer)
+                  peer.RaisePropertyChangedEvent(
+                      RangeValuePatternIdentifiers.ValueProperty, e.OldValue, e.NewValue);
+          }
+      }
+
+      public class StarRatingAutomationPeer(StarRating owner)
+          : FrameworkElementAutomationPeer(owner), IRangeValueProvider
+      {
+          protected override string GetClassNameCore() => nameof(StarRating);
+          protected override AutomationControlType GetAutomationControlTypeCore() => AutomationControlType.Slider;
+          // WinUI: override GetPatternCore instead
+          public override object GetPattern(PatternInterface pattern) =>
+              pattern == PatternInterface.RangeValue ? this : base.GetPattern(pattern);
+
+          private StarRating Rating => (StarRating)Owner;
+          public double Value => Rating.Value;
+          public double Minimum => 1;
+          public double Maximum => 5;
+          public double SmallChange => 1;
+          public double LargeChange => 1;
+          public bool IsReadOnly => !Rating.IsEnabled;
+          public void SetValue(double value) => Rating.Value = Math.Clamp(value, Minimum, Maximum);
+      }
+    expected: "Narrator reads \"Rating, slider, 4\" (the name comes from `AutomationProperties.Name` on the instance). Accessibility Insights shows the RangeValue pattern, and changing the value from the pattern moves the stars."
+    sources:
+      - title: UI Automation of a WPF custom control
+        url: https://learn.microsoft.com/en-us/dotnet/desktop/wpf/controls/ui-automation-of-a-wpf-custom-control
+      - title: Custom automation peers — Windows apps
+        url: https://learn.microsoft.com/en-us/windows/apps/design/accessibility/custom-automation-peers
+    validation:
+      status: excerpt
+      host: a WPF app on Windows (WindowsDesktop runtime)
+
+  - id: automated-audit
+    kind: code
+    title: An automated audit in the test suite — axe with Playwright for Blazor
+    note: "Run axe on every page in end-to-end tests and Accessibility Insights FastPass on Windows and Android builds, then test by ear with the platform's screen reader, which no tool replaces."
+    prerequisites:
+      - "An NUnit test project (`dotnet new nunit`) with `Microsoft.Playwright.NUnit` and `Deque.AxeCore.Playwright`; install browsers with `pwsh bin/Debug/net9.0/playwright.ps1 install`"
+      - "The Blazor app running at the base URL (or started by the test's fixture)"
+    code: |-
+      using Deque.AxeCore.Commons;
+      using Deque.AxeCore.Playwright;
+      using Microsoft.Playwright;
+      using Microsoft.Playwright.NUnit;
+
+      public class AccessibilityTests : PageTest
+      {
+          public override BrowserNewContextOptions ContextOptions() => new()
+          {
+              BaseURL = Environment.GetEnvironmentVariable("BASE_URL") ?? "https://localhost:7043",
+              IgnoreHTTPSErrors = true,                          // the dev certificate is not trusted on CI runners
+          };
+
+          [TestCase("/orders")]
+          [TestCase("/orders/A-1042")]
+          [TestCase("/checkout")]
+          public async Task PageHasNoWcagAaViolations(string path)
+          {
+              await Page.GotoAsync(path);
+              await Expect(Page.GetByRole(AriaRole.Heading, new() { Level = 1 })).ToBeVisibleAsync();
+
+              // each axe rule carries the tag of the one WCAG version and level that introduced it
+              var options = new AxeRunOptions
+              {
+                  RunOnly = new RunOnlyOptions
+                  {
+                      Type = "tag",
+                      Values = ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa"],
+                  },
+              };
+              AxeResult result = await Page.RunAxe(options);
+
+              Assert.That(result.Violations.Select(v => $"{v.Id}: {v.Help}"), Is.Empty);
+          }
+      }
+    expected: "`dotnet test` fails with the rule id and help text, for example `color-contrast: Elements must meet minimum color contrast ratio thresholds`, for each violation on a page. Clean pages pass."
+    applies:
+      platforms: [dotnet, browser]
+      requires: [Microsoft.Playwright.NUnit, Deque.AxeCore.Playwright]
+      versions: { csharp: ">=13", dotnet: ">=9", playwright: ">=1.40" }
+    sources:
+      - title: Deque.AxeCore.Playwright — axe-core-nuget
+        url: https://github.com/dequelabs/axe-core-nuget/blob/develop/packages/playwright/README.md
+      - title: Accessibility Insights
+        url: https://accessibilityinsights.io/
+    validation:
+      status: excerpt
+      host: "an NUnit test project with Microsoft.Playwright.NUnit and Deque.AxeCore.Playwright (not installed here), against a running Blazor app"
+
+  - id: accessibility-rules
+    kind: rules
+    title: Test it, and the pitfalls
+    note: Automated audits catch only part of the problems — the rest needs a person with a screen reader.
+    items:
+      - tone: good
+        text: "Test by ear on every platform you ship: **TalkBack** (Android), **VoiceOver** (iOS, macOS), **Narrator** (Windows, Win+Ctrl+Enter). Navigate the whole flow without looking."
+      - tone: good
+        text: "Run **Accessibility Insights for Windows** FastPass on WPF, WinUI and MAUI Windows builds; it lists unnamed controls, missing patterns and contrast failures."
+      - tone: good
+        text: "Prefer **semantic properties** in MAUI. `AutomationProperties.Name`, `HelpText` and `LabeledBy` are documented as deprecated there since .NET 8, but give no compiler warning."
+      - tone: good
+        text: "Localize descriptions and hints like any other UI text, and keep `AutomationId` stable and untranslated for tests."
+      - tone: bad
+        text: "Colour as the only signal (a red dot for \"failed\"), fixed `HeightRequest` on text, and `FontAutoScalingEnabled=\"False\"` on body text."
+      - tone: bad
+        text: "Positive `tabindex` in Blazor, or markup out of reading order in MAUI (which has no `TabIndex`). Fix the order of the markup; use `SemanticOrderView` only where the markup order cannot change."
+      - tone: bad
+        text: "A `Description` on a MAUI `Label` (it replaces the spoken text) or on a container whose children must stay reachable on iOS."
+      - tone: neutral
+        text: "Target sizes: at least 44×44 points on iOS and 48×48 dp on Android for anything tappable. WCAG 2.2 sets a 24×24 CSS-pixel minimum."

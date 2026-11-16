@@ -1,0 +1,742 @@
+id: cs-networking-rest
+concept: networking.rest
+scope: platform
+title: "Networking — REST with HttpClient"
+group: "Networking & media"
+subtitle: "Typed JSON calls, one long-lived client, errors as values, timeouts, retry and token refresh in DelegatingHandlers, pagination, ETags and progress — every runnable piece tested through a fake HttpMessageHandler."
+applies:
+  platforms: [dotnet]
+  runtime: .NET (System.Net.Http, System.Net.Http.Json); the same code runs in .NET MAUI, WPF, WinUI and Blazor
+  versions: { csharp: ">=12", dotnet: ">=8" }
+sources:
+  - title: Make HTTP requests with the HttpClient class — .NET
+    url: https://learn.microsoft.com/en-us/dotnet/fundamentals/networking/http/httpclient
+  - title: HttpClient guidelines for .NET
+    url: https://learn.microsoft.com/en-us/dotnet/fundamentals/networking/http/httpclient-guidelines
+  - title: IHttpClientFactory with .NET
+    url: https://learn.microsoft.com/en-us/dotnet/core/extensions/httpclient-factory
+  - title: Build resilient HTTP apps — .NET
+    url: https://learn.microsoft.com/en-us/dotnet/core/resilience/http-resilience
+cards:
+  - id: httpclient-pieces
+    kind: table
+    title: The pieces of HttpClient, and what you add
+    note: "`HttpClient` is a thin front over a handler pipeline, so cross-cutting behaviour (retry, auth, logging) goes in a `DelegatingHandler`, never in each call."
+    headers: [Piece, What it gives you, What you add]
+    rows:
+      - - "`HttpClient`"
+        - "`GetAsync` / `SendAsync`, `BaseAddress`, `DefaultRequestHeaders`, `Timeout` (100 s by default)"
+        - "**one long-lived instance** (or a factory); per-call headers on an `HttpRequestMessage`"
+      - - "`System.Net.Http.Json`"
+        - "`GetFromJsonAsync`, `PostAsJsonAsync`, `ReadFromJsonAsync` with web defaults (camelCase, case-insensitive)"
+        - "a typed error model: `GetFromJsonAsync` throws on a non-success status, the others hand you the response"
+      - - "`SocketsHttpHandler`"
+        - "the connection pool, HTTP/2 and HTTP/3, TLS — the default on desktop and server"
+        - "`PooledConnectionLifetime` so a long-lived client sees DNS changes; on MAUI Android and iOS keep the platform handler"
+      - - "`DelegatingHandler`"
+        - "a link in the pipeline that sees every request and response"
+        - "retry with backoff, bearer tokens and refresh, logging, a fake in tests"
+      - - "`IHttpClientFactory`"
+        - "pooled handlers with a managed lifetime, typed clients, DI"
+        - "`AddHttpClient<T>()`, `Microsoft.Extensions.Http.Resilience`"
+      - - "`HttpCompletionOption.ResponseHeadersRead`"
+        - "returns once headers arrive instead of buffering the body"
+        - "streamed downloads with progress — and disposing the response"
+      - - "`MultipartFormDataContent`"
+        - "a file plus form fields in one request"
+        - "`StreamContent(File.OpenRead(path))` as one part; wrap it in a progress-reporting content for progress"
+      - - "HTTP caching"
+        - "`SocketsHttpHandler` keeps no HTTP cache; in Blazor WebAssembly `fetch` goes through the browser's"
+        - "ETags and `If-None-Match` by hand; `SetBrowserRequestCache` per request in Blazor WebAssembly"
+      - - "Blazor WebAssembly"
+        - "`HttpClient` runs on the browser's `fetch`: no sockets, CORS applies"
+        - "the `HttpClient` the template registers; never a secret in the request"
+  - id: typed-get-and-post
+    kind: code
+    title: A typed GET and POST
+    note: "`GetFromJsonAsync` throws `HttpRequestException` on a non-2xx status, so when a 404 is an expected answer take the response and read the status yourself."
+    prerequisites: &run
+      - .NET 8 SDK or later
+      - "`dotnet new console -o Demo`, replace `Demo/Program.cs` with the example, then `dotnet run --project Demo`"
+    code: |-
+      using System.Net;
+      using System.Net.Http.Headers;
+      using System.Net.Http.Json;
+
+      using var http = new HttpClient(new FakeShop()) { BaseAddress = new Uri("https://shop.example/api/") };
+      http.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+      http.DefaultRequestHeaders.UserAgent.ParseAdd("OrdersApp/1.0");
+
+      // A relative path with no leading slash; throws on a non-2xx status.
+      Order? order = await http.GetFromJsonAsync<Order>("orders/o-1");
+      Console.WriteLine($"{order!.Id} is {order.Status}");
+
+      using var created = await http.PostAsJsonAsync("orders", new NewOrder("sku-42", 2));
+      created.EnsureSuccessStatusCode();
+      var saved = await created.Content.ReadFromJsonAsync<Order>();
+      Console.WriteLine($"{(int)created.StatusCode} {saved!.Id} at {created.Headers.Location}");
+
+      // A status you expect is an answer, not an exception: read it.
+      using var missing = await http.GetAsync("orders/o-9");
+      if (missing.StatusCode == HttpStatusCode.NotFound) Console.WriteLine("o-9: not found");
+
+      try { await http.GetFromJsonAsync<Order>("orders/o-9"); }
+      catch (HttpRequestException e) { Console.WriteLine($"GetFromJsonAsync threw, status {e.StatusCode}"); }
+
+      record Order(string Id, string Sku, string Status);
+
+      record NewOrder(string Sku, int Quantity);
+
+      // The test seam: HttpClient sends through whatever handler it is given.
+      sealed class FakeShop : HttpMessageHandler
+      {
+          protected override async Task<HttpResponseMessage> SendAsync(
+              HttpRequestMessage request, CancellationToken ct)
+          {
+              var path = request.RequestUri!.AbsolutePath;
+              if (request.Method == HttpMethod.Post && path == "/api/orders")
+              {
+                  var draft = (await request.Content!.ReadFromJsonAsync<NewOrder>(ct))!;
+                  var reply = new HttpResponseMessage(HttpStatusCode.Created);
+                  reply.Content = JsonContent.Create(new Order("o-2", draft.Sku, "pending"));
+                  reply.Headers.Location = new Uri("/api/orders/o-2", UriKind.Relative);
+                  return reply;
+              }
+              if (path != "/api/orders/o-1") return new HttpResponseMessage(HttpStatusCode.NotFound);
+              return new HttpResponseMessage { Content = JsonContent.Create(new Order("o-1", "sku-7", "shipped")) };
+          }
+      }
+    expected: |-
+      o-1 is shipped
+      201 o-2 at /api/orders/o-2
+      o-9: not found
+      GetFromJsonAsync threw, status NotFound
+    sources:
+      - title: HttpClientJsonExtensions — .NET API
+        url: https://learn.microsoft.com/en-us/dotnet/api/system.net.http.json.httpclientjsonextensions
+    validation: &ran
+      status: ran
+      toolchain: .NET SDK 9.0.304 (net9.0, C# 13)
+      date: "2026-11-16"
+  - id: errors-timeouts-cancellation
+    kind: code
+    title: Errors as values — problem details and unreadable bodies
+    note: "Map every HTTP outcome a screen must handle to one result type, including the 200 whose body is a proxy's HTML page, `null`, half an order or in an unknown charset."
+    prerequisites:
+      - .NET 9 SDK or later
+      - "`dotnet new console -o Demo`, replace `Demo/Program.cs` with the example, then `dotnet run --project Demo`"
+    code: |-
+      using System.Net;
+      using System.Net.Http.Headers;
+      using System.Net.Http.Json;
+      using System.Text.Json;
+
+      var strict = new JsonSerializerOptions(JsonSerializerDefaults.Web)     // nulls or gaps in a 200: refused
+          { RespectRequiredConstructorParameters = true, RespectNullableAnnotations = true };
+      HttpResponseMessage[] replies =
+      [
+          Reply(200, "application/json", """{"id":"o-1","status":"shipped"}"""),
+          Reply(404, "application/problem+json", """{"title":"Order not found"}"""),
+          Reply(200, "text/html", "<html>Back soon</html>"),                     // a proxy's maintenance page
+          Reply(200, "application/json", "null"),
+          Reply(200, "application/json", """{"id":"o-1"}"""),                   // half an order
+          Reply(200, "application/json; charset=klingon", """{"id":"o-1","status":"shipped"}"""),
+      ];
+      foreach (var reply in replies)
+          Console.WriteLine(await ReadOrder(reply, strict, CancellationToken.None));
+
+      static async Task<ApiResult> ReadOrder(
+          HttpResponseMessage response, JsonSerializerOptions options, CancellationToken ct)
+      {
+          try
+          {
+              if (response.IsSuccessStatusCode)
+                  return await response.Content.ReadFromJsonAsync<Order>(options, ct) is { } order
+                      ? new Ok(order) : new Unreadable();
+              var isProblem = response.Content.Headers.ContentType?.MediaType == "application/problem+json";
+              var problem = isProblem ? await response.Content.ReadFromJsonAsync<Problem>(ct) : null;
+              return new Failed((int)response.StatusCode, problem?.Title ?? response.ReasonPhrase);
+          }
+          catch (Exception e) when (e is JsonException or InvalidOperationException) { return new Unreadable(); }
+      }
+
+      static HttpResponseMessage Reply(int status, string type, string body) =>
+          new((HttpStatusCode)status) { Content = new StringContent(body, MediaTypeHeaderValue.Parse(type)) };
+
+      abstract record ApiResult;
+
+      record Ok(Order Order) : ApiResult;
+
+      record Failed(int Status, string? Title) : ApiResult;
+
+      record Unreadable : ApiResult;
+
+      record Order(string Id, string Status);
+
+      record Problem(string? Title, string? Detail);    // RFC 9457 problem details
+    expected: |-
+      Ok { Order = Order { Id = o-1, Status = shipped } }
+      Failed { Status = 404, Title = Order not found }
+      Unreadable { }
+      Unreadable { }
+      Unreadable { }
+      Unreadable { }
+    applies:
+      versions: { csharp: ">=12", dotnet: ">=9" }
+    sources:
+      - title: "RFC 9457: Problem Details for HTTP APIs"
+        url: https://www.rfc-editor.org/rfc/rfc9457
+    validation: *ran
+  - id: timeouts-and-cancellation
+    kind: code
+    title: Timeouts, cancellation and being offline
+    note: "A timeout and the user leaving both throw `OperationCanceledException`, so tell them apart by the caller's token, and give each its own message."
+    prerequisites: *run
+    code: |-
+      using System.Net;
+
+      var api = new OrdersApi(new HttpClient(new SlowOrDown()) { BaseAddress = new Uri("https://shop.example/") });
+      Console.WriteLine(await api.GetStatus("o-slow"));
+      Console.WriteLine(await api.GetStatus("o-down"));
+
+      using var leaving = new CancellationTokenSource();
+      leaving.Cancel();
+      try { await api.GetStatus("o-1", leaving.Token); }
+      catch (OperationCanceledException) { Console.WriteLine("cancelled by the caller: show nothing"); }
+
+      sealed class OrdersApi(HttpClient http)
+      {
+          public async Task<string> GetStatus(string id, CancellationToken ct = default)
+          {
+              // HttpClient.Timeout caps every call (100 s by default); a linked source sets this call's budget.
+              using var perCall = CancellationTokenSource.CreateLinkedTokenSource(ct);
+              perCall.CancelAfter(TimeSpan.FromMilliseconds(200));
+              try
+              {
+                  using var response = await http.GetAsync($"orders/{id}", perCall.Token);
+                  return $"status {(int)response.StatusCode}";
+              }
+              catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+              {
+                  return "timed out: offer Retry";
+              }
+              catch (HttpRequestException e) { return $"offline ({e.HttpRequestError}): show the cached copy"; }
+          }
+      }
+
+      sealed class SlowOrDown : HttpMessageHandler
+      {
+          protected override async Task<HttpResponseMessage> SendAsync(
+              HttpRequestMessage request, CancellationToken ct)
+          {
+              if (request.RequestUri!.AbsolutePath == "/orders/o-down")
+                  throw new HttpRequestException(HttpRequestError.NameResolutionError);
+              await Task.Delay(Timeout.Infinite, ct);
+              return new HttpResponseMessage(HttpStatusCode.OK);
+          }
+      }
+    expected: |-
+      timed out: offer Retry
+      offline (NameResolutionError): show the cached copy
+      cancelled by the caller: show nothing
+    sources:
+      - title: HttpClient.Timeout — .NET API
+        url: https://learn.microsoft.com/en-us/dotnet/api/system.net.http.httpclient.timeout
+      - title: HttpRequestException.HttpRequestError — .NET API
+        url: https://learn.microsoft.com/en-us/dotnet/api/system.net.http.httprequestexception.httprequesterror
+    validation: *ran
+  - id: retry-backoff-handler
+    kind: code
+    title: Retry with backoff in a DelegatingHandler
+    note: "Retry only what is safe to repeat and never the caller's cancellation, free the failed response before waiting, and take the delay from an injected policy (next card) so the test sleeps for nothing."
+    prerequisites: *run
+    code: |-
+      using System.Net;
+
+      var replies = new Queue<Func<HttpResponseMessage>>([
+          () => throw new HttpRequestException("connection reset"),
+          () => new(HttpStatusCode.ServiceUnavailable),
+          () => new(HttpStatusCode.OK),
+      ]);
+      var retry = new RetryHandler(
+          nextDelay: (_, attempt) => TimeSpan.FromMilliseconds(50 * Math.Pow(2, attempt)),   // RetryDelays.Next
+          sleep: (wait, _) => Console.Out.WriteLineAsync($"waited {wait.TotalMilliseconds} ms"))   // Task.Delay
+          { InnerHandler = new Scripted(replies) };
+      var scripted = replies.Count;
+      using var response = await new HttpClient(retry).GetAsync("https://shop.example/orders");
+      Console.WriteLine($"{(int)response.StatusCode} after {scripted - replies.Count} attempts");
+
+      sealed class RetryHandler(Func<HttpResponseMessage?, int, TimeSpan?> nextDelay,
+          Func<TimeSpan, CancellationToken, Task> sleep, int retries = 4) : DelegatingHandler
+      {
+          protected override async Task<HttpResponseMessage> SendAsync(
+              HttpRequestMessage request, CancellationToken ct)
+          {
+              var safe = request.Method.Method is not ("POST" or "PATCH")
+                  || request.Headers.Contains("Idempotency-Key");
+              for (var attempt = 0; ; attempt++)
+              {
+                  HttpResponseMessage? response;
+                  try { response = await base.SendAsync(request, ct); }
+                  catch (HttpRequestException) when (safe && attempt < retries) { response = null; }
+
+                  if (response is { } r && (!safe || attempt == retries || !IsTransient(r))) return r;
+                  if (nextDelay(response, attempt) is not { } wait)
+                      return response ?? throw new HttpRequestException("gave up after a network failure");
+                  response?.Dispose();                                                  // free the connection first
+                  await sleep(wait, ct);
+              }
+          }
+
+          static bool IsTransient(HttpResponseMessage r) => (int)r.StatusCode is 408 or 429 or (>= 502 and <= 504);
+      }
+
+      sealed class Scripted(Queue<Func<HttpResponseMessage>> replies) : HttpMessageHandler
+      {
+          protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
+              => Task.FromResult(replies.Dequeue()());
+      }
+    expected: |-
+      waited 50 ms
+      waited 100 ms
+      200 after 3 attempts
+    sources:
+      - title: DelegatingHandler — .NET API
+        url: https://learn.microsoft.com/en-us/dotnet/api/system.net.http.delegatinghandler
+    validation: *ran
+  - id: retry-after-policy
+    kind: code
+    title: "The delay policy: Retry-After, a cap, exponential backoff and jitter"
+    note: "Wait what the server asks for (seconds or an HTTP date) unless it is longer than the cap, in which case give up and show the error, and otherwise back off exponentially with full jitter."
+    prerequisites: *run
+    code: |-
+      using System.Net;
+      using System.Net.Http.Headers;
+
+      var now = DateTimeOffset.UnixEpoch;
+      var delays = new RetryDelays(new FixedClock(now), random: () => 0.5, cap: TimeSpan.FromSeconds(10));
+
+      Show("network failure, attempt 0", null, 0);
+      Show("503, attempt 3", new(HttpStatusCode.ServiceUnavailable), 3);
+      Show("503, Retry-After: 2", Hinted(new(TimeSpan.FromSeconds(2))), 1);
+      Show("503, Retry-After: <a date 5 s away>", Hinted(new(now.AddSeconds(5))), 1);
+      Show("503, Retry-After: 3600", Hinted(new(TimeSpan.FromHours(1))), 1);
+
+      void Show(string reply, HttpResponseMessage? response, int attempt)
+      {
+          var next = delays.Next(response, attempt);
+          Console.WriteLine($"{reply} -> {(next is { } wait ? $"wait {wait.TotalMilliseconds} ms" : "give up")}");
+      }
+
+      static HttpResponseMessage Hinted(RetryConditionHeaderValue retryAfter) =>
+          new(HttpStatusCode.ServiceUnavailable) { Headers = { RetryAfter = retryAfter } };
+
+      sealed class RetryDelays(TimeProvider time, Func<double> random, TimeSpan cap)
+      {
+          // null means "stop retrying": return the response and let the screen show it.
+          public TimeSpan? Next(HttpResponseMessage? response, int attempt)
+          {
+              var after = response?.Headers.RetryAfter;                       // seconds, or an HTTP date
+              var hint = after?.Delta ?? after?.Date - time.GetUtcNow();
+              if (hint > cap) return null;                                    // don't sleep for an hour
+              if (hint is { } wait) return wait > TimeSpan.Zero ? wait : TimeSpan.Zero;
+              var ceiling = Math.Min(cap.TotalMilliseconds, 100 * Math.Pow(2, attempt));   // exponential, capped
+              return TimeSpan.FromMilliseconds(random() * ceiling);                        // "full jitter"
+          }
+      }
+
+      sealed class FixedClock(DateTimeOffset now) : TimeProvider
+      {
+          public override DateTimeOffset GetUtcNow() => now;
+      }
+    expected: |-
+      network failure, attempt 0 -> wait 50 ms
+      503, attempt 3 -> wait 400 ms
+      503, Retry-After: 2 -> wait 2000 ms
+      503, Retry-After: <a date 5 s away> -> wait 5000 ms
+      503, Retry-After: 3600 -> give up
+    sources:
+      - title: "RFC 9110: HTTP Semantics — Retry-After"
+        url: https://www.rfc-editor.org/rfc/rfc9110#name-retry-after
+      - title: Exponential Backoff And Jitter — AWS Architecture Blog
+        url: https://aws.amazon.com/blogs/architecture/exponential-backoff-and-jitter/
+    validation: *ran
+  - id: lifetime-factory-resilience
+    kind: code
+    title: "IHttpClientFactory: a typed client with the standard resilience pipeline"
+    note: "In a MAUI, Blazor or ASP.NET Core host, register a typed client and let the factory own the handlers (no socket exhaustion, no stale DNS) and one resilience pipeline that does the two retry cards' work."
+    prerequisites:
+      - "A .NET 8+ app with a DI host (`MauiProgram`, a Blazor Web App, the generic host)"
+      - "`dotnet add package Microsoft.Extensions.Http.Resilience` — 9.1 or later for `DisableForUnsafeHttpMethods`; it brings `Microsoft.Extensions.Http` and Polly"
+    code: |-
+      using Microsoft.Extensions.DependencyInjection;
+      using Microsoft.Extensions.Http.Resilience;
+
+      // Called from MauiProgram.CreateMauiApp or Program.cs: builder.Services.AddShopApi();
+      public static class ShopServices
+      {
+          public static IServiceCollection AddShopApi(this IServiceCollection services)
+          {
+              services.AddHttpClient<OrdersApi>(client => client.BaseAddress = new Uri("https://shop.example/api/"))
+                  .AddStandardResilienceHandler(options =>
+                  {
+                      // Rate limit, total timeout, retry, circuit breaker, attempt timeout: one handler, never two.
+                      options.Retry.DisableForUnsafeHttpMethods();             // never replay a POST by accident
+                      options.Retry.MaxRetryAttempts = 4;
+                      options.AttemptTimeout.Timeout = TimeSpan.FromSeconds(5);
+                  });
+              return services;
+          }
+      }
+
+      // Typed clients are transient: inject them where needed, and never capture one in a singleton.
+      public sealed class OrdersApi(HttpClient http)
+      {
+          public Task<string> GetOrderJson(string id, CancellationToken ct) =>
+              http.GetStringAsync($"orders/{id}", ct);
+      }
+    expected: "`OrdersApi` gets a factory-managed `HttpClient` behind rate limiting, a total timeout, up to 4 retries of safe methods with jittered exponential backoff, a circuit breaker and a 5-second attempt timeout."
+    applies:
+      requires: [Microsoft.Extensions.Http.Resilience]
+      versions: { csharp: ">=12", dotnet: ">=8", microsoft-extensions-http-resilience: ">=9.1" }
+    sources:
+      - title: Build resilient HTTP apps — .NET
+        url: https://learn.microsoft.com/en-us/dotnet/core/resilience/http-resilience
+      - title: HttpClient guidelines for .NET
+        url: https://learn.microsoft.com/en-us/dotnet/fundamentals/networking/http/httpclient-guidelines
+    validation:
+      status: excerpt
+      host: an app with a DI host referencing Microsoft.Extensions.Http.Resilience 9.1 or later
+  - id: bearer-single-flight-refresh
+    kind: code
+    title: A single-flight token refresh, whatever its outcome
+    note: "When five requests find the token expired at once they join one in-flight refresh task under a lock, so one call to the token endpoint gives all five the same outcome: the new token, \"signed out\", or the network error."
+    prerequisites:
+      - .NET 9 SDK or later
+      - "`dotnet new console -o Demo`, replace `Demo/Program.cs` with the example, then `dotnet run --project Demo`"
+    code: |-
+      foreach (var outcome in new[] { "ok", "revoked", "unreachable" })
+      {
+          var tokens = new TokenStore("t-expired", async () =>
+          {
+              await Task.Delay(50);                                     // POST grant_type=refresh_token in the app
+              if (outcome == "revoked") throw new SignedOutException();                   // 400 invalid_grant
+              if (outcome == "unreachable") throw new HttpRequestException("token endpoint down");
+              return "t-fresh";
+          });
+          var results = await Task.WhenAll(Enumerable.Range(0, 5).Select(async _ =>
+          {
+              try { return await tokens.RefreshAsync("t-expired", CancellationToken.None); }
+              catch (SignedOutException) { return "signed out"; }
+              catch (HttpRequestException) { return "network error"; }
+          }));
+          Console.WriteLine($"{outcome}: {string.Join(",", results)}; token endpoint calls: {tokens.RefreshCalls}");
+      }
+
+      sealed class TokenStore(string initial, Func<Task<string>> refresh)
+      {
+          private readonly Lock gate = new();
+          private Task<string>? inFlight;
+          public string Current { get; private set; } = initial;
+          public int RefreshCalls { get; private set; }
+
+          public Task<string> RefreshAsync(string rejected, CancellationToken ct)
+          {
+              lock (gate)
+              {
+                  if (Current != rejected) return Task.FromResult(Current);            // refreshed meanwhile
+                  if (inFlight is not { IsCompleted: false }) inFlight = RunAsync();   // else join the one running
+                  return inFlight.WaitAsync(ct);               // one caller's cancellation leaves the rest waiting
+              }
+          }
+
+          // Every joiner gets the same outcome: the new token, SignedOutException, or the network error.
+          private async Task<string> RunAsync()
+          {
+              RefreshCalls++;
+              return Current = await refresh();
+          }
+      }
+
+      sealed class SignedOutException() : Exception("The session ended: sign in again.");
+    expected: |-
+      ok: t-fresh,t-fresh,t-fresh,t-fresh,t-fresh; token endpoint calls: 1
+      revoked: signed out,signed out,signed out,signed out,signed out; token endpoint calls: 1
+      unreachable: network error,network error,network error,network error,network error; token endpoint calls: 1
+    applies:
+      versions: { csharp: ">=13", dotnet: ">=9" }
+    sources:
+      - title: The lock statement and System.Threading.Lock — C#
+        url: https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/statements/lock
+      - title: "RFC 6749: OAuth 2.0 — Refreshing an Access Token"
+        url: https://www.rfc-editor.org/rfc/rfc6749#section-6
+    validation: *ran
+  - id: bearer-handler
+    kind: code
+    title: Bearer auth in a DelegatingHandler, retried once on 401
+    note: "The handler attaches the token, refreshes through the previous card's store on a 401 and resends once, so a second 401 or a `SignedOutException` reaches the caller as \"sign in again\"."
+    prerequisites: *run
+    code: |-
+      using System.Net;
+      using System.Net.Http.Headers;
+
+      var tokens = new FakeTokens(current: "t-expired", afterRefresh: "t-fresh");
+      using var http = new HttpClient(new BearerHandler(tokens) { InnerHandler = new AcceptsOnly("t-fresh") });
+      using var response = await http.GetAsync("https://shop.example/orders");
+      Console.WriteLine($"{(int)response.StatusCode}, now holding {tokens.Current}");
+
+      interface ITokenSource
+      {
+          string Current { get; }
+          Task<string> RefreshAsync(string rejected, CancellationToken ct);   // TokenStore in the app
+      }
+
+      sealed class BearerHandler(ITokenSource tokens) : DelegatingHandler
+      {
+          protected override async Task<HttpResponseMessage> SendAsync(
+              HttpRequestMessage request, CancellationToken ct)
+          {
+              var sent = tokens.Current;
+              request.Headers.Authorization = new("Bearer", sent);
+              var response = await base.SendAsync(request, ct);
+              if (response.StatusCode != HttpStatusCode.Unauthorized) return response;
+
+              response.Dispose();                                   // the refresh may throw SignedOutException
+              request.Headers.Authorization = new("Bearer", await tokens.RefreshAsync(sent, ct));
+              return await base.SendAsync(request, ct);                       // a second 401 reaches the caller
+          }
+      }
+
+      sealed class FakeTokens(string current, string afterRefresh) : ITokenSource
+      {
+          public string Current { get; private set; } = current;
+
+          public Task<string> RefreshAsync(string rejected, CancellationToken ct)
+          {
+              Current = afterRefresh;
+              return Task.FromResult(Current);
+          }
+      }
+
+      sealed class AcceptsOnly(string token) : HttpMessageHandler
+      {
+          protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
+              => Task.FromResult(new HttpResponseMessage(request.Headers.Authorization?.Parameter == token
+                  ? HttpStatusCode.OK : HttpStatusCode.Unauthorized));
+      }
+    expected: |-
+      200, now holding t-fresh
+    sources:
+      - title: DelegatingHandler — .NET API
+        url: https://learn.microsoft.com/en-us/dotnet/api/system.net.http.delegatinghandler
+    validation: *ran
+  - id: cursor-pagination
+    kind: code
+    title: Cursor pagination as an IAsyncEnumerable
+    note: "The caller writes `await foreach` and never sees pages, and stopping early stops fetching because each page is requested only when the previous one is used up."
+    prerequisites: *run
+    code: |-
+      using System.Net.Http.Json;
+      using System.Runtime.CompilerServices;
+      using System.Web;
+
+      var server = new FakePagedOrders(total: 7);
+      using var http = new HttpClient(server) { BaseAddress = new Uri("https://shop.example/") };
+
+      var shown = new List<string>();
+      await foreach (var order in AllOrders(http))
+      {
+          shown.Add(order.Id);
+          if (shown.Count == 3) break;                                       // one screen's worth
+      }
+      Console.WriteLine($"{string.Join(",", shown)} from {server.PagesServed} pages");
+
+      static async IAsyncEnumerable<Order> AllOrders(
+          HttpClient http, [EnumeratorCancellation] CancellationToken ct = default)
+      {
+          string? cursor = null;
+          do
+          {
+              var url = cursor is null ? "orders?limit=2" : $"orders?limit=2&cursor={Uri.EscapeDataString(cursor)}";
+              var page = await http.GetFromJsonAsync<Page<Order>>(url, ct);
+              foreach (var order in page!.Items) yield return order;
+              cursor = page.NextCursor;
+          } while (cursor is not null);
+      }
+
+      record Order(string Id);
+
+      record Page<T>(T[] Items, string? NextCursor);
+
+      sealed class FakePagedOrders(int total) : HttpMessageHandler
+      {
+          public int PagesServed { get; private set; }
+
+          protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
+          {
+              PagesServed++;
+              var query = HttpUtility.ParseQueryString(request.RequestUri!.Query);
+              var start = int.Parse(query["cursor"] ?? "0");
+              var count = Math.Min(int.Parse(query["limit"]!), total - start);
+              var items = Enumerable.Range(start + 1, count).Select(i => new Order($"o-{i}")).ToArray();
+              var page = new Page<Order>(items, start + count < total ? $"{start + count}" : null);
+              return Task.FromResult(new HttpResponseMessage { Content = JsonContent.Create(page) });
+          }
+      }
+    expected: |-
+      o-1,o-2,o-3 from 2 pages
+    sources:
+      - title: Generate and consume async streams — C#
+        url: https://learn.microsoft.com/en-us/dotnet/csharp/asynchronous-programming/generate-consume-asynchronous-stream
+    validation: *ran
+  - id: etag-conditional-requests
+    kind: code
+    title: Caching with ETag and If-None-Match
+    note: "`SocketsHttpHandler` keeps no HTTP cache, so store the body with its `ETag` and send `If-None-Match`: a `304 Not Modified` costs a round trip but no body."
+    prerequisites: *run
+    code: |-
+      using System.Net;
+      using System.Net.Http.Headers;
+      using System.Net.Http.Json;
+
+      var server = new FakeCatalog();
+      var catalog = new CatalogCache(new HttpClient(server) { BaseAddress = new Uri("https://shop.example/") });
+      Console.WriteLine((await catalog.GetAsync()).Length + " products");
+      Console.WriteLine((await catalog.GetAsync()).Length + " products");      // revalidated: no body sent
+      server.Current = (2, ["Mug", "Tee", "Cap"]);                                // the catalog changes
+      Console.WriteLine((await catalog.GetAsync()).Length + " products");
+
+      sealed class CatalogCache(HttpClient http)
+      {
+          private EntityTagHeaderValue? etag;
+          private string[] products = [];
+
+          public async Task<string[]> GetAsync(CancellationToken ct = default)
+          {
+              using var request = new HttpRequestMessage(HttpMethod.Get, "products");
+              if (etag is not null) request.Headers.IfNoneMatch.Add(etag);
+              using var response = await http.SendAsync(request, ct);
+              Console.Write($"{(int)response.StatusCode} -> ");
+              if (response.StatusCode == HttpStatusCode.NotModified) return products;
+              response.EnsureSuccessStatusCode();
+              products = (await response.Content.ReadFromJsonAsync<string[]>(ct))!;
+              etag = response.Headers.ETag;
+              return products;
+          }
+      }
+
+      sealed class FakeCatalog : HttpMessageHandler
+      {
+          public (int Version, string[] Products) Current { get; set; } = (1, ["Mug", "Tee"]);
+
+          protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
+          {
+              var current = new EntityTagHeaderValue($"\"v{Current.Version}\"");
+              var response = request.Headers.IfNoneMatch.Contains(current)
+                  ? new HttpResponseMessage(HttpStatusCode.NotModified)
+                  : new HttpResponseMessage { Content = JsonContent.Create(Current.Products) };
+              response.Headers.ETag = current;
+              return Task.FromResult(response);
+          }
+      }
+    expected: |-
+      200 -> 2 products
+      304 -> 2 products
+      200 -> 3 products
+    sources:
+      - title: "RFC 9110: HTTP Semantics — Conditional Requests"
+        url: https://www.rfc-editor.org/rfc/rfc9110#name-conditional-requests
+      - title: WebAssemblyHttpRequestMessageExtensions.SetBrowserRequestCache — API
+        url: https://learn.microsoft.com/en-us/dotnet/api/microsoft.aspnetcore.components.webassembly.http.webassemblyhttprequestmessageextensions.setbrowserrequestcache
+    validation: *ran
+  - id: upload-download-progress
+    kind: code
+    title: Upload and download with progress, cancellable
+    note: "Download with `ResponseHeadersRead` and copy the stream in chunks, upload through an `HttpContent` that reports as it writes, and pass the screen's token everywhere so leaving stops the transfer."
+    prerequisites: *run
+    code: |-
+      using var http = new HttpClient(new FakeFiles()) { BaseAddress = new Uri("https://files.example/") };
+      var ct = CancellationToken.None;                       // the screen's token: leaving stops the transfer
+
+      using var response = await http.GetAsync(
+          "invoices/2026-10.pdf", HttpCompletionOption.ResponseHeadersRead, ct);
+      response.EnsureSuccessStatusCode();
+      var total = response.Content.Headers.ContentLength;                   // null: show an indeterminate bar
+      await using var body = await response.Content.ReadAsStreamAsync(ct);
+      var buffer = new byte[64 * 1024];
+      long received = 0;
+      for (int read; (read = await body.ReadAsync(buffer, ct)) > 0;)
+      {
+          received += read;                                                 // write buffer[..read] to the file
+          Console.WriteLine(total > 0 ? $"download {received * 100 / total}%" : $"download {received} bytes");
+      }
+
+      var receipt = new ProgressContent(new byte[40 * 1024], sent => Console.WriteLine($"upload {sent / 1024} KB"));
+      using var posted = await http.PostAsync("receipts", receipt, ct);   // report: an IProgress<long> in an app
+      Console.WriteLine($"upload: {(int)posted.StatusCode}");
+
+      sealed class ProgressContent(byte[] data, Action<long> report) : ByteArrayContent(data)   // knows its length
+      {
+          private readonly byte[] bytes = data;
+
+          protected override async Task SerializeToStreamAsync(
+              Stream stream, System.Net.TransportContext? context, CancellationToken ct)
+          {
+              for (var offset = 0; offset < bytes.Length; offset += 16 * 1024)
+              {
+                  var chunk = bytes.AsMemory(offset, Math.Min(16 * 1024, bytes.Length - offset));
+                  await stream.WriteAsync(chunk, ct);
+                  report(offset + chunk.Length);
+              }
+          }
+      }
+
+      sealed class FakeFiles : HttpMessageHandler
+      {
+          protected override async Task<HttpResponseMessage> SendAsync(
+              HttpRequestMessage request, CancellationToken ct)
+          {
+              if (request.Content is not null) await request.Content.CopyToAsync(Stream.Null, ct);
+              return new() { Content = new ByteArrayContent(new byte[200 * 1024]) };
+          }
+      }
+    expected: |-
+      download 32%
+      download 64%
+      download 96%
+      download 100%
+      upload 16 KB
+      upload 32 KB
+      upload 40 KB
+      upload: 200
+    sources:
+      - title: HttpCompletionOption — .NET API
+        url: https://learn.microsoft.com/en-us/dotnet/api/system.net.http.httpcompletionoption
+      - title: HttpContent — .NET API
+        url: https://learn.microsoft.com/en-us/dotnet/api/system.net.http.httpcontent
+    validation: *ran
+  - id: rest-pitfalls
+    kind: rules
+    title: Pitfalls worth saying out loud
+    note: Most HttpClient incidents in production are one of these.
+    items:
+      - tone: bad
+        text: "`new HttpClient()` per request in a `using`: each disposal leaves a socket in `TIME_WAIT`, and under load the machine runs out of ports (**socket exhaustion**)."
+      - tone: bad
+        text: "One static client over the default handler with no `PooledConnectionLifetime`: connections live forever and never see a **DNS change** after a failover. Without DI: `new HttpClient(new SocketsHttpHandler { PooledConnectionLifetime = TimeSpan.FromMinutes(2) })`, kept for the app's life."
+      - tone: bad
+        text: "`.Result` or `.Wait()` on an HTTP call (sync-over-async): it blocks the UI thread in MAUI, WPF or WinUI, can deadlock, and starves the thread pool on a server. `await` all the way up."
+      - tone: bad
+        text: "Not disposing `HttpResponseMessage` — above all with `ResponseHeadersRead` — keeps the connection checked out of the pool until the GC finds it."
+      - tone: bad
+        text: "Catching `TaskCanceledException` and calling it a timeout: check the caller's token first, or a user who left the screen sees an error."
+      - tone: bad
+        text: "Mutating `DefaultRequestHeaders` after the first request: it is shared and not thread-safe. Per-call headers belong on the `HttpRequestMessage`."
+      - tone: neutral
+        text: "`BaseAddress` needs a trailing slash and request paths none: `https://x/api` + `orders` resolves to `https://x/orders`."
+      - tone: neutral
+        text: "On MAUI Android and iOS the default handler is the platform's (`AndroidMessageHandler`, `NSUrlSessionHandler`): share one `HttpClient` there too, but don't swap in `SocketsHttpHandler` without a reason."
+      - tone: good
+        text: "Retry only idempotent requests (or a POST with an `Idempotency-Key`), with capped, jittered backoff, and keep **one** resilience handler per client."
+      - tone: good
+        text: "Test through a fake `HttpMessageHandler` or `DelegatingHandler`: no network, no mocking library, and the same pipeline the app runs."

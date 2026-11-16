@@ -1,0 +1,553 @@
+id: cs-strings
+concept: strings.operations
+scope: shared
+title: "Strings — Standard Operations"
+group: Shared concepts
+subtitle: "UTF-16 chars underneath, text elements on screen. Search, split, slice with spans, compare ordinally or by culture, normalize, build, format and match text correctly."
+applies:
+  platforms: [dotnet]
+  runtime: ".NET 9 base class library (System, System.Text, System.Globalization, System.Text.RegularExpressions); culture data from ICU"
+  versions: { csharp: ">=13", dotnet: ">=9" }
+sources:
+  - title: Character encoding in .NET
+    url: https://learn.microsoft.com/en-us/dotnet/standard/base-types/character-encoding-introduction
+  - title: Best practices for comparing strings in .NET
+    url: https://learn.microsoft.com/en-us/dotnet/standard/base-types/best-practices-strings
+  - title: String class — .NET API
+    url: https://learn.microsoft.com/en-us/dotnet/api/system.string?view=net-9.0
+  - title: .NET regular expressions
+    url: https://learn.microsoft.com/en-us/dotnet/standard/base-types/regular-expressions
+cards:
+  - id: i-want-to
+    kind: table
+    title: I want to…
+    note: "The standard member for each everyday job and its trap — some `string` methods compare ordinally by default and others by culture."
+    headers: [I want to…, Use, Watch out]
+    rows:
+      - ["know if text contains a word", "`Contains`, `StartsWith`, `EndsWith` with a `StringComparison`", "`Contains(string)` is ordinal, but `StartsWith(string)`/`EndsWith(string)` use the current culture"]
+      - ["find where it is", "`IndexOf(value, StringComparison.Ordinal)`, `LastIndexOf`", "`IndexOf(string)` with no comparison is culture-sensitive; `-1` when absent"]
+      - ["split into fields", "`Split(';', StringSplitOptions.TrimEntries)`, `Split(',', 2)`", "`\"\".Split(';')` is one empty field, not none; add `RemoveEmptyEntries` to drop them"]
+      - ["split into what a reader sees", "`StringInfo` / `StringInfo.GetTextElementEnumerator`", "`ToCharArray()` cuts emoji in half; `Split(' ')` fails on Japanese or Thai"]
+      - ["join", "`string.Join(\", \", parts)`, `string.Concat`", "\"a, b and c\" is English grammar: localize list wording"]
+      - ["trim", "`Trim`, `TrimStart`, `TrimEnd`, `Trim('-')`", "strips every Unicode white space, including the no-break space"]
+      - ["replace every match", "`Replace(\"-\", \"/\")`, `Replace(old, new, StringComparison)`, `Regex.Replace`", "`string.Replace` replaces all matches (unlike JavaScript's first-only `replace`)"]
+      - ["pad or repeat", "`PadLeft(8)`, `PadRight`, `{value,8}` in an interpolation, `new string('-', 20)`", "counts UTF-16 chars, so emoji misalign columns"]
+      - ["take a piece", "`s[4..8]`, `s[^6..]`, `AsSpan(start, length)`", "out of range throws; a range copies, a span does not"]
+      - ["sort for people", "`StringComparer.Create(culture, ignoreCase)`", "`StringComparer.Ordinal` sorts by UTF-16 value: `\"Zoë\"` before `\"adam\"`"]
+      - ["ignore case for identifiers", "`StringComparer.OrdinalIgnoreCase`, `StringComparison.OrdinalIgnoreCase`", "`ToLower()` copies follow the current culture: `I` lowercases to `ı` in Turkish"]
+      - ["count characters", "`new StringInfo(s).LengthInTextElements`", "`.Length` counts UTF-16 chars"]
+
+  - id: what-a-character-is
+    kind: code
+    title: char, Rune, text element — and slicing safely
+    note: "Count and cut by text elements whenever a person sees the result: length limits, truncation, cursor movement."
+    prerequisites: &run
+      - .NET 9 SDK or later
+      - "`dotnet new console -o Demo`, replace `Demo/Program.cs` with the example, then `dotnet run --project Demo`"
+    code: |-
+      using System.Globalization;
+      using System.Text;
+
+      Console.OutputEncoding = Encoding.UTF8;           // Windows consoles default to a legacy code page
+      var samples = new (string Name, string Text)[]
+      {
+          ("plain", "Ada"),
+          ("family", "\U0001F469\u200D\U0001F469\u200D\U0001F467"),   // 👩‍👩‍👧: three emoji joined by U+200D
+          ("composed", "Zo\u00EB"),                                    // Zoë, ë as one code point
+          ("decomposed", "Zoe\u0308"),                                 // Zoë, e + COMBINING DIAERESIS
+          ("flag", "\U0001F1E8\U0001F1F4"),                            // 🇨🇴: two regional-indicator letters
+      };
+      foreach (var (name, text) in samples)
+      {
+          // Length and s[i] count UTF-16 chars; EnumerateRunes yields code points;
+          // StringInfo counts text elements, which is what a reader sees
+          var runes = text.EnumerateRunes().Count();
+          var elements = new StringInfo(text).LengthInTextElements;
+          Console.WriteLine($"{name,-10} chars {text.Length}  runes {runes}  text elements {elements}");
+      }
+
+      var status = "Shipped \U0001F680 today";                     // "Shipped 🚀 today"
+      var naive = status[..9];                                      // ends on half of 🚀
+      Console.WriteLine($"{char.IsHighSurrogate(naive[^1])} {Rune.TryGetRuneAt(naive, 8, out _)}");
+      Console.WriteLine(Truncate(status, 10));
+      Console.WriteLine(Rune.GetRuneAt(status, 8).Value.ToString("X", CultureInfo.InvariantCulture));
+
+      // cut on text-element boundaries, so an emoji or an accent is never split
+      static string Truncate(string text, int max)
+      {
+          ArgumentOutOfRangeException.ThrowIfLessThan(max, 2);       // room for one element and the ellipsis
+          var info = new StringInfo(text);
+          return info.LengthInTextElements <= max ? text : info.SubstringByTextElements(0, max - 1) + "…";
+      }
+    expected: |-
+      plain      chars 3  runes 3  text elements 3
+      family     chars 8  runes 5  text elements 1
+      composed   chars 3  runes 3  text elements 3
+      decomposed chars 4  runes 4  text elements 3
+      flag       chars 4  runes 2  text elements 1
+      True False
+      Shipped 🚀…
+      1F680
+    sources:
+      - title: StringInfo class — .NET API
+        url: https://learn.microsoft.com/en-us/dotnet/api/system.globalization.stringinfo?view=net-9.0
+      - title: Rune struct — .NET API
+        url: https://learn.microsoft.com/en-us/dotnet/api/system.text.rune?view=net-9.0
+      - title: "UAX #29: Unicode Text Segmentation"
+        url: https://www.unicode.org/reports/tr29/
+    validation: &ran
+      status: ran
+      toolchain: .NET SDK 9.0.304 (net9.0, C# 13)
+      date: "2026-11-16"
+
+  - id: everyday-operations
+    kind: code
+    title: Search, split, join, trim, replace, pad
+    note: "Parsing a pasted contact list: trim first, split on a known separator, and default every field that may be missing."
+    prerequisites: *run
+    code: |-
+      string[] pasted =
+      [
+          "  Lovelace, Ada ; ADA@Example.com ; admin|editor ",
+          "# exported 2026-03-08",
+          "Hopper, Grace;grace@navy.example;",
+          "Alan Turing;alan@example.org",
+          "",
+      ];
+
+      for (var index = 0; index < pasted.Length; index++)
+      {
+          var line = pasted[index].Trim();
+          if (line.Length == 0 || line.StartsWith('#')) continue;
+
+          // TrimEntries trims every field; a missing field reads as "" instead of throwing
+          var fields = line.Split(';', StringSplitOptions.TrimEntries);
+          var name = fields[0];
+          var email = fields.ElementAtOrDefault(1) ?? "";
+          var roles = fields.ElementAtOrDefault(2) ?? "";
+
+          var nameParts = name.Split(',', 2, StringSplitOptions.TrimEntries);       // "family, given", or one name
+          var display = nameParts.Length == 2 ? $"{nameParts[1]} {nameParts[0]}" : name;
+          var at = email.IndexOf('@');
+          var domain = at < 0 ? "(no email)" : email[(at + 1)..].ToLowerInvariant();
+          var roleList = roles.Split('|', StringSplitOptions.RemoveEmptyEntries);
+
+          Console.WriteLine(string.Join(" | ",
+              FormattableString.Invariant($"C-{index + 1:D4}"),
+              display.PadRight(14),
+              domain.PadRight(14),
+              roleList.Length == 0 ? "-" : string.Join(", ", roleList)));
+      }
+
+      var title = "Ada Lovelace";
+      Console.WriteLine($"{"2026-03-08".Replace("-", "/")} {title.Contains("love")}");
+      Console.WriteLine($"{title.Contains("love", StringComparison.OrdinalIgnoreCase)}");
+      Console.WriteLine($"{"".Split(';').Length} {"admin|".Split('|').Length} {"--x--".Trim('-')}");
+      Console.WriteLine(title.IndexOf("Love", StringComparison.Ordinal));
+      Console.WriteLine($"[{"Total".PadRight(8)}][{"9.50".PadLeft(8)}]");
+      Console.WriteLine(string.Concat(Enumerable.Repeat("ab", 3)));
+    expected: |-
+      C-0001 | Ada Lovelace   | example.com    | admin, editor
+      C-0003 | Grace Hopper   | navy.example   | -
+      C-0004 | Alan Turing    | example.org    | -
+      2026/03/08 False
+      True
+      1 2 x
+      4
+      [Total   ][    9.50]
+      ababab
+    validation: *ran
+
+  - id: spans-without-allocating
+    kind: code
+    title: Ranges, Span<char> and slicing without allocating
+    note: "Parse with `ReadOnlySpan<char>` on hot paths, because a slice is a view rather than a copy, and search a fixed character set with a `SearchValues<char>` built once."
+    prerequisites: *run
+    code: |-
+      using System.Buffers;
+      using System.Globalization;
+
+      var orderId = "ORD-2026-001042";
+      Console.WriteLine($"{orderId[^6..]} {orderId[4..8]} {orderId[..3]}");   // a range on a string copies
+      // orderId[10..40] throws ArgumentOutOfRangeException: clamp the end yourself
+      Console.WriteLine(orderId[10..Math.Min(40, orderId.Length)]);
+
+      // a span is a window onto the same chars: slicing it copies nothing
+      ReadOnlySpan<char> id = orderId;
+      var year = int.Parse(id.Slice(4, 4), CultureInfo.InvariantCulture);
+      var number = int.Parse(id[^6..], CultureInfo.InvariantCulture);
+      Console.WriteLine($"{year} {number} {id.StartsWith("ORD-")}");      // span StartsWith is ordinal
+
+      // totalling a pasted price list without a string per field (.NET 9: Split on a span yields Ranges)
+      ReadOnlySpan<char> prices = "12.50;  4.25 ;;3.00";
+      decimal total = 0;
+      var skipped = 0;
+      foreach (Range range in prices.Split(';'))
+      {
+          var field = prices[range].Trim();
+          if (field.IsEmpty) { skipped++; continue; }
+          total += decimal.Parse(field, NumberStyles.Number, CultureInfo.InvariantCulture);
+      }
+      Console.WriteLine($"total {total.ToString(CultureInfo.InvariantCulture)}, {skipped} empty field");
+
+      // SearchValues (.NET 8): a character set prepared once, then searched fast many times
+      ReadOnlySpan<char> address = "Calle 10 #45-12, Bogotá";
+      Console.WriteLine(address.IndexOfAny(Separators.Address));          // the first '#', ',' or '-'
+      Console.WriteLine(address.ContainsAnyExceptInRange('\0', '\x7F'));  // any non-ASCII character?
+
+      static class Separators
+      {
+          public static readonly SearchValues<char> Address = SearchValues.Create("#,-");
+      }
+    expected: |-
+      001042 2026 ORD
+      01042
+      2026 1042 True
+      total 19.75, 1 empty field
+      9
+      True
+    sources:
+      - title: Memory- and span-related types — .NET
+        url: https://learn.microsoft.com/en-us/dotnet/standard/memory-and-spans/
+      - title: SearchValues class — .NET API
+        url: https://learn.microsoft.com/en-us/dotnet/api/system.buffers.searchvalues?view=net-9.0
+    validation: *ran
+
+  - id: compare-and-sort
+    kind: code
+    title: Ordinal or culture? Comparing and sorting
+    note: "Compare ordinally (or with `OrdinalIgnoreCase`) anything a program reads — keys, identifiers, paths, protocol tokens — and use a culture comparer only for what a person reads."
+    prerequisites: *run
+    code: |-
+      using System.Globalization;
+
+      string[] customers = ["zoe", "Émile", "adam", "Zoë", "Ärzte GmbH", "Oskar", "Øster"];
+      var english = CultureInfo.GetCultureInfo("en-US");
+      var swedish = CultureInfo.GetCultureInfo("sv-SE");                 // å, ä, ö are letters after z
+
+      Console.WriteLine(string.Join(", ", customers.Order(StringComparer.Ordinal)));      // UTF-16 values
+      Console.WriteLine(string.Join(", ", customers.Order(StringComparer.Create(english, ignoreCase: false))));
+      Console.WriteLine(string.Join(", ", customers.Order(StringComparer.Create(swedish, ignoreCase: false))));
+
+      // identifiers, keys, file paths, HTTP headers: ordinal, ignoring case where the protocol says so
+      var headers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+      {
+          ["Content-Type"] = "application/json",
+      };
+      Console.WriteLine(headers.ContainsKey("content-type"));
+
+      // the Turkish i: culture-sensitive case rules change the answer for ASCII text
+      var turkish = CultureInfo.GetCultureInfo("tr-TR");
+      Console.WriteLine($"{"title".ToUpper(turkish)} {"TITLE".ToLower(turkish)} {"title".ToUpperInvariant()}");
+      Console.WriteLine(string.Compare("FILE", "file", turkish, CompareOptions.IgnoreCase) == 0);
+      Console.WriteLine(string.Compare("FILE", "file", english, CompareOptions.IgnoreCase) == 0);
+      Console.WriteLine(string.Equals("FILE", "file", StringComparison.OrdinalIgnoreCase));
+
+      // a culture-aware match that ignores accents and case — for search boxes, not for keys
+      var compare = english.CompareInfo;
+      var loose = CompareOptions.IgnoreCase | CompareOptions.IgnoreNonSpace;
+      Console.WriteLine(compare.Compare("Zoë", "ZOE", loose) == 0);
+      Console.WriteLine(compare.IndexOf("Crème Brûlée", "brulee", loose));
+
+      // numeric ordering: "Room 10" after "Room 9" (.NET 10 adds CompareOptions.NumericOrdering)
+      string[] rooms = ["Room 10", "Room 9", "Room 1"];
+      var byNumber = rooms.OrderBy(r => int.Parse(r.AsSpan(5), CultureInfo.InvariantCulture));
+      Console.WriteLine(string.Join(", ", byNumber));
+    expected: |-
+      Oskar, Zoë, adam, zoe, Ärzte GmbH, Émile, Øster
+      adam, Ärzte GmbH, Émile, Oskar, Øster, zoe, Zoë
+      adam, Émile, Oskar, zoe, Zoë, Ärzte GmbH, Øster
+      True
+      TİTLE tıtle TITLE
+      False
+      True
+      True
+      True
+      6
+      Room 1, Room 9, Room 10
+    sources:
+      - title: CompareOptions enum — .NET API
+        url: https://learn.microsoft.com/en-us/dotnet/api/system.globalization.compareoptions?view=net-9.0
+      - title: What's new in .NET 10 libraries (numeric ordering)
+        url: https://learn.microsoft.com/en-us/dotnet/core/whats-new/dotnet-10/libraries
+    validation: *ran
+
+  - id: fold-and-normalize
+    kind: code
+    title: Case mapping and normalization
+    note: "Normalize user input at the boundary, and remember that .NET maps case one char to one char, so `ß`/`ss` needs a linguistic comparison."
+    prerequisites: *run
+    code: |-
+      using System.Globalization;
+      using System.Text;
+
+      // .NET case mapping is one char to one char: lengths never change, and ß has no one-char capital
+      var german = CultureInfo.GetCultureInfo("de-DE");
+      Console.WriteLine($"{"straße".ToUpper(german)} {"straße".ToUpperInvariant().Length}");
+
+      // ordinal ignore-case misses ß = ss; IgnoreNonSpace matches it — and also ignores accents
+      var loose = CompareOptions.IgnoreCase | CompareOptions.IgnoreNonSpace;
+      Console.WriteLine(string.Equals("STRASSE", "straße", StringComparison.OrdinalIgnoreCase));
+      Console.WriteLine(german.CompareInfo.Compare("STRASSE", "straße", loose) == 0);
+      Console.WriteLine(german.CompareInfo.Compare("resume", "RÉSUMÉ", loose) == 0);
+
+      // the same visible name in two encodings: NFC (one code point) vs NFD (letter + combining mark),
+      // as old HFS+ file names and some pasted text deliver it
+      var fromFileName = "Zoe\u0308";
+      var storedInDb = "Zo\u00EB";
+      Console.WriteLine($"{fromFileName == storedInDb} {fromFileName.Normalize() == storedInDb}");
+      var linguistic = string.Equals(fromFileName, storedInDb, StringComparison.InvariantCulture);
+      Console.WriteLine($"{fromFileName.IsNormalized()} {linguistic}");
+
+      // NFKC also folds compatibility forms (ligatures, full-width digits): for keys, never for display
+      Console.WriteLine("ﬁle Ｎｏ１".Normalize(NormalizationForm.FormKC));
+
+      // an accent-insensitive key for Latin text: other scripts pass through with their marks
+      foreach (var name in new[] { "Crème Brûlée", "Zoë", "мой", "Ελλάδα", "パン", "हिंदी" })
+          Console.WriteLine($"{name} → {LatinSearchKey(name)}");
+
+      // drop a combining mark only right after a Latin letter, so й, ї, Greek tonos, kana and Indic marks stay;
+      // đ, ø, ł and ß have no decomposition and stay too. Across scripts, use CompareInfo with IgnoreNonSpace
+      static string LatinSearchKey(string text)
+      {
+          var builder = new StringBuilder(text.Length);
+          var afterLatin = false;
+          foreach (var c in text.Normalize(NormalizationForm.FormD))
+          {
+              var isMark = CharUnicodeInfo.GetUnicodeCategory(c) == UnicodeCategory.NonSpacingMark;
+              if (isMark && afterLatin) continue;
+              if (!isMark) afterLatin = char.IsAsciiLetter(c);
+              builder.Append(c);
+          }
+          return builder.ToString().Normalize(NormalizationForm.FormC).ToLowerInvariant();
+      }
+    expected: |-
+      STRAßE 6
+      False
+      True
+      True
+      False True
+      False True
+      file No1
+      Crème Brûlée → creme brulee
+      Zoë → zoe
+      мой → мой
+      Ελλάδα → ελλάδα
+      パン → パン
+      हिंदी → हिंदी
+    sources:
+      - title: String.Normalize method — .NET API
+        url: https://learn.microsoft.com/en-us/dotnet/api/system.string.normalize?view=net-9.0
+      - title: "UAX #15: Unicode Normalization Forms"
+        url: https://unicode.org/reports/tr15/
+    validation: *ran
+
+  - id: build-strings
+    kind: compare
+    title: Building strings in a loop
+    note: "Each `+=` copies everything built so far, so use one `StringBuilder`, whose interpolated `Append` overloads format straight into the buffer in the culture you pass."
+    columns:
+      - label: Concatenation in a loop
+        tone: legacy
+        code: |-
+          using System.Globalization;
+
+          var usd = CultureInfo.GetCultureInfo("en-US");
+          (string Item, int Qty, decimal UnitPrice)[] order =
+          [
+              ("Espresso", 2, 3.50m),
+              ("Croissant", 1, 3.25m),
+              ("Orange juice", 3, 4.00m),
+          ];
+
+          // each += copies everything built so far: O(n²) characters for n lines
+          var receipt = "";
+          decimal total = 0;
+          for (var i = 0; i < order.Length; i++)
+          {
+              var amount = order[i].Qty * order[i].UnitPrice;
+              total += amount;
+              receipt += order[i].Qty + " x " + order[i].Item.PadRight(13)
+                  + amount.ToString("C", usd).PadLeft(8) + "\n";
+          }
+          receipt += "Total".PadRight(17) + total.ToString("C", usd).PadLeft(8);
+          Console.WriteLine(receipt);
+      - label: StringBuilder + interpolated Append
+        tone: modern
+        code: |-
+          using System.Globalization;
+          using System.Text;
+
+          var usd = CultureInfo.GetCultureInfo("en-US");
+          (string Item, int Qty, decimal UnitPrice)[] order =
+          [
+              ("Espresso", 2, 3.50m),
+              ("Croissant", 1, 3.25m),
+              ("Orange juice", 3, 4.00m),
+          ];
+
+          // one growing buffer; the interpolated-string handler formats straight into it — no temporary strings
+          var receipt = new StringBuilder();
+          foreach (var (item, qty, unitPrice) in order)
+              receipt.AppendLine(usd, $"{qty} x {item,-13}{qty * unitPrice,8:C}");
+
+          var total = order.Sum(line => line.Qty * line.UnitPrice);
+          receipt.Append(usd, $"{"Total",-17}{total,8:C}");
+          Console.WriteLine(receipt);
+    expected: |-
+      2 x Espresso        $7.00
+      1 x Croissant       $3.25
+      3 x Orange juice   $12.00
+      Total              $22.25
+    prerequisites: *run
+    sources:
+      - title: Using the StringBuilder class in .NET
+        url: https://learn.microsoft.com/en-us/dotnet/standard/base-types/stringbuilder
+      - title: String interpolation using $ — C# reference
+        url: https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/tokens/interpolated
+    validation: *ran
+
+  - id: format-and-literals
+    kind: code
+    title: Format specifiers, culture, raw and UTF-8 literals
+    note: "Pin the culture with `string.Create(culture, $\"…\")` or `FormattableString.Invariant`, parse runtime format strings once with `CompositeFormat`, and write JSON and paths as raw literals."
+    prerequisites: *run
+    code: |-
+      using System.Globalization;
+      using System.Text;
+
+      var german = CultureInfo.GetCultureInfo("de-DE");
+      var placed = new DateTimeOffset(2026, 3, 8, 14, 30, 0, TimeSpan.FromHours(1));
+      decimal total = 1234.5m;
+      var orderNumber = 1042;
+
+      // format specifiers after the colon, alignment after the comma; string.Create pins the culture
+      Console.WriteLine(string.Create(german, $"Bestellung {orderNumber:D6}: {total:C} am {placed:d}"));
+      Console.WriteLine(string.Create(german, $"MwSt. {0.075:P1}"));
+      Console.WriteLine(FormattableString.Invariant($"{total:N2}|{orderNumber,8}|{orderNumber,-8}|{255:X4}"));
+      Console.WriteLine($"{placed:O}");          // round-trip ISO 8601: the same in every culture
+
+      // a format string from a resource: parse it once, reuse it (.NET 8)
+      var shipped = CompositeFormat.Parse("Order {0} shipped to {1} on {2:D}.");
+      Console.WriteLine(string.Format(CultureInfo.GetCultureInfo("en-GB"), shipped, orderNumber, "Ada", placed));
+
+      // raw string literals: no escaping; with $$ a {{x}} interpolates and a single { is literal
+      var json = $$"""
+          { "order": {{orderNumber}}, "customer": "Ada \"the first\"", "path": "C:\orders" }
+          """;
+      Console.WriteLine(json);
+
+      // UTF-8 literal: the bytes are baked into the assembly — no transcoding at run time
+      ReadOnlySpan<byte> contentType = "application/json; charset=utf-8"u8;
+      Console.WriteLine(FormattableString.Invariant($"{contentType.Length} bytes, first byte {contentType[0]:X2}"));
+      Console.WriteLine($"{Encoding.UTF8.GetByteCount("Zoë")} UTF-8 bytes for Zoë");
+    expected: |-
+      Bestellung 001042: 1.234,50 € am 08.03.2026
+      MwSt. 7,5 %
+      1,234.50|    1042|1042    |00FF
+      2026-03-08T14:30:00.0000000+01:00
+      Order 1042 shipped to Ada on Sunday, 8 March 2026.
+      { "order": 1042, "customer": "Ada \"the first\"", "path": "C:\orders" }
+      31 bytes, first byte 61
+      4 UTF-8 bytes for Zoë
+    sources:
+      - title: Overview of how to format numbers, dates, enums, and other types in .NET
+        url: https://learn.microsoft.com/en-us/dotnet/standard/base-types/formatting-types
+      - title: Raw string literals — C# reference
+        url: https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/tokens/raw-string
+      - title: CompositeFormat class — .NET API
+        url: https://learn.microsoft.com/en-us/dotnet/api/system.text.compositeformat?view=net-9.0
+    validation: *ran
+
+  - id: regular-expressions
+    kind: code
+    title: "Regex: named groups, [GeneratedRegex], CRLF, and catastrophic backtracking"
+    note: "Generate every pattern known at compile time, and give patterns that see untrusted input a match timeout, `RegexOptions.NonBacktracking` or an atomic rewrite."
+    prerequisites: *run
+    code: |-
+      using System.Text.RegularExpressions;
+
+      // lines as a Windows editor saves them (CRLF), one name typed decomposed (zoe + U+0308)
+      var log = "2026-03-08 14:30 ERROR order=A-1042 user=ada\r\n"
+              + "2026-03-08 14:31 INFO order=A-1043 user=grace\r\n"
+              + "2026-03-08 14:35 ERROR order=A-1044 user=zoe\u0308\r\n";
+      foreach (Match entry in Patterns.LogEntry().Matches(log))
+          if (entry.Groups["level"].ValueSpan is "ERROR")
+              Console.WriteLine($"{entry.Groups["order"].Value} {entry.Groups["user"].Value.Normalize()}");
+      Console.WriteLine(Patterns.IsoDate().Replace("2026-03-08", "${d}/${m}/${y}"));
+
+      // a tag list typed by a user: (\w+\s?)* can split "aaaa…!" into words in 2^n ways
+      var hostile = new string('a', 40) + "!";
+      try { Patterns.TagsBacktracking().IsMatch(hostile); }
+      catch (RegexMatchTimeoutException) { Console.WriteLine("backtracking engine: timed out"); }
+      foreach (var input in new[] { hostile, "vip beta", "vip beta " })
+      {
+          var linear = Patterns.TagsLinear().IsMatch(input);
+          var atomic = Patterns.TagsAtomic().IsMatch(input);
+          Console.WriteLine($"{input.Length,2} chars  non-backtracking: {linear}  atomic: {atomic}");
+      }
+
+      // [GeneratedRegex] writes each matcher as C# at build time: no pattern parsing at startup, trim-safe
+      static partial class Patterns
+      {
+          // $ matches before \n only, so \r? lets CRLF lines match; \p{M} keeps combining accents in names
+          [GeneratedRegex(
+              @"^(?<date>[\d-]+) (?<time>[\d:]+) (?<level>[A-Z]+) "
+                  + @"order=(?<order>[A-Z]-\d+) user=(?<user>[\p{L}\p{M}]+)\r?$",
+              RegexOptions.Multiline)]
+          public static partial Regex LogEntry();
+
+          [GeneratedRegex(@"^(?<y>\d{4})-(?<m>\d{2})-(?<d>\d{2})$")]
+          public static partial Regex IsoDate();
+
+          [GeneratedRegex(@"^(\w+\s?)*$", RegexOptions.None, matchTimeoutMilliseconds: 200)]
+          public static partial Regex TagsBacktracking();
+
+          // linear time; the generator hands this option to the runtime engine
+          [GeneratedRegex(@"^(\w+\s?)*$", RegexOptions.NonBacktracking)]
+          public static partial Regex TagsLinear();
+
+          // the same language: the atomic group gives each run of letters one way to match
+          [GeneratedRegex(@"^(?>\w+\s?)*$")]
+          public static partial Regex TagsAtomic();
+      }
+    expected: |-
+      A-1042 ada
+      A-1044 zoë
+      08/03/2026
+      backtracking engine: timed out
+      41 chars  non-backtracking: False  atomic: False
+       8 chars  non-backtracking: True  atomic: True
+       9 chars  non-backtracking: True  atomic: True
+    sources:
+      - title: .NET regular expression source generators
+        url: https://learn.microsoft.com/en-us/dotnet/standard/base-types/regular-expression-source-generators
+      - title: Backtracking in .NET regular expressions
+        url: https://learn.microsoft.com/en-us/dotnet/standard/base-types/backtracking-in-regular-expressions
+      - title: Best practices for regular expressions in .NET
+        url: https://learn.microsoft.com/en-us/dotnet/standard/base-types/best-practices-regex
+    validation: *ran
+
+  - id: string-pitfalls
+    kind: rules
+    title: Pitfalls worth saying out loud
+    note: Most string bugs are culture or Unicode bugs that ASCII test data never finds.
+    items:
+      - tone: good
+        text: "Pass a `StringComparison` or `StringComparer` every time. The analyzer rules `CA1307`/`CA1309`/`CA1310` flag the overloads that guess."
+      - tone: good
+        text: "Test with real text: `Zoë` in NFC and NFD, `👩‍👩‍👧`, `🇨🇴`, `straße`, `İstanbul`, Arabic and Japanese — and under `tr-TR` as the current culture."
+      - tone: good
+        text: "Pin the culture wherever text is formatted or parsed: `CultureInfo.InvariantCulture` for data and logs, the user's culture only for display."
+      - tone: bad
+        text: "`+=` in a loop: strings are **immutable**, so each step copies the whole string. Use `StringBuilder`, `string.Join` or `string.Create`."
+      - tone: bad
+        text: "`ToLower()`/`ToUpper()` to make keys case-insensitive: they follow the current culture. Use `OrdinalIgnoreCase` (or `ToUpperInvariant` if you must normalize)."
+      - tone: bad
+        text: "`.Length` as a user-facing limit, `Substring` for truncation, `ToCharArray()` to reverse: all three cut emoji and accents apart."
+      - tone: bad
+        text: "Asserting culture-formatted output against hard-coded text: it depends on the ICU version, so macOS (Apple ICU), Linux (vanilla ICU) and Windows can format the same culture differently (`U+00A0`, `U+202F`, `¥`/`￥`). Assert against the formatter's own output."
+      - tone: neutral
+        text: "A `Regex` without a timeout on untrusted input runs until it finishes. Set `matchTimeoutMilliseconds`, or `AppContext` data `REGEX_DEFAULT_MATCH_TIMEOUT` (a `TimeSpan`, set at startup before any `Regex` is used) for the whole process."
+      - tone: neutral
+        text: "`SearchValues.Create(\"…\")` (.NET 8) precomputes a character or string set for fast `IndexOfAny`/`ContainsAny` on spans."

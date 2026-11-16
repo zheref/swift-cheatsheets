@@ -214,7 +214,7 @@ real toolchains, and skips (never passes) a language whose toolchain it cannot f
 | --- | --- | --- |
 | TypeScript | Node 22.18+, this repository's `typescript`, and the libraries the examples import | `npm ci`, then `npm run examples:install` (the pinned, example-only `examples/package.json`) |
 | Kotlin | `kotlinc` 2.x, a JDK 17+, and the jars the examples import | `PATH` or `KOTLINC`; the jars pinned in `examples/kotlin/jars.txt`, fetched and digest-checked by `npm run examples:install` — or your own in `KOTLIN_CLASSPATH` (colon-separated) |
-| C# | the .NET 8+ SDK | `PATH`, `DOTNET`, or `~/.dotnet/dotnet`; an example naming a package pinned in `examples/csharp/packages.json` restores it from nuget.org |
+| C# | the .NET 9 SDK or later (an example is built for the SDK's own framework; each card states the minimum it needs) | `PATH`, `DOTNET`, or `~/.dotnet/dotnet`; an example naming a package pinned in `examples/csharp/packages.json` restores it from nuget.org |
 
 The libraries are **example-only**: the site's own `package.json` does not list them, so
 nothing an example imports reaches the built pages. `examples/kotlin/lib/` and

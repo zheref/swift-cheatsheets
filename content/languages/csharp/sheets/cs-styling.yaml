@@ -1,0 +1,522 @@
+id: cs-styling
+concept: ui.styling
+scope: platform
+title: "Styling — XAML Resources, Styles, Themes & CSS Isolation"
+group: UI
+subtitle: "Decide a value once, name it by role, switch it per theme: ResourceDictionary tokens, Styles with BasedOn, AppThemeBinding and ThemeResource, visual states, adaptive layout, and Blazor's scoped CSS."
+applies:
+  platforms: [dotnet, android, ios, maccatalyst, windows]
+  runtime: .NET MAUI (XAML), with the WPF, WinUI and Blazor equivalents
+  versions: { csharp: ">=12", dotnet: ">=8", maui: ">=8" }
+sources:
+  - title: Resource dictionaries — .NET MAUI
+    url: https://learn.microsoft.com/en-us/dotnet/maui/fundamentals/resource-dictionaries
+  - title: Style apps using XAML — .NET MAUI
+    url: https://learn.microsoft.com/en-us/dotnet/maui/user-interface/styles/xaml
+  - title: Respond to system theme changes — .NET MAUI
+    url: https://learn.microsoft.com/en-us/dotnet/maui/user-interface/system-theme-changes
+  - title: Visual states — .NET MAUI
+    url: https://learn.microsoft.com/en-us/dotnet/maui/user-interface/visual-states
+cards:
+  - id: token-mapping
+    kind: table
+    title: "One token idea, four UI stacks"
+    note: "The same decision lives in a different place on each stack; name tokens by role (`Surface`, `OnSurface`), never by value (`Gray100`)."
+    headers: [Idea, .NET MAUI, WPF, WinUI 3, Blazor]
+    rows:
+      - ["a colour, spacing or radius token", "`<Color x:Key>`, `<x:Double x:Key>`, `<Thickness x:Key>` in a `ResourceDictionary`", "the same, with `SolidColorBrush` and `sys:Double`", "the same, with `SolidColorBrush`", "a CSS custom property: `--space-m: 16px`"]
+      - ["read a fixed token", "`{StaticResource SpaceM}`", "`{StaticResource SpaceM}`", "`{StaticResource SpaceM}`", "`var(--space-m)`"]
+      - ["read a token that can change", "`{DynamicResource CardBackground}`", "`{DynamicResource CardBackgroundBrush}`", "`{ThemeResource CardBackgroundBrush}`", "`var(--color-surface)` (always live)"]
+      - ["light and dark values", "`{AppThemeBinding Light=…, Dark=…}`", "swap a merged dictionary (or .NET 9's experimental `ThemeMode`, warning WPF0001)", "`ThemeDictionaries` keyed `Light` / `Dark`", "`[data-theme=dark]`, `prefers-color-scheme`"]
+      - ["override the OS theme", "`Application.Current.UserAppTheme`", "replace the theme dictionary", "`FrameworkElement.RequestedTheme`", "set `data-theme` on `<html>`"]
+      - ["a reusable style", "`<Style TargetType>` with `Setter`s, `BasedOn`, `Class`", "`Style`, `BasedOn`", "`Style`, `BasedOn`", "a class in `.razor.css`"]
+      - ["pressed, hover, disabled", "`VisualStateManager` states in the style", "`Style.Triggers` / `ControlTemplate` triggers", "`VisualStateManager`, lightweight styling keys", "`:active`, `:hover`, `:disabled`"]
+      - ["breakpoints and devices", "`AdaptiveTrigger`, `OnIdiom`, `OnPlatform`", "`SizeChanged` in code", "`AdaptiveTrigger`", "`@media (min-width: …)`"]
+      - ["user text size", "on by default: `FontAutoScalingEnabled`", "DPI scaling only: read `UISettings.TextScaleFactor` yourself", "follows the text scale factor", "`rem` units"]
+    sources:
+      - title: Resource dictionaries — .NET MAUI
+        url: https://learn.microsoft.com/en-us/dotnet/maui/fundamentals/resource-dictionaries
+      - title: Text scaling — Windows apps
+        url: https://learn.microsoft.com/en-us/windows/apps/develop/input/text-scaling
+      - title: How can I programmatically obtain the value of the "Make text bigger" slider? — The Old New Thing
+        url: https://devblogs.microsoft.com/oldnewthing/20230830-00/?p=108680
+  - id: tokens-as-resources
+    kind: code
+    title: "Tokens as XAML resources: define once, merge once, StaticResource vs DynamicResource"
+    note: "StaticResource is looked up once when the page loads; DynamicResource keeps watching the key, so use it for anything a theme swap replaces."
+    prerequisites: &maui
+      - "A .NET MAUI app project (`dotnet new maui -o Shop`, the MAUI workload installed)"
+      - "Add `Resources/Styles/Tokens.xaml` (build action `MauiXaml`), merge it in `App.xaml`, then use the keys from any page"
+    code: |-
+      <!-- Resources/Styles/Tokens.xaml -->
+      <?xaml-comp compile="true" ?>
+      <ResourceDictionary xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
+                          xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml">
+          <Color x:Key="BrandPrimary">#512BD4</Color>
+          <Color x:Key="Danger">#C62828</Color>
+          <Color x:Key="CardBackground">#F7F7FA</Color>
+          <Color x:Key="DisabledBackground">#E0E0E6</Color>
+          <Color x:Key="DisabledText">#6E6E73</Color>
+          <x:Double x:Key="SpaceM">16</x:Double>
+          <Thickness x:Key="PagePadding">16,24</Thickness>
+          <Thickness x:Key="ButtonPadding">20,12</Thickness>
+          <x:Int32 x:Key="RadiusM">12</x:Int32>                <!-- Button.CornerRadius is an int -->
+          <RoundRectangle x:Key="CardShape" CornerRadius="12" />  <!-- a Border's StrokeShape -->
+          <x:Double x:Key="FontBody">16</x:Double>
+          <x:Double x:Key="FontTitle">24</x:Double>
+          <x:Double x:Key="FontCaption">13</x:Double>
+      </ResourceDictionary>
+
+      <!-- App.xaml: merged once, available to every page -->
+      <Application.Resources>
+          <ResourceDictionary>
+              <ResourceDictionary.MergedDictionaries>
+                  <ResourceDictionary Source="Resources/Styles/Tokens.xaml" />
+                  <ResourceDictionary Source="Resources/Styles/Styles.xaml" />
+              </ResourceDictionary.MergedDictionaries>
+          </ResourceDictionary>
+      </Application.Resources>
+
+      <!-- OrdersPage.xaml -->
+      <VerticalStackLayout Padding="{StaticResource PagePadding}" Spacing="{StaticResource SpaceM}">
+          <Label Text="Order #1042" FontSize="{StaticResource FontTitle}" />
+          <Border BackgroundColor="{DynamicResource CardBackground}" StrokeShape="{StaticResource CardShape}" />
+      </VerticalStackLayout>
+    expected: "Every page reads spacing, type sizes and colours from one dictionary; replacing `CardBackground` at runtime repaints the card, while the StaticResource values stay as loaded."
+    validation: &maui-excerpt
+      status: excerpt
+      host: a .NET MAUI app project (the MAUI workload)
+  - id: reusable-styles
+    kind: code
+    title: "Reusable styles: implicit, explicit with BasedOn, and style classes"
+    note: "An implicit style (no key) applies to every control of its type and an explicit one replaces it, so build both on a keyed base with BasedOn (WPF can base on `{StaticResource {x:Type Button}}`, WinUI on `DefaultButtonStyle`)."
+    prerequisites: *maui
+    code: |-
+      <!-- Resources/Styles/Styles.xaml (inside its ResourceDictionary) -->
+      <Style x:Key="BaseButton" TargetType="Button">
+          <Setter Property="FontSize" Value="{StaticResource FontBody}" />
+          <Setter Property="Padding" Value="{StaticResource ButtonPadding}" />
+          <Setter Property="CornerRadius" Value="{StaticResource RadiusM}" />
+          <Setter Property="BackgroundColor" Value="{StaticResource BrandPrimary}" />
+          <Setter Property="TextColor" Value="White" />
+      </Style>
+
+      <!-- Implicit: every Button in scope -->
+      <Style TargetType="Button" BasedOn="{StaticResource BaseButton}" />
+
+      <!-- Explicit: opted into per element, inherits the base setters -->
+      <Style x:Key="DestructiveButton" TargetType="Button" BasedOn="{StaticResource BaseButton}">
+          <Setter Property="BackgroundColor" Value="{StaticResource Danger}" />
+      </Style>
+
+      <!-- Style classes: combinable variants -->
+      <Style TargetType="Label" Class="Caption">
+          <Setter Property="FontSize" Value="{StaticResource FontCaption}" />
+          <Setter Property="Opacity" Value="0.8" />
+      </Style>
+
+      <!-- On a page -->
+      <Button Text="Place order" />
+      <Button Text="Cancel order" Style="{StaticResource DestructiveButton}" />
+      <Label Text="Ships in 2 days" StyleClass="Caption" />
+    expected: "Both buttons share font, padding and radius; the destructive one is red; the caption is smaller and dimmer — with no value repeated on the page."
+    sources:
+      - title: Style apps using XAML — .NET MAUI
+        url: https://learn.microsoft.com/en-us/dotnet/maui/user-interface/styles/xaml
+    validation: *maui-excerpt
+  - id: light-and-dark
+    kind: compare
+    title: "Light and dark: MAUI AppThemeBinding vs WinUI ThemeDictionaries"
+    note: "MAUI picks a value per property from the current theme; WinUI swaps whole keyed dictionaries and ThemeResource re-reads them."
+    prerequisites:
+      - "A .NET MAUI app project (left) or a WinUI 3 app with the Windows App SDK (right)"
+      - "Put the markup in a page or `App.xaml`, the C# in the app or page code-behind"
+    columns:
+      - label: .NET MAUI
+        tone: neutral
+        code: |-
+          <!-- Per property: the effective theme picks one value -->
+          <ContentPage BackgroundColor="{AppThemeBinding Light=#FFFFFF, Dark=#1B1B1F}">
+              <Border BackgroundColor="{AppThemeBinding Light={StaticResource CardBackground}, Dark=#2C2C30}">
+                  <Label Text="Your orders" TextColor="{AppThemeBinding Light=#1B1B1F, Dark=#F2F2F7}" />
+              </Border>
+          </ContentPage>
+
+          // Override the OS (AppTheme.Unspecified follows it again)
+          Application.Current!.UserAppTheme = AppTheme.Dark;
+
+          // Read and observe the effective theme
+          AppTheme effective = Application.Current!.RequestedTheme;
+          Application.Current!.RequestedThemeChanged += (_, e) =>
+              Console.WriteLine($"now {e.RequestedTheme}");
+      - label: WinUI 3
+        tone: neutral
+        code: |-
+          <!-- App.xaml resources: one dictionary per theme, the same keys in each -->
+          <ResourceDictionary.ThemeDictionaries>
+              <ResourceDictionary x:Key="Light">
+                  <SolidColorBrush x:Key="CardBackgroundBrush" Color="#F7F7FA" />
+              </ResourceDictionary>
+              <ResourceDictionary x:Key="Dark">
+                  <SolidColorBrush x:Key="CardBackgroundBrush" Color="#2C2C30" />
+              </ResourceDictionary>
+          </ResourceDictionary.ThemeDictionaries>
+
+          <!-- ThemeResource re-evaluates on a theme change; StaticResource would not -->
+          <Border Background="{ThemeResource CardBackgroundBrush}" CornerRadius="12" />
+
+          // Application.RequestedTheme is start-up only; at runtime theme a subtree
+          if (window.Content is FrameworkElement root)
+              root.RequestedTheme = ElementTheme.Dark;
+    expected: "The page and card switch between their light and dark values when the OS theme changes or the app overrides it, without reloading the page."
+    applies:
+      platforms: [dotnet, android, ios, maccatalyst, windows]
+      requires: [.NET MAUI, Windows App SDK]
+      versions: { csharp: ">=12", dotnet: ">=8", maui: ">=8", windows-app-sdk: ">=1.4" }
+    sources:
+      - title: Respond to system theme changes — .NET MAUI
+        url: https://learn.microsoft.com/en-us/dotnet/maui/user-interface/system-theme-changes
+      - title: ResourceDictionary and XAML resource references — Windows apps
+        url: https://learn.microsoft.com/en-us/windows/apps/develop/platform/xaml/xaml-resource-dictionary
+    validation:
+      status: excerpt
+      host: a .NET MAUI app project, or a WinUI 3 app (Windows App SDK)
+  - id: swap-theme-dictionary
+    kind: code
+    title: "Swap a whole token set at runtime (MAUI and WPF)"
+    note: "For brand themes or a user's choice beyond light/dark: keep the same keys in each theme dictionary, replace the merged one, and consume them with DynamicResource."
+    prerequisites:
+      - "A .NET MAUI app with `Themes/LightTheme.xaml` and `Themes/DarkTheme.xaml` (ResourceDictionary with `x:Class`), or a WPF app with `Themes/Light.xaml` and `Themes/Dark.xaml`"
+      - "Every consumer uses `{DynamicResource CardBackground}`, never `{StaticResource …}`, for themed keys"
+    code: |-
+      // MAUI: LightTheme and DarkTheme are ResourceDictionary subclasses with the same keys
+      public static class ThemeSwitcher
+      {
+          public static void Apply(ResourceDictionary theme)
+          {
+              var merged = Application.Current!.Resources.MergedDictionaries;
+              if (merged.FirstOrDefault(d => d is LightTheme or DarkTheme) is { } current)
+                  merged.Remove(current);                // Tokens.xaml and Styles.xaml stay merged
+              merged.Add(theme);                         // every DynamicResource consumer repaints
+          }
+      }
+
+      ThemeSwitcher.Apply(new DarkTheme());
+
+      // WPF: the same move with a URI-loaded dictionary
+      var dictionaries = System.Windows.Application.Current.Resources.MergedDictionaries;
+      if (dictionaries.FirstOrDefault(d => d.Source?.OriginalString.StartsWith("Themes/") == true) is { } old)
+          dictionaries.Remove(old);
+      var dark = new System.Windows.ResourceDictionary { Source = new Uri("Themes/Dark.xaml", UriKind.Relative) };
+      dictionaries.Add(dark);
+    expected: "The running app repaints every element bound with DynamicResource to the new token set; StaticResource consumers keep the old values."
+    applies:
+      platforms: [dotnet, android, ios, maccatalyst, windows]
+      requires: [.NET MAUI, WPF]
+      versions: { csharp: ">=12", dotnet: ">=8", maui: ">=8" }
+    sources:
+      - title: Theme an app — .NET MAUI
+        url: https://learn.microsoft.com/en-us/dotnet/maui/user-interface/theming
+      - title: Merged resource dictionaries — WPF
+        url: https://learn.microsoft.com/en-us/dotnet/desktop/wpf/systems/xaml-resources-merged-dictionaries
+    validation:
+      status: excerpt
+      host: a .NET MAUI app project, or a WPF app on Windows
+  - id: theme-service
+    kind: code
+    title: "Theme choice in plain C#: system, light or dark"
+    note: "Keep the decision of which palette applies, and when it changes, in UI-free code you can run and test, so the UI side only swaps dictionaries on `Changed`."
+    prerequisites:
+      - .NET 8 SDK or later
+      - "`dotnet new console -o Demo`, replace `Demo/Program.cs` with the example, then `dotnet run --project Demo`"
+    code: |-
+      var osIsDark = false;                                    // MAUI: RequestedTheme == AppTheme.Dark
+      var themes = new ThemeService(() => osIsDark);
+      themes.Changed += p => Console.WriteLine($"apply {p.Name}: surface {p.Surface}, text {p.OnSurface}");
+
+      themes.Choose(ThemePreference.Dark);                     // the user picks Dark in settings
+      themes.Choose(ThemePreference.System);                   // back to following the OS (light)
+      osIsDark = true;
+      themes.SystemThemeChanged();                             // MAUI: RequestedThemeChanged
+      themes.SystemThemeChanged();                             // nothing changed: no event, no repaint
+
+      enum ThemePreference { System, Light, Dark }
+
+      record Palette(string Name, string Surface, string OnSurface)
+      {
+          public static readonly Palette Light = new("light", "#FFFFFF", "#1B1B1F");
+          public static readonly Palette Dark = new("dark", "#1B1B1F", "#F2F2F7");
+      }
+
+      sealed class ThemeService(Func<bool> systemIsDark)
+      {
+          private ThemePreference preference = ThemePreference.System;
+          public Palette Current { get; private set; } = systemIsDark() ? Palette.Dark : Palette.Light;
+          public event Action<Palette>? Changed;
+
+          public void Choose(ThemePreference choice)
+          {
+              preference = choice;
+              var next = choice switch
+              {
+                  ThemePreference.Light => Palette.Light,
+                  ThemePreference.Dark => Palette.Dark,
+                  _ => systemIsDark() ? Palette.Dark : Palette.Light,
+              };
+              if (next == Current) return;
+              Current = next;
+              Changed?.Invoke(next);                           // the UI swaps its theme dictionary here
+          }
+
+          public void SystemThemeChanged() => Choose(preference);
+      }
+    expected: |-
+      apply dark: surface #1B1B1F, text #F2F2F7
+      apply light: surface #FFFFFF, text #1B1B1F
+      apply dark: surface #1B1B1F, text #F2F2F7
+    applies:
+      platforms: [dotnet]
+      runtime: .NET (plain C#; the UI hook is MAUI's `RequestedThemeChanged` or a dictionary swap)
+      versions: { csharp: ">=12", dotnet: ">=8" }
+    validation:
+      status: ran
+      toolchain: .NET SDK 9.0.304 (net9.0, C# 13)
+      date: "2026-11-16"
+  - id: token-contrast-check
+    kind: code
+    title: Check token contrast in CI
+    note: "Run every text/background token pair of both themes through the WCAG formula and exit non-zero when one fails AA, so CI stops the build (here the failing old grey is shown as data, since a ran example must exit 0)."
+    prerequisites:
+      - .NET 8 SDK or later
+      - "`dotnet new console -o Demo`, replace `Demo/Program.cs` with the example, then `dotnet run --project Demo`"
+    code: |-
+      using System.Globalization;
+
+      CultureInfo.CurrentCulture = CultureInfo.InvariantCulture;
+      var failures = CheckAA(
+      [
+          ("light", "body text", "#1B1B1F", "#FFFFFF"),
+          ("light", "primary button", "#FFFFFF", "#512BD4"),
+          ("light", "muted caption", "#6E6E73", "#FFFFFF"),
+          ("dark", "body text", "#F2F2F7", "#1B1B1F"),
+          ("dark", "primary button", "#1B1B1F", "#AC99EA"),
+          ("dark", "muted caption", "#98989F", "#1B1B1F"),
+      ]);
+      Environment.ExitCode = failures == 0 ? 0 : 1;            // a non-zero exit stops the CI build
+      Console.WriteLine($"{failures} failure(s): exit code {Environment.ExitCode}");
+
+      // The muted grey the palette used to have, as data: it would stop the build
+      var before = CheckAA([("light", "muted caption", "#8E8E93", "#FFFFFF")]);
+      Console.WriteLine($"with #8E8E93: {before} failure(s), exit code would be {(before == 0 ? 0 : 1)}");
+
+      static int CheckAA((string Theme, string Role, string Text, string Background)[] pairs)
+      {
+          var failures = 0;
+          foreach (var (theme, role, text, background) in pairs)
+          {
+              var ratio = Ratio(text, background);
+              Console.WriteLine($"{theme,-5} {role,-15} {ratio,5:0.00}:1 {(ratio >= 4.5 ? "AA" : "fails AA")}");
+              if (ratio < 4.5) failures++;                     // xUnit: Assert.True(ratio >= 4.5, role)
+          }
+          return failures;
+      }
+
+      // WCAG 2.x: (lighter + 0.05) / (darker + 0.05); AA body text needs 4.5:1, large text 3:1
+      static double Ratio(string foreground, string background)
+      {
+          var (a, b) = (Luminance(foreground), Luminance(background));
+          return (Math.Max(a, b) + 0.05) / (Math.Min(a, b) + 0.05);
+      }
+
+      static double Luminance(string hex)
+      {
+          var rgb = Convert.FromHexString(hex.TrimStart('#'));
+          return 0.2126 * Linear(rgb[0] / 255.0) + 0.7152 * Linear(rgb[1] / 255.0)
+              + 0.0722 * Linear(rgb[2] / 255.0);
+      }
+
+      static double Linear(double c) => c <= 0.04045 ? c / 12.92 : Math.Pow((c + 0.055) / 1.055, 2.4);
+    expected: |-
+      light body text       17.17:1 AA
+      light primary button   7.94:1 AA
+      light muted caption    5.07:1 AA
+      dark  body text       15.39:1 AA
+      dark  primary button   6.95:1 AA
+      dark  muted caption    5.99:1 AA
+      0 failure(s): exit code 0
+      light muted caption    3.26:1 fails AA
+      with #8E8E93: 1 failure(s), exit code would be 1
+    applies:
+      platforms: [dotnet]
+      runtime: .NET (plain C#; the UI hook is MAUI's `RequestedThemeChanged` or a dictionary swap)
+      versions: { csharp: ">=12", dotnet: ">=8" }
+    sources:
+      - title: Understanding contrast (minimum) — WCAG 2.2
+        url: https://www.w3.org/WAI/WCAG22/Understanding/contrast-minimum.html
+    validation:
+      status: ran
+      toolchain: .NET SDK 9.0.304 (net9.0, C# 13)
+      date: "2026-11-16"
+  - id: visual-states
+    kind: code
+    title: "Pressed, hover and disabled with VisualStateManager"
+    note: "States live in the style so every button gets the same feedback, and a group must include `Normal` (WPF uses `Style.Triggers`; WinUI overrides lightweight-styling keys such as `ButtonBackgroundPressed`)."
+    prerequisites: *maui
+    code: |-
+      <!-- Added to the BaseButton style in Styles.xaml -->
+      <Style x:Key="BaseButton" TargetType="Button">
+          <!-- …the setters from the styles card… -->
+          <Setter Property="VisualStateManager.VisualStateGroups">
+              <VisualStateGroupList>
+                  <VisualStateGroup x:Name="CommonStates">
+                      <VisualState x:Name="Normal" />
+                      <VisualState x:Name="Pressed">
+                          <VisualState.Setters>
+                              <Setter Property="Scale" Value="0.97" />
+                              <Setter Property="Opacity" Value="0.85" />
+                          </VisualState.Setters>
+                      </VisualState>
+                      <VisualState x:Name="PointerOver">
+                          <VisualState.Setters>
+                              <Setter Property="Opacity" Value="0.92" />
+                          </VisualState.Setters>
+                      </VisualState>
+                      <VisualState x:Name="Disabled">
+                          <VisualState.Setters>
+                              <Setter Property="BackgroundColor" Value="{StaticResource DisabledBackground}" />
+                              <Setter Property="TextColor" Value="{StaticResource DisabledText}" />
+                          </VisualState.Setters>
+                      </VisualState>
+                  </VisualStateGroup>
+              </VisualStateGroupList>
+          </Setter>
+      </Style>
+
+      <!-- IsEnabled drives the Disabled state; a command's CanExecute does the same -->
+      <Button Text="Place order" Command="{Binding PlaceOrderCommand}" />
+    expected: "Buttons shrink slightly while pressed, dim under a mouse pointer, and turn grey with readable text while disabled."
+    validation: *maui-excerpt
+  - id: responsive-layout
+    kind: code
+    title: "Responsive and adaptive: OnIdiom, OnPlatform, AdaptiveTrigger, font scaling"
+    note: "OnIdiom and OnPlatform are resolved once at load; AdaptiveTrigger follows the window as it resizes; text scales with the user's OS setting unless you opt out."
+    prerequisites: *maui
+    code: |-
+      <!-- Per device and platform, resolved when the page loads -->
+      <Label Text="Your orders"
+             FontSize="{OnIdiom Phone=22, Tablet=28, Desktop=28}"
+             Margin="{OnPlatform iOS='0,8,0,0', Default='0'}" />
+
+      <!-- Follows the OS text size by default; opt out only for fixed-size chrome -->
+      <Label Text="{Binding UnreadCount}" FontSize="12" FontAutoScalingEnabled="False" />
+
+      <!-- Breakpoints: list above details when narrow, side by side from 800 wide -->
+      <FlexLayout Direction="Column">
+          <VisualStateManager.VisualStateGroups>
+              <VisualStateGroup x:Name="WidthStates">
+                  <VisualState x:Name="Narrow">
+                      <VisualState.StateTriggers>
+                          <AdaptiveTrigger MinWindowWidth="0" />
+                      </VisualState.StateTriggers>
+                      <VisualState.Setters>
+                          <Setter Property="Direction" Value="Column" />
+                      </VisualState.Setters>
+                  </VisualState>
+                  <VisualState x:Name="Wide">
+                      <VisualState.StateTriggers>
+                          <AdaptiveTrigger MinWindowWidth="800" />
+                      </VisualState.StateTriggers>
+                      <VisualState.Setters>
+                          <Setter Property="Direction" Value="Row" />
+                      </VisualState.Setters>
+                  </VisualState>
+              </VisualStateGroup>
+          </VisualStateManager.VisualStateGroups>
+          <views:OrderList FlexLayout.Basis="40%" />
+          <views:OrderDetails FlexLayout.Grow="1" />
+      </FlexLayout>
+    expected: "On a phone the title is 22 and on a tablet or desktop 28; whenever the window is at least 800 wide (most tablets in landscape, desktop windows) the list and details sit side by side, otherwise stacked."
+    sources:
+      - title: Triggers (state triggers, AdaptiveTrigger) — .NET MAUI
+        url: https://learn.microsoft.com/en-us/dotnet/maui/fundamentals/triggers
+      - title: Fonts (font scaling) — .NET MAUI
+        url: https://learn.microsoft.com/en-us/dotnet/maui/user-interface/fonts
+    validation: *maui-excerpt
+  - id: blazor-css-isolation
+    kind: code
+    title: "Blazor: tokens as CSS custom properties, styles scoped per component"
+    note: "Global tokens go in `app.css`; a `.razor.css` file next to a component is rewritten to apply only to that component, and `::deep` reaches its children."
+    prerequisites:
+      - "A Blazor Web App (`dotnet new blazor -o Shop`) or Blazor Hybrid project"
+      - "Add `OrderCard.razor` and `OrderCard.razor.css` side by side; the build bundles all scoped CSS into `Shop.styles.css`"
+    code: |-
+      /* wwwroot/app.css: the tokens, once */
+      :root {
+        --color-surface: #ffffff;
+        --color-on-surface: #1b1b1f;
+        --space-m: 1rem;
+        --radius-m: 12px;
+      }
+      [data-theme="dark"] {                 /* set from C# through JS interop, or follow the OS: */
+        --color-surface: #1b1b1f;
+        --color-on-surface: #f2f2f7;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root:not([data-theme="light"]) { --color-surface: #1b1b1f; --color-on-surface: #f2f2f7; }
+      }
+
+      /* Components/OrderCard.razor.css: scoped to OrderCard by a generated b-xxxxxxxxxx attribute */
+      .card {
+        background: var(--color-surface);
+        color: var(--color-on-surface);
+        padding: var(--space-m);
+        border-radius: var(--radius-m);
+      }
+      .card ::deep .badge { font-size: 0.8rem; }   /* StatusBadge is a child component */
+      @media (min-width: 800px) {
+        .card { display: grid; grid-template-columns: 1fr auto; }
+      }
+
+      @* Components/OrderCard.razor *@
+      <article class="card">
+          <h3>Order @Order.Number</h3>
+          <StatusBadge Status="@Order.Status" />
+      </article>
+      @code { [Parameter, EditorRequired] public Order Order { get; set; } = default!; }
+
+      <!-- Components/App.razor, in <head> (.NET 9; earlier: href="Shop.styles.css") -->
+      <link rel="stylesheet" href="@Assets["Shop.styles.css"]" />
+    expected: "Each order card picks up the global tokens, flips with the theme, and its `.card` rule cannot leak into other components."
+    applies:
+      platforms: [dotnet, browser]
+      requires: [ASP.NET Core Blazor]
+      versions: { csharp: ">=12", dotnet: ">=9", aspnetcore: ">=9" }
+    sources:
+      - title: ASP.NET Core Blazor CSS isolation
+        url: https://learn.microsoft.com/en-us/aspnet/core/blazor/components/css-isolation
+    validation:
+      status: excerpt
+      host: a Blazor Web App project
+  - id: styling-rules
+    kind: rules
+    title: Rules and pitfalls
+    note: Most styling bugs are a static lookup, a missing BasedOn, or a hard-coded value.
+    items:
+      - tone: bad
+        text: "`{StaticResource …}` for a themed key: it is read once, so a theme swap leaves it stale. Use `DynamicResource` (MAUI, WPF), `ThemeResource` (WinUI) or `AppThemeBinding`."
+      - tone: bad
+        text: "An explicit `Style` without `BasedOn`: it replaces the implicit style, and the button silently loses its padding and radius."
+      - tone: bad
+        text: "Hex values and magic numbers in pages: name a token by role (`Surface`, `SpaceM`) so dark mode and rebrands are one-file changes."
+      - tone: bad
+        text: "`FontAutoScalingEnabled=\"False\"` on body text, or fixed-height rows around text: users who enlarge text get clipped content."
+      - tone: bad
+        text: "A `VisualStateGroup` without a `Normal` state: setters from the previous state are never undone."
+      - tone: good
+        text: "Check every text/background token pair for 4.5:1 contrast (3:1 for large text) in a unit test, in both themes."
+      - tone: good
+        text: "Order merged dictionaries tokens-first: a style that reads `{StaticResource BrandPrimary}` must come after the dictionary that defines it."
+      - tone: neutral
+        text: "MAUI implicit styles do not apply to subclasses unless the style sets `ApplyToDerivedTypes=\"True\"`."
+      - tone: neutral
+        text: "Blazor scoped CSS only matches elements in the component's own markup; reach child components with `::deep` under an element you own."

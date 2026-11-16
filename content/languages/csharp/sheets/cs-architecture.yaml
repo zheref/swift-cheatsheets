@@ -1,0 +1,502 @@
+id: cs-architecture
+concept: architecture.approaches
+scope: shared
+title: "Architectural Approaches"
+group: "Design & practice"
+subtitle: "MVC, MVVM, MVU and clean/onion/hexagonal layering for .NET apps and services — a testable view model, a repository and use case wired with Microsoft.Extensions.DependencyInjection, service lifetimes, navigation as a service, a reducer, and vertical slices."
+applies:
+  platforms: [dotnet]
+  runtime: .NET; the patterns apply to .NET MAUI, WPF, WinUI, Blazor and ASP.NET Core (the examples are console apps)
+  versions: { csharp: ">=12", dotnet: ">=8" }
+sources:
+  - title: Common web application architectures — .NET architecture guide
+    url: https://learn.microsoft.com/en-us/dotnet/architecture/modern-web-apps-azure/common-web-application-architectures
+  - title: Model-View-ViewModel — .NET MAUI enterprise application patterns
+    url: https://learn.microsoft.com/en-us/dotnet/architecture/maui/mvvm
+  - title: Dependency injection — .NET
+    url: https://learn.microsoft.com/en-us/dotnet/core/extensions/dependency-injection
+cards:
+  - id: comparison
+    kind: table
+    title: The approaches compared
+    note: The presentation patterns (MVC, MVVM, MVU) and the layering patterns (clean, onion, hexagonal) answer different questions — most apps use one of each.
+    headers: [Approach, Data flow, Where logic lives, Testability, At home in]
+    rows:
+      - ["**MVC**", "input → controller → model → controller picks a view", "controllers calling services", "controllers with fake services; views need an integration test", "ASP.NET Core MVC; Razor Pages (the page model plays the controller)"]
+      - ["**MVVM**", "view ⇄ view model through data binding and `ICommand`", "the view model and the services it is given", "the view model is plain C#: unit tests need no UI", ".NET MAUI, WPF, WinUI (with CommunityToolkit.Mvvm)"]
+      - ["**MVU / unidirectional**", "action → pure `Reduce(state, action)` → new state → view re-renders", "reducers and effects", "reducers are pure functions: input, output, done", "Blazor components with a store (Fluxor); any UI with a hand-written store"]
+      - ["**Clean / onion / hexagonal**", "dependencies point inward; adapters at the edges implement the domain's ports", "domain and use cases, free of frameworks", "the core runs with in-memory fakes", "services and larger apps — beneath any of the patterns above"]
+      - ["**Vertical slices (+ CQRS)**", "one request → one handler that owns its data access", "per feature folder", "a handler is tested end to end with a test database", "ASP.NET Core minimal APIs, often with a mediator"]
+  - id: mvvm-done-properly
+    kind: code
+    title: MVVM done properly
+    note: "The view model owns one state value, reports a failure and shows it, treats a user's cancellation as a return to what was on screen, and takes its dependencies as parameters — overlapping loads are the next card, and INotifyPropertyChanged is on the MVVM State sheet (`cs-mvvm-state`)."
+    prerequisites: &run-mvvm
+      - .NET 8 SDK or later
+      - "`dotnet new console -o Demo`, then `dotnet add Demo package CommunityToolkit.Mvvm`"
+      - "Replace `Demo/Program.cs` with the example, then `dotnet run --project Demo` (the Toolkit's source generators run at build time)"
+    code: |-
+      using System.Globalization;
+      using CommunityToolkit.Mvvm.ComponentModel;
+      using CommunityToolkit.Mvvm.Input;
+
+      Func<CancellationToken, Task<decimal[]>> backend = _ => Task.FromResult<decimal[]>([42.50m, 15.00m]);
+      var viewModel = new OrdersViewModel(ct => backend(ct), e => Console.WriteLine($"reported: {e.Message}"));
+      viewModel.PropertyChanged += (_, _) => Console.WriteLine(viewModel.State);    // what a binding would see
+      await viewModel.LoadCommand.ExecuteAsync(null);                               // the view's command
+
+      backend = ct => new TaskCompletionSource<decimal[]>().Task.WaitAsync(ct);     // a backend that hangs...
+      var refresh = viewModel.LoadCommand.ExecuteAsync(null);
+      viewModel.LoadCommand.Cancel();                                               // ...so the user cancels
+      await refresh;
+
+      backend = _ => Task.FromException<decimal[]>(new HttpRequestException("503 Service Unavailable"));
+      await viewModel.LoadCommand.ExecuteAsync(null);                               // the next refresh fails
+
+      partial class OrdersViewModel(
+          Func<CancellationToken, Task<decimal[]>> loadOrderTotals, Action<Exception> report) : ObservableObject
+      {
+          [ObservableProperty] private OrdersState state = new Loading();   // generates State and its notification
+
+          [RelayCommand]                                    // generates LoadCommand, cancellable through its token
+          private async Task LoadAsync(CancellationToken ct)
+          {
+              var previous = State;
+              State = new Loading();
+              try
+              {
+                  var totals = await loadOrderTotals(ct);
+                  var sum = totals.Sum().ToString("0.00", CultureInfo.InvariantCulture);
+                  State = new Loaded($"{totals.Length} orders, {sum} EUR");
+              }
+              catch (OperationCanceledException) { State = previous; }   // the user's choice: not an error
+              catch (Exception e)                           // this screen's top-level handler: report, then show it
+              {
+                  report(e);
+                  State = new Failed("Could not load your orders.");
+              }
+          }
+      }
+
+      abstract record OrdersState;
+
+      sealed record Loading : OrdersState;
+
+      sealed record Loaded(string Summary) : OrdersState;
+
+      sealed record Failed(string Message) : OrdersState;
+    expected: |-
+      Loaded { Summary = 2 orders, 57.50 EUR }
+      Loading { }
+      Loaded { Summary = 2 orders, 57.50 EUR }
+      Loading { }
+      reported: 503 Service Unavailable
+      Failed { Message = Could not load your orders. }
+    applies:
+      requires: [CommunityToolkit.Mvvm]
+      versions: { csharp: ">=12", dotnet: ">=8", communitytoolkit-mvvm: ">=8.0" }
+    sources:
+      - title: ObservableProperty attribute — MVVM Toolkit
+        url: https://learn.microsoft.com/en-us/dotnet/communitytoolkit/mvvm/generators/observableproperty
+      - title: RelayCommand attribute — MVVM Toolkit
+        url: https://learn.microsoft.com/en-us/dotnet/communitytoolkit/mvvm/generators/relaycommand
+    validation:
+      status: ran
+      toolchain: .NET SDK 9.0.304 (net9.0, C# 13), CommunityToolkit.Mvvm 8.4.2
+      date: "2026-11-16"
+  - id: stale-responses
+    kind: code
+    title: "Stale responses: only the newest request may write"
+    note: "Requests overlap whenever the user is faster than the network, so a view model numbers each one and drops an answer that is no longer the newest (cancelling the superseded request's token also saves the bandwidth)."
+    prerequisites: &run
+      - .NET 8 SDK or later
+      - "`dotnet new console -o Demo`, replace `Demo/Program.cs` with the example, then `dotnet run --project Demo`"
+    code: |-
+      // A search box's view model: one request per keystroke, and the answers can arrive in any order.
+      var pending = new Dictionary<string, TaskCompletionSource<string[]>>();
+
+      Task<string[]> Search(string query)                    // a fake backend: the demo releases each reply by hand
+      {
+          pending[query] = new TaskCompletionSource<string[]>(TaskCreationOptions.RunContinuationsAsynchronously);
+          return pending[query].Task;
+      }
+
+      var viewModel = new SearchViewModel(Search, show: text => Console.WriteLine($"shown: {text}"));
+      var typing = new[] { viewModel.OnInputAsync("mu"), viewModel.OnInputAsync("mug") };
+
+      pending["mug"].SetResult(["mug", "travel mug"]);                 // the newer query answers first...
+      pending["mu"].SetResult(["mug", "muffin tin", "mustard"]);       // ...the older one lands late: dropped
+      await Task.WhenAll(typing);
+      Console.WriteLine("rendered once, for the newest query");
+
+      sealed class SearchViewModel(Func<string, Task<string[]>> search, Action<string> show)
+      {
+          private int latest;
+
+          public async Task OnInputAsync(string query)
+          {
+              var request = ++latest;
+              var results = await search(query);
+              if (request != latest) return;                 // a newer query was typed: this answer is stale
+              show($"{query} -> {string.Join(", ", results)}");
+          }
+      }
+    expected: |-
+      shown: mug -> mug, travel mug
+      rendered once, for the newest query
+    validation: &ran
+      status: ran
+      toolchain: .NET SDK 9.0.304 (net9.0, C# 13)
+      date: "2026-11-16"
+  - id: repository-and-use-case
+    kind: code
+    title: "Repository + use case, wired by the container"
+    note: "The domain declares the port, the use case depends only on it and is resolved inside a scope once per request, and the composition root picks the adapter — the in-memory one is the store itself, an EF Core one is scoped like its `DbContext`."
+    prerequisites: &di
+      - .NET 8 SDK or later
+      - "`dotnet new console -o Demo`, then `dotnet add Demo package Microsoft.Extensions.DependencyInjection`"
+      - "Replace `Demo/Program.cs` with the example, then `dotnet run --project Demo`"
+    code: |-
+      using System.Collections.Concurrent;
+      using Microsoft.Extensions.DependencyInjection;
+
+      var services = new ServiceCollection();
+      // The adapter is the store, so a thread-safe singleton; EF Core: AddDbContext + a scoped EfOrderRepository
+      services.AddSingleton<IOrderRepository, InMemoryOrderRepository>();
+      services.AddScoped<CancelOrder>();
+      using var provider = services.BuildServiceProvider(validateScopes: true);
+
+      foreach (var id in new[] { "A-1", "A-1", "A-9" })
+      {
+          await using var scope = provider.CreateAsyncScope();     // one per request, as in ASP.NET Core
+          Console.WriteLine(await scope.ServiceProvider.GetRequiredService<CancelOrder>().ExecuteAsync(id));
+      }
+
+      sealed record Order(string Id, bool IsCancelled);                      // Domain: the entity and its port
+
+      interface IOrderRepository
+      {
+          Task<Order?> FindAsync(string id, CancellationToken ct);
+          Task SaveAsync(Order order, CancellationToken ct);
+      }
+
+      sealed class CancelOrder(IOrderRepository orders)                      // Application: one use case
+      {
+          public async Task<string> ExecuteAsync(string id, CancellationToken ct = default)
+          {
+              var order = await orders.FindAsync(id, ct);
+              if (order is null) return $"{id}: not found";
+              if (order.IsCancelled) return $"{id}: already cancelled";
+              await orders.SaveAsync(order with { IsCancelled = true }, ct);
+              return $"{id}: cancelled";
+          }
+      }
+
+      sealed class InMemoryOrderRepository : IOrderRepository              // Infrastructure: implements the port
+      {
+          private readonly ConcurrentDictionary<string, Order> orders = new() { ["A-1"] = new("A-1", false) };
+
+          public Task<Order?> FindAsync(string id, CancellationToken ct) =>
+              Task.FromResult(orders.GetValueOrDefault(id));
+
+          public Task SaveAsync(Order order, CancellationToken ct)
+          {
+              orders[order.Id] = order;
+              return Task.CompletedTask;
+          }
+      }
+    expected: |-
+      A-1: cancelled
+      A-1: already cancelled
+      A-9: not found
+    applies:
+      requires: [Microsoft.Extensions.DependencyInjection]
+      versions: { csharp: ">=12", dotnet: ">=8", microsoft-extensions-dependencyinjection: ">=8.0" }
+    sources:
+      - title: DbContext lifetime, configuration, and initialization — EF Core
+        url: https://learn.microsoft.com/en-us/ef/core/dbcontext-configuration/
+    validation: &ran-di
+      status: ran
+      toolchain: .NET SDK 9.0.304 (net9.0, C# 13), Microsoft.Extensions.DependencyInjection 10.0.15
+      date: "2026-11-16"
+  - id: service-lifetimes
+    kind: code
+    title: "Service lifetimes and the captive-dependency trap"
+    note: "Singleton is one per container, scoped one per scope and transient one per resolution — and a singleton must never hold a scoped service, which only `ValidateScopes` plus `ValidateOnBuild` report at startup."
+    prerequisites: *di
+    code: |-
+      using Microsoft.Extensions.DependencyInjection;
+
+      var services = new ServiceCollection();
+      services.AddSingleton<PriceCache>();         // one for the whole app
+      services.AddScoped<CartSession>();           // one per request (ASP.NET Core), per circuit (Blazor Server)
+      services.AddTransient<ReceiptBuilder>();     // a new instance on every resolution
+
+      using (var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true }))
+      {
+          using var first = provider.CreateScope();
+          using var second = provider.CreateScope();
+          var (a, b) = (first.ServiceProvider, second.ServiceProvider);
+          Console.WriteLine($"singleton, two scopes: {Same<PriceCache>(a, b)}");
+          Console.WriteLine($"scoped, one scope:     {Same<CartSession>(a, a)}");
+          Console.WriteLine($"scoped, two scopes:    {Same<CartSession>(a, b)}");
+          Console.WriteLine($"transient, twice:      {Same<ReceiptBuilder>(a, a)}");
+      }
+
+      // The trap: a singleton holding a scoped service keeps the first cart forever, for every user.
+      services.AddSingleton<CheckoutTotals>();
+      foreach (var (scopes, onBuild) in new[] { (true, false), (false, true), (true, true) })
+      {
+          var options = new ServiceProviderOptions { ValidateScopes = scopes, ValidateOnBuild = onBuild };
+          try
+          {
+              using var provider = services.BuildServiceProvider(options);
+              Console.WriteLine($"ValidateScopes={scopes}, ValidateOnBuild={onBuild}: starts");
+          }
+          catch (AggregateException e)
+          {
+              Console.WriteLine($"both: fails at startup: {e.InnerExceptions[0].InnerException?.Message}");
+          }
+      }
+      // ValidateScopes alone throws only when CheckoutTotals is first resolved; the generic host sets both in
+      // Development. Related: a transient IDisposable resolved from the root lives until the root is disposed.
+
+      static bool Same<T>(IServiceProvider x, IServiceProvider y) where T : notnull =>
+          ReferenceEquals(x.GetRequiredService<T>(), y.GetRequiredService<T>());
+
+      sealed class PriceCache;
+      sealed class CartSession;
+      sealed class ReceiptBuilder;
+      sealed class CheckoutTotals(CartSession cart) { public CartSession Cart => cart; }
+    expected: |-
+      singleton, two scopes: True
+      scoped, one scope:     True
+      scoped, two scopes:    False
+      transient, twice:      False
+      ValidateScopes=True, ValidateOnBuild=False: starts
+      ValidateScopes=False, ValidateOnBuild=True: starts
+      both: fails at startup: Cannot consume scoped service 'CartSession' from singleton 'CheckoutTotals'.
+    applies:
+      requires: [Microsoft.Extensions.DependencyInjection]
+      versions: { csharp: ">=12", dotnet: ">=8", microsoft-extensions-dependencyinjection: ">=8.0" }
+    sources:
+      - title: Service lifetimes — Dependency injection in .NET
+        url: https://learn.microsoft.com/en-us/dotnet/core/extensions/dependency-injection/service-lifetimes
+    validation: *ran-di
+  - id: navigation-as-a-concern
+    kind: code
+    title: "Navigation as its own concern"
+    note: "View models ask an `INavigator` for a route; one adapter per UI stack knows Shell, `NavigationManager` or `Frame`, and tests record the requests."
+    prerequisites: *run
+    code: |-
+      var navigator = new RecordingNavigator();
+      var viewModel = new OrderListViewModel(navigator);
+      await viewModel.OpenOrderAsync("A-1");
+      await viewModel.OpenOrderAsync("B&7");          // escaped, so it cannot break the route
+      await viewModel.CheckoutAsync(cartIsEmpty: true);
+      await viewModel.CheckoutAsync(cartIsEmpty: false);
+
+      interface INavigator
+      {
+          Task GoToAsync(string route, IDictionary<string, object>? parameters = null);
+      }
+
+      static class Routes
+      {
+          public const string OrderDetail = "orders/detail", Checkout = "checkout", EmptyCart = "cart/empty";
+      }
+
+      sealed class OrderListViewModel(INavigator navigator)
+      {
+          public Task OpenOrderAsync(string orderId) =>
+              navigator.GoToAsync(Routes.OrderDetail, new Dictionary<string, object> { ["id"] = orderId });
+
+          public Task CheckoutAsync(bool cartIsEmpty) =>
+              navigator.GoToAsync(cartIsEmpty ? Routes.EmptyCart : Routes.Checkout);   // a testable decision
+      }
+
+      // The app registers one adapter per stack instead:
+      //   .NET MAUI Shell: Shell.Current.GoToAsync(route, parameters)   (routes: Routing.RegisterRoute)
+      //   Blazor:          navigationManager.NavigateTo($"/{route}?id={Uri.EscapeDataString(id)}")
+      //   WinUI:           frame.Navigate(typeof(OrderDetailPage), parameters)   — WPF: frame.Navigate(page)
+      sealed class RecordingNavigator : INavigator
+      {
+          public Task GoToAsync(string route, IDictionary<string, object>? parameters = null)
+          {
+              var pairs = parameters?.Select(p => $"{p.Key}={Uri.EscapeDataString(p.Value.ToString() ?? "")}");
+              var query = pairs is null ? "" : "?" + string.Join("&", pairs);
+              Console.WriteLine($"navigate {route}{query}");
+              return Task.CompletedTask;
+          }
+      }
+    expected: |-
+      navigate orders/detail?id=A-1
+      navigate orders/detail?id=B%267
+      navigate cart/empty
+      navigate checkout
+    sources:
+      - title: .NET MAUI Shell navigation
+        url: https://learn.microsoft.com/en-us/dotnet/maui/fundamentals/shell/navigation
+      - title: ASP.NET Core Blazor routing and navigation
+        url: https://learn.microsoft.com/en-us/aspnet/core/blazor/fundamentals/routing
+    validation: *ran
+  - id: unidirectional-flow
+    kind: code
+    title: "Unidirectional flow: the store is a fold"
+    note: "State changes only through a pure reducer, so replaying the same actions always yields the same screens; stores, effects and Fluxor are on the Unidirectional State sheet (`cs-unidirectional`)."
+    prerequisites: *run
+    code: |-
+      using System.Globalization;
+
+      CartAction[] actions =
+      [
+          new CartAction.Add("mug", 12.00m),
+          new CartAction.Add("lamp", 99.00m),
+          new CartAction.ApplyCoupon("FREESTUFF"),                 // not a valid code: the reducer ignores it
+          new CartAction.ApplyCoupon("WELCOME10"),
+          new CartAction.Remove("mug"),
+      ];
+
+      var state = new CartState([], Coupon: null);
+      foreach (var action in actions)
+      {
+          state = CartReducer.Reduce(state, action);
+          Console.WriteLine(state.Describe());
+      }
+
+      record CartLine(string Sku, decimal Price);
+
+      record CartState(IReadOnlyList<CartLine> Lines, string? Coupon)
+      {
+          public decimal Total => Lines.Sum(line => line.Price) * (Coupon is null ? 1m : 0.9m);
+          public string Describe() => string.Create(CultureInfo.InvariantCulture,
+              $"[{string.Join(", ", Lines.Select(line => line.Sku))}] {Total:0.00}{CouponLabel}");
+
+          private string CouponLabel => Coupon is null ? "" : $" ({Coupon})";
+      }
+
+      abstract record CartAction
+      {
+          public sealed record Add(string Sku, decimal Price) : CartAction;
+          public sealed record Remove(string Sku) : CartAction;
+          public sealed record ApplyCoupon(string Code) : CartAction;
+      }
+
+      static class CartReducer
+      {
+          private static readonly HashSet<string> KnownCoupons = ["WELCOME10"];
+
+          public static CartState Reduce(CartState state, CartAction action) => action switch
+          {
+              CartAction.Add(var sku, var price) => state with { Lines = [.. state.Lines, new(sku, price)] },
+              CartAction.Remove(var sku) => state with { Lines = [.. state.Lines.Where(line => line.Sku != sku)] },
+              CartAction.ApplyCoupon(var code) when KnownCoupons.Contains(code) => state with { Coupon = code },
+              _ => state,                                          // an unknown coupon changes nothing
+          };
+      }
+    expected: |-
+      [mug] 12.00
+      [mug, lamp] 111.00
+      [mug, lamp] 111.00
+      [mug, lamp] 99.90 (WELCOME10)
+      [lamp] 89.10 (WELCOME10)
+    validation: *ran
+  - id: vertical-slices-cqrs
+    kind: code
+    title: "Vertical slices and CQRS, in outline"
+    note: "Each feature is a request and its handler, owning its data access; commands change state and queries only read, and a mediator later adds one dispatch point and pipeline behaviours without changing the slices."
+    prerequisites: *di
+    code: |-
+      using System.Collections.Concurrent;
+      using System.Globalization;
+      using Microsoft.Extensions.DependencyInjection;
+
+      var services = new ServiceCollection();
+      services.AddSingleton<OrderStore>();                                            // shared, so thread-safe
+      services.AddScoped<IHandler<PlaceOrder, string>, PlaceOrderHandler>();          // Features/PlaceOrder/
+      services.AddScoped<IHandler<CustomerOrders, string[]>, CustomerOrdersHandler>(); // Features/CustomerOrders/
+      using var provider = services.BuildServiceProvider(validateScopes: true);
+
+      await using var request = provider.CreateAsyncScope();
+      var place = request.ServiceProvider.GetRequiredService<IHandler<PlaceOrder, string>>();
+      Console.WriteLine(await place.HandleAsync(new PlaceOrder("A-1", "ada", 42.50m)));
+      Console.WriteLine(await place.HandleAsync(new PlaceOrder("A-2", "ada", 15.00m)));
+      var history = request.ServiceProvider.GetRequiredService<IHandler<CustomerOrders, string[]>>();
+      Console.WriteLine(string.Join("; ", await history.HandleAsync(new CustomerOrders("ada"))));
+
+      interface IHandler<in TRequest, TResponse>
+      {
+          Task<TResponse> HandleAsync(TRequest request, CancellationToken ct = default);
+      }
+
+      sealed record Order(string Id, string Customer, decimal Total);
+
+      sealed class OrderStore { public ConcurrentDictionary<string, Order> Orders { get; } = new(); }
+
+      // Command: changes state and returns as little as possible.
+      sealed record PlaceOrder(string Id, string Customer, decimal Total);
+
+      sealed class PlaceOrderHandler(OrderStore store) : IHandler<PlaceOrder, string>
+      {
+          public Task<string> HandleAsync(PlaceOrder command, CancellationToken ct = default) =>
+              Task.FromResult(store.Orders.TryAdd(command.Id, new(command.Id, command.Customer, command.Total))
+                  ? $"placed {command.Id}"
+                  : $"{command.Id} was already placed");
+      }
+
+      // Query: reads, shaped for the screen that asks, never changes state (with EF Core: a DbContext query).
+      sealed record CustomerOrders(string Customer);
+
+      sealed class CustomerOrdersHandler(OrderStore store) : IHandler<CustomerOrders, string[]>
+      {
+          public Task<string[]> HandleAsync(CustomerOrders query, CancellationToken ct = default) =>
+              Task.FromResult(store.Orders.Values.Where(o => o.Customer == query.Customer)
+                  .OrderBy(o => o.Id, StringComparer.Ordinal)
+                  .Select(o => string.Create(CultureInfo.InvariantCulture, $"{o.Id} {o.Total:0.00}"))
+                  .ToArray());
+      }
+    expected: |-
+      placed A-1
+      placed A-2
+      A-1 42.50; A-2 15.00
+    applies:
+      requires: [Microsoft.Extensions.DependencyInjection]
+      versions: { csharp: ">=12", dotnet: ">=8", microsoft-extensions-dependencyinjection: ">=8.0" }
+    validation: *ran-di
+  - id: layers-as-projects
+    kind: table
+    title: "Clean / onion layering as projects"
+    note: "The compiler enforces the direction once each layer is its own project: a reference that points outward simply does not exist."
+    headers: [Project, Contains, References, Must not reference]
+    rows:
+      - ["`Shop.Domain`", "entities, value objects, domain rules, ports such as `IOrderRepository`", "nothing (the BCL only)", "EF Core, ASP.NET Core, MAUI, any NuGet adapter"]
+      - ["`Shop.Application`", "use cases or handlers, DTOs, validation", "`Shop.Domain`", "`Shop.Infrastructure`, any UI project"]
+      - ["`Shop.Infrastructure`", "the EF Core `DbContext`, typed `HttpClient`s, adapters implementing the ports", "`Shop.Application`, `Shop.Domain`", "any UI project"]
+      - ["`Shop.App` / `Shop.Api`", "pages, view models, endpoints, and the composition root (`MauiProgram.cs`, `Program.cs`)", "all of the above", "—"]
+      - ["`Shop.*.Tests`", "unit tests per layer; integration tests against Infrastructure", "the project under test", "another test project"]
+  - id: which-architecture
+    kind: rules
+    title: "How to answer \"which architecture would you use?\""
+    note: Answer with the forces, not a favourite acronym.
+    sources:
+      - title: Choosing a testing strategy — EF Core
+        url: https://learn.microsoft.com/en-us/ef/core/testing/choosing-a-testing-strategy
+    items:
+      - tone: good
+        text: "**Start from the constraints** — team size, how long the app lives, how many platforms, offline needs, and how much logic is domain versus screens over an API."
+      - tone: good
+        text: "**Name one presentation pattern and one layering** — e.g. MVVM with CommunityToolkit.Mvvm for a MAUI app, over a clean core with a repository and use cases."
+      - tone: good
+        text: "**Say how you test it** — view models and use cases with in-memory fakes, adapters with integration tests, a few UI tests on the main journeys."
+      - tone: good
+        text: "**Say where navigation, DI and state live** — a navigation service, constructor injection from the composition root, one state value per screen."
+      - tone: neutral
+        text: "**Blazor is component-first** — component state and a store (MVU) are more natural there than MVVM; WPF, WinUI and MAUI bindings make MVVM the default."
+      - tone: neutral
+        text: "**Scale the ceremony** — a CRUD screen over an API does not need four projects; vertical slices with one project can be the cleanest answer for a small service."
+      - tone: bad
+        text: "**Logic in code-behind or in `.razor` markup** — it can only be tested through the UI; move it into the view model, component class or a service."
+      - tone: bad
+        text: "**A domain type or use case that news up `HttpClient` or a vendor SDK** — the dependency arrow points the wrong way; depend on a port the domain owns."
+      - tone: neutral
+        text: "**`DbContext` in a handler is a choice, not a mistake** — it is the vertical-slice design and EF Core already is a unit of work; add a repository when you need to stub data access in unit tests, and know it costs code to write and maintain (EF Core's testing guide weighs both)."

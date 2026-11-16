@@ -1,0 +1,406 @@
+id: cs-rx-timing
+concept: reactive.timing-operators
+scope: platform
+title: "Timing Operators — Rx.NET vs Plain Async"
+group: .NET
+subtitle: "Throttle (a debounce!), Sample, Delay, Timeout, Buffer, Window, Interval: what each one drops, how to write it by hand, and how TestScheduler makes every test instant."
+applies:
+  platforms: [dotnet]
+  runtime: .NET (System.Reactive, Microsoft.Reactive.Testing)
+  versions: { csharp: ">=12", dotnet: ">=8", system-reactive: ">=6.0" }
+sources:
+  - title: Reactive Extensions for .NET — dotnet/reactive
+    url: https://github.com/dotnet/reactive
+  - title: Introduction to Rx.NET — Time-based sequences
+    url: https://introtorx.com/chapters/time-based-sequences
+  - title: Introduction to Rx.NET — Scheduling and threading (virtual time)
+    url: https://introtorx.com/chapters/scheduling-and-threading
+cards:
+  - id: operator-meaning-equivalent
+    kind: table
+    title: "Operator → meaning → hand-written equivalent"
+    note: "Names differ across libraries: Rx.NET's `Throttle` is everyone else's debounce, and Rx.NET has no leading-edge throttle at all."
+    headers: [Rx.NET, Meaning, Drops values?, Plain async equivalent]
+    rows:
+      - ["`Throttle(t)`", "emit after `t` of silence; keeps the **last** of a burst — what Combine, RxJS and Flow call **debounce**", "yes, most", "cancel-and-restart: a new `CancellationTokenSource` and `Task.Delay(t, time, token)` per input"]
+      - ["`Sample(t)`", "every `t`, the latest value if one arrived since the last tick (a trailing throttle, RxJS `sampleTime`)", "yes", "a `PeriodicTimer` reading the latest value"]
+      - ["(none built in)", "leading throttle: the **first** value, then ignore for `t` (RxJS `throttleTime`, Combine `throttle(latest: false)`)", "yes", "a last-accepted timestamp from `TimeProvider.GetTimestamp()`"]
+      - ["`Delay(t)`", "shift every value later", "no", "`await Task.Delay(t, time, token)` before acting"]
+      - ["`Timeout(t)`", "fail with `TimeoutException` when the **next** value (every gap, not just the first) takes longer than `t`", "terminates", "`CancelAfter(t)` on a linked token, or `task.WaitAsync(t, time)`"]
+      - ["`Timeout(t, fallback)`", "switch to `fallback` instead of failing", "no", "`catch (TimeoutException)` and use the fallback"]
+      - ["`Buffer(t, n)`", "a list per window of `t` **or** `n` items, whichever comes first", "no (batches)", "a `Channel<T>` reader with a deadline"]
+      - ["`Window(t)`", "like `Buffer`, but each batch is itself an `IObservable<T>`", "no", "—"]
+      - ["`Interval(t)`, `Timer(due, period)`", "ticks `0, 1, 2…` every `t` (after `due`)", "n/a", "`PeriodicTimer` (does not drift)"]
+      - ["`DistinctUntilChanged()`", "drop a value equal to the previous one", "yes", "compare with the last value you kept"]
+      - ["`Timestamp()`, `TimeInterval()`", "attach the time, or the gap since the previous value", "no", "`TimeProvider.GetElapsedTime(start)`"]
+  - id: debounce-search
+    kind: code
+    title: "Throttle — search when they stop typing"
+    note: "The search-as-you-type pipeline: Throttle (debounce), trim, DistinctUntilChanged, a minimum length, a Catch inside each search so one failure does not end the box, then Switch so a stale answer never lands."
+    prerequisites: &run-testing
+      - .NET 8 SDK or later
+      - "`dotnet new console -o Demo`, then `dotnet add Demo package System.Reactive --version 6.1.0`"
+      - "`dotnet add Demo package Microsoft.Reactive.Testing --version 6.1.0`"
+      - "Replace `Demo/Program.cs` with the example, then `dotnet run --project Demo`"
+    code: |-
+      using System.Reactive.Linq;
+      using Microsoft.Reactive.Testing;
+
+      var scheduler = new TestScheduler();
+      var keystrokes = scheduler.CreateHotObservable(
+          ReactiveTest.OnNext(Ms(0), "l"),
+          ReactiveTest.OnNext(Ms(100), "la"),
+          ReactiveTest.OnNext(Ms(200), "lap"),        // a pause: 300 ms of silence follow
+          ReactiveTest.OnNext(Ms(700), "lapt"),
+          ReactiveTest.OnNext(Ms(800), "lapto"),
+          ReactiveTest.OnNext(Ms(900), "laptop"),
+          ReactiveTest.OnNext(Ms(1600), "laptop "));  // a trailing space: the same query
+
+      IObservable<string> Search(string query) =>      // a 50 ms round trip; the server fails 'lap' with a 503
+          Observable.Timer(TimeSpan.FromMilliseconds(50), scheduler)
+              .Select(_ => query == "lap" ? throw new HttpRequestException("503") : $"results for '{query}'");
+
+      keystrokes
+          .Throttle(TimeSpan.FromMilliseconds(300), scheduler)   // Rx.NET's debounce
+          .Select(text => text.Trim())
+          .DistinctUntilChanged()                    // "laptop " trims to "laptop": no second request
+          .Where(query => query.Length >= 2)
+          .Select(query => Search(query)            // Catch per query: the next keystroke still searches
+              .Catch((HttpRequestException e) => Observable.Return($"'{query}' unavailable ({e.Message})")))
+          .Switch()
+          .Subscribe(r => Console.WriteLine($"{scheduler.Clock / TimeSpan.TicksPerMillisecond} ms: {r}"));
+
+      scheduler.Start();                               // two seconds of typing, run instantly
+
+      static long Ms(int milliseconds) => TimeSpan.FromMilliseconds(milliseconds).Ticks;
+    expected: |-
+      550 ms: 'lap' unavailable (503)
+      1250 ms: results for 'laptop'
+    validation: &ran-testing
+      status: ran
+      toolchain: .NET SDK 9.0.304 (net9.0, C# 13), System.Reactive 6.1.0, Microsoft.Reactive.Testing 6.1.0
+      date: "2026-11-16"
+  - id: throttle-sample-debounce
+    kind: code
+    title: "One input, three decisions: Throttle vs Sample vs a leading throttle"
+    note: "Scroll events every 50 ms for half a second: debounce waits for the end, Sample reports the latest per tick, a leading throttle takes the first per window."
+    prerequisites: *run-testing
+    code: |-
+      using System.Reactive.Concurrency;
+      using System.Reactive.Linq;
+      using Microsoft.Reactive.Testing;
+
+      var scheduler = new TestScheduler();
+      var scrolls = Enumerable.Range(0, 10).Select(i => ReactiveTest.OnNext(Ms(10 + 50 * i), (i + 1) * 100));
+      var scrollOffsets = scheduler.CreateHotObservable([.. scrolls, ReactiveTest.OnCompleted<int>(Ms(700))]);
+
+      var window = TimeSpan.FromMilliseconds(175);
+      Record("Throttle", scrollOffsets.Throttle(window, scheduler));              // after silence
+      Record("Sample", scrollOffsets.Sample(window, scheduler));                  // latest per tick
+      Record("ThrottleFirst", scrollOffsets.ThrottleFirst(window, scheduler));    // first per window
+
+      scheduler.AdvanceTo(Ms(1000));                   // Sample ticks forever: advance, don't Start()
+
+      void Record(string name, IObservable<int> results)
+      {
+          var seen = new List<string>();
+          results.Subscribe(
+              v => seen.Add($"{v}@{scheduler.Clock / TimeSpan.TicksPerMillisecond}"),
+              () => seen.Add($"done@{scheduler.Clock / TimeSpan.TicksPerMillisecond}"));   // the scroll ended
+          var print = () => Console.WriteLine($"{name,-13} {string.Join(" ", seen)}");
+          scheduler.Schedule(TimeSpan.FromMilliseconds(999), print);
+      }
+
+      static long Ms(int milliseconds) => TimeSpan.FromMilliseconds(milliseconds).Ticks;
+
+      static class TimingOperators
+      {
+          // Not in Rx.NET: take one value, then a silent window on the scheduler's timer (not its wall clock)
+          public static IObservable<T> ThrottleFirst<T>(this IObservable<T> source, TimeSpan window,
+              IScheduler scheduler) =>
+              source.Publish(shared => shared
+                  .Take(1)
+                  .Concat(Observable.Empty<T>().Delay(window, scheduler))   // completes after the window
+                  .Repeat()                                                 // then waits for the next value
+                  .TakeUntil(shared.LastOrDefaultAsync()));                 // and ends when the source ends
+      }
+    expected: |-
+      Throttle      1000@635 done@700
+      Sample        400@175 700@350 1000@525 done@700
+      ThrottleFirst 100@10 500@210 900@410 done@700
+    validation: *ran-testing
+  - id: delay-and-timeout
+    kind: code
+    title: Delay and Timeout
+    note: "Delay shifts every value and drops none; Timeout gives up when a gap is too long — fail, or switch to a fallback."
+    prerequisites: *run-testing
+    code: |-
+      using System.Reactive.Linq;
+      using Microsoft.Reactive.Testing;
+
+      var scheduler = new TestScheduler();
+      void Log(string text) => Console.WriteLine($"{scheduler.Clock / TimeSpan.TicksPerSecond}s {text}");
+
+      // Hide the "Saved" toast two seconds after it appears
+      Observable.Return("hide toast").Delay(TimeSpan.FromSeconds(2), scheduler).Subscribe(Log);
+
+      // A slow request: answers after 5 s
+      var slowProfile = Observable.Timer(TimeSpan.FromSeconds(5), scheduler).Select(_ => "fresh profile");
+
+      slowProfile
+          .Timeout(TimeSpan.FromSeconds(3), scheduler)
+          .Subscribe(Log, error => Log($"failed: {error.GetType().Name}"));
+
+      slowProfile
+          .Timeout(TimeSpan.FromSeconds(3), Observable.Return("cached profile"), scheduler)
+          .Subscribe(Log);
+
+      slowProfile
+          .Timeout(TimeSpan.FromSeconds(10), scheduler)
+          .Subscribe(Log);
+
+      scheduler.Start();
+    expected: |-
+      2s hide toast
+      3s failed: TimeoutException
+      3s cached profile
+      5s fresh profile
+    validation: *ran-testing
+  - id: buffer-and-window
+    kind: code
+    title: "Buffer and Window — batching by time and count"
+    note: "Upload analytics in batches of 3 or every 2 s, whichever comes first; count events per second with Window."
+    prerequisites: *run-testing
+    code: |-
+      using System.Reactive.Linq;
+      using Microsoft.Reactive.Testing;
+
+      var scheduler = new TestScheduler();
+      var taps = scheduler.CreateHotObservable(
+          ReactiveTest.OnNext(Ms(100), "add-to-cart"),
+          ReactiveTest.OnNext(Ms(200), "view-item"),
+          ReactiveTest.OnNext(Ms(300), "view-item"),   // third event: the batch is full
+          ReactiveTest.OnNext(Ms(2500), "checkout"),
+          ReactiveTest.OnCompleted<string>(Ms(6500)));
+      string At() => $"{scheduler.Clock / TimeSpan.TicksPerMillisecond} ms";
+
+      taps.Buffer(TimeSpan.FromSeconds(2), 3, scheduler)
+          .Where(batch => batch.Count > 0)               // a quiet window still emits an empty list
+          .Subscribe(batch => Console.WriteLine($"{At()} upload [{string.Join(", ", batch)}]"));
+
+      taps.Window(TimeSpan.FromSeconds(1), scheduler)
+          .SelectMany(second => second.Count())          // each window is an IObservable<string>
+          .Where(count => count > 0)
+          .Subscribe(count => Console.WriteLine($"{At()} {count} event(s) in the last second"));
+
+      scheduler.Start();
+
+      static long Ms(int milliseconds) => TimeSpan.FromMilliseconds(milliseconds).Ticks;
+    expected: |-
+      300 ms upload [add-to-cart, view-item, view-item]
+      1000 ms 3 event(s) in the last second
+      3000 ms 1 event(s) in the last second
+      4300 ms upload [checkout]
+    validation: *ran-testing
+  - id: interval-without-drift
+    kind: code
+    title: "Interval and Timer — polling without drift"
+    note: "Interval schedules each tick from the start, so a 300 ms poll does not push the next one later; a delay-then-poll loop drifts by the work's cost every time."
+    prerequisites: *run-testing
+    code: |-
+      using System.Reactive.Concurrency;
+      using System.Reactive.Linq;
+      using Microsoft.Reactive.Testing;
+
+      var scheduler = new TestScheduler();
+      // Asking the server for the order status takes 300 ms
+      IObservable<string> PollStatus() =>
+          Observable.Timer(TimeSpan.FromMilliseconds(300), scheduler).Select(_ => "polled");
+
+      var anchored = Observable.Interval(TimeSpan.FromSeconds(1), scheduler)
+          .Select(_ => PollStatus())
+          .Concat();                                     // one poll at a time, ticks stay on the 1 s grid
+
+      var drifting = Observable.Timer(TimeSpan.FromSeconds(1), scheduler)
+          .SelectMany(_ => PollStatus())
+          .Repeat();                                     // wait 1 s, poll, wait 1 s again: + 300 ms each round
+
+      Record("Interval", anchored);
+      Record("delay loop", drifting);
+      scheduler.AdvanceTo(TimeSpan.FromSeconds(4).Ticks);
+
+      void Record(string name, IObservable<string> polls)
+      {
+          var finishedAt = new List<string>();
+          polls.Subscribe(_ => finishedAt.Add($"{scheduler.Clock / TimeSpan.TicksPerMillisecond}"));
+          var print = () => Console.WriteLine($"{name,-10} {string.Join(" ", finishedAt)}");
+          scheduler.Schedule(TimeSpan.FromSeconds(4), print);
+      }
+    expected: |-
+      Interval   1300 2300 3300
+      delay loop 1300 2600 3900
+    validation: *ran-testing
+  - id: injectable-time
+    kind: code
+    title: "Inject the scheduler — and the test is instant"
+    note: "Every timing operator takes an `IScheduler`: production passes the default, tests pass a TestScheduler and assert on recorded notifications."
+    prerequisites: *run-testing
+    code: |-
+      using System.Reactive.Concurrency;
+      using System.Reactive.Linq;
+      using System.Reactive.Subjects;
+      using Microsoft.Reactive.Testing;
+
+      var scheduler = new TestScheduler();
+      var model = new SearchModel(scheduler);
+      scheduler.Schedule(TimeSpan.FromMilliseconds(250), () => model.Query.OnNext("lap"));
+      scheduler.Schedule(TimeSpan.FromMilliseconds(400), () => model.Query.OnNext("laptop"));
+
+      // created 0, subscribed 0, disposed 2 s (the default overload uses ticks 100, 200, 1000)
+      var observer = scheduler.Start(() => model.Suggestions, 0, 0, TimeSpan.FromSeconds(2).Ticks);
+
+      var expected = new[] { ReactiveTest.OnNext(TimeSpan.FromMilliseconds(700).Ticks, "laptop") };
+      var passed = observer.Messages.SequenceEqual(expected);
+      Console.WriteLine(passed ? "debounced to one suggestion at 700 ms" : "FAILED");
+
+      sealed class SearchModel(IScheduler scheduler)      // production: new SearchModel(DefaultScheduler.Instance)
+      {
+          public Subject<string> Query { get; } = new();
+
+          public IObservable<string> Suggestions =>
+              Query.Throttle(TimeSpan.FromMilliseconds(300), scheduler).DistinctUntilChanged();
+      }
+    expected: |-
+      debounced to one suggestion at 700 ms
+    validation: *ran-testing
+  - id: debounce-by-hand
+    kind: code
+    title: "The same debounce by hand: CancellationTokenSource and an injected TimeProvider"
+    note: "Without Rx, each keystroke cancels the pending wait and starts a new one, and the token is checked again after the request so a late answer to an old query is dropped."
+    prerequisites:
+      - .NET 8 SDK or later (`Task.Delay` with a `TimeProvider`)
+      - "`dotnet new console -o Demo`, replace `Demo/Program.cs` with the example, then `dotnet run --project Demo`"
+    code: |-
+      var requested = new SemaphoreSlim(0);
+      var answers = new Dictionary<string, TaskCompletionSource<string>> { ["lap"] = new(), ["laptop"] = new() };
+      Task<string> SearchAsync(string query, CancellationToken token)   // a server that ignores the token
+      {
+          Console.WriteLine($"request: {query}");
+          requested.Release();
+          return answers[query].Task;
+      }
+
+      var search = new DebouncedSearch(SearchAsync, TimeSpan.FromMilliseconds(100), TimeProvider.System);
+      search.ResultsChanged += Console.WriteLine;
+
+      foreach (var text in new[] { "l", "la", "lap" }) search.QueryChanged(text);   // one burst: one request
+      await requested.WaitAsync();                         // 'lap' is in flight…
+      search.QueryChanged("laptop");                       // …when the user types again
+      answers["lap"].SetResult("results for 'lap'");       // the old answer arrives late: dropped
+      answers["laptop"].SetResult("results for 'laptop'");
+      await search.Pending;
+
+      sealed class DebouncedSearch(
+          Func<string, CancellationToken, Task<string>> searchAsync, TimeSpan delay, TimeProvider time)
+      {
+          private CancellationTokenSource? pending;
+          public event Action<string>? ResultsChanged;
+          public Task Pending { get; private set; } = Task.CompletedTask;
+
+          public void QueryChanged(string query)          // called on the UI thread
+          {
+              pending?.Cancel();                            // restart the clock: the last keystroke wins
+              pending = new CancellationTokenSource();      // no timer inside it, so nothing to Dispose
+              Pending = SearchAfterQuietAsync(query, pending.Token);
+          }
+
+          private async Task SearchAfterQuietAsync(string query, CancellationToken token)
+          {
+              try
+              {
+                  await Task.Delay(delay, time, token);     // tests pass a fake TimeProvider here
+                  var results = await searchAsync(query, token);
+                  token.ThrowIfCancellationRequested();     // it answered, but a newer keystroke superseded it
+                  ResultsChanged?.Invoke(results);
+              }
+              catch (OperationCanceledException) { }      // superseded: not an error
+          }
+      }
+    expected: |-
+      request: lap
+      request: laptop
+      results for 'laptop'
+    applies:
+      runtime: .NET (System.Threading.Tasks, TimeProvider) — no Rx
+    validation:
+      status: ran
+      toolchain: .NET SDK 9.0.304 (net9.0, C# 13)
+      date: "2026-11-16"
+  - id: owning-the-subscription
+    kind: code
+    title: Owning the timer subscription safely
+    note: "A SerialDisposable holds at most one timer: Start twice replaces instead of doubling, Stop and Dispose end it, and nothing fires after the screen is gone."
+    prerequisites: *run-testing
+    code: |-
+      using System.Reactive.Concurrency;
+      using System.Reactive.Disposables;
+      using System.Reactive.Linq;
+      using Microsoft.Reactive.Testing;
+
+      var scheduler = new TestScheduler();
+      var screen = new OrdersScreen(scheduler);
+      screen.StartAutoRefresh();
+      scheduler.AdvanceBy(TimeSpan.FromSeconds(1.5).Ticks);
+      screen.StartAutoRefresh();                         // e.g. OnAppearing ran twice: still one timer
+      scheduler.AdvanceBy(TimeSpan.FromSeconds(2).Ticks);
+      screen.StopAutoRefresh();
+      scheduler.AdvanceBy(TimeSpan.FromSeconds(5).Ticks);
+      screen.StartAutoRefresh();
+      scheduler.AdvanceBy(TimeSpan.FromSeconds(1).Ticks);
+      screen.Dispose();                                  // the user left the screen
+      scheduler.AdvanceBy(TimeSpan.FromSeconds(5).Ticks);
+      Console.WriteLine($"refreshes after dispose: {screen.Refreshes}");
+
+      sealed class OrdersScreen(IScheduler scheduler) : IDisposable
+      {
+          private readonly SerialDisposable autoRefresh = new();   // assigning disposes the previous one
+          public int Refreshes { get; private set; }
+
+          public void StartAutoRefresh() =>
+              autoRefresh.Disposable = Observable.Interval(TimeSpan.FromSeconds(1), scheduler)
+                  .Subscribe(_ => Console.WriteLine($"refresh #{++Refreshes} at {scheduler.Now:s.f}s"));
+
+          public void StopAutoRefresh() => autoRefresh.Disposable = Disposable.Empty;
+
+          public void Dispose() => autoRefresh.Dispose();  // the timer captured `this`: release it
+      }
+    expected: |-
+      refresh #1 at 1.0s
+      refresh #2 at 2.5s
+      refresh #3 at 3.5s
+      refresh #4 at 9.5s
+      refreshes after dispose: 4
+    validation: *ran-testing
+  - id: safety-checklist
+    kind: rules
+    title: Safety checklist for timing code
+    note: Most timing bugs are naming, lifetime or real-time-in-tests bugs.
+    items:
+      - tone: bad
+        text: "Reaching for `Throttle` to rate-limit a button: in Rx.NET it is a **debounce** and waits for silence. Use `Sample` (trailing) or a leading-edge throttle like `ThrottleFirst` above."
+      - tone: good
+        text: "Pass an `IScheduler` to every time-based operator (`Throttle`, `Delay`, `Timeout`, `Buffer`, `Interval`) and inject it, so tests use a `TestScheduler`."
+      - tone: good
+        text: "Test with `AdvanceBy`/`AdvanceTo` when a sequence never ends (`Interval`, `Sample`): `Start()` runs until nothing is scheduled, which is never."
+      - tone: good
+        text: "Keep a timer subscription in a `SerialDisposable` (restartable) or `CompositeDisposable` (many) and dispose it when the screen goes away — the callback captures the screen."
+      - tone: good
+        text: "Deliver results on the UI thread with `ObserveOn(SynchronizationContext.Current!)` **after** the timing operators; the timers themselves fire on the scheduler's thread."
+      - tone: bad
+        text: "`Buffer(t)` emits empty lists on quiet windows — filter `batch.Count > 0` before uploading."
+      - tone: bad
+        text: "`Timeout(t)` applies to every gap between values, not to the whole sequence; for an overall deadline use `Timeout(scheduler.Now + t, scheduler)` (fails with `TimeoutException`), or `TakeUntil(Observable.Timer(t, scheduler))` (completes quietly, so the caller cannot tell it gave up)."
+      - tone: bad
+        text: "Hand-written debounce without cancelling the **request** too: a slow answer to an old query can still arrive after a newer one. Pass the same token to the call."
+      - tone: neutral
+        text: "Polling with `Interval(…).Select(poll).Concat()` queues ticks when a poll runs longer than the period; with `SelectMany` polls overlap. Pick one deliberately."

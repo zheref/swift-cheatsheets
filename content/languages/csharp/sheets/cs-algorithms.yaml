@@ -139,6 +139,707 @@ cards:
       Console.WriteLine(ShortestPath(["..#.", ".##.", "...."], (0, 0), (0, 3)));
     expected: "7"
     validation: *ran
+  - id: hash-map-counting-grouping
+    kind: code
+    title: "Hash map: counting, grouping, memory of the past"
+    note: "The default first idea, O(n) hash operations and O(n) space (anagram keys add a per-word sort) — two prices that use a gift card exactly, the first unique letter, anagram groups."
+    prerequisites: *run
+    code: |-
+      using System.Runtime.InteropServices;
+
+      // Two-sum on unsorted input: remember each value's index and look up the complement. O(n).
+      static (int, int)? TwoSum(int[] prices, int budget)
+      {
+          var seen = new Dictionary<int, int>();               // price -> index
+          for (var i = 0; i < prices.Length; i++)
+          {
+              if (seen.TryGetValue(budget - prices[i], out var j)) return (j, i);   // checked(...) near int limits
+              seen.TryAdd(prices[i], i);                       // keep the first index of a repeated price
+          }
+          return null;
+      }
+
+      // First non-repeating character: count once, then scan in the original order.
+      static char? FirstUnique(string s)
+      {
+          var counts = new Dictionary<char, int>();
+          foreach (var c in s)
+              CollectionsMarshal.GetValueRefOrAddDefault(counts, c, out _)++;   // one lookup, not two
+          foreach (var c in s)
+              if (counts[c] == 1) return c;
+          return null;
+      }
+
+      // Group anagrams under a canonical key, the sorted letters: O(n · L log L) for n words of length L.
+      static IEnumerable<string[]> GroupAnagrams(string[] words) =>
+          words.GroupBy(w => string.Concat(w.Order())).Select(g => g.ToArray());
+
+      Console.WriteLine($"two items for a 50 gift card: {TwoSum([30, 45, 15, 20], 50)}");
+      Console.WriteLine($"first unique letter of 'swiss': {FirstUnique("swiss")}");
+      var groups = GroupAnagrams(["eat", "tea", "tan", "ate", "nat", "bat"]);
+      Console.WriteLine(string.Join(" ", groups.Select(g => $"[{string.Join(",", g)}]")));
+    expected: |-
+      two items for a 50 gift card: (0, 3)
+      first unique letter of 'swiss': w
+      [eat,tea,ate] [tan,nat] [bat]
+    sources:
+      - title: CollectionsMarshal.GetValueRefOrAddDefault — .NET API
+        url: https://learn.microsoft.com/en-us/dotnet/api/system.runtime.interopservices.collectionsmarshal.getvaluereforadddefault
+    validation: &ran-2026-11-16
+      status: ran
+      toolchain: .NET SDK 9.0.304 (net9.0, C# 13)
+      date: "2026-11-16"
+  - id: prefix-sums-difference-arrays
+    kind: code
+    title: Prefix sums & difference arrays
+    note: "Many range-sum queries over daily revenue in O(1) each (sums in `long`: totals outgrow `int`), and many range updates (seats booked on a span of flights) in O(1) each."
+    prerequisites: *run
+    code: |-
+      // Range sums over daily revenue: O(n) to build, then O(1) per query.
+      int[] revenue = [120, 80, 0, 200, 50, 90, 300];
+      var prefix = new long[revenue.Length + 1];   // prefix[i] = sum of the first i days; long: totals outgrow int
+      for (var i = 0; i < revenue.Length; i++) prefix[i + 1] = prefix[i] + revenue[i];
+      long RangeSum(int from, int to) => prefix[to + 1] - prefix[from];   // inclusive days
+      Console.WriteLine($"days 1-3: {RangeSum(1, 3)}, days 0-6: {RangeSum(0, 6)}");
+
+      // How many runs of consecutive days sum exactly to 250? Prefix sums + a hash map, O(n).
+      static int SubarraysSumming(int[] xs, int k)
+      {
+          var seen = new Dictionary<long, int> { [0] = 1 };    // prefix value -> how many times seen
+          long running = 0;
+          var total = 0;
+          foreach (var x in xs)
+          {
+              running += x;
+              total += seen.GetValueOrDefault(running - k);
+              seen[running] = seen.GetValueOrDefault(running) + 1;
+          }
+          return total;
+      }
+      Console.WriteLine($"runs summing to 250: {SubarraysSumming(revenue, 250)}");
+
+      // Difference array: seat bookings over ranges of flights, O(1) per booking, one pass at the end.
+      (int First, int Last, int Seats)[] bookings = [(1, 2, 10), (2, 3, 20), (2, 5, 25)];
+      var diff = new int[5 + 2];                               // flights 1..5, plus one past the end
+      foreach (var (first, last, seats) in bookings) { diff[first] += seats; diff[last + 1] -= seats; }
+      var perFlight = new int[5];
+      for (int f = 1, running = 0; f <= 5; f++) perFlight[f - 1] = running += diff[f];
+      Console.WriteLine($"seats per flight: {string.Join(",", perFlight)}");
+    expected: |-
+      days 1-3: 280, days 0-6: 840
+      runs summing to 250: 2
+      seats per flight: 10,55,45,25,25
+    validation: *ran-2026-11-16
+  - id: sort-then-sweep-intervals
+    kind: code
+    title: "Sort then sweep: intervals"
+    note: "Merge overlapping bookings and count the rooms a day needs — sorting first turns both into one linear pass, O(n log n)."
+    prerequisites: *run
+    code: |-
+      // Merge overlapping calendar bookings, then find how many rooms the day needs. O(n log n).
+      Booking[] day = [new(9, 10), new(13, 15), new(9, 12), new(14, 16), new(11, 12)];
+      Console.WriteLine($"busy: {string.Join(" ", Merge(day))}");
+      Console.WriteLine($"rooms needed: {MinRooms(day)}");
+
+      static List<Booking> Merge(IEnumerable<Booking> bookings)
+      {
+          var merged = new List<Booking>();
+          foreach (var b in bookings.OrderBy(b => b.Start))
+          {
+              if (merged.Count > 0 && b.Start <= merged[^1].End)                       // overlaps the last one
+                  merged[^1] = merged[^1] with { End = Math.Max(merged[^1].End, b.End) };
+              else
+                  merged.Add(b);
+          }
+          return merged;
+      }
+
+      // Sweep line: +1 at every start, -1 at every end, walked in time order; the peak is the answer.
+      static int MinRooms(IEnumerable<Booking> bookings)
+      {
+          var events = bookings.SelectMany(b => new[] { (At: b.Start, Delta: 1), (At: b.End, Delta: -1) })
+              .OrderBy(e => e.At).ThenBy(e => e.Delta);       // an end before a start at the same hour
+          int current = 0, peak = 0;
+          foreach (var (_, delta) in events) peak = Math.Max(peak, current += delta);
+          return peak;
+      }
+
+      record struct Booking(int Start, int End)
+      {
+          public override readonly string ToString() => $"{Start}-{End}";
+      }
+    expected: |-
+      busy: 9-12 13-16
+      rooms needed: 2
+    validation: *ran-2026-11-16
+  - id: stack-monotonic-stack
+    kind: code
+    title: Stack & monotonic stack
+    note: "Matching brackets, and \"how long until a bigger value\" (daily temperatures, next greater element) in one O(n) pass."
+    prerequisites: *run
+    code: |-
+      // Validate the brackets in a template expression before evaluating it. O(n).
+      static bool IsBalanced(string s)
+      {
+          var openerOf = new Dictionary<char, char> { [')'] = '(', [']'] = '[', ['}'] = '{' };
+          var stack = new Stack<char>();
+          foreach (var c in s)
+          {
+              if (c is '(' or '[' or '{') stack.Push(c);
+              else if (openerOf.TryGetValue(c, out var opener) && (!stack.TryPop(out var top) || top != opener))
+                  return false;
+          }
+          return stack.Count == 0;
+      }
+
+      // Daily temperatures: how many days until a warmer one? A stack of indices, values decreasing. O(n).
+      static int[] DaysUntilWarmer(int[] temps)
+      {
+          var answer = new int[temps.Length];                  // 0 when no warmer day comes
+          var waiting = new Stack<int>();
+          for (var i = 0; i < temps.Length; i++)
+          {
+              while (waiting.TryPeek(out var day) && temps[day] < temps[i])
+                  answer[waiting.Pop()] = i - day;             // today is the answer for that day
+              waiting.Push(i);
+          }
+          return answer;
+      }
+
+      Console.WriteLine($"{IsBalanced("{items[(i + 1)]}")} {IsBalanced("(]")} {IsBalanced("((")}");
+      Console.WriteLine(string.Join(",", DaysUntilWarmer([73, 74, 75, 71, 69, 72, 76, 73])));
+      // The same skeleton: next greater element, stock span, largest rectangle in a histogram, trapping rain water.
+    expected: |-
+      True False False
+      1,1,4,2,1,1,0,0
+    validation: *ran-2026-11-16
+  - id: fast-slow-pointers-linked-lists
+    kind: code
+    title: Fast & slow pointers (linked lists)
+    note: "Find a playlist's middle track, detect a loop and the track where it starts (Floyd) — O(n) time and O(1) space."
+    prerequisites: *run
+    code: |-
+      // A playlist as a singly linked list: find the middle track, detect a loop and where it starts.
+      var playlist = new Track("intro")
+          { Next = new("verse") { Next = new("chorus") { Next = new("bridge") { Next = new("outro") } } } };
+      Console.WriteLine($"middle: {Middle(playlist)?.Title}, loop: {CycleStart(playlist)?.Title ?? "none"}");
+
+      var looped = new Track("intro") { Next = new("verse") { Next = new("chorus") } };
+      looped.Next!.Next!.Next = looped.Next;                   // chorus -> verse: a repeat-forever bug
+      Console.WriteLine($"looped list: loop starts at {CycleStart(looped)?.Title}");
+
+      static Track? Middle(Track? head)                        // slow moves 1, fast moves 2
+      {
+          Track? slow = head, fast = head;
+          while (fast?.Next is not null) (slow, fast) = (slow!.Next, fast.Next.Next);
+          return slow;
+      }
+
+      // Floyd, O(n) time and O(1) space: once slow and fast meet, a pointer from the head and one from the
+      // meeting point, both moving 1, meet at the loop's first node.
+      static Track? CycleStart(Track? head)
+      {
+          Track? slow = head, fast = head;
+          while (fast?.Next is not null)
+          {
+              (slow, fast) = (slow!.Next, fast.Next.Next);
+              if (!ReferenceEquals(slow, fast)) continue;      // identity, not equality
+              var start = head;
+              while (!ReferenceEquals(start, slow)) (start, slow) = (start!.Next, slow!.Next);
+              return start;
+          }
+          return null;                                         // fast fell off the end: no loop
+      }
+
+      sealed class Track(string title)
+      {
+          public string Title { get; } = title;
+          public Track? Next { get; set; }
+      }
+    expected: |-
+      middle: chorus, loop: none
+      looped list: loop starts at verse
+    validation: *ran-2026-11-16
+  - id: trees-dfs-and-bfs
+    kind: code
+    title: "Trees: DFS on a binary search tree"
+    note: "Recursion for depth — in-order gives a BST sorted, and a range passed down validates it; recursion depth is the tree's height, so a sorted-insert tree overflows the stack."
+    prerequisites: *run
+    code: |-
+      // A category tree stored as a binary search tree by id: insert, in-order DFS, validation.
+      TreeNode? root = null;
+      foreach (var id in new[] { 50, 30, 70, 20, 40, 60, 80, 30 }) root = Insert(root, id);
+
+      var sorted = new List<int>();
+      InOrder(root, sorted);
+      Console.WriteLine($"in-order: {string.Join(",", sorted)}");
+      var badEdit = new TreeNode(50) { Left = new(30) { Right = new(60) } };   // 60 sits left of 50
+      Console.WriteLine($"valid BST: {IsValid(root)}, after a bad edit: {IsValid(badEdit)}");
+
+      // Recursion depth = tree height: fine when balanced; sorted inserts make a list and overflow the stack
+      // (fatal in .NET) — use SortedSet<T> or an explicit stack there.
+      static TreeNode Insert(TreeNode? node, int value)
+      {
+          if (node is null) return new TreeNode(value);
+          if (value < node.Value) node.Left = Insert(node.Left, value);
+          else if (value > node.Value) node.Right = Insert(node.Right, value);
+          return node;                                         // equal: ids are unique, keep one
+      }
+
+      static void InOrder(TreeNode? node, List<int> into)      // left, self, right = sorted for a BST
+      {
+          if (node is null) return;
+          InOrder(node.Left, into);
+          into.Add(node.Value);
+          InOrder(node.Right, into);
+      }
+
+      // Pass the allowed range down; comparing with the parent alone misses 60 under 30 under 50.
+      static bool IsValid(TreeNode? node, long min = long.MinValue, long max = long.MaxValue)
+      {
+          if (node is null) return true;
+          if (node.Value <= min || node.Value >= max) return false;
+          return IsValid(node.Left, min, node.Value) && IsValid(node.Right, node.Value, max);
+      }
+
+      sealed class TreeNode(int value)
+      {
+          public int Value { get; } = value;
+          public TreeNode? Left { get; set; }
+          public TreeNode? Right { get; set; }
+      }
+    expected: |-
+      in-order: 20,30,40,50,60,70,80
+      valid BST: True, after a bad edit: False
+    validation: *ran-2026-11-16
+  - id: trees-bfs-level-order
+    kind: code
+    title: "Trees: BFS level order"
+    note: "A queue for breadth: drain exactly one level per outer loop to print a category tree by depth, with memory bounded by the widest level."
+    prerequisites: *run
+    code: |-
+      // Show a category tree level by level (breadcrumb depth, an org chart): BFS drains one level per loop.
+      var root = new TreeNode("shop")
+      {
+          Left = new("audio") { Left = new("cables"), Right = new("speakers") },
+          Right = new("video") { Right = new("cameras") },
+      };
+      var levels = LevelOrder(root);
+      for (var depth = 0; depth < levels.Count; depth++)
+          Console.WriteLine($"depth {depth}: {string.Join(", ", levels[depth])}");
+
+      static List<List<string>> LevelOrder(TreeNode? root)
+      {
+          var levels = new List<List<string>>();
+          var queue = new Queue<TreeNode>();
+          if (root is not null) queue.Enqueue(root);
+          while (queue.Count > 0)
+          {
+              var level = new List<string>();
+              for (var remaining = queue.Count; remaining > 0; remaining--)   // exactly this level's nodes
+              {
+                  var node = queue.Dequeue();
+                  level.Add(node.Name);
+                  if (node.Left is not null) queue.Enqueue(node.Left);
+                  if (node.Right is not null) queue.Enqueue(node.Right);
+              }
+              levels.Add(level);
+          }
+          return levels;
+      }
+      // No recursion, so depth is not limited by the stack; memory is the widest level.
+
+      sealed class TreeNode(string name)
+      {
+          public string Name { get; } = name;
+          public TreeNode? Left { get; set; }
+          public TreeNode? Right { get; set; }
+      }
+    expected: |-
+      depth 0: shop
+      depth 1: audio, video
+      depth 2: cables, speakers, cameras
+    validation: *ran-2026-11-16
+  - id: graphs-bfs-dfs
+    kind: code
+    title: "Graphs: BFS and DFS"
+    note: "Degrees of separation in a follower graph (BFS) and everyone reachable from a user (DFS) — an adjacency list, a visited set, a queue or a stack."
+    prerequisites: *run
+    code: |-
+      // A follower graph: degrees of separation (BFS), and who is reachable at all (iterative DFS). O(V + E).
+      var follows = new Dictionary<string, string[]>
+      {
+          ["ana"] = ["ben", "cy"], ["ben"] = ["dee"], ["cy"] = ["dee", "eli"],
+          ["dee"] = ["fay"], ["eli"] = [], ["fay"] = [], ["gus"] = ["ana"],
+      };
+      var toGus = Distance(follows, "ana", "gus")?.ToString() ?? "unreachable";
+      Console.WriteLine($"ana -> fay: {Distance(follows, "ana", "fay")} hops, ana -> gus: {toGus}");
+      Console.WriteLine($"reachable from cy: {string.Join(",", Reachable(follows, "cy").Order())}");
+
+      // Shortest path in an UNWEIGHTED graph is BFS; mark visited when enqueuing, not when dequeuing.
+      static int? Distance(Dictionary<string, string[]> graph, string from, string to)
+      {
+          var distance = new Dictionary<string, int> { [from] = 0 };
+          var queue = new Queue<string>([from]);
+          while (queue.TryDequeue(out var node))
+          {
+              if (node == to) return distance[node];
+              foreach (var next in graph.GetValueOrDefault(node, []))
+                  if (distance.TryAdd(next, distance[node] + 1)) queue.Enqueue(next);
+          }
+          return null;
+      }
+
+      // DFS with an explicit stack: no recursion depth limit on a deep graph.
+      static HashSet<string> Reachable(Dictionary<string, string[]> graph, string start)
+      {
+          var visited = new HashSet<string>();
+          var stack = new Stack<string>([start]);
+          while (stack.TryPop(out var node))
+          {
+              if (!visited.Add(node)) continue;
+              foreach (var next in graph.GetValueOrDefault(node, [])) stack.Push(next);
+          }
+          return visited;
+      }
+      // Weighted edges? Dijkstra is this BFS with a PriorityQueue keyed by distance.
+    expected: |-
+      ana -> fay: 3 hops, ana -> gus: unreachable
+      reachable from cy: cy,dee,eli,fay
+    validation: *ran-2026-11-16
+  - id: topological-sort
+    kind: code
+    title: Topological sort
+    note: "A build order for projects with dependencies, with cycle detection for free — Kahn's algorithm, O(V + E), or O(V log V + E) with the priority queue that keeps the order stable."
+    prerequisites: *run
+    code: |-
+      // Build order for projects with dependencies (Kahn's algorithm); a cycle means no valid order. O(V + E).
+      (string Project, string DependsOn)[] edges = [("api", "core"), ("web", "api"), ("web", "ui"), ("ui", "core"),
+                                                    ("tests", "web")];
+      Console.WriteLine($"build order: {string.Join(" -> ", BuildOrder(edges) ?? ["cycle"])}");
+      var withCycle = BuildOrder([.. edges, ("core", "tests")]);
+      Console.WriteLine($"with a cycle: {string.Join(" -> ", withCycle ?? ["cycle"])}");
+
+      static List<string>? BuildOrder((string Project, string DependsOn)[] edges)
+      {
+          var dependents = new Dictionary<string, List<string>>();
+          var waitingOn = new Dictionary<string, int>();       // in-degree: unbuilt dependencies
+          foreach (var (project, dependsOn) in edges)
+          {
+              waitingOn.TryAdd(dependsOn, 0);
+              waitingOn[project] = waitingOn.GetValueOrDefault(project) + 1;
+              if (!dependents.TryGetValue(dependsOn, out var list)) dependents[dependsOn] = list = [];
+              list.Add(project);
+          }
+
+          // A priority queue instead of a queue: among the ready ones, alphabetical, so the order is stable.
+          var ready = new PriorityQueue<string, string>(StringComparer.Ordinal);
+          foreach (var (project, count) in waitingOn) if (count == 0) ready.Enqueue(project, project);
+
+          var order = new List<string>();
+          while (ready.TryDequeue(out var project, out _))
+          {
+              order.Add(project);
+              foreach (var next in dependents.GetValueOrDefault(project, []))
+                  if (--waitingOn[next] == 0) ready.Enqueue(next, next);
+          }
+          return order.Count == waitingOn.Count ? order : null;   // leftovers are on a cycle or wait on one
+      }
+    expected: |-
+      build order: core -> api -> ui -> web -> tests
+      with a cycle: cycle
+    validation: *ran-2026-11-16
+  - id: backtracking
+    kind: code
+    title: Backtracking
+    note: "Every combination of gift-card denominations for an amount — choose, explore, un-choose, and prune early; zero coins are dropped first (the search would never end) and repeats too (they would repeat results)."
+    prerequisites: *run
+    code: |-
+      // Which gift-card denominations add up exactly to the amount? Choose, explore, un-choose.
+      // Exponential in amount / smallest coin; sorting lets the loop stop at the first coin that is too big.
+      static List<List<int>> CombinationsSumming(int[] denominations, int amount)
+      {
+          var coins = denominations.Where(d => d > 0).Distinct().Order().ToArray();   // 0 never shrinks the amount;
+                                                                                      // a repeat duplicates results
+          var results = new List<List<int>>();
+          var current = new List<int>();
+
+          void Explore(int start, int remaining)
+          {
+              if (remaining == 0)
+              {
+                  results.Add([.. current]);                   // copy: current keeps changing
+                  return;
+              }
+              for (var i = start; i < coins.Length && coins[i] <= remaining; i++)
+              {
+                  current.Add(coins[i]);                       // choose
+                  Explore(i, remaining - coins[i]);            // explore (i, not i + 1: a card may repeat)
+                  current.RemoveAt(current.Count - 1);         // un-choose
+              }
+          }
+
+          Explore(0, amount);
+          return results;
+      }
+
+      var combinations = CombinationsSumming([10, 25, 5, 5, 0], 30);
+      Console.WriteLine(string.Join(" ", combinations.Select(c => $"[{string.Join("+", c)}]")));
+    expected: |-
+      [5+5+5+5+5+5] [5+5+5+5+10] [5+5+10+10] [5+25] [10+10+10]
+    validation: *ran-2026-11-16
+  - id: backtracking-permutations
+    kind: code
+    title: "Backtracking: permutations"
+    note: "Every seating order for a table — the same choose, explore, un-choose skeleton with a `used[]` mask, O(n!)."
+    prerequisites: *run
+    code: |-
+      // Every seating order for three guests: permutations, with a used[] mask so each guest appears once. O(n!).
+      static List<string> Permutations(string[] guests)
+      {
+          var results = new List<string>();
+          var used = new bool[guests.Length];
+          var current = new List<string>();
+
+          void Explore()
+          {
+              if (current.Count == guests.Length)
+              {
+                  results.Add(string.Join("", current));
+                  return;
+              }
+              for (var i = 0; i < guests.Length; i++)
+              {
+                  if (used[i]) continue;
+                  used[i] = true;                              // choose
+                  current.Add(guests[i]);
+                  Explore();                                   // explore
+                  current.RemoveAt(current.Count - 1);         // un-choose
+                  used[i] = false;
+              }
+          }
+
+          Explore();
+          return results;
+      }
+
+      Console.WriteLine(string.Join(" ", Permutations(["A", "B", "C"])));
+      // Subsets are the same skeleton without the mask: record current on every call, explore from i + 1.
+    expected: |-
+      ABC ACB BAC BCA CAB CBA
+    validation: *ran-2026-11-16
+  - id: dynamic-programming
+    kind: code
+    title: Dynamic programming
+    note: "Overlapping subproblems with optimal substructure — the best non-adjacent haul, \"did you mean?\" edit distance, fewest coins bottom-up, where a top-down memo would recurse amount / smallest coin deep."
+    prerequisites: *run
+    code: |-
+      // 1-D: the most you can collect from houses in a row without robbing two neighbours. O(n), O(1) space.
+      static int Rob(int[] houses)
+      {
+          int skip = 0, take = 0;                              // best so far without / with the last house
+          foreach (var h in houses) (skip, take) = (Math.Max(skip, take), skip + h);
+          return Math.Max(skip, take);
+      }
+
+      // 2-D: edit distance for "did you mean?". dp[i, j] = edits turning the first i of a into the first j of b.
+      static int EditDistance(string a, string b)
+      {
+          var dp = new int[a.Length + 1, b.Length + 1];
+          for (var i = 0; i <= a.Length; i++) dp[i, 0] = i;   // delete everything
+          for (var j = 0; j <= b.Length; j++) dp[0, j] = j;   // insert everything
+          for (var i = 1; i <= a.Length; i++)
+              for (var j = 1; j <= b.Length; j++)
+                  dp[i, j] = a[i - 1] == b[j - 1]
+                      ? dp[i - 1, j - 1]                       // a free match
+                      : 1 + Math.Min(dp[i - 1, j - 1],         // replace
+                                     Math.Min(dp[i - 1, j],    // delete
+                                              dp[i, j - 1]));  // insert
+          return dp[a.Length, b.Length];
+      }
+
+      // Fewest coins, flattened bottom-up: best[a] = fewest coins for amount a. A top-down memo reads closer
+      // to the recurrence, but its recursion depth is amount / smallest coin — a stack overflow for big amounts.
+      static int FewestCoins(int[] coins, int amount)
+      {
+          var best = new int[amount + 1];
+          Array.Fill(best, int.MaxValue);                      // int.MaxValue: cannot be made (yet)
+          best[0] = 0;
+          for (var a = 1; a <= amount; a++)
+              foreach (var coin in coins)
+                  if (coin > 0 && coin <= a && best[a - coin] != int.MaxValue)
+                      best[a] = Math.Min(best[a], best[a - coin] + 1);
+          return best[amount];
+      }
+
+      Console.WriteLine($"rob: {Rob([2, 7, 9, 3, 1])}");
+      Console.WriteLine($"edit distance: {EditDistance("recieve", "receive")} {EditDistance("kitten", "sitting")}");
+      // (a swapped pair costs 2 here; Damerau-Levenshtein counts it as 1)
+      Console.WriteLine($"fewest coins for 63: {FewestCoins([1, 5, 10, 21, 25, 0], 63)}");
+    expected: |-
+      rob: 12
+      edit distance: 2 3
+      fewest coins for 63: 3
+    validation: *ran-2026-11-16
+  - id: union-find-disjoint-set
+    kind: code
+    title: Union-Find (disjoint set)
+    note: "Which servers share a cluster, and which cable is redundant — connectivity in near O(1) per operation with path compression and union by rank."
+    prerequisites: *run
+    code: |-
+      // Servers joined by network cables: how many clusters, and which cable closes a loop?
+      (int, int)[] cables = [(0, 1), (1, 2), (3, 4), (2, 0), (5, 6)];
+      var network = new UnionFind(7);
+      foreach (var (a, b) in cables)
+          if (!network.Union(a, b)) Console.WriteLine($"cable {a}-{b} is redundant");
+      bool Connected(int a, int b) => network.Find(a) == network.Find(b);
+      Console.WriteLine($"{network.Components} clusters; 0-2 connected: {Connected(0, 2)}, 0-3: {Connected(0, 3)}");
+
+      sealed class UnionFind
+      {
+          private readonly int[] _parent;
+          private readonly int[] _rank;
+          public int Components { get; private set; }
+
+          public UnionFind(int count)
+          {
+              _parent = [.. Enumerable.Range(0, count)];       // everyone starts as their own root
+              _rank = new int[count];
+              Components = count;
+          }
+
+          public int Find(int x)
+          {
+              if (_parent[x] != x) _parent[x] = Find(_parent[x]);   // path compression: point straight at the root
+              return _parent[x];
+          }
+
+          /// <summary>False when a and b were already connected.</summary>
+          public bool Union(int a, int b)
+          {
+              var (ra, rb) = (Find(a), Find(b));
+              if (ra == rb) return false;
+              if (_rank[ra] < _rank[rb]) (ra, rb) = (rb, ra);  // union by rank: attach the shorter tree
+              _parent[rb] = ra;
+              if (_rank[ra] == _rank[rb]) _rank[ra]++;
+              Components--;
+              return true;
+          }
+      }
+      // Also solves: Kruskal's minimum spanning tree, merging accounts that share an email.
+    expected: |-
+      cable 2-0 is redundant
+      3 clusters; 0-2 connected: True, 0-3: False
+    validation: *ran-2026-11-16
+  - id: trie-prefix-tree
+    kind: code
+    title: Trie (prefix tree)
+    note: "Autocomplete for a search box in O(prefix length), independent of how many names the catalogue holds."
+    prerequisites: *run
+    code: |-
+      // Autocomplete for a product search box: O(length of the prefix), whatever the catalogue size.
+      var catalogue = new Trie();
+      string[] products = ["cable", "camera", "camping stove", "candle", "car charger", "tablet"];
+      foreach (var name in products) catalogue.Insert(name);
+
+      Console.WriteLine($"cam: {string.Join(", ", catalogue.Complete("cam"))}");
+      Console.WriteLine($"ca, first 3: {string.Join(", ", catalogue.Complete("ca").Take(3))}");
+
+      sealed class Trie
+      {
+          private sealed class Node
+          {
+              public SortedDictionary<char, Node> Children { get; } = [];   // sorted: completions come out A-Z
+              public bool IsWord { get; set; }
+          }
+
+          private readonly Node _root = new();
+
+          public void Insert(string word)
+          {
+              var node = _root;
+              foreach (var c in word)
+              {
+                  if (!node.Children.TryGetValue(c, out var next)) node.Children[c] = next = new Node();
+                  node = next;
+              }
+              node.IsWord = true;
+          }
+
+          public IEnumerable<string> Complete(string prefix) =>
+              Find(prefix) is { } start ? Walk(start, prefix) : [];   // lazy: Take(n) stops the walk early
+
+          private Node? Find(string prefix)
+          {
+              var node = _root;
+              foreach (var c in prefix)
+                  if (!node.Children.TryGetValue(c, out node)) return null;
+              return node;
+          }
+
+          private static IEnumerable<string> Walk(Node node, string path)
+          {
+              if (node.IsWord) yield return path;
+              foreach (var (c, child) in node.Children)
+                  foreach (var word in Walk(child, path + c)) yield return word;
+          }
+      }
+    expected: |-
+      cam: camera, camping stove
+      ca, first 3: cable, camera, camping stove
+    validation: *ran-2026-11-16
+  - id: bit-manipulation-cyclic-sort
+    kind: code
+    title: Bit manipulation & cyclic sort
+    note: "Find the one unpaired reading, enumerate subsets, find the first missing ticket number — O(1)-space tricks, within 32-bit (`int`) or 64-bit (`long`) masks."
+    prerequisites: *run
+    code: |-
+      using System.Numerics;
+
+      // XOR: every sensor reported twice except one; pairs cancel out. O(n) time, O(1) space.
+      int[] reports = [4, 1, 2, 1, 2];
+      Console.WriteLine($"unpaired: {reports.Aggregate(0, (acc, x) => acc ^ x)}");
+
+      // The everyday tricks, with the BCL's intrinsics where they exist (TrailingZeroCount(0) is 32).
+      var x = 0b1011_0100;
+      Console.WriteLine($"lowest bit cleared: {Convert.ToString(x & (x - 1), 2)}, lowest bit: {x & -x}");
+      var (ones, zeros) = (BitOperations.PopCount((uint)x), BitOperations.TrailingZeroCount(x));
+      Console.WriteLine($"popcount: {ones}, trailing zeros: {zeros}, pow2(64): {BitOperations.IsPow2(64)}");
+
+      // Every subset of three toppings, as a bitmask from 0 to 2^n - 1.
+      // int masks: n <= 30 (1 << 31 is negative, 1 << 32 is 1); 1L << i up to 62; beyond that, recurse.
+      string[] toppings = ["ham", "egg", "kale"];
+      var subsets = Enumerable.Range(0, 1 << toppings.Length)
+          .Select(mask => "{" + string.Join(",", toppings.Where((_, i) => (mask & (1 << i)) != 0)) + "}");
+      Console.WriteLine(string.Join(" ", subsets));
+
+      // Cyclic sort: ticket numbers should be 1..n, so put each at index value - 1; the first gap is the answer.
+      // O(n) time, O(1) space — and it reorders the array in place: pass a copy if the caller needs it.
+      static int FirstMissing(int[] tickets)
+      {
+          for (var i = 0; i < tickets.Length;)
+          {
+              var target = tickets[i] - 1;
+              if (target >= 0 && target < tickets.Length && tickets[target] != tickets[i])
+                  (tickets[i], tickets[target]) = (tickets[target], tickets[i]);
+              else
+                  i++;
+          }
+          for (var i = 0; i < tickets.Length; i++)
+              if (tickets[i] != i + 1) return i + 1;
+          return tickets.Length + 1;
+      }
+      Console.WriteLine($"first missing ticket: {FirstMissing([3, 4, -1, 1])} {FirstMissing([1, 2, 3])}");
+    expected: |-
+      unpaired: 4
+      lowest bit cleared: 10110000, lowest bit: 4
+      popcount: 4, trailing zeros: 2, pow2(64): True
+      {} {ham} {egg} {ham,egg} {kale} {ham,kale} {egg,kale} {ham,egg,kale}
+      first missing ticket: 2 4
+    sources:
+      - title: BitOperations class — .NET API
+        url: https://learn.microsoft.com/en-us/dotnet/api/system.numerics.bitoperations
+    validation: *ran-2026-11-16
   - id: working-it-out
     kind: rules
     title: Working a problem out loud

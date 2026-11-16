@@ -1,0 +1,556 @@
+id: cs-blazor
+concept: ui.blazor
+scope: platform
+title: "Blazor — Razor Components"
+group: UI
+subtitle: Render modes, components with parameters, EventCallbacks and RenderFragments, binding, lists with @key, lifecycle, cascading values and DI, forms and validation, routing, JS interop and the performance rules.
+applies:
+  platforms: [dotnet, browser]
+  runtime: ASP.NET Core Blazor Web App (server, WebAssembly or both)
+  requires: [ASP.NET Core Blazor]
+  versions: { csharp: ">=13", dotnet: ">=9", aspnetcore: ">=9" }
+sources:
+  - title: ASP.NET Core Blazor
+    url: https://learn.microsoft.com/en-us/aspnet/core/blazor/?view=aspnetcore-9.0
+  - title: ASP.NET Core Blazor render modes
+    url: https://learn.microsoft.com/en-us/aspnet/core/blazor/components/render-modes?view=aspnetcore-9.0
+  - title: Razor component lifecycle
+    url: https://learn.microsoft.com/en-us/aspnet/core/blazor/components/lifecycle?view=aspnetcore-9.0
+  - title: Blazor rendering performance best practices
+    url: https://learn.microsoft.com/en-us/aspnet/core/blazor/performance/rendering?view=aspnetcore-9.0
+cards:
+  - id: render-modes
+    kind: table
+    title: Render modes (.NET 8 and later)
+    note: "The render mode decides where a component runs and whether it reacts to clicks, it is chosen per page or per component, and with none set a component is static."
+    headers: [Mode, How to set it, Where the code runs, Interactivity, Reach for it when]
+    rows:
+      - ["Static SSR", "nothing: the default", "server, once per request, HTML out", "none: links, form posts, enhanced navigation", "content pages, SEO, simple forms"]
+      - ["Streaming SSR", "`@attribute [StreamRendering]`", "server; sends a placeholder, then streams the rest as awaits finish", "none", "a static page with a slow query"]
+      - ["Interactive Server", "`@rendermode InteractiveServer`", "server; DOM diffs and UI events travel over a SignalR circuit", "full; each event is a round trip", "intranet apps, data next to the server, tiny download"]
+      - ["Interactive WebAssembly", "`@rendermode InteractiveWebAssembly` (component in the `.Client` project)", ".NET on WebAssembly in the browser", "full, no round trips once downloaded", "rich client UI, offline-ish work, low server load"]
+      - ["Interactive Auto", "`@rendermode InteractiveAuto` (component in `.Client`)", "Server on the first visit, WebAssembly once the runtime is cached", "full", "fast first load and client-side later"]
+      - ["Prerendering", "on by default; `@rendermode @(new InteractiveServerRenderMode(prerender: false))` turns it off", "a static pass first, then the interactive one", "`OnInitializedAsync` runs twice", "turn it off for pages that are pointless without interactivity"]
+      - ["Detect at run time (.NET 9)", "`RendererInfo.Name`, `RendererInfo.IsInteractive`, `AssignedRenderMode`", "Static, Server, WebAssembly or WebView", "`IsInteractive` is false while prerendering", "disable a button until the page is interactive"]
+
+  - id: orders-page
+    kind: code
+    title: A routable page with a list, @key and a shareable search
+    note: "`@bind:after` runs once the bound value has been written, `@key` lets the diff move rows instead of rewriting them, and after an event handler returns the component re-renders by itself."
+    prerequisites: &blazor
+      - "The .NET 9 SDK: `dotnet new blazor -o Shop --interactivity Server`; its `Program.cs` already calls `AddInteractiveServerComponents()` and `AddInteractiveServerRenderMode()`, and `_Imports.razor` has `@using static Microsoft.AspNetCore.Components.Web.RenderMode`"
+      - "Save as `Components/Pages/Orders.razor`; register the service in `Program.cs` with `builder.Services.AddScoped<IOrderService, OrderService>()`"
+    code: |-
+      @page "/orders"
+      @rendermode InteractiveServer
+      @inject IOrderService OrderService
+      @inject NavigationManager Navigation
+
+      <input placeholder="Search by customer"
+             @bind="query" @bind:event="oninput" @bind:after="SearchAsync" />
+
+      @if (orders is null)
+      {
+          <p>Loading…</p>
+      }
+      else if (orders.Count == 0)
+      {
+          <p>No orders match "@query".</p>
+      }
+      else
+      {
+          <ul>
+              @foreach (var order in orders)
+              {
+                  <OrderRow @key="order.Id" Order="order" />
+              }
+          </ul>
+      }
+
+      @code {
+          [SupplyParameterFromQuery(Name = "q")] private string? InitialQuery { get; set; }   // /orders?q=ada
+          private string query = "";
+          private List<Order>? orders;
+
+          protected override async Task OnInitializedAsync()
+          {
+              query = InitialQuery ?? "";
+              orders = await OrderService.SearchAsync(query);
+          }
+
+          // Server: one round trip per keystroke, so real apps debounce this
+          private async Task SearchAsync()
+          {
+              Navigation.NavigateTo(Navigation.GetUriWithQueryParameter("q", query), replace: true);
+              orders = await OrderService.SearchAsync(query);
+          }
+      }
+    expected: "Typing filters the list on each keystroke and keeps the URL shareable (`/orders?q=ada`) without adding history entries, and because rows are keyed, rows that stay in the results keep their DOM elements."
+    sources:
+      - title: Data binding — Blazor
+        url: https://learn.microsoft.com/en-us/aspnet/core/blazor/components/data-binding?view=aspnetcore-9.0
+      - title: Retain element, component and model relationships (@key) — Blazor
+        url: https://learn.microsoft.com/en-us/aspnet/core/blazor/components/element-component-model-relationships?view=aspnetcore-9.0
+    validation:
+      status: excerpt
+      host: a Blazor Web App project (`dotnet new blazor`); compiled with the .NET 9 SDK
+
+  - id: component-parameters
+    kind: code
+    title: Parameters, EventCallback and two-way component binding
+    note: "Data flows down through `[Parameter]` and events flow up through `EventCallback`, and a bindable component pairs `Value` with `ValueChanged` without ever assigning its own parameter."
+    prerequisites:
+      - "A Blazor Web App project (`dotnet new blazor -o Shop`)"
+      - "Save as `Components/OrderRow.razor` and `Components/QuantityInput.razor`"
+    code: |-
+      @* OrderRow.razor *@
+      <li>
+          <a href="orders/@Order.Id">#@Order.Id · @Order.Customer</a>
+          <span>@Order.Total.ToString("C")</span>
+          @if (Order.Status == OrderStatus.Pending)
+          {
+              <button @onclick="() => OnCancel.InvokeAsync(Order)">Cancel</button>
+          }
+      </li>
+
+      @code {
+          [Parameter, EditorRequired] public Order Order { get; set; } = default!;
+          [Parameter] public EventCallback<Order> OnCancel { get; set; }   // re-renders the parent when done
+      }
+
+      @* QuantityInput.razor, used as
+         <QuantityInput @bind-Value="line.Quantity" @bind-Value:after="SaveCartAsync" /> *@
+      <input type="number" min="1" max="99" @bind:get="Value" @bind:set="SetAsync" />
+
+      @code {
+          [Parameter] public int Value { get; set; }
+          [Parameter] public EventCallback<int> ValueChanged { get; set; }
+
+          private Task SetAsync(int value) => ValueChanged.InvokeAsync(Math.Clamp(value, 1, 99));
+      }
+    expected: "Each row links to its order and only pending orders show Cancel, which calls the parent's handler; the quantity box clamps what is typed to 1–99, pushes it into `line.Quantity`, then saves the cart."
+    sources:
+      - title: Razor components — component parameters
+        url: https://learn.microsoft.com/en-us/aspnet/core/blazor/components/?view=aspnetcore-9.0
+      - title: Event handling — Blazor
+        url: https://learn.microsoft.com/en-us/aspnet/core/blazor/components/event-handling?view=aspnetcore-9.0
+    validation:
+      status: excerpt
+      host: a Blazor Web App project (`dotnet new blazor`); compiled with the .NET 9 SDK
+
+  - id: render-fragments
+    kind: code
+    title: Composition with RenderFragment, and ErrorBoundary
+    note: "Markup a caller nests inside a component arrives as a `RenderFragment` (`ChildContent`), a `RenderFragment<T>` lets the caller template each item, and `ErrorBoundary` contains a failure to its subtree."
+    prerequisites:
+      - "A Blazor Web App project (`dotnet new blazor -o Shop`)"
+      - "Save `Components/Panel.razor` and `Components/DataTable.razor`; the usage goes in any page"
+    code: |-
+      @* Panel.razor — a wrapper *@
+      <section class="panel">
+          <h2>@Title</h2>
+          @ChildContent
+      </section>
+
+      @code {
+          [Parameter, EditorRequired] public string Title { get; set; } = "";
+          [Parameter] public RenderFragment? ChildContent { get; set; }
+      }
+
+      @* DataTable.razor — a templated component: the caller decides what each row shows *@
+      @typeparam TItem
+
+      <table>
+          @foreach (var item in Items)
+          {
+              <tr @key="item">@RowTemplate(item)</tr>
+          }
+      </table>
+
+      @code {
+          [Parameter, EditorRequired] public IReadOnlyList<TItem> Items { get; set; } = [];
+          [Parameter, EditorRequired] public RenderFragment<TItem> RowTemplate { get; set; } = default!;
+      }
+
+      @* Using both: if a row throws, ErrorContent replaces the boundary's content until Recover() *@
+      <Panel Title="Recent orders">
+          <ErrorBoundary @ref="boundary">
+              <ChildContent>
+                  <DataTable Items="recent" Context="order">
+                      <RowTemplate>
+                          <td>#@order.Id</td>
+                          <td>@order.Customer</td>
+                      </RowTemplate>
+                  </DataTable>
+              </ChildContent>
+              <ErrorContent>
+                  <button @onclick="() => boundary?.Recover()">Couldn't show the orders. Try again</button>
+              </ErrorContent>
+          </ErrorBoundary>
+      </Panel>
+
+      @code {
+          private ErrorBoundary? boundary;
+      }
+    expected: "A titled panel holding a table with one templated row per order; an exception thrown while rendering a row shows a Try again button inside the panel instead of taking down the whole page, and Try again re-renders the rows once the cause is gone (on an interactive page)."
+    sources:
+      - title: Templated components — Blazor
+        url: https://learn.microsoft.com/en-us/aspnet/core/blazor/components/templated-components?view=aspnetcore-9.0
+      - title: Handle errors in Blazor apps (error boundaries)
+        url: https://learn.microsoft.com/en-us/aspnet/core/blazor/fundamentals/handle-errors?view=aspnetcore-9.0
+    validation:
+      status: excerpt
+      host: a Blazor Web App project (`dotnet new blazor`); compiled with the .NET 9 SDK
+
+  - id: lifecycle-statehaschanged
+    kind: code
+    title: Lifecycle, a polling refresh and StateHasChanged
+    note: "`OnInitialized` runs once per instance (twice with prerendering) and `OnParametersSet` on every parameter change, and a timer tick is not a UI event, so it re-renders through `InvokeAsync(StateHasChanged)`."
+    prerequisites:
+      - "A Blazor Web App project (`dotnet new blazor -o Shop --interactivity Server`) with `IOrderService` registered as in the orders-page card"
+      - "Save as `Components/Pages/OrderDetail.razor`"
+    code: |-
+      @page "/orders/{OrderId:int}"
+      @rendermode InteractiveServer
+      @implements IDisposable
+      @inject IOrderService OrderService
+      @inject ILogger<OrderDetail> Logger
+
+      <p>Order #@OrderId: @(order?.Status.ToString() ?? "loading…")</p>
+      <p hidden="@(!refreshFailed)">Couldn't refresh; showing the last known status.</p>
+
+      @code {
+          [Parameter] public int OrderId { get; set; }
+          private Order? order;
+          private bool refreshFailed;
+          private readonly PeriodicTimer timer = new(TimeSpan.FromSeconds(30));   // ticks never overlap
+
+          protected override void OnInitialized()
+          {
+              if (RendererInfo.IsInteractive) _ = PollAsync();     // not in the throwaway prerender pass
+          }
+
+          protected override async Task OnParametersSetAsync() =>   // runs again for /orders/7 → /orders/8
+              order = await OrderService.GetAsync(OrderId);
+
+          private async Task PollAsync()
+          {
+              while (await timer.WaitForNextTickAsync())             // false once Dispose stops the timer
+                  await InvokeAsync(RefreshAsync);
+          }
+
+          // Catch here: under per-page interactivity no ErrorBoundary encloses a page; a throw ends the circuit
+          private async Task RefreshAsync()
+          {
+              try
+              {
+                  order = await OrderService.GetAsync(OrderId);
+                  refreshFailed = false;
+              }
+              catch (Exception ex)
+              {
+                  Logger.LogWarning(ex, "Refreshing order {OrderId} failed", OrderId);
+                  refreshFailed = true;
+              }
+              StateHasChanged();
+          }
+
+          public void Dispose() => timer.Dispose();
+      }
+    expected: "The page loads the order when it opens and whenever the route's id changes, refreshes the status every 30 seconds while the user stays, shows the last status with a \"couldn't refresh\" line when a poll fails (and logs it) instead of ending the circuit, and stops polling when the user leaves."
+    sources:
+      - title: Razor component rendering — Blazor
+        url: https://learn.microsoft.com/en-us/aspnet/core/blazor/components/rendering?view=aspnetcore-9.0
+    validation:
+      status: excerpt
+      host: a Blazor Web App project (`dotnet new blazor`); compiled with the .NET 9 SDK
+
+  - id: cascading-di
+    kind: code
+    title: Cascading values and dependency injection
+    note: "Root-level cascading values reach interactive components and scoped services resolve in every render mode, but static rendering and the circuit each get their own scoped instance, so per-user state must be filled inside the circuit."
+    prerequisites:
+      - "A Blazor Web App project (`dotnet new blazor -o Shop --interactivity Server`)"
+      - "The registrations go in `Program.cs` (and in the `.Client` project's `Program.cs` too when WebAssembly or Auto components use them); `OrderSummary` sits on an `@rendermode InteractiveServer` page"
+      - "`CustomerService.GetCurrentAsync()` looks the customer up for the signed-in user (for example from `AuthenticationStateProvider`); a `CircuitHandler` is the other place to fill the session"
+    code: |-
+      // Program.cs
+      builder.Services.AddCascadingValue(sp => new ShopSettings { Currency = "EUR" });   // every component
+
+      // Per-user state: one instance per scope, and the static render and the circuit are two scopes
+      builder.Services.AddScoped<CustomerSession>();
+      builder.Services.AddScoped<ICustomerService, CustomerService>();
+
+      @* OrderSummary.razor *@
+      @inject CustomerSession Session
+      @inject ICustomerService Customers
+
+      <p>@Session.Customer?.Name pays in @Settings.Currency</p>
+
+      @code {
+          [CascadingParameter] private ShopSettings Settings { get; set; } = default!;
+
+          // Runs inside the circuit, so later components in it read the same session; a value set
+          // during static rendering (the layout, the prerender) lives in a different instance
+          protected override async Task OnInitializedAsync() =>
+              Session.Customer ??= await Customers.GetCurrentAsync();
+      }
+
+      @* Doesn't reach an interactive page under per-page interactivity, because MainLayout renders
+         statically and cascading values don't cross render-mode boundaries (fine with global
+         interactivity, <Routes @rendermode="InteractiveServer" /> in App.razor):
+         <CascadingValue Value="currentCustomer">@Body</CascadingValue> *@
+
+      // .NET 9: constructor injection, in OrderHistory.razor.cs
+      public partial class OrderHistory(IOrderService orderService)
+      {
+          private Task<List<Order>> LoadAsync() => orderService.GetRecentAsync();
+      }
+    expected: "On the interactive page `OrderSummary` shows the current customer, loaded into the circuit's session, and the currency from the root-level value; a customer cascaded or stored by the static `MainLayout` would be gone there once the page turns interactive."
+    sources:
+      - title: Cascading values and parameters — Blazor
+        url: https://learn.microsoft.com/en-us/aspnet/core/blazor/components/cascading-values-and-parameters?view=aspnetcore-9.0
+      - title: Dependency injection — Blazor
+        url: https://learn.microsoft.com/en-us/aspnet/core/blazor/fundamentals/dependency-injection?view=aspnetcore-9.0
+    validation:
+      status: excerpt
+      host: a Blazor Web App project (`dotnet new blazor --interactivity Server`); compiled with the .NET 9 SDK
+
+  - id: forms-validation
+    kind: code
+    title: EditForm with DataAnnotations validation
+    note: "`EditForm` with `DataAnnotationsValidator` checks the model's attributes, and in static SSR `FormName` with `[SupplyParameterFromForm]` binds the posted values."
+    prerequisites:
+      - "A Blazor Web App project (`dotnet new blazor -o Shop`); `CheckoutForm` is the class in the next card"
+      - "Save as `Components/Pages/Checkout.razor`; with no `@rendermode` it works as a static SSR form post"
+    code: |-
+      @page "/checkout"
+      @inject IOrderService OrderService
+      @inject NavigationManager Navigation
+
+      <EditForm Model="Form" OnValidSubmit="PlaceOrderAsync" FormName="checkout">
+          <DataAnnotationsValidator />
+          <ValidationSummary />
+
+          <label>Email <InputText @bind-Value="Form!.Email" /></label>
+          <ValidationMessage For="() => Form!.Email" />
+
+          <label>Quantity <InputNumber @bind-Value="Form!.Quantity" /></label>
+          <ValidationMessage For="() => Form!.Quantity" />
+
+          <button type="submit">Place order</button>
+      </EditForm>
+
+      @code {
+          [SupplyParameterFromForm] private CheckoutForm? Form { get; set; }   // filled from the POST
+
+          protected override void OnInitialized() => Form ??= new();
+
+          private async Task PlaceOrderAsync()
+          {
+              var orderId = await OrderService.PlaceAsync(Form!);
+              Navigation.NavigateTo($"orders/{orderId}");
+          }
+      }
+    expected: "In static SSR the form posts and, if the email is invalid or the quantity is outside 1–20, the server re-renders it with each message beside its field and in the summary; a valid post places the order and redirects to it, and `EditForm` adds the antiforgery token itself (with an interactive render mode, fields validate as you edit)."
+    sources:
+      - title: ASP.NET Core Blazor forms overview
+        url: https://learn.microsoft.com/en-us/aspnet/core/blazor/forms/?view=aspnetcore-9.0
+      - title: Blazor forms validation
+        url: https://learn.microsoft.com/en-us/aspnet/core/blazor/forms/validation?view=aspnetcore-9.0
+    validation:
+      status: excerpt
+      host: a Blazor Web App project (`dotnet new blazor`); compiled with the .NET 9 SDK
+
+  - id: model-validation
+    kind: code
+    title: The same validation, run without a browser
+    note: "`DataAnnotationsValidator` runs the attributes from `System.ComponentModel.DataAnnotations`, so calling `Validator` directly tests the form model or re-checks it on the server."
+    prerequisites:
+      - .NET 8 SDK or later
+      - "`dotnet new console -o Demo`, replace `Demo/Program.cs` with the example, then `dotnet run --project Demo`"
+    code: |-
+      using System.ComponentModel.DataAnnotations;
+
+      CheckoutForm[] drafts =
+      [
+          new() { Email = "ada@example.com", Quantity = 2 },
+          new() { Email = "not-an-email", Quantity = 0 },
+          new() { Email = null, Quantity = 3 },
+      ];
+
+      foreach (var form in drafts)
+      {
+          var errors = new List<ValidationResult>();
+          var context = new ValidationContext(form);
+          var valid = Validator.TryValidateObject(form, context, errors, validateAllProperties: true);
+          Console.WriteLine(valid ? "valid" : string.Join(" / ", errors.Select(e => e.ErrorMessage)));
+      }
+
+      public class CheckoutForm
+      {
+          [Required(ErrorMessage = "Enter an email for the receipt.")]
+          [EmailAddress(ErrorMessage = "That email doesn't look right.")]
+          public string? Email { get; set; }
+
+          [Range(1, 20, ErrorMessage = "Order between 1 and 20 items.")]
+          public int Quantity { get; set; } = 1;
+      }
+    expected: |-
+      valid
+      That email doesn't look right. / Order between 1 and 20 items.
+      Enter an email for the receipt.
+    applies:
+      platforms: [dotnet]
+      runtime: .NET console app (no UI)
+      versions: { csharp: ">=12", dotnet: ">=8" }
+    sources:
+      - title: System.ComponentModel.DataAnnotations.Validator — .NET API
+        url: https://learn.microsoft.com/en-us/dotnet/api/system.componentmodel.dataannotations.validator
+    validation:
+      status: ran
+      toolchain: .NET SDK 9.0.304 (net9.0, C# 13)
+      date: "2026-11-16"
+
+  - id: js-interop
+    kind: code
+    title: JavaScript interop — when you need it
+    note: "Use JS interop only for what .NET can't reach (browser APIs, DOM measurement, third-party JS), loading a collocated module after the first render and sending data in one call."
+    prerequisites:
+      - "A Blazor Web App project (`dotnet new blazor -o Shop`)"
+      - "Save `Components/OrderRouteMap.razor` and, next to it, `Components/OrderRouteMap.razor.js` holding the exported function; the component needs an interactive render mode"
+    code: |-
+      @implements IAsyncDisposable
+      @inject IJSRuntime JS
+
+      <div @ref="mapElement" class="route-map"></div>
+
+      @code {
+          [Parameter, EditorRequired] public IReadOnlyList<Stop> Stops { get; set; } = default!;
+          private ElementReference mapElement;
+          private IJSObjectReference? module;
+
+          protected override async Task OnAfterRenderAsync(bool firstRender)
+          {
+              // the element exists only after the first render; JS is unavailable while prerendering
+              if (!firstRender) return;
+              module = await JS.InvokeAsync<IJSObjectReference>("import", "./Components/OrderRouteMap.razor.js");
+              await module.InvokeVoidAsync("drawRoute", mapElement, Stops);    // one call, every stop
+          }
+
+          async ValueTask IAsyncDisposable.DisposeAsync()
+          {
+              if (module is null) return;
+              try { await module.DisposeAsync(); }
+              catch (JSDisconnectedException) { }       // Server: the circuit is already gone
+          }
+      }
+
+      // OrderRouteMap.razor.js
+      export function drawRoute(element, stops) { /* hand the stops to the map library */ }
+    expected: "The delivery route is drawn once the map element exists, with a single interop call however many stops there are, and the module is released when the component goes away even if the tab has already disconnected."
+    sources:
+      - title: Call JavaScript functions from .NET methods — Blazor
+        url: https://learn.microsoft.com/en-us/aspnet/core/blazor/javascript-interoperability/call-javascript-from-dotnet?view=aspnetcore-9.0
+      - title: JavaScript location in Blazor apps
+        url: https://learn.microsoft.com/en-us/aspnet/core/blazor/javascript-interoperability/location-of-javascript?view=aspnetcore-9.0
+    validation:
+      status: excerpt
+      host: a Blazor Web App project with an interactive render mode; the component compiled with the .NET 9 SDK (the JS call is not exercised)
+
+  - id: virtualize
+    kind: code
+    title: Virtualize a long list
+    note: "`Virtualize` renders only the rows in view and asks an items provider for each block as the user scrolls, so the DOM holds about a screenful of rows."
+    prerequisites:
+      - "A Blazor Web App project (`dotnet new blazor -o Shop`); `OrderService.GetPageAsync` returns a page of orders and the total count"
+      - "Save as `Components/Pages/OrderHistory.razor`"
+    code: |-
+      @page "/orders/history"
+      @rendermode InteractiveServer
+      @inject IOrderService OrderService
+
+      <div style="height: 600px; overflow-y: auto">
+          <Virtualize ItemsProvider="LoadOrdersAsync" ItemSize="48" OverscanCount="4" Context="order">
+              <ItemContent>
+                  <OrderRow @key="order.Id" Order="order" />
+              </ItemContent>
+              <Placeholder>
+                  <div class="row-skeleton"></div>
+              </Placeholder>
+          </Virtualize>
+      </div>
+
+      @code {
+          private async ValueTask<ItemsProviderResult<Order>> LoadOrdersAsync(ItemsProviderRequest request)
+          {
+              var page = await OrderService.GetPageAsync(
+                  request.StartIndex, request.Count, request.CancellationToken);
+              return new ItemsProviderResult<Order>(page.Items, page.TotalCount);
+          }
+      }
+    expected: "Fifty thousand orders scroll with about a screenful of rows in the DOM, each block fetched as it comes into view, with skeleton rows until it arrives."
+    sources:
+      - title: ASP.NET Core Razor component virtualization
+        url: https://learn.microsoft.com/en-us/aspnet/core/blazor/components/virtualization?view=aspnetcore-9.0
+    validation:
+      status: excerpt
+      host: a Blazor Web App project (`dotnet new blazor`); compiled with the .NET 9 SDK
+
+  - id: should-render
+    kind: code
+    title: Skip a re-render with ShouldRender
+    note: "`ShouldRender` lets a row ignore its parent's re-render when its own parameter did not change, which pays off when a parent re-renders often and holds many rows."
+    prerequisites:
+      - "A Blazor Web App project (`dotnet new blazor -o Shop`); `Order` is an immutable `record`"
+      - "Save as `Components/OrderSummaryRow.razor`"
+    code: |-
+      <li>#@Order.Id · @Order.Customer · @Order.Status</li>
+
+      @code {
+          [Parameter, EditorRequired] public Order Order { get; set; } = default!;
+          private Order? lastSeen;
+          private bool orderChanged;
+
+          protected override void OnParametersSet()
+          {
+              orderChanged = !Equals(lastSeen, Order);       // a record: equal values mean nothing to redraw
+              lastSeen = Order;
+          }
+
+          // Not consulted for the first render; false also skips renders after this row's own events
+          protected override bool ShouldRender() => orderChanged;
+      }
+    expected: "When the parent list re-renders, only rows whose order record actually changed render again."
+    sources:
+      - title: Blazor rendering performance best practices
+        url: https://learn.microsoft.com/en-us/aspnet/core/blazor/performance/rendering?view=aspnetcore-9.0
+    validation:
+      status: excerpt
+      host: a Blazor Web App project (`dotnet new blazor`); compiled with the .NET 9 SDK
+
+  - id: blazor-rules
+    kind: rules
+    title: Performance rules and pitfalls
+    note: "Blazor's cost is the size of the render tree it diffs and, on Server, every message over the circuit."
+    items:
+      - tone: good
+        text: "Put `@key` on every looped element or component that has a stable id, so inserts and deletes move rows instead of rewriting them."
+      - tone: good
+        text: "Use `<Virtualize>` (or `QuickGrid` with virtualization) for long lists: a few thousand component instances add measurable render time on WebAssembly."
+      - tone: good
+        text: "Batch JS interop into one `InvokeVoidAsync(\"saveAll\", items)` instead of a call per item: on Server, each call is a network round trip."
+      - tone: good
+        text: "Override `ShouldRender` (or pass immutable, primitive parameters) where a parent re-renders often but a child's data rarely changes."
+      - tone: good
+        text: "Wrap risky regions (third-party widgets, data-driven rows) in `<ErrorBoundary>` and call `Recover()` to retry; `DispatchExceptionAsync` reaches a boundary only from a component inside one, so a page under per-page interactivity must catch its own background failures or the circuit ends."
+      - tone: bad
+        text: "Calling `StateHasChanged()` at the end of every event handler: Blazor already re-renders after handlers and `EventCallback`s, so call it only for timers, service events and other threads, through `InvokeAsync`."
+      - tone: bad
+        text: "Writing to a `[Parameter]` property inside the child: the parent's next render overwrites it, so raise `ValueChanged` and let the parent own the value."
+      - tone: bad
+        text: "Expensive work, timers or JS calls in `OnInitializedAsync` with prerendering on: it runs twice and JS is unavailable in the first pass, so check `RendererInfo.IsInteractive` or use `OnAfterRenderAsync(firstRender)`."
+      - tone: bad
+        text: "Expecting a `CascadingValue` in a static layout to reach an interactive page: values don't cross render-mode boundaries, so register it with `AddCascadingValue` at the root or keep the state in a scoped service."
+      - tone: neutral
+        text: "A scoped service on Server lives for the circuit (one per tab), not per request, and on WebAssembly it behaves like a singleton."

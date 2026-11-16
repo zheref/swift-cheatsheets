@@ -1,0 +1,406 @@
+id: cs-ui-compared
+concept: ui.declarative-vs-imperative
+scope: platform
+title: "XAML vs Code vs Blazor"
+group: UI
+subtitle: Translate any .NET UI answer between MAUI XAML, C# code, WPF/WinUI and Blazor — the same screen three ways, embedding one in another, update triggers and choosing a stack.
+applies:
+  platforms: [dotnet, android, ios, maccatalyst, windows, browser]
+  runtime: .NET MAUI, WPF, WinUI 3 (Windows App SDK) and ASP.NET Core Blazor on .NET 9
+  requires: [.NET MAUI, WPF, Windows App SDK, ASP.NET Core Blazor]
+  versions: { csharp: ">=13", dotnet: ">=9", maui: ">=9", aspnetcore: ">=9" }
+sources:
+  - title: .NET MAUI documentation
+    url: https://learn.microsoft.com/en-us/dotnet/maui/?view=net-maui-9.0
+  - title: ASP.NET Core Blazor
+    url: https://learn.microsoft.com/en-us/aspnet/core/blazor/?view=aspnetcore-9.0
+  - title: ASP.NET Core Blazor Hybrid
+    url: https://learn.microsoft.com/en-us/aspnet/core/blazor/hybrid/?view=aspnetcore-9.0
+  - title: Windows Presentation Foundation documentation
+    url: https://learn.microsoft.com/en-us/dotnet/desktop/wpf/
+cards:
+  - id: concept-mapping
+    kind: table
+    title: Concept mapping
+    note: "The XAML and code columns share one retained object model, while Blazor is a render-tree diff closer to SwiftUI."
+    headers: [Concept, MAUI XAML, C# code (MAUI / WPF / WinUI), WPF / WinUI XAML, Blazor]
+    rows:
+      - ["A screen", "`ContentPage` (.xaml + .xaml.cs)", "`new ContentPage { Content = … }`; a `Window` or `Page` subclass", "`Window` / `Page`", "a `.razor` component with `@page \"/orders\"`"]
+      - ["A reusable piece", "`ContentView` + `BindableProperty`", "a class deriving from `ContentView` / `Control`", "`UserControl`, or a templated `Control` + `DependencyProperty`", "a component + `[Parameter]`, `RenderFragment` for nested content"]
+      - ["Where data comes from", "`BindingContext`", "`BindingContext` / `DataContext` set in code", "`DataContext`; `x:Bind` → page members", "fields and properties in `@code`"]
+      - ["Show a value", "`{Binding Total, StringFormat='{0:C}'}`", "`SetBinding(…, static (Order o) => o.Total)` or `label.Text = …`", "`{Binding}` / `{x:Bind}`", "`@order.Total.ToString(\"C\")`"]
+      - ["Two-way input", "`Text=\"{Binding Query}\"` (TwoWay by default)", "a `TwoWay` binding, or `TextChanged += …`", "WPF: `{Binding Query, UpdateSourceTrigger=PropertyChanged}`; WinUI: `{x:Bind ViewModel.Query, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}` (or `{Binding …, Mode=TwoWay}`)", "`@bind=\"query\" @bind:event=\"oninput\"`"]
+      - ["A user action", "`Command=\"{Binding SaveCommand}\"`", "`Clicked += …` or `Command = …`", "`Command` / `Click`", "`@onclick=\"SaveAsync\"`"]
+      - ["A list", "`CollectionView` + `DataTemplate`", "`ItemTemplate = new DataTemplate(() => new OrderRow())`", "`ListView` + `DataTemplate`", "`@foreach` + `@key`, `<Virtualize>`"]
+      - ["Conditional UI", "`IsVisible`, `DataTrigger`, `EmptyView`", "`view.IsVisible = …`", "`Visibility`, `x:Load`, visual states", "`@if` / `@switch`"]
+      - ["Navigation", "Shell `GoToAsync(\"detail\", parameters)`", "`await Navigation.PushAsync(new OrderDetailPage(order))`", "`Frame.Navigate(typeof(OrderDetailPage), order)` / `ShowDialog()`", "`@page \"/orders/{Id:int}\"`, `NavigationManager.NavigateTo`"]
+      - ["Lifecycle", "`OnAppearing` / `OnDisappearing`", "the same overrides, `Loaded` / `Unloaded`", "`Loaded`, `OnNavigatedTo`", "`OnInitializedAsync`, `OnParametersSetAsync`, `Dispose`"]
+      - ["Back to the UI thread", "`MainThread.BeginInvokeOnMainThread`", "the same, or the framework's dispatcher", "`Dispatcher.InvokeAsync` / `DispatcherQueue.TryEnqueue`", "`InvokeAsync(StateHasChanged)`"]
+      - ["Styling", "`Style` in a `ResourceDictionary`", "`new Style(typeof(Label))` objects", "`Style`, `ControlTemplate`", "CSS, scoped `Component.razor.css`"]
+
+  - id: list-screen-both-ways
+    kind: compare
+    title: A list screen, imperative and declarative
+    note: "Code-behind pulls values out of controls and pushes results back on every path, while XAML with bindings states what to show and leaves the data to the view model (full versions are on the C# UI and XAML sheets)."
+    prerequisites:
+      - "A .NET MAUI app project (`dotnet new maui -o Shop`)"
+      - "Left: an `OrdersPage.xaml` that only names `SearchBox`, `OrderList` and `CountLabel`; right: the content of the XAML sheet's page, whose `x:DataType` is `OrdersViewModel`"
+    columns:
+      - label: Imperative code-behind
+        tone: legacy
+        code: |-
+          public partial class OrdersPage : ContentPage
+          {
+              private readonly IOrderService orders;
+              private List<Order> all = [];
+
+              public OrdersPage(IOrderService orders)
+              {
+                  InitializeComponent();
+                  this.orders = orders;
+                  SearchBox.TextChanged += (_, e) => Show(e.NewTextValue);
+              }
+
+              protected override async void OnAppearing()
+              {
+                  base.OnAppearing();
+                  all = await orders.GetAllAsync();
+                  Show(SearchBox.Text);
+              }
+
+              // every change must remember to call this
+              private void Show(string? query)
+              {
+                  var visible = all.Where(o => o.Customer.Contains(query ?? "",
+                      StringComparison.OrdinalIgnoreCase)).ToList();
+                  OrderList.ItemsSource = visible;      // a new list: every row is rebuilt
+                  CountLabel.Text = $"{visible.Count} orders";
+              }
+          }
+      - label: XAML with bindings
+        tone: modern
+        code: |-
+          <!-- the filter, the count and navigation live in the view model -->
+          <Grid RowDefinitions="Auto,Auto,*" RowSpacing="8" Padding="16">
+              <SearchBar Text="{Binding Query}" Placeholder="Search by customer" />
+
+              <Label Grid.Row="1" Text="{Binding Orders.Count, StringFormat='{0} orders'}" />
+
+              <CollectionView Grid.Row="2"
+                              ItemsSource="{Binding Orders}"
+                              SelectionMode="Single"
+                              SelectedItem="{Binding SelectedOrder}"
+                              SelectionChangedCommand="{Binding OpenSelectedCommand}">
+                  <CollectionView.ItemTemplate>
+                      <DataTemplate x:DataType="models:Order">
+                          <Label Text="{Binding Customer}" Padding="12" />
+                      </DataTemplate>
+                  </CollectionView.ItemTemplate>
+              </CollectionView>
+          </Grid>
+
+          <!-- code-behind: InitializeComponent(); BindingContext = viewModel; -->
+    expected: "Both show a searchable orders list with a count; on the right the filter and count are testable view-model code, the list updates in place, and selecting a row also navigates."
+    validation:
+      status: excerpt
+      host: a .NET MAUI 9 app project; both columns compiled against Microsoft.Maui.Controls 9.0.120 (XamlC for the XAML)
+
+  - id: same-screen-blazor
+    kind: code
+    title: The same screen as a Blazor component, on the same view model
+    note: "Blazor re-renders after its own events, so changes the view model makes on its own (a load finishing, a push) arrive through `PropertyChanged` and become `InvokeAsync(StateHasChanged)`."
+    prerequisites:
+      - "A Blazor Web App (`dotnet new blazor -o Shop --interactivity Server`) or a Blazor Hybrid app, with `OrdersViewModel` registered with `AddScoped`"
+      - "The view model of the MAUI sheets, except that its `Shell.Current.GoToAsync` call goes through a small navigation interface each host implements (Shell in MAUI, `NavigationManager` here)"
+    code: |-
+      @page "/orders"
+      @rendermode InteractiveServer
+      @implements IDisposable
+      @inject OrdersViewModel ViewModel
+
+      <input placeholder="Search by customer" @bind="ViewModel.Query" @bind:event="oninput" />
+      <p>@ViewModel.Orders.Count orders</p>
+
+      <ul>
+          @foreach (var order in ViewModel.Orders)
+          {
+              <li @key="order.Id" @onclick="() => OpenAsync(order)">@order.Customer</li>
+          }
+      </ul>
+
+      @code {
+          protected override async Task OnInitializedAsync()
+          {
+              ViewModel.PropertyChanged += OnViewModelChanged;
+              ViewModel.Orders.CollectionChanged += OnViewModelChanged;
+              await ViewModel.LoadAsync();
+          }
+
+          // the same members the XAML binds: SelectedItem, then SelectionChangedCommand
+          private Task OpenAsync(Order order)
+          {
+              ViewModel.SelectedOrder = order;
+              return ViewModel.OpenSelectedCommand.ExecuteAsync(null);
+          }
+
+          private void OnViewModelChanged(object? sender, EventArgs e) => _ = InvokeAsync(StateHasChanged);
+
+          public void Dispose()
+          {
+              ViewModel.PropertyChanged -= OnViewModelChanged;
+              ViewModel.Orders.CollectionChanged -= OnViewModelChanged;
+          }
+      }
+    expected: "The same searchable list and count rendered as HTML, where typing sets `ViewModel.Query`, the view model refilters `Orders`, and the component re-renders from the change events."
+    sources:
+      - title: Razor component rendering — Blazor
+        url: https://learn.microsoft.com/en-us/aspnet/core/blazor/components/rendering?view=aspnetcore-9.0
+    validation:
+      status: excerpt
+      host: a Blazor Web App project (`dotnet new blazor`) or a .NET MAUI Blazor Hybrid app; compiled with the .NET 9 SDK
+
+  - id: one-state-two-listeners
+    kind: code
+    title: One state object, two kinds of listener
+    note: "A XAML binding re-reads the one property named in `PropertyChanged`, a Blazor component re-renders its whole tree on a coarse `Changed` event, and in a hybrid app one singleton can serve both."
+    prerequisites:
+      - .NET 8 SDK or later
+      - "`dotnet new console -o Demo`, replace `Demo/Program.cs` with the example, then `dotnet run --project Demo` (in an app, the handlers are a binding and `InvokeAsync(StateHasChanged)`)"
+    code: |-
+      using System.ComponentModel;
+      using System.Globalization;
+
+      var cart = new CartState();
+      cart.PropertyChanged += (_, e) => Console.WriteLine($"binding: re-read {e.PropertyName}");
+      cart.Changed += () => Console.WriteLine("component: re-render");
+
+      cart.Add(new CartLine("USB-C cable", 2, 9.50m));
+      cart.Add(new CartLine("Charger", 1, 24.00m));
+      Console.WriteLine($"{cart.ItemCount} items, {cart.Total.ToString("C", CultureInfo.GetCultureInfo("en-US"))}");
+
+      sealed class CartState : INotifyPropertyChanged
+      {
+          private readonly List<CartLine> lines = [];
+
+          public event PropertyChangedEventHandler? PropertyChanged;   // XAML bindings
+          public event Action? Changed;                                 // Blazor components
+
+          public int ItemCount => lines.Sum(l => l.Quantity);
+          public decimal Total => lines.Sum(l => l.Quantity * l.UnitPrice);
+
+          public void Add(CartLine line)
+          {
+              lines.Add(line);
+              Raise(nameof(ItemCount));
+              Raise(nameof(Total));
+              Changed?.Invoke();
+          }
+
+          private void Raise(string name) => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
+      }
+
+      record CartLine(string Product, int Quantity, decimal UnitPrice);
+    expected: |-
+      binding: re-read ItemCount
+      binding: re-read Total
+      component: re-render
+      binding: re-read ItemCount
+      binding: re-read Total
+      component: re-render
+      3 items, $43.00
+    applies:
+      platforms: [dotnet]
+      runtime: .NET console app (no UI)
+      versions: { csharp: ">=12", dotnet: ">=8" }
+    sources:
+      - title: ASP.NET Core Blazor state management (in-memory state container)
+        url: https://learn.microsoft.com/en-us/aspnet/core/blazor/state-management/?view=aspnetcore-9.0
+    validation:
+      status: ran
+      toolchain: .NET SDK 9.0.304 (net9.0, C# 13)
+      date: "2026-11-16"
+
+  - id: blazor-in-maui
+    kind: code
+    title: Embedding Blazor in MAUI — BlazorWebView
+    note: "Blazor Hybrid runs Razor components in-process inside a native web view, with no server and no WebAssembly, and XAML controls beside it share its DI services."
+    prerequisites:
+      - "`dotnet new maui-blazor -o ShopHybrid` (project SDK `Microsoft.NET.Sdk.Razor`, the MAUI workload)"
+      - "The registrations go in `MauiProgram.cs` and the markup in `MainPage.xaml`, whose code-behind sets `BindingContext` to the `CartState` singleton; `Components/Routes.razor` comes with the template"
+    code: |-
+      // MauiProgram.cs
+      builder.Services.AddMauiBlazorWebView();
+      #if DEBUG
+      builder.Services.AddBlazorWebViewDeveloperTools();
+      #endif
+      builder.Services.AddSingleton<CartState>();          // one instance for XAML pages and Razor components
+
+      <!-- MainPage.xaml -->
+      <ContentPage xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
+                   xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
+                   xmlns:local="clr-namespace:ShopHybrid"
+                   x:Class="ShopHybrid.MainPage"
+                   x:DataType="local:CartState">
+          <Grid RowDefinitions="*,Auto">
+              <BlazorWebView x:Name="blazorWebView" HostPage="wwwroot/index.html">
+                  <BlazorWebView.RootComponents>
+                      <RootComponent Selector="#app" ComponentType="{x:Type local:Components.Routes}" />
+                  </BlazorWebView.RootComponents>
+              </BlazorWebView>
+
+              <!-- a native control under the web UI, bound to the same state -->
+              <Label Grid.Row="1" Padding="12" Text="{Binding ItemCount, StringFormat='{0} items in cart'}" />
+          </Grid>
+      </ContentPage>
+    expected: "The app shows the Razor UI full screen with a native label under it, and adding to the cart in a Razor component updates the label through `PropertyChanged` because both use the one `CartState`."
+    sources:
+      - title: Host a Blazor web app in a .NET MAUI app using BlazorWebView
+        url: https://learn.microsoft.com/en-us/dotnet/maui/user-interface/controls/blazorwebview?view=net-maui-9.0
+      - title: Build a .NET MAUI Blazor Hybrid app with a Blazor Web App
+        url: https://learn.microsoft.com/en-us/aspnet/core/blazor/hybrid/tutorials/maui-blazor-web-app?view=aspnetcore-9.0
+    validation:
+      status: excerpt
+      host: a .NET MAUI Blazor Hybrid app project; compiled with the Razor SDK against Microsoft.AspNetCore.Components.WebView.Maui 9.0.120 (not run on a device)
+
+  - id: blazor-in-wpf
+    kind: code
+    title: Embedding Blazor in WPF
+    note: "WPF and Windows Forms have their own `BlazorWebView` (WinUI 3 has none), and native code can reach into the Blazor scope with `TryDispatchAsync`."
+    prerequisites:
+      - "A WPF app: `dotnet add package Microsoft.AspNetCore.Components.WebView.Wpf`, set the project `Sdk` to `Microsoft.NET.Sdk.Razor`"
+      - "Add `wwwroot/index.html` with `<div id=\"app\">` and the `_framework/blazor.webview.js` script; this code goes in `MainWindow.xaml.cs`"
+    code: |-
+      using System.Windows;
+      using Microsoft.AspNetCore.Components;
+      using Microsoft.AspNetCore.Components.WebView.Wpf;
+      using Microsoft.Extensions.DependencyInjection;
+
+      public partial class MainWindow : Window
+      {
+          private readonly BlazorWebView blazorWebView;
+
+          public MainWindow()
+          {
+              InitializeComponent();
+
+              var services = new ServiceCollection();
+              services.AddWpfBlazorWebView();
+
+              // the same as <blazor:BlazorWebView HostPage=… Services=…> in XAML
+              blazorWebView = new BlazorWebView
+              {
+                  HostPage = @"wwwroot\index.html",
+                  Services = services.BuildServiceProvider(),
+              };
+              blazorWebView.RootComponents.Add(
+                  new RootComponent { Selector = "#app", ComponentType = typeof(OrderHistory) });
+              Content = blazorWebView;
+          }
+
+          // A native menu item opening a Razor page
+          private async void OnShowOrdersClicked(object sender, RoutedEventArgs e)
+          {
+              var dispatched = await blazorWebView.TryDispatchAsync(sp =>
+                  sp.GetRequiredService<NavigationManager>().NavigateTo("/orders"));
+
+              if (!dispatched)                              // Blazor hasn't started in the web view yet
+                  MessageBox.Show(this, "The order history is still loading. Try again in a moment.");
+          }
+      }
+    expected: "The WPF window hosts the Razor order history, and a native menu item can drive its router."
+    sources:
+      - title: Build a WPF Blazor app
+        url: https://learn.microsoft.com/en-us/aspnet/core/blazor/hybrid/tutorials/wpf?view=aspnetcore-9.0
+      - title: ASP.NET Core Blazor Hybrid (access scoped services from native UI)
+        url: https://learn.microsoft.com/en-us/aspnet/core/blazor/hybrid/?view=aspnetcore-9.0
+    validation:
+      status: excerpt
+      host: a WPF app on Windows with the BlazorWebView package; compiled for `net9.0-windows` against Microsoft.AspNetCore.Components.WebView.Wpf 9.0.120
+
+  - id: maui-in-native
+    kind: code
+    title: MAUI views inside a native app
+    note: "MAUI 9 can embed a MAUI view into an existing .NET for Android, iOS or WinUI app, from one shared `MauiApp` and a window context per native window."
+    prerequisites:
+      - "A .NET for Android app referencing a MAUI library that holds `App`, `OrderSummaryView` and the `EmbeddedShop` class"
+      - "`using Microsoft.Maui.Controls.Embedding;` in the activity's file"
+    code: |-
+      // In the MAUI library: one MauiApp for the whole process
+      public static class EmbeddedShop
+      {
+          private static readonly Lazy<MauiApp> app = new(() =>
+              MauiApp.CreateBuilder().UseMauiEmbeddedApp<App>().Build());
+
+          public static MauiApp Shared => app.Value;
+      }
+
+      // In the native Android app
+      [Activity(Label = "Order summary")]
+      public class OrderSummaryActivity : Activity
+      {
+          protected override void OnCreate(Bundle? savedInstanceState)
+          {
+              base.OnCreate(savedInstanceState);
+
+              var windowContext = EmbeddedShop.Shared.CreateEmbeddedWindowContext(this);   // per window
+              Android.Views.View summary = new OrderSummaryView().ToPlatformEmbedded(windowContext);
+              SetContentView(summary);
+          }
+      }
+    expected: "The Android activity shows a MAUI-built order summary as an ordinary Android view, while every activity shares one MAUI app and its services."
+    sources:
+      - title: Native embedding — .NET MAUI
+        url: https://learn.microsoft.com/en-us/dotnet/maui/platform-integration/native-embedding?view=net-maui-9.0
+    validation:
+      status: excerpt
+      host: a .NET for Android app using MAUI 9 native embedding; `UseMauiEmbeddedApp` compiled on net9.0, the Android-only calls checked against the native-embedding documentation
+
+  - id: update-triggers
+    kind: table
+    title: What triggers a UI update
+    note: "Most \"the screen didn't update\" bugs come from a change that never reached the mechanism in this table."
+    headers: [Model, An update happens when, What gets redrawn, The trap]
+    rows:
+      - ["MAUI / WPF / WinUI `{Binding}`", "the source raises `PropertyChanged` or `CollectionChanged`", "only the bound target property, or the affected rows", "a property without `INotifyPropertyChanged`; a change raised off the UI thread (WinUI throws; WPF marshals properties but not collections; MAUI marshals binding updates itself)"]
+      - ["WinUI `{x:Bind}`", "the same events, but only with `Mode=OneWay` or `TwoWay`; or `Bindings.Update()`", "the bound property, through generated code", "the default `OneTime` keeps the first value forever"]
+      - ["Imperative code-behind", "your code assigns `label.Text`, `ItemsSource`, `IsVisible`", "whatever you touched", "a code path that forgets to refresh leaves the screen stale"]
+      - ["Blazor", "an event handler or `EventCallback` completes; new parameters arrive from a re-rendering parent; `StateHasChanged()`", "the component's render tree, diffed against the last one; children re-render when their parameters change", "timers, service events and other threads need `InvokeAsync(StateHasChanged)`"]
+      - ["Blazor Hybrid shared state", "the native side raises the event; the component calls `InvokeAsync(StateHasChanged)`", "that component", "forgetting to unsubscribe in `Dispose` leaks every component instance"]
+      - ["Animations and visual states", "an explicit call: `FadeTo`, `VisualStateManager.GoToState`, an `AdaptiveTrigger`", "that element", "data changes don't animate on their own: start the animation from the change"]
+
+  - id: choose-a-stack
+    kind: table
+    title: Choosing a stack
+    note: "Decide by target platform first and then by team skills and existing code, remembering that Blazor Hybrid can put Razor components inside MAUI or WPF."
+    headers: [If you need…, Choose, Because]
+    rows:
+      - ["Android and iOS (and Mac, Windows) from one C# codebase, with native controls", ".NET MAUI — XAML, or C# with Markup", "one project and native widgets, with device APIs built in"]
+      - ["A Windows-only line-of-business app, existing WPF code, heavy third-party grids", "WPF", "the most mature desktop ecosystem; runs on .NET 9 as-is"]
+      - ["A new Windows app with Fluent design and Windows 11 features", "WinUI 3 (Windows App SDK)", "the current native Windows UI stack"]
+      - ["A web app, or a team of web developers", "Blazor Web App", "any browser; choose static, Server or WebAssembly per page"]
+      - ["The same UI on the web and in a store app with device access", "Blazor Hybrid (`BlazorWebView` in MAUI, WPF or Windows Forms)", "shares Razor components between the web and native shells"]
+      - ["An existing HTML/JS front end inside a MAUI app", "`HybridWebView` (MAUI 9)", "hosts any web content with JS ↔ C# messaging; no Blazor needed"]
+      - ["A team that avoids XAML, or UI generated from data", "C# code: plain MAUI APIs or `CommunityToolkit.Maui.Markup`", "the same controls, refactorable, no XAML compiler"]
+      - ["Linux desktop as well", "none of these officially: Blazor in a browser, or third-party Avalonia / Uno Platform", "MAUI, WPF and WinUI don't target Linux"]
+
+  - id: interview-talking-points
+    kind: rules
+    title: Interview talking points
+    note: "Short answers to the questions that come up about .NET UI stacks."
+    items:
+      - tone: modern
+        text: "XAML is **declarative markup over a retained object tree**: the controls live as long as the page, and bindings keep their properties in sync with the view model."
+      - tone: modern
+        text: "Blazor is **declarative and diff-based**, closer to SwiftUI or React: a component re-renders its tree, the renderer applies only the DOM differences, and `@key` is its identity."
+      - tone: legacy
+        text: "Code-behind and C#-built UI are **imperative**: you create controls and mutate them, which is fine for structure and painful when you keep state in sync by hand."
+      - tone: neutral
+        text: "XAML and C# markup are the **same object model**: anything in XAML can be written in C#, and MAUI 9's typed `SetBinding` lambdas close the compile-time-check gap (for members not written by another source generator)."
+      - tone: neutral
+        text: "Compiled bindings (`x:DataType` in MAUI, `{x:Bind}` in WinUI) move binding errors to build time, and MAUI requires them under full trimming and NativeAOT."
+      - tone: neutral
+        text: "Every stack has one UI thread: `MainThread`, `Dispatcher`, `DispatcherQueue`, or Blazor's `InvokeAsync`; know each one's name."
+      - tone: good
+        text: "Keep view models UI-free and test them in plain unit tests: the same `INotifyPropertyChanged` view model can back XAML pages and, through a small adapter, Razor components."
+      - tone: good
+        text: "Migration is usually screen by screen: host Blazor in WPF or MAUI with `BlazorWebView`, or embed MAUI views in a native app with MAUI 9's native embedding."

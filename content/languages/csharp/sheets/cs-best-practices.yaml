@@ -1,0 +1,647 @@
+id: cs-best-practices
+concept: practice.engineering
+scope: shared
+title: "C# Engineering Best Practices"
+group: "Design & practice"
+subtitle: "The framework design guidelines that matter in review, typed exceptions with `when` filters, nullable discipline, structured logging, options validated at startup, async and disposal rules, a performance checklist and the project hygiene behind them."
+applies:
+  platforms: [dotnet]
+  runtime: .NET (any app model; the examples are console apps)
+  versions: { csharp: ">=12", dotnet: ">=8" }
+sources:
+  - title: Framework design guidelines — .NET
+    url: https://learn.microsoft.com/en-us/dotnet/standard/design-guidelines/
+  - title: Best practices for exceptions — .NET
+    url: https://learn.microsoft.com/en-us/dotnet/standard/exceptions/best-practices-for-exceptions
+  - title: Nullable reference types — C#
+    url: https://learn.microsoft.com/en-us/dotnet/csharp/nullable-references
+  - title: Code analysis in .NET
+    url: https://learn.microsoft.com/en-us/dotnet/fundamentals/code-analysis/overview
+cards:
+  - id: the-ten
+    kind: rules
+    title: The ten that matter most
+    note: If you say nothing else in a review, say these.
+    items:
+      - tone: modern
+        text: "**Nullable on, warnings as errors** — `<Nullable>enable</Nullable>` and `<TreatWarningsAsErrors>true</TreatWarningsAsErrors>` in `Directory.Build.props`, from day one."
+      - tone: modern
+        text: "**Follow the framework design guidelines** — PascalCase public API, `Async` suffix, `I` on interfaces, no public fields, read-only collection returns."
+      - tone: modern
+        text: "**Exceptions are for the exceptional** — typed exceptions, `catch` only what you can handle, `throw;` to rethrow; the Try-pattern for ordinary failures."
+      - tone: modern
+        text: "**Async all the way** — never `.Result` or `.Wait()`; accept a `CancellationToken` and pass it on."
+      - tone: modern
+        text: "**Own it, dispose it** — `using` / `await using` for what you create; never dispose what was injected."
+      - tone: modern
+        text: "**Constructor injection, small interfaces** — no `new` of services and no static singletons inside logic; inject `TimeProvider` for time."
+      - tone: modern
+        text: "**Structured logging** — `ILogger` message templates, never string interpolation; pass the exception itself (`LogError(e, \"… {OrderId}\", id)`), never `e.Message`; never log secrets or personal data."
+      - tone: modern
+        text: "**Validate configuration at startup** — typed options with `ValidateOnStart()`; secrets from user-secrets in development and a vault or the environment in production, never from source control."
+      - tone: modern
+        text: "**Measure before optimising** — BenchmarkDotNet and `dotnet-counters`, then `Span<T>`, pooling and fewer allocations where the profile says."
+      - tone: modern
+        text: "**Immutable by default** — `record`, `init`, `readonly`, `sealed`; mutate only state you own."
+  - id: design-guidelines
+    kind: compare
+    title: "Framework design guidelines and XML docs, in review"
+    note: "Properties not fields, enums not magic ints or bool flags, a read-only snapshot not a mutable `List<T>`, argument validation, and `///` docs IntelliSense shows to every caller."
+    prerequisites: &run
+      - .NET 8 SDK or later
+      - "`dotnet new console -o Demo`, replace `Demo/Program.cs` with the example, then `dotnet run --project Demo`"
+    columns:
+      - label: Before
+        tone: bad
+        code: |-
+          using System.Globalization;
+
+          var history = new OrderHistory();
+          foreach (var o in history.GetOrders("ada", false))
+              Console.WriteLine($"{o.id} {o.total.ToString("0.00", CultureInfo.InvariantCulture)}");
+          Console.WriteLine($"with cancelled: {history.GetOrders("ada", true).Count}");
+
+          public class Order
+          {
+              public string id = "";
+              public string customer = "";
+              public decimal total;
+              public int status;                                  // 1 = delivered, 2 = cancelled
+          }
+
+          public class OrderHistory
+          {
+              private List<Order> orders = new()
+              {
+                  new() { id = "A-1", customer = "ada", total = 42.50m, status = 1 },
+                  new() { id = "A-2", customer = "ada", total = 99.00m, status = 2 },
+                  new() { id = "A-3", customer = "ada", total = 15.00m, status = 1 },
+                  new() { id = "A-4", customer = "grace", total = 30.00m, status = 1 },
+              };
+
+              // A mutable List<T>, abbreviated parameters, a bool flag, no docs, no validation
+              public List<Order> GetOrders(string c, bool b) =>
+                  orders.Where(o => o.customer == c && (b || o.status != 2)).ToList();
+          }
+      - label: After
+        tone: good
+        code: |-
+          using System.Globalization;
+
+          var history = new OrderHistory(
+          [
+              new("A-1", "ada", 42.50m, IsCancelled: false), new("A-2", "ada", 99.00m, IsCancelled: true),
+              new("A-3", "ada", 15.00m, IsCancelled: false), new("A-4", "grace", 30.00m, IsCancelled: false),
+          ]);
+          foreach (var order in history.ForCustomer("ada"))
+              Console.WriteLine($"{order.Id} {order.Total.ToString("0.00", CultureInfo.InvariantCulture)}");
+          Console.WriteLine($"with cancelled: {history.ForCustomer("ada", OrderFilter.IncludeCancelled).Count}");
+
+          /// <summary>A customer's order, as the history reports it.</summary>
+          /// <param name="Id">The order number, such as <c>A-1</c>.</param>
+          /// <param name="CustomerId">The customer who placed it.</param>
+          /// <param name="Total">The amount charged, in euros.</param>
+          /// <param name="IsCancelled">Whether the order was cancelled.</param>
+          public sealed record Order(string Id, string CustomerId, decimal Total, bool IsCancelled);
+
+          /// <summary>Which orders <see cref="OrderHistory.ForCustomer"/> returns.</summary>
+          public enum OrderFilter
+          {
+              /// <summary>Only orders that still stand.</summary>
+              ExcludeCancelled,
+
+              /// <summary>Every order, cancelled ones included.</summary>
+              IncludeCancelled,
+          }
+
+          /// <summary>Reads customers' order history.</summary>
+          public sealed class OrderHistory(IEnumerable<Order> orders)
+          {
+              private readonly IReadOnlyList<Order> orders = orders.ToList();
+
+              /// <summary>Returns one customer's orders.</summary>
+              /// <param name="customerId">The customer's id; must not be empty.</param>
+              /// <param name="filter">Whether cancelled orders are included; by default they are not.</param>
+              /// <returns>A read-only snapshot of the matching orders.</returns>
+              /// <exception cref="ArgumentException"><paramref name="customerId"/> is empty or white space.</exception>
+              public IReadOnlyList<Order> ForCustomer(
+                  string customerId, OrderFilter filter = OrderFilter.ExcludeCancelled)
+              {
+                  ArgumentException.ThrowIfNullOrWhiteSpace(customerId);
+                  return orders.Where(o => o.CustomerId == customerId &&
+                      (filter == OrderFilter.IncludeCancelled || !o.IsCancelled)).ToList();
+              }
+          }
+    expected: |-
+      A-1 42.50
+      A-3 15.00
+      with cancelled: 3
+    sources:
+      - title: Documentation comments — C# language reference
+        url: https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/xmldoc/
+    validation: &ran
+      status: ran
+      toolchain: .NET SDK 9.0.304 (net9.0, C# 13)
+      date: "2026-11-16"
+  - id: model-errors
+    kind: compare
+    title: "Model errors: typed exceptions and `when` filters"
+    note: "Return a result type when every caller branches on the outcome (as on the Clean Code sheet), throw a typed exception when a component cannot do what its name promises (`ChargeAsync` cannot charge), catch it by type or `when` filter where you can handle it, and let bugs and cancellation reach the global handler."
+    prerequisites: *run
+    columns:
+      - label: Catch-all
+        tone: bad
+        code: |-
+          using static System.Net.HttpStatusCode;
+
+          foreach (var status in new[] { OK, PaymentRequired, ServiceUnavailable })
+          {
+              // A demo shortcut: production code injects one HttpClient (IHttpClientFactory), never one per call
+              using var client = new HttpClient(new FakeGateway(status)) { BaseAddress = new("https://pay.example/") };
+              Console.WriteLine(await Pay(client, "A-1"));
+          }
+
+          static async Task<string> Pay(HttpClient client, string orderId)
+          {
+              try
+              {
+                  var response = await client.PostAsync($"charges/{orderId}", null);
+                  if ((int)response.StatusCode == 402) throw new Exception("declined");      // thrown to itself
+                  response.EnsureSuccessStatusCode();
+                  return $"{orderId}: paid";
+              }
+              catch (Exception e)          // also swallows bugs and cancellation, then guesses from the text
+              {
+                  return e.Message == "declined" ? $"{orderId}: card declined"
+                       : e.Message.Contains("503") ? $"{orderId}: try again later"
+                       : $"{orderId}: error";
+              }
+          }
+
+          sealed class FakeGateway(System.Net.HttpStatusCode status) : HttpMessageHandler
+          {
+              protected override Task<HttpResponseMessage> SendAsync(
+                  HttpRequestMessage request, CancellationToken ct) => Task.FromResult(new HttpResponseMessage(status));
+          }
+      - label: Typed
+        tone: good
+        code: |-
+          using static System.Net.HttpStatusCode;
+
+          foreach (var status in new[] { OK, PaymentRequired, ServiceUnavailable })
+          {
+              // A demo shortcut: production code injects one HttpClient (IHttpClientFactory), never one per call
+              using var client = new HttpClient(new FakeGateway(status)) { BaseAddress = new("https://pay.example/") };
+              Console.WriteLine(await Pay(new PaymentsClient(client), "A-1"));
+          }
+
+          static async Task<string> Pay(PaymentsClient payments, string orderId)
+          {
+              try
+              {
+                  await payments.ChargeAsync(orderId, CancellationToken.None);
+                  return $"{orderId}: paid";
+              }
+              catch (PaymentDeclinedException e) { return $"{e.OrderId}: card declined"; }
+              catch (HttpRequestException e) when (e.StatusCode is ServiceUnavailable or TooManyRequests)
+              {
+                  return $"{orderId}: try again later";
+              }
+              // Anything else (a bug, cancellation) propagates; if you catch to add context, rethrow with `throw;`
+          }
+
+          sealed class PaymentsClient(HttpClient http)         // the boundary: a 402 becomes a typed exception
+          {
+              public async Task ChargeAsync(string orderId, CancellationToken ct)
+              {
+                  using var response = await http.PostAsync($"charges/{orderId}", content: null, ct);
+                  if (response.StatusCode == PaymentRequired)
+                      throw new PaymentDeclinedException(orderId);
+                  response.EnsureSuccessStatusCode();                // HttpRequestException carries StatusCode
+              }
+          }
+
+          sealed class PaymentDeclinedException(string orderId) : Exception($"payment for {orderId} was declined")
+          {
+              public string OrderId { get; } = orderId;
+          }
+
+          sealed class FakeGateway(System.Net.HttpStatusCode status) : HttpMessageHandler
+          {
+              protected override Task<HttpResponseMessage> SendAsync(
+                  HttpRequestMessage request, CancellationToken ct) => Task.FromResult(new HttpResponseMessage(status));
+          }
+    expected: |-
+      A-1: paid
+      A-1: card declined
+      A-1: try again later
+    validation: *ran
+  - id: nullable-discipline
+    kind: compare
+    title: "Nullable reference types discipline"
+    note: "Let the annotations tell the truth — `required` members instead of `= null!`, `[NotNullWhen(true)]` on a Try method instead of a `!` — and the compiler checks every caller."
+    prerequisites: *run
+    columns:
+      - label: Silenced
+        tone: bad
+        code: |-
+          var directory = new CustomerDirectory();
+          foreach (var id in new[] { "c-1", "c-2", "c-9" }) Console.WriteLine(Greeting(directory, id));
+
+          static string Greeting(CustomerDirectory directory, string id)
+          {
+              var customer = directory.Find(id);
+              if (customer == null) return "Hello, guest";             // the signature promised it never is
+              return customer.Email != null ? $"Hello, {customer.Name} <{customer.Email}>" : $"Hello, {customer.Name}";
+          }
+
+          class Customer
+          {
+              public string Id = null!;                                 // `null!` silences the constructor check
+              public string Name = null!;
+              public string? Email;
+          }
+
+          class CustomerDirectory
+          {
+              private readonly List<Customer> customers =
+              [
+                  new() { Id = "c-1", Name = "Ada", Email = "ada@example.com" },
+                  new() { Id = "c-2", Name = "Grace" },
+              ];
+
+              public Customer Find(string id) => customers.FirstOrDefault(c => c.Id == id)!;   // `!` hides "not found"
+          }
+      - label: Truthful
+        tone: good
+        code: |-
+          using System.Diagnostics.CodeAnalysis;
+
+          var directory = new CustomerDirectory();
+          foreach (var id in new[] { "c-1", "c-2", "c-9" }) Console.WriteLine(Greeting(directory, id));
+
+          static string Greeting(CustomerDirectory directory, string id)
+          {
+              if (!directory.TryFind(id, out var customer)) return "Hello, guest";
+              return customer.Email is { } email ? $"Hello, {customer.Name} <{email}>" : $"Hello, {customer.Name}";
+          }
+
+          sealed class Customer
+          {
+              public required string Id { get; init; }                // the compiler makes every `new` set it
+              public required string Name { get; init; }
+              public string? Email { get; init; }                      // `?` only where absence is real
+          }
+
+          sealed class CustomerDirectory
+          {
+              private readonly List<Customer> customers =
+              [
+                  new() { Id = "c-1", Name = "Ada", Email = "ada@example.com" },
+                  new() { Id = "c-2", Name = "Grace" },
+              ];
+
+              public bool TryFind(string id, [NotNullWhen(true)] out Customer? customer)
+              {
+                  customer = customers.FirstOrDefault(c => c.Id == id);
+                  return customer is not null;
+              }
+          }
+    expected: |-
+      Hello, Ada <ada@example.com>
+      Hello, Grace
+      Hello, guest
+    sources:
+      - title: Attributes for null-state static analysis — C#
+        url: https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/attributes/nullable-analysis
+    validation: *ran
+  - id: logging-diagnostics
+    kind: code
+    title: "Logging: templates, scopes and [LoggerMessage]"
+    note: "A message template keeps `OrderId` a queryable field and skips formatting when the level is off, a template scope tags every entry inside it, and `[LoggerMessage]` methods add compile-time checking with no params array or boxing."
+    prerequisites:
+      - .NET 8 SDK or later
+      - "`dotnet new console -o Demo`, then `dotnet add Demo package Microsoft.Extensions.Logging.Console`"
+      - "Replace `Demo/Program.cs` with the example, then `dotnet run --project Demo` (the `[LoggerMessage]` generator runs at build time)"
+    code: |-
+      using Microsoft.Extensions.Logging;
+
+      using (var factory = LoggerFactory.Create(builder => builder.AddSimpleConsole(options =>
+      {
+          options.SingleLine = true;                 // one entry per line, and no timestamp: stable output
+          options.IncludeScopes = true;
+      })))
+      {
+          var checkout = new CheckoutService(factory.CreateLogger<CheckoutService>());
+          checkout.Complete("A-1", 42.50m, paymentAttempts: 2);
+      }   // disposing the factory flushes the console logger's queue
+
+      sealed partial class CheckoutService(ILogger<CheckoutService> logger)
+      {
+          public void Complete(string orderId, decimal total, int paymentAttempts)
+          {
+              // Don't: logger.LogInformation($"Order {orderId} completed") — it formats even when the level
+              // is off, and OrderId becomes plain text instead of a queryable field (analyzer CA2254)
+              OrderCompleted(logger, orderId, total);
+
+              using (logger.BeginScope("Order {OrderId}", orderId))    // every entry inside carries OrderId
+              {
+                  if (paymentAttempts > 1) PaymentRetried(logger, paymentAttempts);
+              }
+          }
+
+          [LoggerMessage(EventId = 1000, Level = LogLevel.Information,
+              Message = "Order {OrderId} completed for {Total}")]
+          private static partial void OrderCompleted(ILogger logger, string orderId, decimal total);
+
+          [LoggerMessage(EventId = 1001, Level = LogLevel.Warning, Message = "Payment needed {Attempts} attempts")]
+          private static partial void PaymentRetried(ILogger logger, int attempts);
+      }
+    expected: |-
+      info: CheckoutService[1000] Order A-1 completed for 42.50
+      warn: CheckoutService[1001] => Order A-1 Payment needed 2 attempts
+    applies:
+      requires: [Microsoft.Extensions.Logging]
+      versions: { csharp: ">=12", dotnet: ">=8", microsoft-extensions-logging: ">=8.0" }
+    sources:
+      - title: Logging in C# and .NET
+        url: https://learn.microsoft.com/en-us/dotnet/core/extensions/logging
+      - title: Compile-time logging source generation — .NET
+        url: https://learn.microsoft.com/en-us/dotnet/core/extensions/logger-message-generator
+      - title: Console log formatting — .NET
+        url: https://learn.microsoft.com/en-us/dotnet/core/extensions/console-log-formatter
+    validation:
+      status: ran
+      toolchain: .NET SDK 9.0.304 (net9.0, C# 13), Microsoft.Extensions.Logging.Console 10.0.15
+      date: "2026-11-16"
+  - id: logging-exceptions
+    kind: code
+    title: "Logging an exception you caught"
+    note: "Pass the caught exception itself to the logger — it lands in the entry's exception slot with its type, stack trace and inner exceptions — instead of formatting `e.Message` into the text."
+    prerequisites:
+      - .NET 8 SDK or later
+      - "`dotnet new console -o Demo`, then `dotnet add Demo package Microsoft.Extensions.Logging.Console`"
+      - "Replace `Demo/Program.cs` with the example, then `dotnet run --project Demo`"
+    code: |-
+      using Microsoft.Extensions.Logging;
+      using Microsoft.Extensions.Logging.Abstractions;
+      using Microsoft.Extensions.Logging.Console;
+
+      using (var factory = LoggerFactory.Create(builder => builder
+          .AddConsole(options => options.FormatterName = "no-trace")
+          .AddConsoleFormatter<NoTraceFormatter, ConsoleFormatterOptions>()))
+      {
+          var receipts = new ReceiptService(factory.CreateLogger<ReceiptService>());
+          await receipts.SendAsync("A-1", send: () => throw new HttpRequestException("503 Service Unavailable"));
+      }
+
+      sealed partial class ReceiptService(ILogger<ReceiptService> logger)
+      {
+          public async Task SendAsync(string orderId, Func<Task> send)
+          {
+              try
+              {
+                  await send();
+              }
+              catch (HttpRequestException e)             // the order is paid either way: log it, retry later
+              {
+                  // Don't: logger.LogError(e.Message) — the type, the stack trace and inner exceptions are lost
+                  ReceiptNotSent(logger, e, orderId);
+              }
+          }
+
+          // An Exception parameter goes to the entry's exception slot, not into the message
+          [LoggerMessage(EventId = 1002, Level = LogLevel.Error, Message = "Receipt for order {OrderId} not sent")]
+          private static partial void ReceiptNotSent(ILogger logger, Exception exception, string orderId);
+      }
+
+      // The default formatters print the full stack trace, which holds this machine's file paths; this demo
+      // prints only the exception's type and message so its output is the same everywhere.
+      sealed class NoTraceFormatter() : ConsoleFormatter("no-trace")
+      {
+          public override void Write<TState>(
+              in LogEntry<TState> entry, IExternalScopeProvider? scopes, TextWriter output)
+          {
+              var message = entry.Formatter(entry.State, entry.Exception);
+              var error = entry.Exception is { } e ? $" [{e.GetType().Name}: {e.Message}]" : "";
+              output.WriteLine($"{entry.LogLevel}: {entry.Category}[{entry.EventId.Id}] {message}{error}");
+          }
+      }
+    expected: |-
+      Error: ReceiptService[1002] Receipt for order A-1 not sent [HttpRequestException: 503 Service Unavailable]
+    applies:
+      requires: [Microsoft.Extensions.Logging]
+      versions: { csharp: ">=12", dotnet: ">=8", microsoft-extensions-logging: ">=8.0" }
+    sources:
+      - title: Console log formatting — custom formatters
+        url: https://learn.microsoft.com/en-us/dotnet/core/extensions/console-log-formatter
+    validation:
+      status: ran
+      toolchain: .NET SDK 9.0.304 (net9.0, C# 13), Microsoft.Extensions.Logging.Console 10.0.15
+      date: "2026-11-16"
+  - id: options-secrets-flags
+    kind: code
+    title: "Configuration, secrets and feature flags"
+    note: "Bind configuration to a typed options class, validate it before the app takes traffic, keep secrets out of the repository, and make flags typed and off by default."
+    prerequisites: *run
+    code: |-
+      using System.ComponentModel.DataAnnotations;
+
+      // In a host the same check runs before the app takes traffic:
+      //   services.AddOptions<PaymentOptions>().BindConfiguration("Payments")
+      //       .ValidateDataAnnotations().ValidateOnStart();
+      PaymentOptions[] environments =
+      [
+          new() { BaseUrl = "https://pay.example/", TimeoutSeconds = 10, ApiKey = "(from a vault)" },
+          new() { BaseUrl = "pay.example", TimeoutSeconds = 0, ApiKey = "" },
+      ];
+
+      foreach (var options in environments)
+      {
+          var errors = new List<ValidationResult>();
+          var context = new ValidationContext(options);
+          var valid = Validator.TryValidateObject(options, context, errors, validateAllProperties: true);
+          Console.WriteLine(valid ? "configuration ok: starting" : "refusing to start:");
+          foreach (var error in errors) Console.WriteLine($"- {error.ErrorMessage}");
+      }
+
+      // A flag is typed and off by default; read it through IOptionsMonitor<FeatureFlags> to change it live
+      var flags = new FeatureFlags { NewCheckout = true };
+      Console.WriteLine(flags.NewCheckout ? "checkout: new flow" : "checkout: classic flow");
+
+      sealed class PaymentOptions
+      {
+          [Required, Url] public required string BaseUrl { get; init; }
+
+          [Range(1, 60)] public int TimeoutSeconds { get; init; } = 10;
+
+          // Never in source control: dotnet user-secrets in development, a vault or the environment in production
+          [Required] public required string ApiKey { get; init; }
+      }
+
+      sealed class FeatureFlags
+      {
+          public bool NewCheckout { get; init; }
+      }
+    expected: |-
+      configuration ok: starting
+      refusing to start:
+      - The BaseUrl field is not a valid fully-qualified http, https, or ftp URL.
+      - The field TimeoutSeconds must be between 1 and 60.
+      - The ApiKey field is required.
+      checkout: new flow
+    sources:
+      - title: Options pattern in .NET
+        url: https://learn.microsoft.com/en-us/dotnet/core/extensions/options
+      - title: Safe storage of app secrets in development — ASP.NET Core
+        url: https://learn.microsoft.com/en-us/aspnet/core/security/app-secrets
+    validation: *ran
+  - id: async-practices
+    kind: code
+    title: "Async practices: tokens, ConfigureAwait, ValueTask"
+    note: "Take a `CancellationToken` and pass it on, use `ConfigureAwait(false)` in library code, and return `ValueTask` only where the result is usually ready synchronously."
+    prerequisites: *run
+    code: |-
+      using System.Collections.Concurrent;
+
+      var prices = new PriceService(new FakeCatalog());
+      var first = await prices.GetPriceCentsAsync("mug", CancellationToken.None);
+      var second = prices.GetPriceCentsAsync("mug", CancellationToken.None);       // a cache hit: no Task allocated
+      Console.WriteLine($"{first} | cached result ready synchronously: {second.IsCompletedSuccessfully}");
+      Console.WriteLine(await second);                                   // await a ValueTask exactly once
+
+      using var timeout = new CancellationTokenSource(TimeSpan.FromMilliseconds(50));
+      try { await prices.GetPriceCentsAsync("lamp", timeout.Token); }
+      catch (OperationCanceledException) { Console.WriteLine("lamp: lookup cancelled by the timeout"); }
+
+      interface ICatalog { Task<int> LoadPriceCentsAsync(string sku, CancellationToken ct); }
+
+      sealed class PriceService(ICatalog catalog)                        // library code: no UI context needed
+      {
+          private readonly ConcurrentDictionary<string, int> cache = new();
+
+          public ValueTask<int> GetPriceCentsAsync(string sku, CancellationToken ct = default) =>
+              cache.TryGetValue(sku, out var cents)
+                  ? ValueTask.FromResult(cents)                              // completes synchronously
+                  : new ValueTask<int>(LoadAsync(sku, ct));
+
+          private async Task<int> LoadAsync(string sku, CancellationToken ct)
+          {
+              var cents = await catalog.LoadPriceCentsAsync(sku, ct).ConfigureAwait(false);
+              cache[sku] = cents;
+              return cents;
+          }
+      }
+
+      sealed class FakeCatalog : ICatalog
+      {
+          public async Task<int> LoadPriceCentsAsync(string sku, CancellationToken ct)
+          {
+              if (sku == "lamp") await Task.Delay(Timeout.Infinite, ct);   // stuck upstream: only the token ends it
+              await Task.Yield();
+              return 1200;
+          }
+      }
+    expected: |-
+      1200 | cached result ready synchronously: True
+      1200
+      lamp: lookup cancelled by the timeout
+    sources:
+      - title: ConfigureAwait FAQ — .NET Blog
+        url: https://devblogs.microsoft.com/dotnet/configureawait-faq/
+    validation: *ran
+  - id: disposal
+    kind: code
+    title: "IDisposable discipline"
+    note: "Dispose what you create with `using`, leave what was injected to the container that created it, and make `Dispose` idempotent and fail fast on use after dispose (lifetimes and scopes are on the Architecture sheet)."
+    prerequisites: *run
+    code: |-
+      using System.Text;
+
+      using (var printer = new ReceiptPrinter())       // you created it, so you dispose it
+      {
+          printer.Print("A-1");
+      }
+      // Injected instead? The container disposes what it created, when its scope ends: never Dispose it yourself.
+
+      var closed = new ReceiptPrinter();
+      closed.Dispose();
+      closed.Dispose();                                // idempotent: a second call is harmless
+      try { closed.Print("A-2"); }
+      catch (ObjectDisposedException e) { Console.WriteLine($"rejected: {e.ObjectName} is disposed"); }
+
+      // Sealed, managed resources only: no finalizer and no Dispose(bool) needed.
+      // An async resource implements IAsyncDisposable and is released with `await using`.
+      sealed class ReceiptPrinter : IDisposable
+      {
+          private readonly MemoryStream connection = new();       // stands in for a printer connection
+          private bool disposed;
+
+          public void Print(string orderId)
+          {
+              ObjectDisposedException.ThrowIf(disposed, this);
+              connection.Write(Encoding.UTF8.GetBytes($"receipt {orderId}\n"));
+              Console.WriteLine($"printed {orderId}");
+          }
+
+          public void Dispose()
+          {
+              if (disposed) return;
+              disposed = true;
+              connection.Dispose();
+              Console.WriteLine("printer released");
+          }
+      }
+    expected: |-
+      printed A-1
+      printer released
+      printer released
+      rejected: ReceiptPrinter is disposed
+    sources:
+      - title: Implement a Dispose method — .NET
+        url: https://learn.microsoft.com/en-us/dotnet/standard/garbage-collection/implementing-dispose
+    validation: *ran
+  - id: performance-checklist
+    kind: table
+    title: Performance checklist
+    note: In rough order of how often each one is the actual culprit — and only after a profile or benchmark says so.
+    headers: [Check, Prefer, Why]
+    rows:
+      - ["I/O and chatty calls", "batch requests, `IAsyncEnumerable` paging, caching, EF Core projections (`Select`) and `AsNoTracking()`", "a round trip costs more than any amount of CPU you can save"]
+      - ["allocations in hot paths", "`Span<T>` / `ReadOnlySpan<char>` slicing, `stackalloc` for small buffers, `string.Create`", "less garbage means fewer GC pauses"]
+      - ["buffers and objects", "`ArrayPool<T>.Shared.Rent` / `Return`; `ObjectPool<T>` (Microsoft.Extensions.ObjectPool)", "reuse large buffers instead of allocating per request"]
+      - ["LINQ in a tight loop", "a `for` / `foreach` over an array or `Span<T>`", "each operator allocates an enumerator and a delegate; fine everywhere else"]
+      - ["collections", "preset capacity, `HashSet<T>` / `Dictionary` for lookups, `FrozenDictionary` for data built once at startup", "avoids resizing and O(n) `List.Contains`; a frozen collection is slower to create and never changes"]
+      - ["struct versus class", "a small (under 16 bytes), immutable `readonly record struct`; a class for everything else", "no heap allocation, but large structs copy on every pass and box behind interfaces"]
+      - ["async overhead", "`ValueTask` on hot paths that usually complete synchronously; no `Task.Run` in ASP.NET Core; no async lambda where a sync one will do", "every async state machine and `Task` costs an allocation"]
+      - ["serialization", "`System.Text.Json` with a source-generated `JsonSerializerContext`", "no reflection at run time; required for Native AOT"]
+      - ["measure", "BenchmarkDotNet for code, `dotnet-counters` and `dotnet-trace` for running apps", "intuition about .NET performance is often wrong"]
+  - id: hygiene-and-review
+    kind: rules
+    title: "Project hygiene, and a five-minute review checklist"
+    note: The first five are set up once per repository; the rest are asked of every pull request.
+    items:
+      - tone: good
+        text: "**Analyzers on** — `<AnalysisLevel>latest-recommended</AnalysisLevel>` and `<EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>` in `Directory.Build.props`, with `TreatWarningsAsErrors`; test projects add `<NoWarn>$(NoWarn);CA1707</NoWarn>` so underscore test names build (see the Modularization sheet)."
+      - tone: good
+        text: "**One style** — a committed `.editorconfig` (`dotnet new editorconfig`) and `dotnet format --verify-no-changes` in CI."
+      - tone: good
+        text: "**Central package versions** — `Directory.Packages.props`; NuGet audit warnings for vulnerable packages kept at zero (`dotnet list package --vulnerable`)."
+      - tone: good
+        text: "**Pinned SDK and docs** — a `global.json` for the SDK, and `<GenerateDocumentationFile>true</GenerateDocumentationFile>` on libraries so a missing `///` on public API is a warning."
+      - tone: good
+        text: "**CI on every pull request** — `dotnet build -warnaserror`, `dotnet test`, `dotnet format --verify-no-changes`, on every target OS the app ships to."
+      - tone: neutral
+        text: "**Review: names and API** — do the public names read well at the call site, return read-only types and take a `CancellationToken`?"
+      - tone: neutral
+        text: "**Review: failure** — what happens on timeout, cancellation, a 4xx and a 5xx? Is anything caught and swallowed?"
+      - tone: neutral
+        text: "**Review: nulls and disposal** — any new `!`, `null!` or `#nullable disable`? Is every created `IDisposable` disposed?"
+      - tone: neutral
+        text: "**Review: tests** — does a test fail without the change, and is it free of real time, network and shared state?"
+      - tone: neutral
+        text: "**Review: accessibility** — every control has a `SemanticProperties.Description` (MAUI) or `AutomationProperties.Name` (WPF, WinUI) or an accessible name (Blazor), and works by keyboard and screen reader."
+      - tone: neutral
+        text: "**Review: localization** — user-facing text comes from `.resx` resources; dates, numbers and currency are formatted with a `CultureInfo`, and machine formats with `InvariantCulture`."
+      - tone: bad
+        text: "**Review: privacy** — no personal data, tokens or secrets in logs, exception messages, telemetry or analytics events."
