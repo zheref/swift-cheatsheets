@@ -127,25 +127,41 @@ describe("Gatsby adapter", () => {
     expect(html).toContain('href="/swift-fixture/"');
     const head = renderToStaticMarkup(<>{Head(props as unknown as Call<typeof Head>)}</>);
     expect(head).toContain("<title>Kotlin Fixture Catalog</title>");
-    expect(head).toContain('<html lang="en">');
+    expect(head).not.toContain("<html");
   });
 
-  it("wraps every page in the shared provider and sets the theme before paint", () => {
+  it("wraps every page in the shared provider", () => {
     for (const wrap of [wrapSsr, wrapBrowser]) {
       const el = (wrap as (a: { element: ReactElement }) => ReactElement)({ element: <p>x</p> });
       expect(el.type).toBe(UiProvider);
     }
+  });
+
+  it.each([
+    { pathname: "/catalog/", pageContext: { catalog: { language: { locale: "es" } } }, lang: "es" },
+    { pathname: "/404.html", pageContext: {}, lang: "en" },
+  ])("sets the page language and theme together for $pathname before paint", ({ pathname, pageContext, lang }) => {
     const setHtmlAttributes = vi.fn();
     const setHeadComponents = vi.fn();
-    (onRenderBody as (a: unknown) => void)({ setHtmlAttributes, setHeadComponents });
-    expect(setHtmlAttributes).toHaveBeenCalledWith({ "data-theme": "dark", className: "dark" });
+    const loadPageDataSync = vi.fn(() => ({ result: { pageContext } }));
+    (onRenderBody as (a: unknown) => void)({ pathname, loadPageDataSync, setHtmlAttributes, setHeadComponents });
+    expect(loadPageDataSync).toHaveBeenCalledWith(pathname);
+    expect(setHtmlAttributes).toHaveBeenCalledWith({ lang, "data-theme": "dark", className: "dark" });
     const head = renderToStaticMarkup(<>{setHeadComponents.mock.calls[0]![0]}</>);
     expect(head).toContain(themeInitScript.slice(0, 40));
   });
 
+  it("uses English when Gatsby development renders without a page-data loader", () => {
+    const setHtmlAttributes = vi.fn();
+    (onRenderBody as (a: unknown) => void)({ pathname: "/", setHtmlAttributes, setHeadComponents: vi.fn() });
+    expect(setHtmlAttributes).toHaveBeenCalledWith({ lang: "en", "data-theme": "dark", className: "dark" });
+  });
+
   it("renders a 404 page that points back to the catalog", () => {
     expect(renderToStaticMarkup(<UiProvider>{NotFound()}</UiProvider>)).toContain('href="/"');
-    expect(renderToStaticMarkup(<>{NotFoundHead({} as Call<typeof NotFoundHead>)}</>)).toContain("Page not found");
+    const head = renderToStaticMarkup(<>{NotFoundHead({} as Call<typeof NotFoundHead>)}</>);
+    expect(head).toContain("<title>Page not found</title>");
+    expect(head).not.toContain("<html");
   });
 });
 
