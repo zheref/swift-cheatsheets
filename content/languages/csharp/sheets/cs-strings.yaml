@@ -429,7 +429,7 @@ cards:
 
       // a format string from a resource: parse it once, reuse it (.NET 8)
       var shipped = CompositeFormat.Parse("Order {0} shipped to {1} on {2:D}.");
-      Console.WriteLine(string.Format(CultureInfo.GetCultureInfo("en-GB"), shipped, orderNumber, "Ada", placed));
+      Console.WriteLine(string.Format(CultureInfo.GetCultureInfo("en-US"), shipped, orderNumber, "Ada", placed));
 
       // raw string literals: no escaping; with $$ a {{x}} interpolates and a single { is literal
       var json = $$"""
@@ -446,7 +446,7 @@ cards:
       MwSt. 7,5 %
       1,234.50|    1042|1042    |00FF
       2026-03-08T14:30:00.0000000+01:00
-      Order 1042 shipped to Ada on Sunday, 8 March 2026.
+      Order 1042 shipped to Ada on Sunday, March 8, 2026.
       { "order": 1042, "customer": "Ada \"the first\"", "path": "C:\orders" }
       31 bytes, first byte 61
       4 UTF-8 bytes for Zoë
