@@ -296,6 +296,28 @@ describe.each(PROVEN)("%s through the primitives (AC-2, AC-3)", (id) => {
     expect(details.open).toBe(false);
   });
 
+  it("stays open while Safari moves focus to a container on a mouse press, and still closes when focus leaves", async () => {
+    await load(catalog);
+    // Gatsby wraps the page in a focusable `#gatsby-focus-wrapper` (tabindex -1); the root plays it here.
+    const wrapper = $("root");
+    wrapper.tabIndex = -1;
+    const summary = document.querySelector("summary")!;
+    const details = summary.parentElement as HTMLDetailsElement;
+    await act(async () => summary.click());
+    expect(details.open).toBe(true);
+    // Safari's mousedown on a link in the list: the link is pressed but not focused; the wrapper is.
+    const link = details.querySelector<HTMLAnchorElement>("a")!;
+    await act(async () => {
+      link.dispatchEvent(new Event("pointerdown", { bubbles: true }));
+      wrapper.focus();
+    });
+    expect(document.activeElement).toBe(wrapper);
+    expect(details.open).toBe(true);
+    // Focus moving to a control beside the selector, as Tab does, still closes it.
+    await act(async () => $("p-q").focus());
+    expect(details.open).toBe(false);
+  });
+
   it("is operable by keyboard: the drawer takes focus, makes the page inert, and gives focus back on Escape", async () => {
     await load(catalog);
     const menu = $("p-menu");

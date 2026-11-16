@@ -63,6 +63,14 @@ export function useCopy(
  * A dismissable disclosure: a pointer press or focus outside `root` closes it,
  * and Escape inside it closes it, returns focus to `toggle` and goes no further
  * (so a page-level Escape does not also fire).
+ *
+ * Focus landing on an element that CONTAINS `root` is not focus leaving it. Safari
+ * does not focus a link or a `<summary>` on a mouse press: it focuses the nearest
+ * focusable ancestor instead — typically a framework's page-wide focus wrapper
+ * (`tabindex="-1"`) — on mousedown, before the click. Closing on that would hide the
+ * list under the pointer, so the click lands on the page behind and a link in the
+ * list is never followed. Tab never lands on such a container, and a press truly
+ * outside is the `pointerdown` branch's.
  */
 export function useDisclosure<R extends HTMLElement, T extends HTMLElement>(): {
   open: boolean;
@@ -76,14 +84,19 @@ export function useDisclosure<R extends HTMLElement, T extends HTMLElement>(): {
   const toggle = useRef<T>(null);
   useEffect(() => {
     if (!open) return;
-    const outside = (ev: Event) => {
+    const pressOutside = (ev: Event) => {
       if (!root.current?.contains(ev.target as Node)) setOpen(false);
     };
-    document.addEventListener("pointerdown", outside);
-    document.addEventListener("focusin", outside);
+    const focusOutside = (ev: Event) => {
+      const target = ev.target as Node;
+      const el = root.current;
+      if (el && !el.contains(target) && !target.contains(el)) setOpen(false);
+    };
+    document.addEventListener("pointerdown", pressOutside);
+    document.addEventListener("focusin", focusOutside);
     return () => {
-      document.removeEventListener("pointerdown", outside);
-      document.removeEventListener("focusin", outside);
+      document.removeEventListener("pointerdown", pressOutside);
+      document.removeEventListener("focusin", focusOutside);
     };
   }, [open]);
   const onKeyDown = (ev: ReactKeyboardEvent) => {
