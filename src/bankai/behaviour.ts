@@ -63,6 +63,20 @@ export function useCopy(
  * A dismissable disclosure: a pointer press or focus outside `root` closes it,
  * and Escape inside it closes it, returns focus to `toggle` and goes no further
  * (so a page-level Escape does not also fire).
+ *
+ * Focus landing on an element that CONTAINS `root` during a press inside it is not
+ * focus leaving it. Safari does not focus a link or a `<summary>` on a mouse press:
+ * it focuses the nearest focusable ancestor instead — typically a framework's
+ * page-wide focus wrapper (`tabindex="-1"`) — on mousedown, before the click. Closing
+ * on that would hide the list under the pointer, so the click lands on the page behind
+ * and a link in the list is never followed. Outside such a press — Shift+Tab onto a
+ * focusable ancestor, a script focusing one — focus on a container has left, and
+ * closes the list; a press truly outside is the `pointerdown` branch's.
+ *
+ * Focus can therefore rest on a container while the disclosure is open (after a
+ * press on a non-link inside the list, in every engine), where Escape never reaches
+ * the handler on `root`: a capturing document listener takes that Escape instead,
+ * with the same effect, before a page-level Escape can see it.
  */
 export function useDisclosure<R extends HTMLElement, T extends HTMLElement>(): {
   open: boolean;
@@ -76,14 +90,40 @@ export function useDisclosure<R extends HTMLElement, T extends HTMLElement>(): {
   const toggle = useRef<T>(null);
   useEffect(() => {
     if (!open) return;
-    const outside = (ev: Event) => {
+    // Set from a press inside `root` until that press is released: the window in which
+    // the engine's focus fallback lands on a container.
+    let pressingInside = false;
+    const pressOutside = (ev: Event) => {
       if (!root.current?.contains(ev.target as Node)) setOpen(false);
+      else pressingInside = true;
     };
-    document.addEventListener("pointerdown", outside);
-    document.addEventListener("focusin", outside);
+    const release = () => {
+      pressingInside = false;
+    };
+    const focusOutside = (ev: Event) => {
+      const target = ev.target as Node;
+      const el = root.current;
+      if (el && !el.contains(target) && !(pressingInside && target.contains(el))) setOpen(false);
+    };
+    const escapeFromContainer = (ev: KeyboardEvent) => {
+      const el = root.current;
+      const active = document.activeElement;
+      if (ev.key !== "Escape" || !el || !active || el.contains(active) || !active.contains(el)) return;
+      ev.stopPropagation();
+      setOpen(false);
+      toggle.current?.focus();
+    };
+    document.addEventListener("pointerdown", pressOutside);
+    document.addEventListener("pointerup", release);
+    document.addEventListener("pointercancel", release);
+    document.addEventListener("focusin", focusOutside);
+    document.addEventListener("keydown", escapeFromContainer, true);
     return () => {
-      document.removeEventListener("pointerdown", outside);
-      document.removeEventListener("focusin", outside);
+      document.removeEventListener("pointerdown", pressOutside);
+      document.removeEventListener("pointerup", release);
+      document.removeEventListener("pointercancel", release);
+      document.removeEventListener("focusin", focusOutside);
+      document.removeEventListener("keydown", escapeFromContainer, true);
     };
   }, [open]);
   const onKeyDown = (ev: ReactKeyboardEvent) => {

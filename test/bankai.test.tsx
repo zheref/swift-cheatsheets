@@ -296,6 +296,63 @@ describe.each(PROVEN)("%s through the primitives (AC-2, AC-3)", (id) => {
     expect(details.open).toBe(false);
   });
 
+  it("stays open while Safari moves focus to a container on a mouse press, and still closes when focus leaves", async () => {
+    await load(catalog);
+    // Gatsby wraps the page in a focusable `#gatsby-focus-wrapper` (tabindex -1); the root plays it here.
+    const wrapper = $("root");
+    wrapper.tabIndex = -1;
+    const summary = document.querySelector("summary")!;
+    const details = summary.parentElement as HTMLDetailsElement;
+    await act(async () => summary.click());
+    expect(details.open).toBe(true);
+    // Safari's mousedown on a link in the list: the link is pressed but not focused; the wrapper is.
+    const link = details.querySelector<HTMLAnchorElement>("a")!;
+    await act(async () => {
+      link.dispatchEvent(new Event("pointerdown", { bubbles: true }));
+      wrapper.focus();
+    });
+    expect(document.activeElement).toBe(wrapper);
+    expect(details.open).toBe(true);
+    // Escape from there never reaches the handler on the disclosure; it still closes the list,
+    // returns focus to the toggle, and goes no further: the search keeps its text.
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call($("p-q"), "kept");
+      $("p-q").dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => wrapper.focus());
+    expect(details.open).toBe(true);
+    await key("Escape", wrapper);
+    expect(details.open).toBe(false);
+    expect(document.activeElement).toBe(summary);
+    expect($("p-query").textContent).toBe("kept");
+    // With the list closed, the same Escape is the page's again: the search clears.
+    await act(async () => wrapper.focus());
+    await key("Escape", wrapper);
+    expect($("p-query").textContent).toBe("");
+    // Focus moving to a control beside the selector, as Tab does, still closes it.
+    await act(async () => summary.click());
+    expect(details.open).toBe(true);
+    await act(async () => $("p-q").focus());
+    expect(details.open).toBe(false);
+    // Focus reaching a focusable container with no press inside (Shift+Tab onto a tabindex=0
+    // ancestor, a script) has left the selector, and closes it — so does one after a press is released.
+    wrapper.tabIndex = 0;
+    await act(async () => summary.click());
+    await act(async () => summary.focus());
+    expect(details.open).toBe(true);
+    await act(async () => wrapper.focus());
+    expect(details.open).toBe(false);
+    await act(async () => summary.click());
+    await act(async () => summary.focus());
+    await act(async () => {
+      link.dispatchEvent(new Event("pointerdown", { bubbles: true }));
+      link.dispatchEvent(new Event("pointerup", { bubbles: true }));
+    });
+    expect(details.open).toBe(true);
+    await act(async () => wrapper.focus());
+    expect(details.open).toBe(false);
+  });
+
   it("is operable by keyboard: the drawer takes focus, makes the page inert, and gives focus back on Escape", async () => {
     await load(catalog);
     const menu = $("p-menu");

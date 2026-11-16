@@ -1,0 +1,3 @@
+### Fixed
+
+- **The language selector works in Safari.** Clicking a language in the open list did nothing in Safari: Safari does not focus a link on a mouse press, so it focused the page-wide focus wrapper Gatsby puts around every page, and the selector read that as focus leaving it and closed the list before the click landed. Focus that reaches an element containing the selector during a press inside it no longer closes the list, so a press on a language follows its link in Safari as it does in Chrome. Focus leaving any other way — Tab, Shift+Tab onto a focusable container, a script — still closes it, as does a press outside, and Escape closes it and returns focus to the toggle even when a press has left focus on the page wrapper, without also clearing the search.

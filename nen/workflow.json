@@ -68,7 +68,15 @@
     "retain": "final-only",
     "template": "spiritual-message",
     "$template": "one of: spiritual-message | rikugan",
-    "captures": "Reports/captures"
+    "captures": "Reports/captures",
+    "sections": {
+      "$comment": "Set up 2026-11-16 at the maintainer's word, from the five variants Hatsu documents for adoption (docs/config/workflow.json.md § reports; zheref/hatsu#89, #108): which blocks each report variant renders, read by nen report render --variant. turn, turn-fast and landing are Spiritual Message; final and register are Rikugan. Consumer-owned once set.",
+      "turn": { "template": "spiritual-message", "blocks": ["masthead", "tally", "desk", "lastTurn", "landed", "delta", "evidence", "launch", "decisions"] },
+      "turn-fast": { "template": "spiritual-message", "blocks": ["masthead", "tally", "desk", "lastTurn"] },
+      "landing": { "template": "spiritual-message", "blocks": ["masthead", "tally", "desk", "lastTurn", "landed", "delta", "evidence", "spend", "launch", "decisions", "prBody"] },
+      "final": { "template": "rikugan", "blocks": ["masthead", "tally", "desk", "register", "spend", "legend"] },
+      "register": { "template": "rikugan", "blocks": ["masthead", "tally", "desk", "register", "spend", "legend"] }
+    }
   },
   "mukai": {
     "autoEn": false,
