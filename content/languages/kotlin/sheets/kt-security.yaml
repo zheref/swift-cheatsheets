@@ -1,0 +1,681 @@
+id: kt-security
+concept: security.auth-and-data
+scope: platform
+title: "Security, Authentication & Privacy"
+group: Quality & reach
+subtitle: "Where secrets go on Android, OAuth 2.0 with PKCE and refresh-token rotation, verifying a JWT, AES-GCM and HMAC with javax.crypto, Keystore keys behind BiometricPrompt, passkeys with Credential Manager, network security config and pinning, WebView and deep-link input, and what never reaches Logcat."
+applies:
+  platforms: [android, jvm]
+  runtime: Kotlin/JVM with the JDK's java.security and javax.crypto; Android for the Keystore, biometric and Credential Manager cards
+  requires: [kotlinx-serialization-json]
+  versions: { kotlin: ">=2.4", kotlinx-serialization: ">=1.13", jvm: ">=21" }
+sources:
+  - title: Security checklist — Android Developers
+    url: https://developer.android.com/privacy-and-security/security-tips
+  - title: Android Keystore system — Android Developers
+    url: https://developer.android.com/privacy-and-security/keystore
+  - title: RFC 7636 — Proof Key for Code Exchange (PKCE)
+    url: https://www.rfc-editor.org/rfc/rfc7636
+  - title: RFC 8252 — OAuth 2.0 for Native Apps
+    url: https://www.rfc-editor.org/rfc/rfc8252
+  - title: RFC 9700 — Best Current Practice for OAuth 2.0 Security
+    url: https://www.rfc-editor.org/rfc/rfc9700
+  - title: RFC 7519 — JSON Web Token (JWT)
+    url: https://www.rfc-editor.org/rfc/rfc7519
+  - title: Java Security Standard Algorithm Names — Java SE 21
+    url: https://docs.oracle.com/en/java/javase/21/docs/specs/security/standard-names.html
+cards:
+  - id: where-secrets-go
+    kind: table
+    title: Where does this secret go?
+    note: Anything inside the APK is public; the Keystore protects keys, not the data you forgot to encrypt.
+    headers: [Secret, Put it in, Never in, Why]
+    rows:
+      - ["Encryption and signing keys", "**Android Keystore** (`AndroidKeyStore` provider; StrongBox where available)", "a file, `SharedPreferences`, code", "the key material cannot be exported; on most devices it lives in the TEE or StrongBox (check `KeyInfo.securityLevel`)"]
+      - ["Access and refresh tokens", "ciphertext from a Keystore AES-GCM key, stored in **DataStore** or a private file", "`SharedPreferences` in clear, logs, URLs", "a rooted device or a backup reads plain prefs"]
+      - ["`EncryptedSharedPreferences` / `EncryptedFile`", "migrate away: **deprecated** in `security-crypto` 1.1.0", "new code", "Google now points to the platform APIs and direct Keystore use"]
+      - ["Third-party API secrets (payment, AI, admin keys)", "**your server**; the app calls your backend", "`BuildConfig`, `strings.xml`, assets, native libraries", "R8 and NDK code are trivially extracted from an APK"]
+      - ["Public, restricted keys (Maps, Firebase config)", "`BuildConfig` or resources, restricted to your package and signing certificate", "—", "they are designed to be public; the restriction is the protection"]
+      - ["User passwords", "nowhere — use passkeys or the password provider via **Credential Manager**", "your own storage", "you cannot leak what you never kept"]
+      - ["Personal data caches", "app-specific internal storage, excluded from backup in `dataExtractionRules` (API 31+) and `fullBackupContent` (API 30 and lower)", "external or shared storage", "other apps and cloud backups can read those"]
+  - id: oauth-pkce
+    kind: code
+    title: OAuth 2.0 authorization code with PKCE
+    note: "Send a SHA-256 challenge, keep the verifier and `state` where process death cannot lose them, check `state` on the redirect and prove the verifier at the exchange — or let AppAuth-Android do all of this."
+    prerequisites:
+      - A Kotlin 2.x compiler (`kotlinc`) and JDK 17 or later; `java.security` is in the JDK
+      - "Save as `main.kt`; run `kotlinc main.kt -include-runtime -d main.jar && java -jar main.jar` — POST the body it builds to the token endpoint; the networking sheet's Ktor card makes the refresh call"
+    code: |-
+      import java.net.*
+      import java.security.*
+      import java.util.Base64
+
+      const val REDIRECT = "com.example.shop:/oauth2redirect"
+
+      fun base64Url(bytes: ByteArray): String = Base64.getUrlEncoder().withoutPadding().encodeToString(bytes)
+      fun s256(verifier: String) = base64Url(MessageDigest.getInstance("SHA-256").digest(verifier.toByteArray()))
+      fun form(vararg fields: Pair<String, String>) =
+          fields.joinToString("&") { (key, value) -> "$key=${URLEncoder.encode(value, Charsets.UTF_8)}" }
+
+      // Persist it (SavedStateHandle or DataStore): Android may kill the app while the Custom Tab is open.
+      data class PkceSession(val verifier: String, val state: String) {
+          val challenge get() = s256(verifier)
+      }
+
+      fun newSession(random: SecureRandom = SecureRandom()) = PkceSession(
+          verifier = base64Url(ByteArray(32).also(random::nextBytes)),        // 43 characters, 256 bits
+          state = base64Url(ByteArray(16).also(random::nextBytes)),
+      )
+
+      fun authorizationUri(s: PkceSession) = URI("https://auth.example.com/authorize?" + form(
+          "response_type" to "code", "client_id" to "shop-android", "redirect_uri" to REDIRECT,
+          "scope" to "openid orders:read", "state" to s.state,
+          "code_challenge" to s.challenge, "code_challenge_method" to "S256"))
+
+      fun exchangeForm(redirect: URI, s: PkceSession): String {          // the token request's POST body
+          val params = redirect.rawQuery.split('&')
+              .associate { it.substringBefore('=') to URLDecoder.decode(it.substringAfter('='), Charsets.UTF_8) }
+          params["error"]?.let { error("authorization failed: $it") }
+          check(params["state"] == s.state) { "state mismatch, possible CSRF" }
+          return form("grant_type" to "authorization_code", "code" to params.getValue("code"),
+              "code_verifier" to s.verifier, "client_id" to "shop-android", "redirect_uri" to REDIRECT)
+      }
+
+      fun main() {
+          println(s256("dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"))         // the RFC 7636 test vector
+          val session = newSession()
+          println("challenge sent: ${"code_challenge=${session.challenge}" in authorizationUri(session).rawQuery}")
+
+          val body = exchangeForm(URI("$REDIRECT?code=c-7f3a&state=${session.state}"), session)
+          println(body.replace(session.verifier, "<the 43-character verifier>"))
+          val forged = runCatching { exchangeForm(URI("$REDIRECT?code=c-evil&state=forged"), session) }
+          println("forged redirect: ${forged.exceptionOrNull()?.message}")
+
+          val tokenEndpoint = { verifier: String -> s256(verifier) == session.challenge }   // the server's check
+          println("code + our verifier: ${tokenEndpoint(session.verifier)}")
+          println("stolen code + a thief's verifier: ${tokenEndpoint(newSession().verifier)}")
+      }
+    expected: |-
+      E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM
+      challenge sent: true
+      grant_type=authorization_code&code=c-7f3a&code_verifier=<the 43-character verifier>&client_id=shop-android&redirect_uri=com.example.shop%3A%2Foauth2redirect
+      forged redirect: state mismatch, possible CSRF
+      code + our verifier: true
+      stolen code + a thief's verifier: false
+    validation:
+      status: ran
+      toolchain: kotlinc 2.4.21, JVM 21.0.12.1
+      date: "2026-11-16"
+  - id: verify-jwt
+    kind: code
+    title: "Verify a JWT, part 1: the algorithm and the signature"
+    note: "Pin the algorithm, verify the signature before reading a claim, and reject everything with one exception type — on a JVM backend use Nimbus JOSE+JWT or jose4j with the issuer's JWKS by `kid`; an Android app treats access tokens as opaque."
+    prerequisites: &jwt
+      - "A Kotlin 2.x compiler (`kotlinc`), JDK 17 or later, `kotlinx-serialization-core-jvm-1.13.0.jar` and `kotlinx-serialization-json-jvm-1.13.0.jar` (only `JsonObject` is used, so no compiler plugin)"
+      - "Save as `main.kt`; run `kotlinc -cp <the two jars> main.kt -d out && kotlin -cp out:<the two jars> MainKt`"
+    code: |-
+      import java.security.*
+      import java.util.Base64
+      import kotlinx.serialization.json.*
+
+      private val encoder = Base64.getUrlEncoder().withoutPadding()
+      private val decoder = Base64.getUrlDecoder()
+      private fun part(s: String) = Json.parseToJsonElement(decoder.decode(s).decodeToString()).jsonObject
+
+      fun verifiedClaims(token: String, issuerKey: PublicKey): JsonObject {           // IllegalArgumentException
+          val (header, payload, signature) = token.split('.').also { require(it.size == 3) { "not a JWS" } }
+          require(part(header)["alg"] == JsonPrimitive("RS256")) { "unexpected alg" }   // never the token's
+          val verifier = Signature.getInstance("SHA256withRSA").apply { initVerify(issuerKey) }
+          verifier.update("$header.$payload".toByteArray())
+          val valid = runCatching { verifier.verify(decoder.decode(signature)) }.getOrDefault(false)   // may throw
+          require(valid) { "bad signature" }
+          return part(payload)                                                       // now check the claims
+      }
+
+      fun sign(key: PrivateKey, claims: String, alg: String = "RS256"): String {     // the issuer's side
+          val unsigned = listOf("""{"alg":"$alg"}""", claims)
+              .joinToString(".") { encoder.encodeToString(it.toByteArray()) }
+          val signer = Signature.getInstance("SHA256withRSA").apply { initSign(key) }
+          signer.update(unsigned.toByteArray())
+          return "$unsigned.${encoder.encodeToString(signer.sign())}"
+      }
+
+      fun main() {
+          val issuer = KeyPairGenerator.getInstance("RSA").apply { initialize(2048) }.generateKeyPair()
+          val attacker = KeyPairGenerator.getInstance("RSA").apply { initialize(2048) }.generateKeyPair()
+          val token = sign(issuer.private, """{"sub":"user-42","aud":"shop-api"}""")
+          val (header, _, signature) = token.split('.')
+          val admin = encoder.encodeToString("""{"sub":"admin","aud":"shop-api"}""".toByteArray())
+          val cases = listOf(
+              "genuine" to token,
+              "payload swapped" to "$header.$admin.$signature",
+              "alg none" to sign(issuer.private, """{"sub":"admin"}""", alg = "none"),
+              "signed by another key" to sign(attacker.private, """{"sub":"admin"}"""),
+              "empty signature" to "$header.$admin.",
+          )
+          for ((label, jwt) in cases) {
+              val result = runCatching { verifiedClaims(jwt, issuer.public) }
+              println("$label: " + result.fold({ "claims $it" }, { "rejected ($it)" }))
+          }
+      }
+    expected: |-
+      genuine: claims {"sub":"user-42","aud":"shop-api"}
+      payload swapped: rejected (java.lang.IllegalArgumentException: bad signature)
+      alg none: rejected (java.lang.IllegalArgumentException: unexpected alg)
+      signed by another key: rejected (java.lang.IllegalArgumentException: bad signature)
+      empty signature: rejected (java.lang.IllegalArgumentException: bad signature)
+    validation: &ran-json
+      status: ran
+      toolchain: kotlinc 2.4.21, JVM 21.0.12.1, kotlinx-serialization-json 1.13.0
+      date: "2026-11-16"
+  - id: jwt-claims
+    kind: code
+    title: "Verify a JWT, part 2: issuer, audience, expiry and not-before"
+    note: "After the signature, check `iss`, `aud` as a string or an array, and `exp`, `nbf` and `iat` as NumericDates (fractional allowed) against an injected clock — a missing `exp` or any malformed time claim is a rejection."
+    prerequisites: *jwt
+    code: |-
+      import java.time.Instant
+      import kotlinx.serialization.json.*
+
+      private fun JsonObject.text(key: String) = (get(key) as? JsonPrimitive)?.contentOrNull
+      private fun JsonObject.audiences() =                                    // a string or an array of strings
+          (get("aud") as? JsonArray)?.map { it.jsonPrimitive.content } ?: listOfNotNull(text("aud"))
+
+      private fun JsonObject.time(key: String): Instant? {                       // a NumericDate, or absent
+          val value = get(key) ?: return null
+          val seconds = (value as? JsonPrimitive)?.takeUnless { it.isString }?.doubleOrNull   // may be fractional
+          require(seconds != null && seconds.isFinite()) { "$key is not a number" }
+          return Instant.ofEpochMilli((seconds * 1_000).toLong())              // toLong saturates: no overflow
+      }
+
+      /** Throws IllegalArgumentException for every rejection; `now` comes from an injected clock. */
+      fun checkClaims(claims: JsonObject, issuer: String, audience: String, now: Instant) {
+          require(claims.text("iss") == issuer) { "wrong issuer" }
+          require(audience in claims.audiences()) { "wrong audience" }
+          val expires = requireNotNull(claims.time("exp")) { "exp missing" }
+          require(now.isBefore(expires.plusSeconds(30))) { "expired" }                     // 30 s of clock skew
+          claims.time("iat")                                                              // validates its type
+          val notBefore = claims.time("nbf")
+          require(notBefore == null || !now.plusSeconds(30).isBefore(notBefore)) { "not yet valid" }
+      }
+
+      fun main() {
+          val now = Instant.parse("2026-11-21T09:45:00Z")                         // exp 1795255200 is 10:00Z
+          val c = """"iss":"https://auth.example.com""""
+          val cases = listOf(
+              "aud array" to """{$c,"aud":["shop-web","shop-api"],"exp":1795255200}""",
+              "fractional exp" to """{$c,"aud":"shop-api","exp":1795255200.5}""",
+              "nbf in 15 min" to """{$c,"aud":"shop-api","exp":1795258800,"nbf":1795255200}""",
+              "nbf as text, far ahead" to """{$c,"aud":"shop-api","exp":1795255200,"nbf":"1895255200"}""",
+              "exp as text" to """{$c,"aud":"shop-api","exp":"1795255200"}""",
+              "iat as text" to """{$c,"aud":"shop-api","exp":1795255200,"iat":"yesterday"}""",
+              "no exp" to """{$c,"aud":"shop-api"}""",
+              "expired" to """{$c,"aud":"shop-api","exp":1795250000}""",
+          )
+          for ((label, json) in cases) {
+              val claims = Json.parseToJsonElement(json).jsonObject
+              val result = runCatching { checkClaims(claims, "https://auth.example.com", "shop-api", now) }
+              println("$label: " + result.fold({ "accepted" }, { "rejected ($it)" }))
+          }
+      }
+    expected: |-
+      aud array: accepted
+      fractional exp: accepted
+      nbf in 15 min: rejected (java.lang.IllegalArgumentException: not yet valid)
+      nbf as text, far ahead: rejected (java.lang.IllegalArgumentException: nbf is not a number)
+      exp as text: rejected (java.lang.IllegalArgumentException: exp is not a number)
+      iat as text: rejected (java.lang.IllegalArgumentException: iat is not a number)
+      no exp: rejected (java.lang.IllegalArgumentException: exp missing)
+      expired: rejected (java.lang.IllegalArgumentException: expired)
+    validation: *ran-json
+  - id: aes-gcm-sha-hmac
+    kind: code
+    title: AES-GCM encryption and SHA-256 with javax.crypto
+    note: "A fresh random 12-byte nonce for every message, stored beside the ciphertext — and rotate the key well before 2^32 messages, the limit for random nonces."
+    prerequisites:
+      - A Kotlin 2.x compiler (`kotlinc`) and JDK 17 or later; `javax.crypto` and `java.security` are in the JDK
+      - "Save as `main.kt`; run `kotlinc main.kt -include-runtime -d main.jar && java -jar main.jar`"
+    code: |-
+      import java.security.*
+      import java.util.HexFormat
+      import javax.crypto.*
+      import javax.crypto.spec.*
+
+      private val random = SecureRandom()
+
+      /** Returns nonce ‖ ciphertext ‖ tag. The AAD (here the record id) is authenticated, not encrypted. */
+      fun seal(key: SecretKey, plaintext: ByteArray, aad: ByteArray): ByteArray {
+          val nonce = ByteArray(12).also(random::nextBytes)               // never reuse a nonce with the same key
+          val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+          cipher.init(Cipher.ENCRYPT_MODE, key, GCMParameterSpec(128, nonce))
+          cipher.updateAAD(aad)
+          return nonce + cipher.doFinal(plaintext)
+      }
+
+      fun open(key: SecretKey, sealed: ByteArray, aad: ByteArray): ByteArray {
+          val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+          cipher.init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(128, sealed, 0, 12))
+          cipher.updateAAD(aad)
+          return cipher.doFinal(sealed, 12, sealed.size - 12)             // AEADBadTagException if altered
+      }
+
+      fun main() {
+          val key = KeyGenerator.getInstance("AES").apply { init(256) }.generateKey()   // Android: a Keystore key
+          val note = "card ending 4242, expires 09/29".toByteArray()
+          val first = seal(key, note, "order:A-1041".toByteArray())
+          val second = seal(key, note, "order:A-1041".toByteArray())
+          println("same plaintext, same ciphertext: ${first.contentEquals(second)}")
+          println(open(key, first, "order:A-1041".toByteArray()).decodeToString())
+
+          val tampered = first.copyOf().also { it[20] = (it[20].toInt() xor 1).toByte() }
+          val attempts = listOf(Triple("tampered", tampered, "order:A-1041"), Triple("moved", first, "order:A-9"))
+          for ((label, blob, aad) in attempts) {
+              try {
+                  open(key, blob, aad.toByteArray())
+              } catch (e: AEADBadTagException) {
+                  println("$label: rejected")
+              }
+          }
+          val digest = MessageDigest.getInstance("SHA-256").digest("receipt-A-1041".toByteArray())
+          println(HexFormat.of().formatHex(digest))                         // a fingerprint, not a password hash
+      }
+    expected: |-
+      same plaintext, same ciphertext: false
+      card ending 4242, expires 09/29
+      tampered: rejected
+      moved: rejected
+      bf60b7894390b98acfbd6b962af2284eb844dddbb7c24b5e1a39c1ce4abbd91f
+    validation:
+      status: ran
+      toolchain: kotlinc 2.4.21, JVM 21.0.12.1
+      date: "2026-11-16"
+  - id: hmac-webhook
+    kind: code
+    title: "HMAC: verify a webhook on your server"
+    note: "Sign the timestamp with the body, accept ±5 minutes of clock difference, compare in constant time, take the event id from the signed body, remember it only for the window, and answer `false` to a malformed header."
+    prerequisites:
+      - "A Kotlin 2.x compiler (`kotlinc`), JDK 17 or later, `kotlinx-serialization-core-jvm-1.13.0.jar` and `kotlinx-serialization-json-jvm-1.13.0.jar` (only `JsonObject`, so no plugin)"
+      - "Save as `main.kt`; run `kotlinc -cp <the two jars> main.kt -d out && kotlin -cp out:<the two jars> MainKt` — this runs on your backend; an app never holds the webhook secret"
+    code: |-
+      import java.security.MessageDigest
+      import java.time.Instant
+      import java.util.HexFormat
+      import javax.crypto.Mac
+      import javax.crypto.spec.SecretKeySpec
+      import kotlinx.serialization.json.*
+
+      fun hmacSha256(secret: ByteArray, message: String): ByteArray =
+          Mac.getInstance("HmacSHA256").apply { init(SecretKeySpec(secret, "HmacSHA256")) }
+              .doFinal(message.toByteArray())
+
+      class WebhookVerifier(private val secret: ByteArray, private val window: Long = 300) {
+          private val seen = HashMap<String, Long>()          // id → its timestamp; in a fleet: Redis SET NX EX
+          val remembered get() = seen.size
+
+          /** `header` is `t=<unix seconds>,v1=<hex HMAC of "t.body">`; the id is read from the signed body. */
+          fun accept(header: String, body: String, now: Instant): Boolean {
+              val fields = header.split(',').associate { it.substringBefore('=') to it.substringAfter('=') }
+              val t = fields["t"]?.toLongOrNull() ?: return false
+              if (now.epochSecond - t !in -window..window) return false           // ±5 min of clock difference
+              val received = runCatching { HexFormat.of().parseHex(fields["v1"].orEmpty()) }.getOrNull()
+              if (received == null || !MessageDigest.isEqual(hmacSha256(secret, "$t.$body"), received)) return false
+              val id = runCatching { Json.parseToJsonElement(body).jsonObject["id"]?.jsonPrimitive?.content }
+              seen.values.removeIf { now.epochSecond - it > window }   // too old to pass the time check again
+              return id.getOrNull()?.let { seen.putIfAbsent(it, t) == null } ?: false   // a replay is dropped
+          }
+      }
+
+      fun main() {
+          val secret = "whsec_test_only".toByteArray()                // a test value; real ones live in a vault
+          val now = Instant.parse("2026-11-16T10:00:00Z")
+          val verifier = WebhookVerifier(secret)
+          fun event(id: String) = """{"id":"$id","orderId":"A-1041","status":"paid"}"""
+          fun sign(body: String, t: Long) = "t=$t,v1=${HexFormat.of().formatHex(hmacSha256(secret, "$t.$body"))}"
+          fun deliver(id: String, at: Instant, signedAt: Long = at.epochSecond, sentId: String = id) =
+              verifier.accept(sign(event(id), signedAt), event(sentId), at)  // sentId ≠ id: the body was edited
+
+          println("genuine: ${deliver("evt_81", now)}")
+          println("replayed 2 min later: ${deliver("evt_81", now.plusSeconds(120), signedAt = now.epochSecond)}")
+          println("same request, id changed to evt_99: ${deliver("evt_81", now, sentId = "evt_99")}")
+          println("sender clock 5 s ahead: ${deliver("evt_82", now, signedAt = now.epochSecond + 5)}")
+          println("malformed signature: ${verifier.accept("t=${now.epochSecond},v1=xyz", event("evt_83"), now)}")
+          println("ids remembered: ${verifier.remembered}")
+          println("7 min later: ${deliver("evt_90", now.plusSeconds(420))}, ids remembered: ${verifier.remembered}")
+      }
+    expected: |-
+      genuine: true
+      replayed 2 min later: false
+      same request, id changed to evt_99: false
+      sender clock 5 s ahead: true
+      malformed signature: false
+      ids remembered: 2
+      7 min later: true, ids remembered: 1
+    validation:
+      status: ran
+      toolchain: kotlinc 2.4.21, JVM 21.0.12.1, kotlinx-serialization-json 1.13.0
+      date: "2026-11-16"
+  - id: keystore-token-store
+    kind: code
+    title: A Keystore-backed key for tokens, stored in DataStore
+    note: "What replaces `EncryptedSharedPreferences`: an AES-GCM key that lives in the Keystore, and only the IV and ciphertext in DataStore."
+    applies:
+      platforms: [android]
+      runtime: an Android app (API 23+) with DataStore
+      requires: [androidx.datastore:datastore-preferences, kotlinx-coroutines-android]
+      versions: { kotlin: ">=2.4", datastore: "1.1.1", android: "API 23+" }
+    sources:
+      - title: Android Keystore system — Android Developers
+        url: https://developer.android.com/privacy-and-security/keystore
+      - title: DataStore — Android Developers
+        url: https://developer.android.com/topic/libraries/architecture/datastore
+      - title: Security release notes (security-crypto deprecation) — Android Developers
+        url: https://developer.android.com/jetpack/androidx/releases/security
+    prerequisites:
+      - "An Android project with `androidx.datastore:datastore-preferences` 1.1.1; exclude `datastore/session.preferences_pb` in `dataExtractionRules` (the restored ciphertext is useless without the key anyway)"
+      - "`setUnlockedDeviceRequired(true)` (API 28+) makes the key unusable while the device is locked: drop it if WorkManager or FCM code must read the token on a locked device"
+      - "Construct `TokenVault(applicationContext)` once (e.g. in your DI graph); call it from a coroutine"
+    code: |-
+      private val Context.sessionStore by preferencesDataStore(name = "session")
+      private val REFRESH_TOKEN = stringPreferencesKey("refresh_token")
+
+      sealed interface StoredToken {
+          data class Present(val value: String) : StoredToken
+          data object Locked : StoredToken                        // device locked: try again after unlock
+          data object Gone : StoredToken                          // none, key lost or data altered: sign in again
+      }
+
+      class TokenVault(private val context: Context) {
+          private val alias = "session-token-key"
+          private val keyguard = context.getSystemService(KeyguardManager::class.java)
+
+          @Synchronized private fun key(): SecretKey {                // one key, even for two first callers
+              val keyStore = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
+              (keyStore.getKey(alias, null) as? SecretKey)?.let { return it }
+              val purposes = KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT
+              val spec = KeyGenParameterSpec.Builder(alias, purposes)
+                  .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
+                  .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
+                  .setKeySize(256)
+                  .apply { if (Build.VERSION.SDK_INT >= 28) setUnlockedDeviceRequired(true) }   // locked: unusable
+                  .build()                                      // setIsStrongBoxBacked(true) where StrongBox exists
+              return KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, "AndroidKeyStore")
+                  .apply { init(spec) }.generateKey()
+          }
+
+          suspend fun save(refreshToken: String) = withContext(Dispatchers.IO) {
+              val cipher = Cipher.getInstance("AES/GCM/NoPadding").apply { init(Cipher.ENCRYPT_MODE, key()) }
+              val sealed = cipher.iv + cipher.doFinal(refreshToken.toByteArray())
+              context.sessionStore.edit { it[REFRESH_TOKEN] = Base64.encodeToString(sealed, Base64.NO_WRAP) }
+          }
+
+          suspend fun load(): StoredToken = withContext(Dispatchers.IO) {
+              val stored = context.sessionStore.data.first()[REFRESH_TOKEN] ?: return@withContext StoredToken.Gone
+              if (keyguard.isDeviceLocked) return@withContext StoredToken.Locked   // the key refuses to work now
+              val sealed = Base64.decode(stored, Base64.NO_WRAP)
+              runCatching {
+                  val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+                  cipher.init(Cipher.DECRYPT_MODE, key(), GCMParameterSpec(128, sealed, 0, 12))
+                  StoredToken.Present(cipher.doFinal(sealed, 12, sealed.size - 12).decodeToString())
+              }.getOrDefault(StoredToken.Gone)
+          }
+
+          suspend fun clear() = context.sessionStore.edit { it.remove(REFRESH_TOKEN) }   // on sign-out
+      }
+    expected: "The refresh token survives app restarts as ciphertext in DataStore; `load()` answers `Locked` while the device is locked and `Gone` when the key or data is lost, and copying the DataStore file to another device yields nothing, because the key cannot leave this device's Keystore."
+    validation:
+      status: excerpt
+      host: an Android app (needs the Android SDK, AndroidKeyStore and DataStore)
+  - id: biometric-crypto
+    kind: code
+    title: BiometricPrompt bound to a Keystore key
+    note: "Pass a `CryptoObject`, so the biometric unlocks a key that signs a server challenge — and handle the key being invalidated by a new fingerprint."
+    applies:
+      platforms: [android]
+      runtime: an Android app with androidx.biometric
+      requires: [androidx.biometric, androidx.fragment]
+      versions: { kotlin: ">=2.4", biometric: "1.1.0", android: "API 30+ for setUserAuthenticationParameters" }
+    sources:
+      - title: Show a biometric authentication dialog — Android Developers
+        url: https://developer.android.com/identity/sign-in/biometric-auth
+      - title: KeyPermanentlyInvalidatedException — Android API reference
+        url: https://developer.android.com/reference/android/security/keystore/KeyPermanentlyInvalidatedException
+    prerequisites:
+      - "An Android project with `androidx.biometric:biometric` 1.1.0 and `androidx.fragment`; call from a `FragmentActivity`"
+      - "Enrol only when `BiometricManager.from(context).canAuthenticate(BIOMETRIC_STRONG) == BIOMETRIC_SUCCESS`, then send `createApprovalKey()`'s public key to your server; `challenge` is a one-time value from the server, so a captured signature cannot be replayed"
+    code: |-
+      private const val ALIAS = "payment-approval-key"
+
+      fun createApprovalKey(): PublicKey {                    // once, at enrolment
+          val spec = KeyGenParameterSpec.Builder(ALIAS, KeyProperties.PURPOSE_SIGN)
+              .setAlgorithmParameterSpec(ECGenParameterSpec("secp256r1"))
+              .setDigests(KeyProperties.DIGEST_SHA256)
+              .setUserAuthenticationRequired(true)
+              .setUserAuthenticationParameters(0, KeyProperties.AUTH_BIOMETRIC_STRONG)   // 0: every use needs auth
+              .setInvalidatedByBiometricEnrollment(true)      // a newly added fingerprint invalidates the key
+              .build()
+          val generator = KeyPairGenerator.getInstance(KeyProperties.KEY_ALGORITHM_EC, "AndroidKeyStore")
+          return generator.apply { initialize(spec) }.generateKeyPair().public
+      }
+
+      fun FragmentActivity.approve(challenge: ByteArray, onSigned: (ByteArray) -> Unit, onReEnrol: () -> Unit) {
+          val keyStore = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
+          val privateKey = keyStore.getKey(ALIAS, null) as? PrivateKey ?: return onReEnrol()   // never enrolled
+          val signature = try {
+              Signature.getInstance("SHA256withECDSA").apply { initSign(privateKey) }
+          } catch (e: KeyPermanentlyInvalidatedException) {   // biometrics changed since enrolment
+              keyStore.deleteEntry(ALIAS)
+              return onReEnrol()                              // confirm with the password, then enrol again
+          }
+          val callback = object : BiometricPrompt.AuthenticationCallback() {
+              override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
+                  val unlocked = result.cryptoObject?.signature ?: return
+                  unlocked.update(challenge)
+                  onSigned(unlocked.sign())                   // the server verifies with the enrolled public key
+              }
+              override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
+                  // cancelled or locked out: offer the password flow instead
+              }
+          }
+          val info = BiometricPrompt.PromptInfo.Builder()
+              .setTitle("Approve €25.98 to Example Shop")
+              .setAllowedAuthenticators(BiometricManager.Authenticators.BIOMETRIC_STRONG)
+              .setNegativeButtonText("Cancel")
+              .build()
+          BiometricPrompt(this, ContextCompat.getMainExecutor(this), callback)
+              .authenticate(info, BiometricPrompt.CryptoObject(signature))
+      }
+    expected: The system biometric sheet appears; only after a Class 3 biometric match does the Keystore sign the server's challenge. After the user adds a fingerprint, the key is deleted and the user is sent through re-enrolment instead of the app crashing.
+    validation:
+      status: excerpt
+      host: an Android app on a device with a Class 3 biometric enrolled (needs the Android SDK and androidx.biometric)
+  - id: passkeys
+    kind: code
+    title: Passkeys with Credential Manager, in outline
+    note: "Your server issues a WebAuthn challenge as JSON; Credential Manager shows the system sheet and returns the signed response for the server to verify."
+    applies:
+      platforms: [android]
+      runtime: an Android app (API 28+ for passkeys) with Credential Manager
+      requires: [androidx.credentials, androidx.credentials:credentials-play-services-auth]
+      versions: { kotlin: ">=2.4", credentials: "1.5.0 – 1.6.0", android: "API 28+" }
+    sources:
+      - title: Create passkeys — Android Developers
+        url: https://developer.android.com/identity/passkeys/create-passkeys
+      - title: Sign in with passkeys — Android Developers
+        url: https://developer.android.com/identity/passkeys/sign-in-with-passkeys
+    prerequisites:
+      - "`androidx.credentials:credentials` and `credentials-play-services-auth` 1.6.0, and Digital Asset Links linking your app to the relying-party domain (`/.well-known/assetlinks.json`)"
+      - "`authApi` is your backend: it creates the WebAuthn options (with a fresh challenge) and verifies the responses"
+    code: |-
+      class PasskeyAuth(private val credentials: CredentialManager, private val authApi: AuthApi) {
+
+          suspend fun register(activity: Activity): Boolean {
+              val options = authApi.registrationOptions()        // JSON: challenge, rp, user, pubKeyCredParams
+              return try {
+                  val request = CreatePublicKeyCredentialRequest(requestJson = options)
+                  val response = credentials.createCredential(activity, request)
+                      as CreatePublicKeyCredentialResponse
+                  authApi.finishRegistration(response.registrationResponseJson)   // the server keeps the public key
+              } catch (e: CreateCredentialCancellationException) {
+                  false                                          // the user said no: not an error
+              } catch (e: CreateCredentialException) {           // e.g. a Digital Asset Links mismatch
+                  Log.w("Passkeys", "create failed: ${e.type} ${e.errorMessage}")
+                  false
+              }
+          }
+
+          suspend fun signIn(activity: Activity): Session? {
+              val request = GetCredentialRequest(listOf(
+                  GetPublicKeyCredentialOption(requestJson = authApi.signInOptions()),   // challenge, rpId
+                  GetPasswordOption(),                           // password users still see their account
+              ))
+              return try {
+                  when (val credential = credentials.getCredential(activity, request).credential) {
+                      is PublicKeyCredential -> authApi.verifyAssertion(credential.authenticationResponseJson)
+                      is PasswordCredential -> authApi.passwordSignIn(credential.id, credential.password)
+                      else -> null
+                  }
+              } catch (e: NoCredentialException) {
+                  null                                           // offer registration instead
+              } catch (e: GetCredentialException) {
+                  Log.w("Passkeys", "sign-in failed: ${e.type} ${e.errorMessage}")
+                  null
+              }
+          }
+      }
+    expected: "`register` shows the system sheet and creates a passkey in the user's provider (Google Password Manager by default); `signIn` returns a session after the server verifies the signed assertion, and configuration errors are logged by type instead of looking like a refusal."
+    validation:
+      status: excerpt
+      host: an Android app (API 28+) with Credential Manager, Google Play services and Digital Asset Links set up
+  - id: network-security-pinning
+    kind: code
+    title: Network security config and certificate pinning
+    note: "Block cleartext app-wide, trust user CAs only in debug, and pin only if you can ship a backup pin and an expiry — a wrong pin bricks the app."
+    applies:
+      platforms: [android]
+      runtime: an Android app with OkHttp
+      requires: [okhttp]
+      versions: { kotlin: ">=2.4", okhttp: "5.5.1", android: "API 24+" }
+    sources:
+      - title: Network security configuration — Android Developers
+        url: https://developer.android.com/privacy-and-security/security-config
+      - title: HTTPS and certificate pinning — OkHttp
+        url: https://lysine.dev/okhttp/features/https/
+    prerequisites:
+      - "`res/xml/network_security_config.xml` (shown in the comment) referenced from `<application android:networkSecurityConfig=\"@xml/network_security_config\">`"
+      - "Pins are base64 SHA-256 hashes of the SubjectPublicKeyInfo of your leaf or intermediate key **and** a backup key"
+    code: |-
+      // res/xml/network_security_config.xml
+      // <network-security-config>
+      //   <base-config cleartextTrafficPermitted="false" />
+      //   <domain-config>
+      //     <domain includeSubdomains="true">api.example.com</domain>
+      //     <pin-set expiration="2027-06-30">                  <!-- after this date, pinning is off, not broken -->
+      //       <pin digest="SHA-256">7HIpactkIAq2Y49orFOOQKurWxmmSFZhBCoQYcRhJ3Y=</pin>
+      //       <pin digest="SHA-256">fwza0LRMXouZHRC8Ei+4PyuldPDcf3UKgO/04cDM1oE=</pin>   <!-- backup key -->
+      //     </pin-set>
+      //   </domain-config>
+      //   <debug-overrides><trust-anchors><certificates src="user" /></trust-anchors></debug-overrides>
+      // </network-security-config>
+
+      // The same pins in OkHttp, when the config file is not enough (e.g. pins fetched per tenant):
+      val pinnedClient = OkHttpClient.Builder()
+          .certificatePinner(
+              CertificatePinner.Builder()
+                  .add("api.example.com", "sha256/7HIpactkIAq2Y49orFOOQKurWxmmSFZhBCoQYcRhJ3Y=")
+                  .add("api.example.com", "sha256/fwza0LRMXouZHRC8Ei+4PyuldPDcf3UKgO/04cDM1oE=")
+                  .build(),
+          )
+          .build()
+      // A mismatch fails the call with SSLPeerUnverifiedException — report it, never "retry without pinning".
+    expected: "Plain `http://` requests fail with `UnknownServiceException`; a TLS connection to `api.example.com` whose chain does not contain a pinned key fails with `SSLPeerUnverifiedException`."
+    validation:
+      status: excerpt
+      host: an Android app (needs the Android SDK; the pins must be your own keys' hashes)
+  - id: webview-and-intents
+    kind: code
+    title: WebView and deep-link input are untrusted
+    note: "A deep link or an extra is input from any app on the device: parse it against an allow-list, and keep the WebView on your own origin."
+    applies:
+      platforms: [android]
+      runtime: an Android app with androidx.webkit
+      requires: [androidx.webkit]
+      versions: { kotlin: ">=2.4", webkit: "1.15.0", android: "API 24+" }
+    sources:
+      - title: WebView — native bridges — Android Developers
+        url: https://developer.android.com/privacy-and-security/risks/insecure-webview-native-bridges
+      - title: Unsafe use of deep links — Android Developers
+        url: https://developer.android.com/privacy-and-security/risks/unsafe-use-of-deeplinks
+    prerequisites:
+      - "An Android project with `androidx.webkit:webkit` 1.15.0; an `<intent-filter android:autoVerify=\"true\">` for `https://shop.example.com/orders/*` (App Links)"
+      - "`openOrder(id)` navigates inside the app; `HelpActivity` hosts the WebView"
+    code: |-
+      private val ORDER_ID = Regex("^A-\\d{4,10}$")
+      private const val ASSETS_HOST = "appassets.androidplatform.net"     // WebViewAssetLoader's default origin
+
+      /** Deep link: https://shop.example.com/orders/A-1041 — validate the shape, never forward raw input. */
+      fun handleDeepLink(intent: Intent, openOrder: (String) -> Unit) {
+          val uri = intent.data ?: return
+          if (uri.scheme != "https" || uri.host != "shop.example.com") return
+          val id = uri.pathSegments.takeIf { it.size == 2 && it[0] == "orders" }?.get(1) ?: return
+          if (ORDER_ID.matches(id)) openOrder(id)               // a typed id, not a URL or a file path
+      }
+
+      class HelpActivity : AppCompatActivity() {
+          override fun onCreate(savedInstanceState: Bundle?) {
+              super.onCreate(savedInstanceState)
+              val assets = WebViewAssetLoader.Builder()         // serves the bundled pages over https
+                  .addPathHandler("/assets/", WebViewAssetLoader.AssetsPathHandler(this)).build()
+              val web = WebView(this).apply {
+                  settings.javaScriptEnabled = true             // only because our own help pages need it
+                  settings.allowFileAccess = false
+                  settings.allowContentAccess = false
+                  webViewClient = object : WebViewClientCompat() {
+                      override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest) =
+                          assets.shouldInterceptRequest(request.url)
+                      override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
+                          val url = request.url
+                          if (url.scheme == "https" && url.host == ASSETS_HOST) return false
+                          if (url.scheme == "https") runCatching { startActivity(Intent(Intent.ACTION_VIEW, url)) }
+                          return true                           // intent:, tel:, custom schemes: dropped
+                      }
+                  }
+              }
+              setContentView(web)
+              web.loadUrl("https://$ASSETS_HOST/assets/help/index.html")
+          }
+      }
+    expected: A link to `A-1041` opens that order; `../../files`, `javascript:` or foreign hosts are ignored, the help WebView never navigates off the bundled pages, and only `https` links leave for the browser.
+    validation:
+      status: excerpt
+      host: an Android app with androidx.webkit (needs the Android SDK)
+  - id: security-privacy-rules
+    kind: rules
+    title: Security and privacy rules
+    note: The things reviewers and the Play Console will ask about.
+    items:
+      - tone: bad
+        text: "Disabling certificate or hostname checks — a trust-all `X509TrustManager`, a `HostnameVerifier` that returns `true`, `handler.proceed()` in `onReceivedSslError`. Test against a debug CA in `debug-overrides` instead; Google Play rejects apps that ship these."
+      - tone: bad
+        text: "Exposing native code to web content with `addJavascriptInterface` on a page you do not control — use `WebViewCompat.addWebMessageListener` with an origin allow-list."
+      - tone: bad
+        text: "Logging tokens, passwords, full card numbers, email addresses or request bodies with `Log.d` — Logcat is readable over `adb` and ends up in bug reports. Log ids and outcomes; strip debug logs in release with R8 rules or a no-op logger."
+      - tone: bad
+        text: "Treating R8 obfuscation as a security control — it renames classes, it does not hide strings, keys or endpoints. Anything shipped in the APK is readable."
+      - tone: good
+        text: "Refresh with `grant_type=refresh_token` and expect rotation: store the new refresh token at once, and treat `invalid_grant` — which a replayed old token also gets — as signed out (see the networking sheet's Ktor and single-flight cards)."
+      - tone: bad
+        text: "Signing in through an embedded WebView — the app can read the password. Use a Custom Tab (AppAuth does this) or Credential Manager; the redirect returns via an App Link or a private scheme."
+      - tone: bad
+        text: "Building SQL with string templates — use Room's `@Query` parameters or `?` bind arguments; SQL injection works on-device too."
+      - tone: bad
+        text: "Exporting components by accident: set `android:exported=\"false\"` unless another app must start it, and create `PendingIntent`s with `FLAG_IMMUTABLE`."
+      - tone: good
+        text: "Ask for runtime permissions in context, at the moment of use, and handle denial; prefer permission-less APIs (the photo picker instead of `READ_MEDIA_IMAGES`, coarse instead of fine location)."
+      - tone: good
+        text: "Consent: no analytics, ads or crash-report personal data before the user agrees where the law requires it, and withdrawing consent stops collection at once."
+      - tone: good
+        text: "Data minimisation: collect only what a feature needs, keep it only as long as needed, exclude it from backups, and declare it truthfully in the Play Data safety form."
+      - tone: good
+        text: "A fresh random nonce for every AES-GCM encryption; random values from `SecureRandom`, never `kotlin.random.Random`; compare MACs with `MessageDigest.isEqual`."
+      - tone: neutral
+        text: "Hash passwords only on the server, with a slow KDF (Argon2id, scrypt, or PBKDF2 with a high iteration count) — a client-side hash just becomes the password."

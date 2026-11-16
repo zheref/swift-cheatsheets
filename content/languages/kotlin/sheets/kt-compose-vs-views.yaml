@@ -1,0 +1,336 @@
+id: kt-compose-vs-views
+concept: ui.declarative-vs-imperative
+scope: platform
+title: "Compose vs Views"
+group: Android
+subtitle: Translate any View-system answer into Compose and back — the concept map, one screen both ways, interop in both directions, themes and state across the boundary, and a migration plan.
+applies:
+  platforms: [android]
+  runtime: an Android app mixing the View system and Jetpack Compose
+  requires: [Jetpack Compose, androidx.fragment, androidx.recyclerview, androidx.lifecycle]
+  versions: { kotlin: ">=2.0.20", compose-bom: ">=2024.09.00", fragment: ">=1.8", recyclerview: ">=1.3", lifecycle: ">=2.8", navigation: ">=2.8.0", android: "API 21+ at these minimums (Compose 1.10+ and Core 1.19 need 23, Navigation 2.10+ needs 24)" }
+sources:
+  - title: Migration strategy — Android Developers
+    url: https://developer.android.com/develop/ui/compose/migrate/strategy
+  - title: Using Views in Compose — Android Developers
+    url: https://developer.android.com/develop/ui/compose/migrate/interoperability-apis/views-in-compose
+  - title: Using Compose in Views — Android Developers
+    url: https://developer.android.com/develop/ui/compose/migrate/interoperability-apis/compose-in-views
+cards:
+  - id: concept-mapping
+    kind: table
+    title: Concept mapping
+    note: The View-system term on the left, what plays its role in Compose on the right.
+    headers: [Views, Compose, Note]
+    rows:
+      - ["`View` subclass", "`@Composable` function", "no object to hold or mutate; call it again with new arguments"]
+      - ["`LinearLayout` / `FrameLayout` / `ConstraintLayout`", "`Column`, `Row` / `Box` / `ConstraintLayout` (constraintlayout-compose)", "nesting is cheap: one measure pass per node"]
+      - ["XML layout + inflation", "Kotlin code in the composable", "previews with `@Preview`"]
+      - ["`LayoutParams`, margins, `layout_weight`", "`Modifier` — `padding`, `size`, `weight`", "there is no margin: padding on the outside of the chain"]
+      - ["`findViewById` / View Binding", "nothing: values are parameters", "no references to keep or null out"]
+      - ["`RecyclerView` + `Adapter` + `ViewHolder`", "`LazyColumn` / `LazyVerticalGrid` + `items(key = …)`", "composition reuse replaces view-holder recycling"]
+      - ["`DiffUtil` + `submitList`", "new state → recomposition, matched by `key`", "unchanged rows are skipped"]
+      - ["`setOnClickListener`, `TextWatcher`", "`onClick` lambda, `value` + `onValueChange`", "events up, state down"]
+      - ["`Fragment` as a screen", "screen-level composable + navigation destination", "`AndroidFragment` embeds one during migration"]
+      - ["XML nav graph + Safe Args", "`NavHost` + `@Serializable` routes", "the same routes work in the Fragment Kotlin DSL"]
+      - ["`onSaveInstanceState`", "`rememberSaveable`", "both survive rotation and process death; a ViewModel survives rotation only — use `SavedStateHandle` for what must outlive the process"]
+      - ["lifecycle callbacks", "`LifecycleEventEffect`, `DisposableEffect`, `collectAsStateWithLifecycle`", "—"]
+      - ["`themes.xml`, `?attr/colorPrimary`", "`MaterialTheme.colorScheme.primary`", "two sources of truth until the XML theme is gone"]
+      - ["custom `View.onDraw`", "`Canvas { }` / `Modifier.drawBehind { }`", "—"]
+      - ["`ObjectAnimator`, `ViewPropertyAnimator`", "`animate*AsState`, `Animatable`, `AnimatedVisibility`", "—"]
+      - ["`requestLayout()` / `invalidate()`", "state read in layout / draw (lambda modifiers)", "Compose re-runs only the phase that read the state"]
+  - id: a-list-screen-both-ways
+    kind: compare
+    title: A list screen, both ways
+    note: Same `OrdersViewModel`, same `StateFlow`, same routes — only the UI layer differs.
+    prerequisites:
+      - "Views: `OrdersAdapter` (a `ListAdapter` with a `DiffUtil.ItemCallback`) and Navigation 2.8+ with the `OrderDetail` route; Compose: the Compose BOM, `lifecycle-viewmodel-compose`, `lifecycle-runtime-compose` and an `OrderRow` composable"
+      - "An `OrdersViewModel` exposing `state: StateFlow<OrdersUiState>` with a `visible: List<Order>`"
+    columns:
+      - label: Views (Fragment + RecyclerView)
+        tone: legacy
+        code: |-
+          class OrdersFragment : Fragment() {
+              private val viewModel: OrdersViewModel by viewModels()
+
+              override fun onCreateView(inflater: LayoutInflater, container: ViewGroup?, saved: Bundle?): View =
+                  RecyclerView(requireContext()).apply {
+                      layoutManager = LinearLayoutManager(context)
+                      clipToPadding = false                           // rows scroll under the navigation bar
+                      ViewCompat.setOnApplyWindowInsetsListener(this) { list, insets ->
+                          val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars())   // all sides
+                          list.updatePadding(left = bars.left, right = bars.right, bottom = bars.bottom)
+                          insets
+                      }
+                  }
+
+              override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
+                  super.onViewCreated(view, savedInstanceState)
+                  val adapter = OrdersAdapter(onOpen = { id -> findNavController().navigate(OrderDetail(id)) })
+                  (view as RecyclerView).adapter = adapter
+                  viewLifecycleOwner.lifecycleScope.launch {
+                      viewLifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
+                          viewModel.state.collect { adapter.submitList(it.visible) }
+                      }
+                  }
+              }
+          }
+          // plus OrdersAdapter, its ViewHolder and DiffUtil.ItemCallback: about 40 more lines
+      - label: Compose (screen composable)
+        tone: modern
+        code: |-
+          @Composable
+          fun OrdersScreen(onOpen: (String) -> Unit, viewModel: OrdersViewModel = viewModel()) {
+              val state by viewModel.state.collectAsStateWithLifecycle()
+              LazyColumn(contentPadding = WindowInsets.navigationBars.asPaddingValues()) {   // last row clears the bar
+                  items(state.visible, key = { it.id }) { order ->
+                      OrderRow(order, onClick = { onOpen(order.id) })
+                  }
+              }
+          }
+
+          // In the NavHost:
+          // composable<Orders> { OrdersScreen(onOpen = { navController.navigate(OrderDetail(it)) }) }
+    expected: Both show the visible orders with the last row clear of the navigation bar, update only the rows that changed, stop collecting while the screen is stopped, and open the detail screen on tap.
+    validation: &excerpt
+      status: excerpt
+      host: an Android app with the View system and Jetpack Compose (needs the Android SDK and the Compose compiler plugin)
+  - id: shared-contract
+    kind: code
+    title: The contract both toolkits share — state, actions and stable ids
+    note: "Keep the reducer and the ids when you migrate: `DiffUtil` and a keyed `LazyColumn` work out the same changes from them."
+    applies:
+      platforms: [jvm, android]
+      runtime: Kotlin/JVM
+      versions: { kotlin: ">=2.0", jvm: ">=17" }
+    prerequisites:
+      - A Kotlin 2.x compiler (`kotlinc`) and JDK 17 or later
+      - "Save as `main.kt`; run `kotlinc main.kt -include-runtime -d main.jar && java -jar main.jar`"
+    code: |-
+      enum class Status { Pending, Shipped }
+
+      data class Order(val id: String, val customer: String, val status: Status)
+
+      data class OrdersUiState(val query: String = "", val orders: List<Order> = emptyList()) {
+          val visible: List<Order> get() = orders.filter { it.customer.contains(query, ignoreCase = true) }
+      }
+
+      sealed interface OrdersAction {
+          data class Loaded(val orders: List<Order>) : OrdersAction
+          data class StatusChanged(val id: String, val status: Status) : OrdersAction
+          data class QueryChanged(val query: String) : OrdersAction
+      }
+
+      fun reduce(state: OrdersUiState, action: OrdersAction): OrdersUiState = when (action) {
+          is OrdersAction.Loaded -> state.copy(orders = action.orders)
+          is OrdersAction.StatusChanged -> state.copy(
+              orders = state.orders.map { if (it.id == action.id) it.copy(status = action.status) else it },
+          )
+          is OrdersAction.QueryChanged -> state.copy(query = action.query)
+      }
+
+      /** What areItemsTheSame (same id) and areContentsTheSame (equal) — or a keyed LazyColumn — conclude. */
+      fun changes(old: List<Order>, new: List<Order>): String {
+          val before = old.associateBy { it.id }
+          val inserted = new.filter { it.id !in before }.map { it.id }
+          val removed = old.map { it.id } - new.map { it.id }.toSet()
+          val changed = new.filter { order -> before[order.id]?.let { it != order } == true }.map { it.id }
+          return "inserted=$inserted removed=$removed changed=$changed"
+      }
+
+      fun main() {
+          val orders = listOf(Order("1041", "Ada", Status.Pending), Order("1042", "Grace", Status.Pending),
+              Order("1043", "Adele", Status.Shipped))
+          var state = OrdersUiState()
+          listOf(
+              OrdersAction.Loaded(orders),
+              OrdersAction.StatusChanged("1042", Status.Shipped),
+              OrdersAction.QueryChanged("ad"),
+          ).forEach { action ->
+              val next = reduce(state, action)
+              println("${action::class.simpleName}: ${changes(state.visible, next.visible)}")
+              state = next
+          }
+      }
+    expected: |-
+      Loaded: inserted=[1041, 1042, 1043] removed=[] changed=[]
+      StatusChanged: inserted=[] removed=[] changed=[1042]
+      QueryChanged: inserted=[] removed=[1042] changed=[]
+    validation:
+      status: ran
+      toolchain: kotlinc 2.4.21, JVM 21.0.12.1
+      date: "2026-11-16"
+  - id: views-in-compose
+    kind: code
+    title: A View inside Compose — AndroidView
+    note: "`factory` creates the View once; `update` pushes Compose state into it after each recomposition that changed what it reads; `onReset` enables reuse in lazy lists."
+    prerequisites: &interop
+      - "A project with both the View system and the Compose BOM; `OrderProgressView` is a custom `View` with a `step` property (see kt-android-views), and `Order` carries `id` and `step`"
+      - "Call the composables from `setContent { }` or a `ComposeView`"
+    code: |-
+      @Composable
+      fun OrderProgress(step: Int, onClick: () -> Unit, modifier: Modifier = Modifier) {
+          AndroidView(
+              factory = { context -> OrderProgressView(context) },  // once: build the View here, never in remember
+              modifier = modifier.fillMaxWidth(),
+              update = { view ->
+                  view.step = step                                   // Compose → View
+                  view.setOnClickListener { onClick() }              // View → Compose, with the latest lambda
+              },
+          )
+      }
+
+      @Composable
+      fun ShipmentList(orders: List<Order>) {
+          LazyColumn {
+              items(orders, key = { it.id }) { order ->
+                  AndroidView(
+                      factory = { context -> OrderProgressView(context) },
+                      modifier = Modifier.fillMaxWidth().padding(16.dp),
+                      onReset = { view -> view.step = 0 },          // non-null: the View is reused for another row
+                      onRelease = { view -> view.setOnClickListener(null) },
+                      update = { view -> view.step = order.step },
+                  )
+              }
+          }
+      }
+    expected: The legacy progress view renders inside the composable, follows `step` as it changes, and in the list its instances are reused as rows scroll instead of being re-created.
+    validation: *excerpt
+  - id: xml-and-fragments-in-compose
+    kind: code
+    title: An XML layout or a Fragment inside Compose
+    note: "`AndroidViewBinding` (ui-viewbinding) inflates a legacy layout; `AndroidFragment` (fragment-compose 1.8+) hosts a Fragment you cannot rewrite yet."
+    prerequisites:
+      - "`implementation(\"androidx.compose.ui:ui-viewbinding\")`, `implementation(\"androidx.fragment:fragment-compose:1.8.0\")` or later, and `buildFeatures { viewBinding = true }`"
+      - "`res/layout/order_summary.xml` with views `customer`, `total` and `track_button`; an existing `CarrierMapFragment`"
+    code: |-
+      @Composable
+      fun LegacyOrderSummary(order: Order, total: String, onTrack: () -> Unit, modifier: Modifier = Modifier) {
+          AndroidViewBinding(OrderSummaryBinding::inflate, modifier = modifier.fillMaxWidth()) {
+              // `this` is the binding; the block runs again when the composable recomposes with new values
+              customer.text = order.customer
+              this.total.text = total
+              trackButton.setOnClickListener { onTrack() }
+          }
+      }
+
+      @Composable
+      fun TrackingSection(order: Order) {
+          Column {
+              Text("Live tracking", style = MaterialTheme.typography.titleMedium)
+              AndroidFragment<CarrierMapFragment>(
+                  modifier = Modifier.fillMaxWidth().height(240.dp),
+                  arguments = Bundle().apply { putString("orderId", order.id) },   // requireArguments() in it
+              )
+          }
+      }
+    expected: The XML summary and the map fragment appear inside the Compose screen; the fragment is removed when `TrackingSection` leaves the composition.
+    validation: *excerpt
+  - id: compose-in-views
+    kind: code
+    title: Compose inside Views — ComposeView and the right ViewCompositionStrategy
+    note: "In a Fragment, dispose with the view's lifecycle (`DisposeOnViewTreeLifecycleDestroyed`); in an Activity or a RecyclerView row the default is right."
+    prerequisites: *interop
+    code: |-
+      class OrderDetailFragment : Fragment() {
+          override fun onCreateView(inflater: LayoutInflater, container: ViewGroup?, saved: Bundle?): View =
+              ComposeView(requireContext()).apply {
+                  // The fragment outlives its view on the back stack: tie the composition to the view's lifecycle
+                  setViewCompositionStrategy(ViewCompositionStrategy.DisposeOnViewTreeLifecycleDestroyed)
+                  setContent {
+                      ShopTheme { OrderDetailScreen(viewModel = viewModel()) }
+                  }
+              }
+      }
+
+      // One composable inside an existing XML screen of an Activity: the default strategy is fine
+      fun showEta(binding: ActivityOrdersBinding, order: Order) {
+          binding.etaCompose.setContent { ShopTheme { DeliveryEta(order = order) } }
+      }
+
+      // As a RecyclerView row: the default, DisposeOnDetachedFromWindowOrReleasedFromPool,
+      // keeps the composition while the row is recycled and disposes it when the pool drops it
+      class EtaViewHolder(val composeView: ComposeView) : RecyclerView.ViewHolder(composeView) {
+          fun bind(order: Order) = composeView.setContent { ShopTheme { DeliveryEta(order = order) } }
+      }
+    expected: "The detail screen is a Compose screen hosted by a Fragment, so Fragment navigation keeps working; its composition is disposed when the fragment's view is destroyed, not merely detached."
+    validation: *excerpt
+  - id: theme-and-state-interop
+    kind: code
+    title: Themes and state across the boundary
+    note: "During migration both worlds read the same colour resources and the same `StateFlow`; events cross as plain lambdas."
+    prerequisites:
+      - "`res/values/colors.xml` and `res/values-night/colors.xml` defining `brand_primary`, `brand_on_primary` and `brand_surface`, used by your `Theme.Material3.DayNight` XML theme"
+      - "The Compose BOM with `material3` and `lifecycle-runtime-compose`; an `OrdersViewModel` whose state has a `filter`, an `onFilter` function, and a `StatusFilterChips` composable"
+    code: |-
+      // One palette for both: the XML theme and the Compose theme read the same colour resources,
+      // and colorResource resolves values-night/ exactly as the View system does
+      @Composable
+      fun ShopTheme(content: @Composable () -> Unit) {
+          val base = if (isSystemInDarkTheme()) darkColorScheme() else lightColorScheme()
+          val colors = base.copy(
+              primary = colorResource(R.color.brand_primary),
+              onPrimary = colorResource(R.color.brand_on_primary),
+              surface = colorResource(R.color.brand_surface),
+          )
+          MaterialTheme(colorScheme = colors, content = content)
+      }
+
+      class OrdersFragment : Fragment(R.layout.fragment_orders) {
+          private val viewModel: OrdersViewModel by viewModels()
+
+          override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
+              super.onViewCreated(view, savedInstanceState)
+              val binding = FragmentOrdersBinding.bind(view)
+              val strategy = ViewCompositionStrategy.DisposeOnViewTreeLifecycleDestroyed
+              binding.filters.setViewCompositionStrategy(strategy)
+              binding.filters.setContent {
+                  val state by viewModel.state.collectAsStateWithLifecycle()   // state in: the same StateFlow
+                  ShopTheme {
+                      StatusFilterChips(selected = state.filter, onSelect = viewModel::onFilter)   // events out
+                  }
+              }
+              // The RecyclerView below still collects the same viewModel.state with repeatOnLifecycle
+          }
+      }
+    expected: The Compose filter chips and the XML list share one colour palette in light and dark mode, and choosing a chip filters the RecyclerView through the shared ViewModel.
+    sources:
+      - title: Migrate XML themes to Compose — Android Developers
+        url: https://developer.android.com/develop/ui/compose/designsystems/views-to-compose
+    validation: *excerpt
+  - id: migration-plan
+    kind: table
+    title: Migrating screen by screen
+    note: The incremental path the Android docs recommend; each step ships on its own.
+    headers: [Step, What you do, Done when]
+    rows:
+      - ["1. Set up", "add the Compose BOM and the `org.jetbrains.kotlin.plugin.compose` Gradle plugin; write `ShopTheme` from the XML theme's values (Material Theme Builder helps)", "a `ComposeView` renders in brand colours in light and dark"]
+      - ["2. New screens in Compose", "a new Fragment returns a `ComposeView`; navigation stays Fragment-based", "new features no longer add XML"]
+      - ["3. A component library", "shared composables (`OrderRow`, `StatusChip`, buttons) in a design-system module", "screens stop styling components inline"]
+      - ["4. Replace existing screens, simplest first", "static screens, then lists (`RecyclerView` → `LazyColumn`), then the complex ones; bottom-up inside mixed screens", "the screen's behaviour tests pass, rewritten against Compose semantics (`createAndroidComposeRule`, `testTag`) where they matched View ids"]
+      - ["5. Keep the architecture", "ViewModels, `StateFlow`s and repositories stay; only the UI layer is rewritten", "no ViewModel changed for a UI migration"]
+      - ["6. Switch navigation", "when every destination is a composable, move from Fragment navigation to Navigation Compose (type-safe routes) or Navigation 3, reusing the `@Serializable` routes", "no Fragments left"]
+      - ["7. Remove the old world", "delete XML layouts and themes, View Binding, and AppCompat themes where nothing needs them", "one source of truth for theming"]
+  - id: interview-talking-points
+    kind: rules
+    title: Interview talking points
+    note: The distinctions worth saying out loud.
+    items:
+      - tone: modern
+        text: "Compose is **declarative**: UI is a function of state. When state changes, the functions that read it run again and Compose applies the difference."
+      - tone: legacy
+        text: "Views are **imperative**: a long-lived, mutable object tree you keep in sync by hand — setters, adapters, `notifyItem…`."
+      - tone: modern
+        text: "A composable is not an object: identity comes from its place in the call tree (and `key`); state lives in the composition through `remember`."
+      - tone: neutral
+        text: "Compose runs three phases — composition, layout, draw. Reading state only in layout or draw lambdas is the counterpart of `requestLayout()` versus `invalidate()`."
+      - tone: neutral
+        text: "Compose ships inside the app (unbundled), so fixes arrive with a library update rather than an OS update; framework Views change with the platform."
+      - tone: legacy
+        text: "Views remain where SDKs only ship Views (ad views, some maps and players, `WebView`): wrap them with `AndroidView`."
+      - tone: good
+        text: "Interop is first class in both directions, so migration is incremental and the ViewModel layer is untouched."
+      - tone: bad
+        text: "The classic interop bugs: the default `ViewCompositionStrategy` in a Fragment (state lost on detach), a strategy tied to the fragment's lifecycle instead of `viewLifecycleOwner` (the composition outlives the view), and a View created outside `AndroidView`'s `factory`."
+      - tone: neutral
+        text: "Compare performance on release builds with R8 and a Baseline Profile; a debug Compose build is not representative."

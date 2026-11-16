@@ -1,0 +1,521 @@
+id: kt-architecture
+concept: architecture.approaches
+scope: shared
+title: "Architectural Approaches"
+group: Design & practice
+subtitle: "MVVM, MVI and clean layers on Android and the JVM — a view model, a reducer, a use case, an offline-first repository, navigation and a composition root, all in plain Kotlin and run; Hilt as the one Android excerpt."
+applies:
+  platforms: [jvm, android]
+  runtime: Kotlin/JVM with kotlinx.coroutines; on Android the same classes sit behind `ViewModel` and Hilt
+  requires: [kotlinx-coroutines-core]
+  versions: { kotlin: ">=2.0", kotlinx-coroutines: ">=1.10", jvm: ">=17" }
+sources:
+  - title: Guide to app architecture — Android Developers
+    url: https://developer.android.com/topic/architecture
+  - title: Recommendations for Android architecture — Android Developers
+    url: https://developer.android.com/topic/architecture/recommendations
+  - title: Build an offline-first app — Android Developers
+    url: https://developer.android.com/topic/architecture/data-layer/offline-first
+  - title: Manual dependency injection — Android Developers
+    url: https://developer.android.com/training/dependency-injection/manual
+cards:
+  - id: approaches-compared
+    kind: table
+    title: The common approaches compared
+    note: "Name the data flow, where the logic lives and how you test it; the acronym is the least important part."
+    headers: [Approach, Data flow, Where logic lives, Testability, Best for]
+    rows:
+      - ["MVC (Activity as controller)", "view ⇄ controller ⇄ model, both ways", "the `Activity`/`Fragment`, next to the framework", "low: needs a device or Robolectric", "prototypes, a single screen"]
+      - ["MVP", "view calls presenter; presenter calls a `View` interface back", "presenter (plain Kotlin)", "high, but the interface is boilerplate and the presenter dies on rotation", "legacy View-system codebases"]
+      - ["MVVM", "view observes `StateFlow`; calls view-model functions", "view model, which survives configuration changes", "high: plain Kotlin with a fake repository", "most Compose and View apps"]
+      - ["MVI", "intents → a pure reducer → one immutable state", "the reducer; effects outside it", "very high: the reducer is a function", "complex screens, many interacting inputs"]
+      - ["Clean / hexagonal", "UI → domain ← data; dependencies point inward", "use cases and entities, free of Android", "very high", "long-lived products, shared KMP domains"]
+      - ["Google's recommended", "**UI layer** (screens + state holders) → optional **domain layer** (use cases) → **data layer** (repositories, sources); state down, events up", "view models and repositories", "high", "the default to name on Android"]
+  - id: mvvm-done-properly
+    kind: code
+    title: MVVM done properly
+    note: "The view model exposes one read-only `StateFlow` of a sealed UI state, cancels a load that a newer one supersedes, and takes its scope and repository call from outside, so it runs as plain Kotlin (on Android it extends `ViewModel` and launches in `viewModelScope`); it maps only `IOException`, so any other exception still crashes it until you wrap the call with the next card's `uiStateOf`."
+    prerequisites: &runTest
+      - "A Kotlin 2.x compiler (`kotlinc`), JDK 17 or later, and the jars `kotlinx-coroutines-core-jvm-1.10.2` and `kotlinx-coroutines-test-jvm-1.10.2`"
+      - "Save as `main.kt`; run `kotlinc -cp <both jars> main.kt -d out && kotlin -cp out:<both jars> MainKt`"
+      - "Or, in a Gradle project: `implementation(\"org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.2\")` and `testImplementation(\"org.jetbrains.kotlinx:kotlinx-coroutines-test:1.10.2\")`"
+    code: |-
+      import kotlinx.coroutines.*
+      import kotlinx.coroutines.flow.*
+      import kotlinx.coroutines.test.*
+      import java.io.IOException
+
+      sealed interface OrdersUiState {
+          data object Loading : OrdersUiState
+          data class Loaded(val orderIds: List<String>) : OrdersUiState
+          data class Failed(val message: String) : OrdersUiState
+      }
+
+      class OrdersViewModel(private val scope: CoroutineScope, private val fetchIds: suspend () -> List<String>) {
+          private val _state = MutableStateFlow<OrdersUiState>(OrdersUiState.Loading)
+          val state: StateFlow<OrdersUiState> = _state.asStateFlow()
+          private var loadJob: Job? = null
+
+          fun load() {
+              loadJob?.cancel()                                        // a newer load supersedes an older one
+              _state.value = OrdersUiState.Loading
+              loadJob = scope.launch {
+                  _state.value = try {
+                      OrdersUiState.Loaded(fetchIds())
+                  } catch (e: IOException) {                           // anything else crashes: see uiStateOf
+                      OrdersUiState.Failed("Couldn't load orders. Check your connection.")
+                  }
+              }
+          }
+      }
+
+      @OptIn(ExperimentalCoroutinesApi::class)
+      fun main() = runTest {
+          var calls = 0
+          val viewModel = OrdersViewModel(backgroundScope) {          // a fake repository call
+              val call = ++calls                                       // which call this answer belongs to
+              delay(if (call == 1) 500 else 100)                       // the first answer is slow
+              if (call == 3) throw IOException("timeout")
+              listOf("A-$call")
+          }
+          backgroundScope.launch { viewModel.state.collect { println(it) } }
+
+          for (gapMs in listOf(10L, 1_000L, 1_000L)) {                 // three refreshes: 10 ms, then 1 s apart
+              viewModel.load()
+              advanceTimeBy(gapMs)
+          }
+      }
+    expected: |-
+      Loading
+      Loaded(orderIds=[A-2])
+      Loading
+      Failed(message=Couldn't load orders. Check your connection.)
+    validation: &ranTest
+      status: ran
+      toolchain: kotlinc 2.4.21, JVM 21.0.12.1, kotlinx-coroutines-core and -test 1.10.2
+      date: "2026-11-16"
+  - id: view-model-error-policy
+    kind: code
+    title: "View-model failures: map the expected, report the rest"
+    note: "One policy shared by every view model turns offline into the screen's own message, reports every other exception, and lets `CancellationException` through, so a superseded load is never shown or reported as a failure."
+    prerequisites: &runCore
+      - A Kotlin 2.x compiler (`kotlinc`), JDK 17 or later, and `kotlinx-coroutines-core-jvm-1.10.2.jar`
+      - "Save as `main.kt`; run `kotlinc -cp kotlinx-coroutines-core-jvm-1.10.2.jar main.kt -d out && kotlin -cp out:kotlinx-coroutines-core-jvm-1.10.2.jar MainKt`"
+      - "Or, in a Gradle project: `implementation(\"org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.2\")`"
+    code: |-
+      import kotlinx.coroutines.*
+      import java.io.IOException
+
+      sealed interface UiState<out T> {
+          data object Loading : UiState<Nothing>
+          data class Loaded<T>(val value: T) : UiState<T>
+          data class Failed(val message: String) : UiState<Nothing>
+      }
+
+      data class FailureMessages(val offline: String, val unexpected: String = "Something went wrong. Try again.")
+
+      // The catch chain of model-errors (Kotlin Engineering Best Practices), ending in UI state.
+      suspend fun <T> uiStateOf(
+          messages: FailureMessages,
+          report: (Throwable) -> Unit,
+          load: suspend () -> T,
+      ): UiState<T> = try {
+          UiState.Loaded(load())
+      } catch (e: CancellationException) {
+          throw e
+      } catch (e: IOException) {
+          UiState.Failed(messages.offline)
+      } catch (e: Exception) {
+          report(e)
+          UiState.Failed(messages.unexpected)
+      }
+
+      fun main() = runBlocking {
+          val orders = FailureMessages(offline = "Couldn't load orders. Check your connection.")
+          val report: (Throwable) -> Unit = { println("reported: $it") }    // on Android: the crash reporter
+
+          println(uiStateOf(orders, report) { listOf("A-1", "A-2") })
+          println(uiStateOf(orders, report) { throw IOException("timeout") })
+          println(uiStateOf(orders, report) { error("malformed order JSON") })
+
+          val screen = launch {
+              val state = uiStateOf(orders, report) {
+                  delay(10_000)
+                  listOf("A-3")
+              }
+              println(state)
+          }
+          yield()
+          screen.cancelAndJoin()                                     // the user left: nothing printed or reported
+          println("cancelled: ${screen.isCancelled}")
+      }
+    expected: |-
+      Loaded(value=[A-1, A-2])
+      Failed(message=Couldn't load orders. Check your connection.)
+      reported: java.lang.IllegalStateException: malformed order JSON
+      Failed(message=Something went wrong. Try again.)
+      cancelled: true
+    validation: &ranCore
+      status: ran
+      toolchain: kotlinc 2.4.21, JVM 21.0.12.1, kotlinx-coroutines-core 1.10.2
+      date: "2026-11-16"
+  - id: mvi-reducer
+    kind: code
+    title: "MVI: unidirectional flow without a library"
+    note: "Intents go up, one immutable state comes down, and the only code that changes state is a pure reducer — so a list of intents replays a session."
+    prerequisites: *runCore
+    code: |-
+      import kotlinx.coroutines.flow.*
+
+      data class CartState(val items: Map<String, Int> = emptyMap(), val couponApplied: Boolean = false) {
+          val count: Int get() = items.values.sum()
+      }
+
+      sealed interface CartIntent {
+          data class Add(val sku: String) : CartIntent
+          data class Remove(val sku: String) : CartIntent
+          data object ApplyCoupon : CartIntent
+      }
+
+      fun reduce(state: CartState, intent: CartIntent): CartState = when (intent) {
+          is CartIntent.Add -> state.copy(items = state.items + (intent.sku to (state.items[intent.sku] ?: 0) + 1))
+          is CartIntent.Remove -> {
+              val left = (state.items[intent.sku] ?: 0) - 1
+              state.copy(items = if (left > 0) state.items + (intent.sku to left) else state.items - intent.sku)
+          }
+          CartIntent.ApplyCoupon -> state.copy(couponApplied = true)
+      }
+
+      class CartStore(initial: CartState = CartState()) {
+          private val _state = MutableStateFlow(initial)
+          val state: StateFlow<CartState> = _state.asStateFlow()
+          fun dispatch(intent: CartIntent) = _state.update { reduce(it, intent) }   // atomic compare-and-set
+      }
+
+      fun main() {
+          val session = listOf(CartIntent.Add("mug"), CartIntent.Add("mug"), CartIntent.Add("lamp"),
+                               CartIntent.Remove("mug"), CartIntent.ApplyCoupon)
+          val store = CartStore()
+          session.forEach(store::dispatch)
+          println(store.state.value)
+          println(session.runningFold(CartState(), ::reduce).map { it.count })   // replay, no store needed
+      }
+    expected: |-
+      CartState(items={mug=1, lamp=1}, couponApplied=true)
+      [0, 1, 2, 3, 2, 2]
+    validation: *ranCore
+  - id: repository-and-use-case
+    kind: code
+    title: "The clean core: a use case and the repository it declares"
+    note: "The domain owns the interface and the outcomes and the data layer (or a test fake) implements it, so dependencies point inward."
+    prerequisites:
+      - A Kotlin 2.x compiler (`kotlinc`) and JDK 17 or later
+      - "Save as `main.kt`; run `kotlinc main.kt -include-runtime -d main.jar && java -jar main.jar`"
+    code: |-
+      import java.time.Instant
+
+      enum class OrderStatus { PLACED, SHIPPED, CANCELLED }
+
+      data class Order(val id: String, val status: OrderStatus, val cancelledAt: Instant? = null)
+
+      interface OrderRepository {                                    // declared BY the domain
+          suspend fun order(id: String): Order?
+          suspend fun save(order: Order)
+      }
+
+      sealed interface CancelResult {
+          data class Cancelled(val order: Order) : CancelResult
+          data class NotCancellable(val status: OrderStatus) : CancelResult
+          data object NotFound : CancelResult
+      }
+
+      class CancelOrderUseCase(private val orders: OrderRepository, private val now: () -> Instant) {
+          suspend operator fun invoke(id: String): CancelResult {
+              val order = orders.order(id) ?: return CancelResult.NotFound
+              if (order.status != OrderStatus.PLACED) return CancelResult.NotCancellable(order.status)
+              val cancelled = order.copy(status = OrderStatus.CANCELLED, cancelledAt = now())
+              orders.save(cancelled)
+              return CancelResult.Cancelled(cancelled)
+          }
+      }
+
+      class FakeOrderRepository(vararg seed: Order) : OrderRepository {   // the outer ring: data layer or test
+          private val rows = seed.associateBy { it.id }.toMutableMap()
+          override suspend fun order(id: String) = rows[id]
+          override suspend fun save(order: Order) {
+              rows[order.id] = order
+          }
+      }
+
+      suspend fun main() {
+          val repository = FakeOrderRepository(Order("A-1", OrderStatus.PLACED), Order("A-2", OrderStatus.SHIPPED))
+          val cancelOrder = CancelOrderUseCase(repository, now = { Instant.parse("2026-11-16T09:30:00Z") })
+
+          listOf("A-1", "A-2", "Z-9").forEach { println(cancelOrder(it)) }
+          println(repository.order("A-1")?.status)
+      }
+    expected: |-
+      Cancelled(order=Order(id=A-1, status=CANCELLED, cancelledAt=2026-11-16T09:30:00Z))
+      NotCancellable(status=SHIPPED)
+      NotFound
+      CANCELLED
+    validation:
+      status: ran
+      toolchain: kotlinc 2.4.21, JVM 21.0.12.1
+      date: "2026-11-16"
+  - id: offline-first
+    kind: code
+    title: "Offline-first: the database is the single source of truth"
+    note: "The UI only ever observes local storage; the network only ever writes into it — so a failed refresh leaves the screen on the cached data instead of an error."
+    prerequisites: *runTest
+    code: |-
+      import kotlinx.coroutines.*
+      import kotlinx.coroutines.flow.*
+      import kotlinx.coroutines.test.*
+      import java.io.IOException
+
+      data class Order(val id: String, val status: String)
+
+      class OrderDao {                                             // on Android: a Room DAO returning Flow
+          private val rows = MutableStateFlow<List<Order>>(emptyList())
+
+          fun observeAll(): Flow<List<Order>> = rows
+
+          fun upsert(orders: List<Order>) = rows.update { current ->
+              (current.associateBy { it.id } + orders.associateBy { it.id }).values.toList()
+          }
+      }
+
+      fun interface OrderApi { suspend fun fetchRecent(): List<Order> }
+
+      class OfflineFirstOrderRepository(private val dao: OrderDao, private val api: OrderApi) {
+          val orders: Flow<List<Order>> = dao.observeAll()         // reads: always local
+
+          // Writes: network -> database (scheduled by WorkManager on Android).
+          suspend fun refresh(): Result<Unit> = try {
+              dao.upsert(api.fetchRecent())
+              Result.success(Unit)
+          } catch (e: IOException) {
+              Result.failure(e)                                    // keep the cause: the caller decides
+          }
+      }
+
+      @OptIn(ExperimentalCoroutinesApi::class)
+      fun main() = runTest {
+          val dao = OrderDao().apply { upsert(listOf(Order("A-1", "placed"))) }   // cached last session
+          var online = false
+          val api = OrderApi {
+              if (!online) throw IOException("offline")
+              listOf(Order("A-1", "shipped"), Order("A-2", "placed"))
+          }
+          val repository = OfflineFirstOrderRepository(dao, api)
+          backgroundScope.launch { repository.orders.collect { println("screen shows $it") } }
+          runCurrent()
+
+          println("refresh: ${repository.refresh()}")
+          online = true
+          println("refresh: ${repository.refresh()}")
+          runCurrent()
+      }
+    expected: |-
+      screen shows [Order(id=A-1, status=placed)]
+      refresh: Failure(java.io.IOException: offline)
+      refresh: Success(kotlin.Unit)
+      screen shows [Order(id=A-1, status=shipped), Order(id=A-2, status=placed)]
+    validation: *ranTest
+  - id: navigation-as-a-concern
+    kind: code
+    title: Navigation as its own concern
+    note: "Screens say where to go through a `Navigator`; one object owns the back stack as observable state — the shape Navigation Compose's type-safe routes and Navigation 3's back-stack list expect."
+    prerequisites: *runCore
+    code: |-
+      import kotlinx.coroutines.flow.*
+
+      sealed interface Route {
+          data object OrderList : Route
+          data class OrderDetail(val orderId: String) : Route
+          data object Checkout : Route
+      }
+
+      fun interface Navigator { fun navigate(route: Route) }   // all a view model may know
+
+      class BackStackNavigator(start: Route) : Navigator {     // the single owner of the back stack
+          private val _backStack = MutableStateFlow(listOf(start))
+          val backStack: StateFlow<List<Route>> = _backStack.asStateFlow()
+
+          override fun navigate(route: Route) = _backStack.update { it + route }
+
+          fun back(): Boolean {                                  // called by the system back handler
+              if (_backStack.value.size == 1) return false       // let the system close the app
+              _backStack.update { it.dropLast(1) }
+              return true
+          }
+      }
+
+      class OrderListViewModel(private val navigator: Navigator) {   // decides WHERE, not HOW
+          fun onOrderTapped(orderId: String) = navigator.navigate(Route.OrderDetail(orderId))
+      }
+
+      fun main() {
+          val navigator = BackStackNavigator(Route.OrderList)
+          OrderListViewModel(navigator).onOrderTapped("A-1")
+          navigator.navigate(Route.Checkout)
+          println(navigator.backStack.value)
+          println("${navigator.back()} ${navigator.back()} ${navigator.back()} ${navigator.backStack.value}")
+
+          val recorded = mutableListOf<Route>()
+          OrderListViewModel { recorded.add(it) }.onOrderTapped("A-2")   // a test fake is one lambda
+          println(recorded)
+      }
+    expected: |-
+      [OrderList, OrderDetail(orderId=A-1), Checkout]
+      true true false [OrderList]
+      [OrderDetail(orderId=A-2)]
+    validation: *ranCore
+  - id: manual-di
+    kind: code
+    title: "Dependency injection by hand: a composition root"
+    note: "A container built once (in `Application.onCreate`) holds app-wide instances and factories for per-screen ones; everything else just takes constructor parameters."
+    prerequisites:
+      - A Kotlin 2.x compiler (`kotlinc`) and JDK 17 or later
+      - "Save as `main.kt`; run `kotlinc main.kt -include-runtime -d main.jar && java -jar main.jar`"
+    code: |-
+      fun interface OrderApi { fun fetch(id: String): String }
+
+      class RemoteOrderApi(private val baseUrl: String) : OrderApi {
+          override fun fetch(id: String) = "GET $baseUrl/orders/$id"   // stands in for an HTTP call
+      }
+
+      class OrderRepository(private val api: OrderApi) {
+          fun order(id: String) = api.fetch(id)
+      }
+
+      class OrderDetailViewModel(private val orderId: String, private val repository: OrderRepository) {
+          fun load() = repository.order(orderId)
+      }
+
+      // The composition root: the only class that knows concrete types and lifetimes.
+      class AppContainer(baseUrl: String) {
+          private val api: OrderApi = RemoteOrderApi(baseUrl)
+          val orderRepository: OrderRepository by lazy { OrderRepository(api) }      // one per app
+
+          fun orderDetailViewModel(orderId: String) =                                // one per screen
+              OrderDetailViewModel(orderId, orderRepository)
+      }
+
+      // On Android, ShopApp : Application() holds `val container by lazy { AppContainer(BuildConfig.API_URL) }`;
+      // BuildConfig holds only non-secret configuration such as a base URL.
+      fun main() {
+          val container = AppContainer(baseUrl = "https://api.example.com")
+          println(container.orderDetailViewModel("A-1").load())
+          println(container.orderDetailViewModel("A-2").load())
+          println(container.orderRepository === container.orderRepository)
+
+          val fakeApi = OrderApi { id -> "fake $id" }                       // a test builds its own graph
+          val underTest = OrderDetailViewModel("A-1", OrderRepository(api = fakeApi))
+          println(underTest.load())
+      }
+    expected: |-
+      GET https://api.example.com/orders/A-1
+      GET https://api.example.com/orders/A-2
+      true
+      fake A-1
+    validation:
+      status: ran
+      toolchain: kotlinc 2.4.21, JVM 21.0.12.1
+      date: "2026-11-16"
+  - id: di-options
+    kind: table
+    title: "DI by hand, Hilt or Koin"
+    note: The classes stay the same — constructor parameters — whichever wires them; only the composition root changes.
+    headers: [Approach, How the graph is declared, When errors show up, Best for]
+    rows:
+      - ["By hand", "an `AppContainer` class: constructors, `by lazy` for singletons, factory functions per screen", "compile time — it is ordinary code", "small and medium apps, libraries, Kotlin Multiplatform"]
+      - ["Hilt", "`@Inject constructor`, `@Module` + `@InstallIn(SingletonComponent::class)` with `@Binds`/`@Provides`, `@HiltViewModel`, `@AndroidEntryPoint`", "compile time: Dagger validates the graph (KSP)", "Android apps — Google's recommended library; Hilt 2.59 or later with AGP 9, 2.57.x with AGP 8"]
+      - ["Koin", "a Kotlin DSL: `module { single<OrderApi> { RemoteOrderApi(getProperty(\"API_URL\")) }; viewModelOf(::OrdersViewModel) }`", "at run time, unless a test covers the graph with `verify()` (JVM) or `androidVerify()`, or Koin's compiler plugin checks it", "fast setup, Kotlin Multiplatform, teams avoiding annotation processing"]
+      - ["Dagger 2", "hand-written `@Component` interfaces and modules", "compile time", "JVM servers and existing Dagger codebases"]
+  - id: hilt-wiring
+    kind: code
+    title: "The same graph with Hilt, ending in Compose"
+    note: "Bind each interface once in a module and provide what you do not own, so the view model gets its repository by constructor and the screen collects state with the lifecycle."
+    prerequisites:
+      - "An Android app on AGP 9 and Gradle 9.1 or later with Compose, Room, and the `com.google.devtools.ksp` and `com.google.dagger.hilt.android` (2.59.2) Gradle plugins; `implementation(\"com.google.dagger:hilt-android:2.59.2\")` and `ksp(\"com.google.dagger:hilt-android-compiler:2.59.2\")`"
+      - "`implementation(\"androidx.hilt:hilt-lifecycle-viewmodel-compose:1.3.0\")` for `hiltViewModel()` and `androidx.lifecycle:lifecycle-runtime-compose` for `collectAsStateWithLifecycle()`"
+    code: |-
+      @HiltAndroidApp
+      class ShopApp : Application()
+
+      @Module
+      @InstallIn(SingletonComponent::class)
+      abstract class DataModule {
+          @Binds @Singleton
+          abstract fun bindOrderRepository(impl: OfflineFirstOrderRepository): OrderRepository
+
+          @Binds abstract fun bindOrderApi(impl: HttpOrderApi): OrderApi    // HttpOrderApi: an @Inject constructor
+      }
+
+      @Module
+      @InstallIn(SingletonComponent::class)
+      object DatabaseModule {
+          @Provides @Singleton
+          fun provideOrderDao(@ApplicationContext context: Context): OrderDao =
+              Room.databaseBuilder(context, ShopDatabase::class.java, "shop.db").build().orderDao()
+      }
+
+      class OfflineFirstOrderRepository @Inject constructor(
+          private val dao: OrderDao,
+          private val api: OrderApi,
+      ) : OrderRepository {
+          override val orders: Flow<List<Order>> = dao.observeAll()     // refresh() as in the offline-first card
+      }
+
+      @HiltViewModel
+      class OrdersViewModel @Inject constructor(repository: OrderRepository) : ViewModel() {
+          val state: StateFlow<OrdersUiState> = repository.orders
+              .map<List<Order>, OrdersUiState> { orders -> OrdersUiState.Loaded(orders.map { it.id }) }
+              .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), OrdersUiState.Loading)
+      }
+
+      @AndroidEntryPoint
+      class MainActivity : ComponentActivity() {
+          override fun onCreate(savedInstanceState: Bundle?) {
+              super.onCreate(savedInstanceState)
+              setContent { OrdersRoute() }
+          }
+      }
+
+      @Composable
+      fun OrdersRoute(viewModel: OrdersViewModel = hiltViewModel()) {
+          val state by viewModel.state.collectAsStateWithLifecycle()
+          OrdersScreen(state)                                // a stateless composable: state in, events out
+      }
+    expected: "Hilt builds the graph at compile time; the orders screen gets a view model scoped to its navigation destination (or, without navigation, to the activity) that survives rotation, and stops collecting five seconds after it leaves the screen."
+    applies:
+      platforms: [android]
+      requires: [Hilt, Jetpack Compose, AndroidX Lifecycle, Room]
+      versions: { kotlin: ">=2.2.10", android-gradle-plugin: ">=9.0", hilt: ">=2.59", androidx-hilt: ">=1.3.0" }
+    sources:
+      - title: Dependency injection with Hilt — Android Developers
+        url: https://developer.android.com/training/dependency-injection/hilt-android
+      - title: Use Hilt with other Jetpack libraries — Android Developers
+        url: https://developer.android.com/training/dependency-injection/hilt-jetpack
+    validation:
+      status: excerpt
+      host: an Android app with Jetpack Compose and Hilt (needs the Android SDK, the Compose compiler plugin, KSP and the Hilt Gradle plugin)
+  - id: which-architecture
+    kind: rules
+    title: How to answer "which architecture would you use?"
+    note: Constraints first, invariants second, acronym last.
+    items:
+      - tone: good
+        text: "Start with the **constraints**: team size, app lifetime, offline needs, how much state is shared across screens, Compose or Views, KMP or not."
+      - tone: good
+        text: "Name the **invariants**: one source of truth per piece of data, state down and events up, no logic in composables, a domain that compiles without Android, navigation owned in one place."
+      - tone: good
+        text: "Then pick the lightest shape that gives them — usually **Google's layering with MVVM** (UI state holders → optional use cases → repositories), MVI for screens with many interacting inputs."
+      - tone: good
+        text: "Mention the seams that matter more than the name: constructor injection, a sealed UI state, repositories that expose `Flow`, and a fake for every interface."
+      - tone: neutral
+        text: "Say what you would **not** do: a use case that only forwards one repository call, a module per layer on a five-screen app, or a framework for MVI before a reducer function has hurt."
+      - tone: bad
+        text: "Avoid an acronym with no trade-off — and avoid a `ViewModel` that holds a `Context`, a `View` or a `NavController`: it outlives them."

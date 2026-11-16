@@ -1,0 +1,400 @@
+id: kt-ui-testing
+concept: testing.ui-e2e
+scope: platform
+title: "UI & End-to-End Testing"
+group: Quality & reach
+subtitle: "Compose UI tests that render, act and assert through semantics, Espresso for Views, UI Automator across apps and system UI, waiting without sleeps, fakes behind Hilt, robots, JVM versus device — and a suite that does not flake."
+applies:
+  platforms: [android]
+  runtime: Android instrumented tests on a device or emulator, or local JVM tests under Robolectric
+  requires: [Jetpack Compose, androidx.compose.ui:ui-test-junit4, Espresso, UI Automator]
+  versions: { kotlin: ">=2.0", compose-bom: ">=2026.04.01", espresso: ">=3.6", uiautomator: ">=2.4.0", hilt: ">=2.57", robolectric: ">=4.16", agp: ">=8.1" }
+sources:
+  - title: Test your Compose layout — Android Developers
+    url: https://developer.android.com/develop/ui/compose/testing
+  - title: Synchronize your tests — Android Developers
+    url: https://developer.android.com/develop/ui/compose/testing/synchronization
+  - title: Espresso — Android Developers
+    url: https://developer.android.com/training/testing/espresso
+  - title: Write automated tests with UI Automator — Android Developers
+    url: https://developer.android.com/training/testing/other-components/ui-automator
+  - title: Hilt testing guide — Android Developers
+    url: https://developer.android.com/training/dependency-injection/hilt-testing
+  - title: Scale your tests with build-managed devices — Android Developers
+    url: https://developer.android.com/studio/test/managed-devices
+cards:
+  - id: tooling
+    kind: table
+    title: The tools, by what they drive
+    note: Most UI tests should be Compose or Espresso tests on one screen; keep a few UI Automator or Maestro journeys for what crosses the app's boundary.
+    headers: [Tool, Drives, Runs on, Reach for it when]
+    rows:
+      - ["**Compose UI test** (`createComposeRule`)", "composables, through the semantics tree", "device, emulator, or the JVM with Robolectric", "a screen or component: render, act, assert on what the user sees"]
+      - ["**Espresso** (+ `espresso-contrib`, `espresso-intents`)", "Views, `RecyclerView`, outgoing intents", "device, emulator, or Robolectric", "View-based screens and hybrid screens"]
+      - ["**UI Automator** 2.4", "any app, system UI, notifications, permission dialogs", "device or emulator, from outside the app's UI", "journeys across apps; release builds; Macrobenchmark"]
+      - ["**Robolectric**", "the Android framework simulated on the JVM", "local JVM (`src/test`)", "fast feedback for Compose and Espresso tests on every commit"]
+      - ["**Roborazzi** / **Paparazzi**", "screenshots via Robolectric / via layoutlib", "local JVM", "golden-image checks for screens and design-system components"]
+      - ["**Compose Preview Screenshot Testing**", "`@PreviewTest` previews in `src/screenshotTest`", "host-side, with AGP", "turning previews you already have into goldens (`validateDebugScreenshotTest`)"]
+      - ["**Maestro**", "the installed app, from YAML flows", "device or emulator", "black-box smoke tests written by QA"]
+      - ["**Gradle Managed Devices**, Firebase Test Lab", "provisions emulators or real devices", "CI", "the instrumented suite on several API levels, sharded"]
+  - id: compose-screen-test
+    kind: code
+    title: A Compose UI test that renders, interacts and asserts
+    note: "Set the content with a fake behind the ViewModel, act like a user, assert on text, descriptions and roles — never on internal state."
+    prerequisites: &compose
+      - "`androidTestImplementation(\"androidx.compose.ui:ui-test-junit4\")` and `debugImplementation(\"androidx.compose.ui:ui-test-manifest\")` with Compose BOM 2026.04.01 or later (ui-test 1.11+, which has the `junit4.v2` rules)"
+      - "Put the class under `src/androidTest/kotlin` and run `./gradlew connectedDebugAndroidTest` — or under `src/test/kotlin` with Robolectric and `./gradlew testDebugUnitTest`"
+    code: |-
+      import androidx.compose.ui.test.junit4.v2.createComposeRule
+      import java.util.Currency
+      import java.util.Locale
+
+      class CartScreenTest {
+          @get:Rule val composeRule = createComposeRule()
+
+          @Test
+          fun removingAnItemUpdatesTheTotal() {
+              val cart = FakeCartRepository(listOf(CartItem("Running shoes", 8990), CartItem("Socks", 990)))
+              // The test pins the formatter, so the expected text never depends on the device's locale.
+              val money = MoneyFormatter(Locale.US, Currency.getInstance("EUR"))
+              composeRule.setContent { AppTheme { CartScreen(CartViewModel(cart, money)) } }
+
+              composeRule.onNodeWithText("Total: ${money.format(9980)}").assertIsDisplayed()
+
+              composeRule.onNode(hasContentDescription("Remove Socks") and hasClickAction())
+                  .performClick()
+
+              composeRule.onNodeWithText("Socks").assertDoesNotExist()
+              composeRule.onNodeWithTag("cart-total").assertTextEquals("Total: ${money.format(8990)}")
+              composeRule.onNode(hasRole(Role.Button) and hasText("Checkout")).assertIsEnabled()
+          }
+      }
+
+      // There is no built-in role matcher; this is the documented way to match a property.
+      fun hasRole(role: Role): SemanticsMatcher = SemanticsMatcher.expectValue(SemanticsProperties.Role, role)
+    expected: The test passes once the row is removed and the total recomputed; a missing content description or a renamed button fails it with the semantics tree printed.
+    validation: &excerpt
+      status: excerpt
+      host: an Android test host (an instrumented test on a device or emulator, or Robolectric on the JVM)
+  - id: select-by-semantics
+    kind: compare
+    title: Find nodes by semantics and test tags, never by layout
+    note: "Match what a user perceives — text, content description, role, state; fall back to `Modifier.testTag` only where nothing perceivable identifies the node."
+    prerequisites: *compose
+    columns:
+      - label: By position
+        tone: bad
+        code: |-
+          // The third child of the root: breaks when a banner is added.
+          composeRule.onRoot().onChildren()[2].onChildAt(0).performClick()
+
+          // Which "Remove"? Index order is layout order, and lists are lazy.
+          composeRule.onAllNodesWithText("Remove")[1].performClick()
+
+          // Icons have no text: this never matches, so the test author adds a sleep and gives up.
+          composeRule.onNodeWithText("Remove Socks").assertExists()
+          Thread.sleep(2_000)
+      - label: By meaning
+        tone: good
+        code: |-
+          // Perceivable first: the description TalkBack reads, plus "it is clickable".
+          composeRule.onNode(hasContentDescription("Remove Socks") and hasClickAction()).performClick()
+
+          // Lazy lists: scroll the container to the node instead of indexing children.
+          composeRule.onNodeWithTag("cart-list").performScrollToNode(hasText("Gift card"))
+
+          // A test tag where nothing a user perceives identifies the node.
+          composeRule.onNodeWithTag("cart-total").assertTextContains("€89.90", substring = true)
+
+          // Debug a failing finder by printing the tree, not by guessing.
+          composeRule.onRoot(useUnmergedTree = true).printToLog("CartScreenTest")
+    expected: The selectors on the right survive layout changes and double as an accessibility check; the ones on the left break on the next redesign.
+    sources:
+      - title: Testing APIs — finders, matchers, assertions — Android Developers
+        url: https://developer.android.com/develop/ui/compose/testing/apis
+    validation: *excerpt
+  - id: wait-without-sleeping
+    kind: code
+    title: "Synchronise without sleeps: the test clock, waitUntil, idling resources"
+    note: "Compose waits for recomposition and animations itself; for work it cannot see, wait on a condition or register an idling resource — and drive time with `mainClock`."
+    prerequisites: *compose
+    code: |-
+      @Test
+      fun undoBannerHidesAfterFourSeconds() {
+          composeRule.mainClock.autoAdvance = false              // the test owns Compose time
+          composeRule.setContent { OrderRow(order, onArchive = {}) }
+          composeRule.onNodeWithContentDescription("Archive ORD-1042").performClick()
+
+          composeRule.mainClock.advanceTimeBy(3_900)            // the banner's LaunchedEffect { delay(4_000) }
+          composeRule.onNodeWithText("Undo").assertIsDisplayed()
+          composeRule.mainClock.advanceTimeBy(200)
+          composeRule.onNodeWithText("Undo").assertDoesNotExist()
+      }
+
+      @Test
+      fun ordersAppearAfterTheRepositoryLoads() {
+          composeRule.setContent { OrdersScreen(viewModel) }
+          // Work on another dispatcher is invisible to Compose: wait for its visible result (wall-clock timeout).
+          composeRule.waitUntil(timeoutMillis = 5_000) {
+              composeRule.onAllNodesWithText("ORD-1042", substring = true).fetchSemanticsNodes().isNotEmpty()
+          }
+      }
+
+      // Or tell the rule when your own background work is busy, once, in @Before:
+      class RepositoryIdling(private val repository: FakeOrderRepository) : IdlingResource {
+          // inFlightRequests is an AtomicInteger: the fake changes it on another dispatcher.
+          override val isIdleNow: Boolean get() = repository.inFlightRequests.get() == 0
+      }
+      // composeRule.registerIdlingResource(RepositoryIdling(repository))
+      // Views: IdlingRegistry.getInstance().register(countingIdlingResource) for Espresso
+    expected: "Both tests finish in well under a second of real time: the first steps the virtual clock across the 4 s delay, the second returns as soon as the order is on screen."
+    sources:
+      - title: Synchronize your tests — Android Developers
+        url: https://developer.android.com/develop/ui/compose/testing/synchronization
+    validation: *excerpt
+  - id: espresso-recyclerview
+    kind: code
+    title: Espresso for Views, with RecyclerView actions
+    note: "`onView` cannot reach an off-screen row; `RecyclerViewActions` scrolls to the matching item and acts on it."
+    prerequisites:
+      - "`androidTestImplementation(\"androidx.test.espresso:espresso-core\")`, `espresso-contrib` (for `RecyclerViewActions`) and `androidx.test.ext:junit`"
+      - "Run with `./gradlew connectedDebugAndroidTest`"
+    code: |-
+      @RunWith(AndroidJUnit4::class)
+      class OrderHistoryViewsTest {
+          @get:Rule val activityRule = ActivityScenarioRule(OrderHistoryActivity::class.java)
+
+          @Test
+          fun openingAnOrderBelowTheFoldShowsItsDetails() {
+              onView(withId(R.id.order_list)).perform(
+                  RecyclerViewActions.actionOnItem<OrderAdapter.OrderViewHolder>(
+                      hasDescendant(withText("ORD-1042")), click(),        // scrolls to the row first
+                  ),
+              )
+              onView(withId(R.id.order_title)).check(matches(withText("ORD-1042")))
+              onView(withContentDescription(R.string.track_parcel)).check(matches(isDisplayed()))
+
+              pressBack()
+              onView(withId(R.id.order_list)).check(matches(isDisplayed()))
+          }
+
+          @Test
+          fun swipingTheFirstRowArchivesIt() {
+              onView(withId(R.id.order_list)).perform(
+                  RecyclerViewActions.actionOnItemAtPosition<OrderAdapter.OrderViewHolder>(0, swipeLeft()),
+              )
+              onView(withText("ORD-1043")).check(doesNotExist())
+          }
+      }
+    expected: "Espresso waits for the main thread's message queue and every registered idling resource before each action, so the scroll, click and back navigation run in order with no sleeps."
+    sources:
+      - title: Espresso lists — Android Developers
+        url: https://developer.android.com/training/testing/espresso/lists
+    validation: *excerpt
+  - id: uiautomator-journey
+    kind: code
+    title: An end-to-end journey across the system UI with UI Automator
+    note: "UI Automator sees every window — the launcher, the notification shade, permission dialogs — so the journey can leave the app and come back."
+    prerequisites:
+      - "`androidTestImplementation(\"androidx.test.uiautomator:uiautomator:2.4.1\")` and `androidx.test.ext:junit`"
+      - "In the app, once near the root: `Modifier.semantics { testTagsAsResourceId = true }` so test tags are visible as resource ids"
+      - "Run with `./gradlew connectedDebugAndroidTest` on an API 33+ device or emulator"
+    code: |-
+      @RunWith(AndroidJUnit4::class)
+      class ShippingNotificationJourneyTest {
+          private val app = "com.example.shop"
+
+          @Test
+          fun tappingTheShippedNotificationOpensTheOrder() = uiAutomator {
+              watchFor(PermissionDialog) { clickAllow() }                      // POST_NOTIFICATIONS, if asked
+              startApp(app)
+              onElement { viewIdResourceName == "orders-list" }                  // a Compose testTag
+
+              // The code path the push handler calls in production, triggered from the test.
+              val context = InstrumentationRegistry.getInstrumentation().targetContext
+              ShippingNotifier(context).notifyShipped(orderId = "ORD-1042")
+
+              pressHome()                                                        // leave the app
+              device.openNotification()                                          // the system shade
+              onElement(timeoutMs = 15_000) { textAsString()?.contains("ORD-1042 has shipped") == true }.click()
+
+              waitForAppToBeVisible(app)
+              onElement { textAsString() == "Shipped" }                          // the order screen, deep-linked
+          }
+      }
+    expected: The test leaves the app, opens the notification shade, taps the real notification and lands on the order screen showing "Shipped"; each `onElement` polls up to its timeout instead of sleeping.
+    sources:
+      - title: Write automated tests with UI Automator — Android Developers
+        url: https://developer.android.com/training/testing/other-components/ui-automator
+      - title: Interoperability with UiAutomator — Android Developers
+        url: https://developer.android.com/develop/ui/compose/testing/interoperability
+    validation: *excerpt
+  - id: isolate-network-and-state
+    kind: code
+    title: Isolate network and state with a fake behind Hilt
+    note: "Replace the data layer once for every instrumented test with `@TestInstallIn`; the screen, ViewModel and navigation stay real, and the fake decides what the network does."
+    prerequisites:
+      - "`androidTestImplementation(\"com.google.dagger:hilt-android-testing:2.57.1\")` and `kspAndroidTest(\"com.google.dagger:hilt-android-compiler:2.57.1\")`"
+      - "A runner returning `HiltTestApplication` from `newApplication`, set as `testInstrumentationRunner` in `defaultConfig`"
+      - "Fresh app state per test: `testInstrumentationRunnerArguments[\"clearPackageData\"] = \"true\"` with `testOptions { execution = \"ANDROIDX_TEST_ORCHESTRATOR\" }` and `androidTestUtil(\"androidx.test:orchestrator:1.6.1\")`"
+    code: |-
+      import androidx.compose.ui.test.junit4.v2.createAndroidComposeRule
+
+      @Module
+      @TestInstallIn(components = [SingletonComponent::class], replaces = [OrdersDataModule::class])
+      abstract class FakeOrdersModule {
+          @Binds abstract fun bindRepository(fake: FakeOrderRepository): OrderRepository
+      }
+
+      @Singleton
+      class FakeOrderRepository @Inject constructor() : OrderRepository {
+          val orders = MutableStateFlow(listOf(Order(code = "ORD-1042", status = OrderStatus.Shipped)))
+          @Volatile var failNextRefresh = false              // set on the test thread, read on the repository's
+
+          override fun observeOrders(): Flow<List<Order>> = orders
+          override suspend fun refresh() {
+              if (failNextRefresh) {
+                  failNextRefresh = false
+                  throw IOException("offline")
+              }
+          }
+      }
+
+      @HiltAndroidTest
+      class OrdersOfflineTest {
+          @get:Rule(order = 0) val hiltRule = HiltAndroidRule(this)
+          @get:Rule(order = 1) val composeRule = createAndroidComposeRule<MainActivity>()
+          @Inject lateinit var repository: FakeOrderRepository
+
+          @Before fun inject() = hiltRule.inject()
+
+          @Test
+          fun failedRefreshKeepsCachedOrdersAndOffersRetry() {
+              repository.failNextRefresh = true
+              composeRule.onNodeWithContentDescription("Refresh orders").performClick()
+              composeRule.onNodeWithText("ORD-1042", substring = true).assertIsDisplayed()
+              composeRule.onNodeWithText("Retry").assertIsDisplayed()
+          }
+      }
+    expected: "The real screen shows the cached order and a Retry button after the fake throws; no request leaves the device, and each test starts from cleared app data."
+    sources:
+      - title: Hilt testing guide — Android Developers
+        url: https://developer.android.com/training/dependency-injection/hilt-testing
+    validation:
+      status: excerpt
+      host: an instrumented test with Hilt on a device or emulator
+  - id: robot-pattern
+    kind: code
+    title: The robot (screen-object) pattern
+    note: "One robot per screen owns its selectors; tests read as the user's steps, and a redesign is fixed in one file."
+    prerequisites: *compose
+    code: |-
+      import androidx.compose.ui.test.junit4.v2.createComposeRule
+
+      class CartRobot(private val rule: ComposeContentTestRule) {
+          fun assertTotal(total: String) = apply {
+              rule.onNodeWithTag("cart-total").assertTextEquals("Total: $total")
+          }
+          fun removeItem(name: String) = apply {
+              rule.onNode(hasContentDescription("Remove $name") and hasClickAction()).performClick()
+          }
+          fun checkout(): CheckoutRobot {
+              rule.onNode(hasText("Checkout") and hasClickAction()).performClick()
+              return CheckoutRobot(rule)
+          }
+      }
+
+      class CheckoutRobot(private val rule: ComposeContentTestRule) {
+          fun assertShown() = apply { rule.onNode(hasText("Payment") and isHeading()).assertIsDisplayed() }
+      }
+
+      fun ComposeContentTestRule.cart(steps: CartRobot.() -> Unit): CartRobot = CartRobot(this).apply(steps)
+
+      class CheckoutJourneyTest {
+          @get:Rule val composeRule = createComposeRule()
+
+          @Test
+          fun removeSocksThenCheckOut() {
+              composeRule.setContent { ShopApp(FakeAppGraph(locale = Locale.US)) }   // fakes and a pinned locale
+              composeRule.cart {
+                  assertTotal("€99.80")
+                  removeItem("Socks")
+                  assertTotal("€89.90")
+              }.checkout().assertShown()
+          }
+      }
+    expected: The test reads as the journey; when the total moves to a new component only `CartRobot.assertTotal` changes.
+    validation: *excerpt
+  - id: where-tests-run
+    kind: code
+    title: "Where tests run: the JVM with Robolectric, or a managed device"
+    note: "Run the same Compose tests on the JVM on every commit and on emulators that AGP provisions in CI; keep device-only checks (accessibility checks, UI Automator) on the device run."
+    prerequisites:
+      - "Android Gradle Plugin 8.1 or later (`managedDevices { localDevices { } }` arrived in 8.1); GMD needs API 27+ system images"
+      - "JDK 21 for the unit-test JVM: Robolectric 4.16+ runs SDK 36 and needs Java 21 for it"
+      - "The Compose test from this sheet, in `src/test/kotlin` for Robolectric and `src/androidTest/kotlin` for the device"
+    code: |-
+      // app/build.gradle.kts
+      android {
+          testOptions {
+              unitTests.isIncludeAndroidResources = true          // Robolectric needs the merged resources
+              animationsDisabled = true                           // instrumented runs: no animation timing
+              managedDevices {
+                  localDevices {
+                      create("pixel6api34") {
+                          device = "Pixel 6"
+                          apiLevel = 34
+                          systemImageSource = "aosp"              // "google" if the app needs Play services
+                      }
+                  }
+              }
+          }
+      }
+      dependencies {
+          testImplementation("org.robolectric:robolectric:4.16.1")      // 4.16+ runs SDK 36, on JDK 21
+          testImplementation("androidx.compose.ui:ui-test-junit4")
+          debugImplementation("androidx.compose.ui:ui-test-manifest")
+      }
+
+      // src/test/kotlin — the same test body, on the JVM (createComposeRule from ...test.junit4.v2)
+      @RunWith(AndroidJUnit4::class)
+      @Config(qualifiers = "w411dp-h891dp-xxhdpi")                // a pinned screen, not the default one
+      class CartScreenRobolectricTest {
+          @get:Rule val composeRule = createComposeRule()
+          // … the tests from CartScreenTest
+      }
+
+      // ./gradlew testDebugUnitTest              JVM + Robolectric: seconds, every commit
+      // ./gradlew pixel6api34DebugAndroidTest    an emulator AGP creates, snapshots and tears down
+    expected: "`testDebugUnitTest` runs the screen tests without a device; `pixel6api34DebugAndroidTest` boots a clean emulator, runs the instrumented suite and writes an HTML report."
+    sources:
+      - title: Scale your tests with build-managed devices — Android Developers
+        url: https://developer.android.com/studio/test/managed-devices
+      - title: Build local unit tests — Android Developers
+        url: https://developer.android.com/training/testing/local-tests
+    validation:
+      status: excerpt
+      host: an Android Gradle project (AGP 8.1+) with the Android SDK
+  - id: flake-checklist
+    kind: rules
+    title: The flake checklist
+    note: A UI test that fails one run in fifty is worse than none; go down this list first.
+    items:
+      - tone: bad
+        text: "`Thread.sleep` or `delay` in a test: too short on CI, too slow everywhere. Use `waitUntil`, `onElement(timeoutMs)`, idling resources or `mainClock`."
+      - tone: bad
+        text: "Selecting by index, child position or coordinates. Select by text, content description, role or `testTag`; scroll lazy lists with `performScrollToNode`."
+      - tone: bad
+        text: "Real network, real clock, real accounts: replace the data layer with a fake (`@TestInstallIn`) or a local `MockWebServer`, and inject the clock."
+      - tone: good
+        text: "Start every test from known state: `clearPackageData` with the orchestrator, a fresh fake per test, no order between tests."
+      - tone: good
+        text: "Disable animations on devices (`testOptions { animationsDisabled = true }`, or the three developer-option scales to 0) and pin locale, time zone, font scale and screen size."
+      - tone: good
+        text: "Wait on the **result** the user sees (`\"ORD-1042\"` on screen), not on a proxy (a spinner disappearing) — the proxy can flicker."
+      - tone: neutral
+        text: "Compose 1.11 deprecated `androidx.compose.ui.test.junit4.createComposeRule` and `createAndroidComposeRule`: the `junit4.v2` versions used here run coroutines on a `StandardTestDispatcher`, which queues them instead of running them at once — a test that relied on the old immediate behaviour needs `waitForIdle()` or `mainClock` steps."
+      - tone: neutral
+        text: "Quarantine a flaky test with an issue link instead of retrying it silently; AGP and Firebase Test Lab retries hide real races."
+      - tone: neutral
+        text: "Most coverage belongs in fast Compose/Robolectric tests of one screen; keep only a handful of UI Automator journeys for what crosses apps or system UI."

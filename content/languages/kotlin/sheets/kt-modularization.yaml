@@ -1,0 +1,360 @@
+id: kt-modularization
+concept: architecture.modularization
+scope: platform
+title: "Modularization — Gradle Modules & Visibility"
+group: Build & modules
+subtitle: "Gradle modules as the unit, `implementation` and `internal` as the walls, feature / data / core layers with api–impl pairs, convention plugins and a version catalog, navigation that never crosses features, and KMP source sets."
+applies:
+  platforms: [jvm, android]
+  runtime: a Gradle multi-module build (Kotlin DSL); Android modules use the Android Gradle plugin
+  versions: { kotlin: ">=2.2.10", gradle: ">=9.1", android-gradle-plugin: ">=9.0", hilt: ">=2.59" }
+sources:
+  - title: Guide to Android app modularization — Android Developers
+    url: https://developer.android.com/topic/modularization
+  - title: Common modularization patterns — Android Developers
+    url: https://developer.android.com/topic/modularization/patterns
+  - title: Structuring projects with Gradle — Gradle docs
+    url: https://docs.gradle.org/current/userguide/multi_project_builds.html
+  - title: The Java Library plugin (api and implementation) — Gradle docs
+    url: https://docs.gradle.org/current/userguide/java_library_plugin.html
+  - title: Visibility modifiers — Kotlin docs
+    url: https://kotlinlang.org/docs/visibility-modifiers.html
+cards:
+  - id: why-modularize
+    kind: rules
+    title: Why modularize, and the unit of modularity
+    note: Have concrete reasons ready; "cleanliness" is not one.
+    items:
+      - tone: good
+        text: "**Build time** — Gradle recompiles only the changed module and the modules whose compile classpath it is on; modules build in parallel and hit the build cache one by one."
+      - tone: good
+        text: "**Enforced boundaries** — `internal` is invisible outside its module and an `implementation` dependency is invisible to consumers, so the architecture is compiler-checked, not a wiki page."
+      - tone: good
+        text: "**Ownership** — one team per `feature/*` folder, routed by `CODEOWNERS`; fewer merge conflicts in one giant module."
+      - tone: good
+        text: "**Reuse** — the same `:core:*` modules feed a phone app, a Wear or TV app module, a benchmark module, or a KMP `shared` module."
+      - tone: neutral
+        text: "The unit is the **Gradle module** (a project with its own `build.gradle.kts`): a Kotlin/JVM library, an Android library, or the Android app. Packages inside one module enforce nothing beyond `private`."
+      - tone: bad
+        text: "Cost: configuration per module, DI wiring across module edges, slower Gradle configuration with hundreds of modules, and a graph someone must keep acyclic."
+  - id: settings-and-feature-module
+    kind: code
+    title: "settings.gradle.kts and a feature module's build file"
+    note: "`settings.gradle.kts` declares the modules; a feature's build file names only what it uses — the shared Android, Compose and Hilt setup lives in a convention plugin."
+    prerequisites: &gradle
+      - "A Gradle multi-module Android project (Android Studio's template, Gradle wrapper 9.1 or later, which AGP 9 requires), with the convention plugins and version catalog shown further down"
+      - "Run `./gradlew :feature:orders:assembleDebug` to build one module and only what it depends on"
+    code: |-
+      // settings.gradle.kts
+      pluginManagement {
+          includeBuild("build-logic")                       // convention plugins (see below)
+          repositories { google(); mavenCentral(); gradlePluginPortal() }
+      }
+      dependencyResolutionManagement {
+          repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)   // repositories in one place only
+          repositories { google(); mavenCentral() }
+      }
+      rootProject.name = "shop"
+      include(":app")
+      include(":feature:orders", ":feature:checkout")
+      include(":core:model", ":core:data:api", ":core:data:impl")
+      include(":core:database", ":core:network", ":core:designsystem", ":core:testing")
+
+      // feature/orders/build.gradle.kts
+      plugins {
+          id("shop.android.feature")                        // SDK levels, Compose, Hilt: declared once
+      }
+
+      android {
+          namespace = "com.example.shop.feature.orders"
+      }
+
+      dependencies {
+          implementation(project(":core:data:api"))         // the contract, never :core:data:impl
+          implementation(project(":core:designsystem"))
+          testImplementation(project(":core:testing"))      // fakes of the api interfaces
+          // never: implementation(project(":feature:checkout"))
+      }
+    expected: "Gradle configures the ten modules (plus the empty parent projects `:core`, `:core:data` and `:feature`); building `:feature:orders` compiles it against `:core:data:api`, `:core:model` and `:core:designsystem` only — a change in `:core:data:impl` does not recompile it."
+    validation: &excerpt
+      status: excerpt
+      host: a Gradle multi-module project (needs Gradle, the Android Gradle plugin and the Android SDK)
+  - id: internal-and-its-limits
+    kind: code
+    title: "`internal` is the wall — and where it stops"
+    note: "Expose an interface and a factory, keep the implementation `internal`; but `internal` is a Kotlin compile-time rule, so Java code and reflection still see a public class with mangled member names."
+    prerequisites:
+      - A Kotlin 2.x compiler (`kotlinc`) and JDK 17 or later
+      - "Save as `main.kt`; run `kotlinc main.kt -d out && kotlin -cp out MainKt` (one file is one module, named `main`)"
+    code: |-
+      // ---- :core:data — one Gradle module, here one file ----
+      interface OrderRepository {                                   // public: the module's contract
+          fun recentOrderIds(): List<String>
+      }
+
+      internal class CachedOrderRepository(private val source: () -> List<String>) : OrderRepository {
+          private var cache: List<String>? = null
+          override fun recentOrderIds() = cache ?: source().also { cache = it }
+          internal fun evictAll() { cache = null }                  // tests in this module may call it
+      }
+
+      fun orderRepository(): OrderRepository =                     // the only way in from outside
+          CachedOrderRepository { listOf("A-1", "A-2") }
+
+      // ---- a consumer in another module sees OrderRepository and orderRepository(), nothing else ----
+      fun main() {
+          println(orderRepository().recentOrderIds())
+
+          // The limit: on the JVM the internal class is public and its internal members are renamed
+          // `name$module` — callable from Java and reflection, so never treat internal as security.
+          val compiled = Class.forName("CachedOrderRepository")
+          println(java.lang.reflect.Modifier.isPublic(compiled.modifiers))
+          println(compiled.declaredMethods.map { it.name }.filter { it.startsWith("evict") })
+      }
+    expected: |-
+      [A-1, A-2]
+      true
+      [evictAll$main]
+    validation:
+      status: ran
+      toolchain: kotlinc 2.4.21, JVM 21.0.12.1
+      date: "2026-11-16"
+  - id: module-types-and-dependency-rule
+    kind: table
+    title: "Feature, data and core modules — and the dependency rule"
+    note: "Arrows point from `:app` to features to core, never sideways between features and never back up."
+    headers: [Module, Contains, May depend on, Must not depend on]
+    rows:
+      - ["`:app`", "`Application`, the `NavHost`, DI wiring, build variants", "every feature and `:impl` module", "— (nothing depends on `:app`)"]
+      - ["`:feature:orders`", "screens, view models, its route and graph builder", "`:core:*:api`, `:core:model`, `:core:designsystem`", "other features, any `:impl` module"]
+      - ["`:core:data:api`", "repository interfaces (pure Kotlin/JVM)", "`:core:model`, `kotlinx-coroutines-core`", "Android, `:impl`, features"]
+      - ["`:core:data:impl`", "Room, Retrofit, data sources, the DI bindings", "`:core:data:api`, `:core:database`, `:core:network`", "features"]
+      - ["`:core:model`", "`data class`es shared by everyone (pure Kotlin/JVM)", "the standard library", "everything else"]
+      - ["`:core:designsystem`", "theme, tokens and shared composables", "Compose", "data and feature modules"]
+      - ["`:core:testing`", "fakes of the api interfaces, test rules", "`:core:*:api`", "— added only with `testImplementation`"]
+  - id: api-impl-pairs
+    kind: code
+    title: "api–impl pairs, `api` versus `implementation`, explicit API mode"
+    note: "`api` puts a dependency on every consumer's compile classpath — use it only for types that appear in your public signatures; everything else is `implementation`, invisible to consumers and no reason to recompile them."
+    prerequisites: *gradle
+    code: |-
+      // core/data/api/build.gradle.kts — pure Kotlin: interfaces and the types in their signatures
+      plugins {
+          `java-library`
+          alias(libs.plugins.kotlin.jvm)
+      }
+      kotlin {
+          explicitApi()                              // public declarations need `public` and an explicit type
+      }
+      dependencies {
+          api(project(":core:model"))                // Order is in OrderRepository's signatures: consumers need it
+          api(libs.kotlinx.coroutines.core)          // so is Flow
+      }
+
+      // core/data/impl/build.gradle.kts — the heavy part, hidden behind the api module
+      plugins {
+          id("shop.android.library")
+          alias(libs.plugins.ksp)
+          alias(libs.plugins.hilt)
+      }
+      android { namespace = "com.example.shop.core.data.impl" }
+      dependencies {
+          implementation(project(":core:data:api"))
+          implementation(libs.retrofit)              // never on a consumer's compile classpath
+          implementation(libs.androidx.room.runtime)
+          ksp(libs.androidx.room.compiler)
+          // src/main: internal classes + a Hilt @Module that @Binds OrderRepository to them
+      }
+
+      // app/build.gradle.kts — the composition root is the only module that sees implementations
+      dependencies {
+          implementation(project(":feature:orders"))
+          implementation(project(":feature:checkout"))
+          implementation(project(":core:data:impl"))
+          // a variant can swap it: releaseImplementation(:impl) + debugImplementation(:core:data:fake)
+      }
+    expected: "Features compile against interfaces only; editing a Room query rebuilds `:core:data:impl` and `:app` but no feature module, and a public declaration without an explicit visibility in `:core:data:api` fails compilation."
+    validation: *excerpt
+  - id: convention-plugins-and-catalog
+    kind: code
+    title: Convention plugins and a version catalog
+    note: "Versions live once in `libs.versions.toml`; build logic lives once in `build-logic` as precompiled script plugins, applied by id — so forty modules cannot drift apart."
+    prerequisites: *gradle
+    code: |-
+      # gradle/libs.versions.toml
+      [versions]
+      agp = "9.0.0"
+      kotlin = "2.4.21"
+      hilt = "2.59.2"
+      retrofit = "3.0.0"
+
+      [libraries]
+      android-gradlePlugin = { module = "com.android.tools.build:gradle", version.ref = "agp" }
+      kotlin-gradlePlugin = { module = "org.jetbrains.kotlin:kotlin-gradle-plugin", version.ref = "kotlin" }
+      retrofit = { module = "com.squareup.retrofit2:retrofit", version.ref = "retrofit" }
+      junit = { module = "junit:junit", version = "4.13.2" }
+
+      [plugins]
+      kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }
+      hilt = { id = "com.google.dagger.hilt.android", version.ref = "hilt" }   # 2.59+ is the first for AGP 9
+      # ...the other aliases used on this page (ksp, room, ktor) follow the same shape
+
+      // build-logic/settings.gradle.kts — an included build reads the same catalog
+      dependencyResolutionManagement {
+          repositories { google(); mavenCentral() }
+          versionCatalogs { create("libs") { from(files("../gradle/libs.versions.toml")) } }
+      }
+
+      // build-logic/build.gradle.kts
+      plugins { `kotlin-dsl` }
+
+      dependencies {
+          implementation(libs.android.gradlePlugin)
+          implementation(libs.kotlin.gradlePlugin)    // AGP 9 alone brings KGP 2.2.10; this pins the catalog's
+      }
+
+      // build-logic/src/main/kotlin/shop.android.library.gradle.kts — the plugin id is the file name
+      plugins { id("com.android.library") }          // AGP 9 compiles Kotlin itself: no kotlin-android plugin
+
+      val libs = extensions.getByType<VersionCatalogsExtension>().named("libs")
+
+      android {
+          compileSdk = 36
+          defaultConfig { minSdk = 24 }
+      }
+
+      dependencies {
+          "testImplementation"(libs.findLibrary("junit").get())
+      }
+      // shop.android.feature.gradle.kts applies shop.android.library plus Compose and Hilt the same way
+    expected: "Every module that applies `id(\"shop.android.library\")` gets the same SDK levels and test dependencies; bumping a version is a one-line change in the catalog."
+    sources:
+      - title: Version catalogs — Gradle docs
+        url: https://docs.gradle.org/current/userguide/version_catalogs.html
+      - title: Sharing build logic between subprojects — Gradle docs
+        url: https://docs.gradle.org/current/userguide/sharing_build_logic_between_subprojects.html
+    validation: *excerpt
+  - id: navigation-between-features
+    kind: code
+    title: Navigation between feature modules that never meet
+    note: "Each feature exposes its route, a `navigateTo…` function and a graph builder that takes callbacks, and only `:app` depends on both and connects them, passing ids rather than objects."
+    prerequisites:
+      - "An Android app with Compose, `androidx.navigation:navigation-compose` 2.8 or later, and the Kotlin serialization plugin (`org.jetbrains.kotlin.plugin.serialization`) for type-safe routes"
+      - "Each section below lives in the module named in its comment"
+    code: |-
+      // ---- :feature:orders — knows nothing about checkout ----
+      @Serializable data object OrdersRoute
+
+      fun NavGraphBuilder.ordersScreen(onCheckout: (orderId: String) -> Unit) {
+          composable<OrdersRoute> { OrdersScreen(onCheckout = onCheckout) }
+      }
+
+      // ---- :feature:checkout ----
+      @Serializable data class CheckoutRoute(val orderId: String)
+
+      fun NavController.navigateToCheckout(orderId: String) = navigate(CheckoutRoute(orderId))
+
+      fun NavGraphBuilder.checkoutScreen(onDone: () -> Unit) {
+          composable<CheckoutRoute> { entry ->
+              val route = entry.toRoute<CheckoutRoute>()     // in a view model: savedStateHandle.toRoute()
+              CheckoutScreen(orderId = route.orderId, onDone = onDone)
+          }
+      }
+
+      // ---- :app — the only module that depends on both features ----
+      @Composable
+      fun ShopNavHost(navController: NavHostController = rememberNavController()) {
+          NavHost(navController, startDestination = OrdersRoute) {
+              ordersScreen(onCheckout = navController::navigateToCheckout)
+              checkoutScreen(onDone = { navController.popBackStack(OrdersRoute, inclusive = false) })
+          }
+      }
+    expected: "Tapping an order in the orders screen opens checkout for that order id, and finishing checkout pops back to the list — with no Gradle dependency between the two feature modules."
+    applies:
+      platforms: [android]
+      requires: [Jetpack Compose, Navigation Compose, kotlinx.serialization]
+      versions: { kotlin: ">=2.0", navigation-compose: ">=2.8.0" }
+    sources:
+      - title: Navigation with Compose — Android Developers
+        url: https://developer.android.com/develop/ui/compose/navigation
+    validation:
+      status: excerpt
+      host: an Android app with Jetpack Compose and Navigation Compose (needs the Android SDK and the Compose compiler plugin)
+  - id: kmp-source-sets
+    kind: code
+    title: Kotlin Multiplatform source sets
+    note: "In a KMP module the source set is the boundary: `commonMain` cannot touch the JDK or Android, and each platform source set supplies its own dependencies and `actual`s."
+    prerequisites:
+      - "A Gradle project with the `org.jetbrains.kotlin.multiplatform` plugin; iOS targets build only on macOS with Xcode"
+      - "Run `./gradlew :shared:allTests`"
+    code: |-
+      // shared/build.gradle.kts
+      plugins { alias(libs.plugins.kotlin.multiplatform) }
+
+      kotlin {
+          jvm()                                          // desktop and server
+          iosArm64()
+          iosSimulatorArm64()
+          // Android target: apply com.android.kotlin.multiplatform.library (AGP's KMP library plugin)
+          explicitApi()
+
+          sourceSets {
+              commonMain.dependencies { implementation(libs.kotlinx.coroutines.core) }
+              commonTest.dependencies { implementation(kotlin("test")) }
+              jvmMain.dependencies { implementation(libs.ktor.client.okhttp) }
+              iosMain.dependencies { implementation(libs.ktor.client.darwin) }
+          }
+      }
+
+      // shared/src/commonMain/kotlin/Currency.kt
+      public expect fun currencySymbol(isoCode: String): String
+
+      // shared/src/jvmMain/kotlin/Currency.jvm.kt
+      public actual fun currencySymbol(isoCode: String): String = java.util.Currency.getInstance(isoCode).symbol
+
+      // shared/src/iosMain/kotlin/Currency.ios.kt supplies its actual from Foundation's NSNumberFormatter.
+      // Prefer an interface in commonMain, injected per platform, when the platform part has state.
+    expected: "`commonMain` compiles once for every target; `jvmMain` and `iosMain` each add their own HTTP engine and `actual`, and a JDK call in `commonMain` fails to compile."
+    applies:
+      platforms: [jvm, android]
+      requires: [Kotlin Multiplatform]
+      versions: { kotlin: ">=2.2.10" }
+    sources:
+      - title: Kotlin Multiplatform project structure — Kotlin docs
+        url: https://kotlinlang.org/docs/multiplatform/multiplatform-discover-project.html
+    validation:
+      status: excerpt
+      host: a Kotlin Multiplatform Gradle project (iOS targets need macOS and Xcode)
+  - id: choosing-a-strategy
+    kind: table
+    title: Choosing a strategy
+    note: Start with the cheapest shape that solves today's pain; split again when build time or ownership hurts.
+    headers: [Strategy, Looks like, Use when]
+    rows:
+      - ["One module", "`:app` with packages", "a prototype or a solo developer; nothing is enforced but `private`"]
+      - ["Layer modules", "`:ui`, `:domain`, `:data`", "a small team that wants the layering checked; every feature still touches all three"]
+      - ["Feature + core modules", "`:feature:orders`, `:core:data`, `:core:designsystem`", "several teams or a growing app — Google's and Now in Android's default"]
+      - ["Feature + api–impl pairs", "`:core:data:api` / `:core:data:impl`", "slow builds or swappable implementations: an implementation change no longer recompiles features"]
+      - ["KMP shared module", "`:shared` with `commonMain`", "sharing domain and data code with iOS, desktop or a server"]
+      - ["Included builds / published artifacts", "`includeBuild(\"../payments-sdk\")`, Maven coordinates", "genuine reuse across products or repositories; adds versioning and release work"]
+  - id: pitfalls
+    kind: rules
+    title: Pitfalls
+    note: The ones that undo the benefits.
+    items:
+      - tone: bad
+        text: "**Cycles** — Gradle rejects them; the fix is moving the shared type down into `:core:model` or extracting an api module, never merging the two."
+      - tone: bad
+        text: "**A god `:common` / `:core:utils` module** — everything depends on it, so every change to it rebuilds the world. Split by what changes together."
+      - tone: bad
+        text: "**Over-modularizing** — a module per class costs configuration time, DI wiring and Android library overhead; prefer plain Kotlin/JVM modules where there is no Android code."
+      - tone: bad
+        text: "**`api` everywhere** — it leaks transitive dependencies onto every consumer and turns a one-module change into a cascade of recompiles."
+      - tone: bad
+        text: "**Feature depends on feature** — navigate through `:app` or an api module instead, and pass ids, not objects."
+      - tone: bad
+        text: "**Treating `internal` as security** — it is a compile-time rule; Java and reflection reach it. Keep secrets off the device instead."
+      - tone: good
+        text: "Fail the build when the graph breaks the rule (a dependency-analysis or module-graph check in CI); a diagram in a wiki never holds."
+      - tone: good
+        text: "Give every api module a fake in `:core:testing` and every feature a test source set; a feature should build and test without any `:impl` module."

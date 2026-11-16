@@ -1,0 +1,593 @@
+id: kt-networking-protocols
+concept: networking.protocols
+scope: platform
+title: "Networking — SOAP, gRPC & GraphQL"
+group: Networking & media
+subtitle: "SOAP envelopes and faults with the JDK's XML parser, GraphQL over plain HTTP with kotlinx.serialization and with Apollo Kotlin, gRPC with grpc-kotlin coroutine stubs, WebSockets, and how to choose between them and REST."
+applies:
+  platforms: [jvm, android]
+  runtime: Kotlin/JVM with kotlinx.coroutines and kotlinx.serialization; the JDK's java.net.http client and javax.xml
+  requires: [kotlinx-coroutines-core, kotlinx-serialization-json]
+  versions: { kotlin: ">=2.4", kotlinx-coroutines: ">=1.10", kotlinx-serialization: ">=1.13", jvm: ">=21" }
+sources:
+  - title: Simple Object Access Protocol (SOAP) 1.1 — W3C Note
+    url: https://www.w3.org/TR/2000/NOTE-SOAP-20000508/
+  - title: SOAP Version 1.2 Part 1 — W3C
+    url: https://www.w3.org/TR/soap12-part1/
+  - title: GraphQL over HTTP — GraphQL Foundation
+    url: https://http-spec.graphql.org/draft/
+  - title: Apollo Kotlin — Apollo GraphQL docs
+    url: https://www.apollographql.com/docs/kotlin
+  - title: Kotlin basics tutorial — gRPC
+    url: https://grpc.io/docs/languages/kotlin/basics/
+  - title: XML External Entity Prevention Cheat Sheet — OWASP
+    url: https://cheatsheetseries.owasp.org/cheatsheets/XML_External_Entity_Prevention_Cheat_Sheet.html
+cards:
+  - id: protocols-on-kotlin
+    kind: table
+    title: What goes over the wire, and what you use in Kotlin
+    note: Three of the four ride on HTTP; only gRPC needs its own client stack and generated code.
+    headers: [Protocol, On the wire, Kotlin/Android client, Code generation]
+    rows:
+      - ["**SOAP**", "XML envelope `POST`ed to one URL; `SOAPAction` header (1.1) or `action` in the content type (1.2)", "any HTTP client + `javax.xml` on the JVM, `XmlPullParser` on Android", "optional, from a WSDL (JAX-WS tools, mostly server-side)"]
+      - ["**GraphQL**", "JSON `{query, variables}` `POST`ed to `/graphql`; the reply holds `data` **and** `errors`; request errors are `4xx` under `application/graphql-response+json`", "Apollo Kotlin, or kotlinx.serialization over Ktor/OkHttp", "Apollo generates typed models from `.graphql` files and the schema"]
+      - ["**gRPC**", "Protocol Buffers over HTTP/2 with trailers carrying the status", "`grpc-kotlin` coroutine stubs on `grpc-okhttp` (Android) or `grpc-netty` (JVM)", "required: `protoc` with the `grpc` and `grpckt` plugins"]
+      - ["**WebSocket**", "an upgraded HTTP connection carrying frames both ways", "OkHttp `newWebSocket`, Ktor `webSocket { }`", "none"]
+  - id: soap-envelope-call
+    kind: code
+    title: "SOAP: build the envelope and POST it"
+    note: "Escape every value you put in the envelope and send the SOAP 1.1 headers; then read the reply with the next cards' `readSoap()` and `vatCheck()` rather than guessing."
+    prerequisites: &run
+      - "A Kotlin 2.x compiler (`kotlinc`), JDK 21 or later and `kotlinx-coroutines-core-jvm-1.10.2.jar`; `java.net.http` is in the JDK"
+      - "Save as `main.kt`; run `kotlinc -cp kotlinx-coroutines-core-jvm-1.10.2.jar main.kt -d out && kotlin -cp out:kotlinx-coroutines-core-jvm-1.10.2.jar MainKt` — it serves a stub of the service on `127.0.0.1` and stops it"
+      - "Or, in a Gradle project: `implementation(\"org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.2\")`"
+    code: |-
+      import com.sun.net.httpserver.HttpServer
+      import java.net.*
+      import java.net.http.*
+      import kotlinx.coroutines.future.await
+      import kotlinx.coroutines.runBlocking
+
+      const val VIES = "urn:ec.europa.eu:taxud:vies:services:checkVat:types"
+
+      fun String.xmlEscaped() = replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")   // element text
+
+      fun checkVatEnvelope(country: String, number: String) = """
+          <?xml version="1.0" encoding="UTF-8"?>
+          <soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/" xmlns:v="$VIES">
+            <soap:Body><v:checkVat>
+              <v:countryCode>${country.xmlEscaped()}</v:countryCode>
+              <v:vatNumber>${number.xmlEscaped()}</v:vatNumber>
+            </v:checkVat></soap:Body></soap:Envelope>""".trimIndent()
+
+      suspend fun postSoap(http: HttpClient, endpoint: URI, envelope: String): Pair<Int, String> {
+          val request = HttpRequest.newBuilder(endpoint)
+              .header("Content-Type", "text/xml; charset=utf-8")
+              .header("SOAPAction", "\"\"")                          // SOAP 1.1 requires the header, even empty
+              .POST(HttpRequest.BodyPublishers.ofString(envelope)).build()
+          val response = http.sendAsync(request, HttpResponse.BodyHandlers.ofString()).await()
+          return response.statusCode() to response.body()
+      }
+
+      fun main() = runBlocking {                                   // postSoap returns raw status and body
+          val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+          server.createContext("/checkVatService") { ex ->
+              val sent = ex.requestBody.readAllBytes().decodeToString().lines().first { "vatNumber>" in it }
+              println("server: ${ex.requestHeaders.getFirst("Content-Type")}, ${sent.trim()}")
+              val reply = """<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"><s:Body>""" +
+                  """<checkVatResponse xmlns="$VIES"><valid>true</valid></checkVatResponse></s:Body></s:Envelope>"""
+              ex.sendResponseHeaders(200, reply.length.toLong())
+              ex.responseBody.use { it.write(reply.encodeToByteArray()) }
+          }
+          server.start()
+
+          HttpClient.newHttpClient().use { http ->
+              val endpoint = URI("http://127.0.0.1:${server.address.port}/checkVatService")
+              val (status, body) = postSoap(http, endpoint, checkVatEnvelope("DE", "123<456>789"))
+              println("HTTP $status, ${body.length} bytes: next, readSoap() and vatCheck()")
+          }
+          server.stop(0)
+      }
+    expected: |-
+      server: text/xml; charset=utf-8, <v:vatNumber>123&lt;456&gt;789</v:vatNumber>
+      HTTP 200, 210 bytes: next, readSoap() and vatCheck()
+    validation: &ran
+      status: ran
+      toolchain: kotlinc 2.4.21, JVM 21.0.12.1, kotlinx-coroutines-core 1.10.2
+      date: "2026-11-16"
+  - id: soap-fault
+    kind: code
+    title: "SOAP: find the Body, and classify a Fault in 1.1 or 1.2"
+    note: "Look for a Fault only in the envelope's Body, never the Header; `Server` (1.1) or `Receiver` (1.2) means the service is down, `Client` or `Sender` means your request is wrong."
+    prerequisites:
+      - A Kotlin 2.x compiler (`kotlinc`) and JDK 17 or later; `javax.xml` is in the JDK
+      - "Save as `main.kt`; run `kotlinc main.kt -include-runtime -d main.jar && java -jar main.jar`"
+    code: |-
+      import javax.xml.parsers.DocumentBuilderFactory
+      import org.w3c.dom.Element
+
+      const val SOAP11 = "http://schemas.xmlsoap.org/soap/envelope/"
+      const val SOAP12 = "http://www.w3.org/2003/05/soap-envelope"
+
+      class SoapFault(val serviceDown: Boolean, reason: String) :
+          Exception((if (serviceDown) "service down, retry later: " else "our request is wrong: ") + reason)
+
+      fun parseXml(xml: String): Element = DocumentBuilderFactory.newInstance().apply {
+          isNamespaceAware = true
+          setFeature("http://apache.org/xml/features/disallow-doctype-decl", true)   // no DTD: no XXE
+          setFeature("http://javax.xml.XMLConstants/feature/secure-processing", true)   // FEATURE_SECURE_PROCESSING
+      }.newDocumentBuilder().parse(xml.byteInputStream()).documentElement
+
+      fun Element.child(ns: String?, name: String): Element? = generateSequence(firstChild) { it.nextSibling }
+          .filterIsInstance<Element>().firstOrNull { it.namespaceURI == ns && it.localName == name }
+
+      fun readSoap(status: Int, xml: String): Element {                       // the Body, SOAP 1.1 or 1.2
+          val envelope = runCatching { parseXml(xml) }.getOrNull()           // a proxy's HTML, a refused DOCTYPE
+          val ns = envelope?.namespaceURI?.takeIf { it == SOAP11 || it == SOAP12 }
+          val body = ns?.let { envelope.child(it, "Body") } ?: throw SoapFault(true, "HTTP $status, not SOAP")
+          val fault = body.child(ns, "Fault") ?: return body                 // the Body only, never the Header
+          val (code, reason) = if (ns == SOAP11) fault.child(null, "faultcode") to fault.child(null, "faultstring")
+              else fault.child(ns, "Code")?.child(ns, "Value") to fault.child(ns, "Reason")?.child(ns, "Text")
+          val kind = code?.textContent?.trim()?.substringAfter(':')?.substringBefore('.')   // e:Server.Busy: Server
+          throw SoapFault(kind != "Client" && kind != "Sender", "$kind: ${reason?.textContent.orEmpty()}")
+      }
+
+      fun env(body: String, header: String = "", ns: String = SOAP11) =
+          """<e:Envelope xmlns:e="$ns"><e:Header>$header</e:Header><e:Body>$body</e:Body></e:Envelope>"""
+      fun fault11(code: String, text: String) = env("<e:Fault>$code<faultstring>$text</faultstring></e:Fault>")
+      fun fault12(code: String, text: String, sub: String = "") = env(ns = SOAP12, body = "<e:Fault><e:Code>" +
+          "<e:Value>e:$code</e:Value>$sub</e:Code><e:Reason><e:Text>$text</e:Text></e:Reason></e:Fault>")
+
+      fun main() {
+          val replies = listOf(
+              200 to env("<checkVatResponse/>", header = "<e:Fault>spoofed in the Header</e:Fault>"),
+              500 to fault11("<faultcode>\n  e:Server.Busy </faultcode>", "MS_MAX_CONCURRENT_REQ"),
+              500 to fault11("", "MS_UNAVAILABLE"),                              // no faultcode at all
+              500 to fault12("Receiver", "MS_UNAVAILABLE", "<e:Subcode><e:Value>e:Busy</e:Value></e:Subcode>"),
+              400 to fault12("Sender", "INVALID_INPUT"),
+          )
+          for ((status, xml) in replies) {
+              println(runCatching { "Body: " + readSoap(status, xml).firstChild.localName }.getOrElse { "$it" })
+          }
+      }
+    expected: |-
+      Body: checkVatResponse
+      SoapFault: service down, retry later: Server: MS_MAX_CONCURRENT_REQ
+      SoapFault: service down, retry later: null: MS_UNAVAILABLE
+      SoapFault: service down, retry later: Receiver: MS_UNAVAILABLE
+      SoapFault: our request is wrong: Sender: INVALID_INPUT
+    validation:
+      status: ran
+      toolchain: kotlinc 2.4.21, JVM 21.0.12.1
+      date: "2026-11-16"
+  - id: soap-vat-result
+    kind: code
+    title: "SOAP: read the answer from the Body, and nothing else"
+    note: "Read the result only inside the Body, accept every `xs:boolean` spelling, and report a missing answer or an unreadable reply as unknown — never as invalid."
+    prerequisites:
+      - A Kotlin 2.x compiler (`kotlinc`) and JDK 17 or later; `javax.xml` is in the JDK
+      - "Save as `main.kt`; run `kotlinc main.kt -include-runtime -d main.jar && java -jar main.jar` (the JDK parser logs the refused DOCTYPE and the broken HTML to stderr); in the app, `readSoap()` from the previous card hands over the Body"
+    code: |-
+      import javax.xml.parsers.DocumentBuilderFactory
+      import org.w3c.dom.Element
+
+      const val SOAP11 = "http://schemas.xmlsoap.org/soap/envelope/"
+      const val VIES = "urn:ec.europa.eu:taxud:vies:services:checkVat:types"
+
+      sealed interface VatCheck {
+          data class Valid(val name: String?) : VatCheck
+          data object Invalid : VatCheck
+          data class Unknown(val reason: String) : VatCheck                    // never tell the user "invalid"
+      }
+
+      fun Element.child(ns: String?, name: String): Element? = generateSequence(firstChild) { it.nextSibling }
+          .filterIsInstance<Element>().firstOrNull { it.namespaceURI == ns && it.localName == name }
+
+      fun bodyOf(xml: String): Element? = runCatching {
+          DocumentBuilderFactory.newInstance().apply {
+              isNamespaceAware = true
+              setFeature("http://apache.org/xml/features/disallow-doctype-decl", true)   // no DTD: no XXE
+              setFeature("http://javax.xml.XMLConstants/feature/secure-processing", true)
+          }.newDocumentBuilder().parse(xml.byteInputStream()).documentElement
+      }.getOrNull()?.takeIf { it.namespaceURI == SOAP11 }?.child(SOAP11, "Body")
+
+      fun vatCheck(body: Element?): VatCheck {
+          val result = body?.child(VIES, "checkVatResponse") ?: return VatCheck.Unknown("not a checkVatResponse")
+          return when (result.child(VIES, "valid")?.textContent?.trim()) {      // xs:boolean: true, false, 1, 0
+              "true", "1" -> VatCheck.Valid(result.child(VIES, "name")?.textContent)
+              "false", "0" -> VatCheck.Invalid
+              else -> VatCheck.Unknown("no <valid> answer")
+          }
+      }
+
+      fun reply(header: String, result: String) = """<s:Envelope xmlns:s="$SOAP11" xmlns:v="$VIES">""" +
+          "<s:Header>$header</s:Header><s:Body><v:checkVatResponse>$result</v:checkVatResponse></s:Body>" +
+          "</s:Envelope>"
+
+      fun main() {
+          val replies = listOf(
+              reply("", "<v:valid>true</v:valid><v:name>Musterfirma GmbH</v:name>"),
+              reply("", "<v:valid>1</v:valid>"),
+              reply("<v:valid>true</v:valid>", "<v:valid>false</v:valid>"),   // a Header cannot overrule the Body
+              reply("", ""),
+              "<html><body>502 Bad Gateway</body>",
+              """<!DOCTYPE e [<!ENTITY x SYSTEM "file:///etc/passwd">]><e>&x;</e>""",
+          )
+          for (xml in replies) println(vatCheck(bodyOf(xml)))
+      }
+    expected: |-
+      Valid(name=Musterfirma GmbH)
+      Valid(name=null)
+      Invalid
+      Unknown(reason=no <valid> answer)
+      Unknown(reason=not a checkVatResponse)
+      Unknown(reason=not a checkVatResponse)
+    validation:
+      status: ran
+      toolchain: kotlinc 2.4.21, JVM 21.0.12.1
+      date: "2026-11-16"
+  - id: graphql-query-variables
+    kind: code
+    title: "GraphQL: a typed query with variables over HTTP"
+    note: "Send values as typed `variables` — a `@Serializable` class keeps `Boolean!` a boolean — never by building the query string."
+    prerequisites:
+      - "A Kotlin 2.x compiler (`kotlinc`), JDK 21 or later, `kotlinx-serialization-core-jvm-1.13.0.jar` and `kotlinx-serialization-json-jvm-1.13.0.jar`"
+      - "Save as `main.kt`; run `kotlinc -Xplugin=$KOTLIN_HOME/lib/kotlinx-serialization-compiler-plugin.jar -cp <the two jars> main.kt -d out && kotlin -cp out:<the two jars> MainKt` — it serves a stub GraphQL endpoint on `127.0.0.1` and stops it"
+      - "Or, in a Gradle project: the `kotlin(\"plugin.serialization\")` plugin and `kotlinx-serialization-json:1.13.0`"
+    code: |-
+      import com.sun.net.httpserver.HttpServer
+      import java.net.*
+      import java.net.http.*
+      import kotlinx.serialization.*
+      import kotlinx.serialization.json.*
+
+      @Serializable data class GraphQLRequest<V>(val query: String, val variables: V)
+      @Serializable data class GraphQLError(val message: String)
+      @Serializable data class GraphQLResponse<D>(val data: D? = null, val errors: List<GraphQLError> = emptyList())
+      @Serializable data class OrderVars(val id: String, val withTracking: Boolean)     // typed: ID!, Boolean!
+      @Serializable data class OrderData(val order: Order?)
+      @Serializable data class Order(val id: String, val status: String, val trackingNumber: String? = null)
+
+      const val ORDER_QUERY = "query OrderById(\$id: ID!, \$withTracking: Boolean!) " +
+          "{ order(id: \$id) { id status trackingNumber @include(if: \$withTracking) } }"
+      val json = Json { ignoreUnknownKeys = true }
+
+      fun order(http: HttpClient, endpoint: URI, vars: OrderVars): GraphQLResponse<OrderData> {
+          val body = json.encodeToString(GraphQLRequest(ORDER_QUERY, vars))    // values as JSON, not in the query
+          val request = HttpRequest.newBuilder(endpoint).header("Content-Type", "application/json")
+              .header("Accept", "application/graphql-response+json, application/json")
+              .POST(HttpRequest.BodyPublishers.ofString(body)).build()
+          val response = http.send(request, HttpResponse.BodyHandlers.ofString())        // Dispatchers.IO in an app
+          return json.decodeFromString(response.body())               // a non-2xx status: the next card
+      }
+
+      fun main() {
+          val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+          server.createContext("/graphql") { ex ->
+              val sent = json.parseToJsonElement(ex.requestBody.readAllBytes().decodeToString())
+              println("server: variables ${sent.jsonObject["variables"]}")
+              val reply = """{"data":{"order":{"id":"A-1041","status":"SHIPPED","trackingNumber":"1Z999"}}}"""
+              ex.responseHeaders.add("Content-Type", "application/graphql-response+json")
+              ex.sendResponseHeaders(200, reply.length.toLong())
+              ex.responseBody.use { it.write(reply.encodeToByteArray()) }
+          }
+          server.start()
+
+          HttpClient.newHttpClient().use { http ->
+              val endpoint = URI("http://127.0.0.1:${server.address.port}/graphql")
+              println(order(http, endpoint, OrderVars("A-1041", withTracking = true)))
+          }
+          server.stop(0)
+      }
+    expected: |-
+      server: variables {"id":"A-1041","withTracking":true}
+      GraphQLResponse(data=OrderData(order=Order(id=A-1041, status=SHIPPED, trackingNumber=1Z999)), errors=[])
+    validation:
+      status: ran
+      toolchain: kotlinc 2.4.21, JVM 21.0.12.1, kotlinx-serialization-json 1.13.0
+      date: "2026-11-16"
+  - id: graphql-http-status
+    kind: code
+    title: "GraphQL: a 4xx can still be a GraphQL answer"
+    note: "Under `application/graphql-response+json` a request error comes as a `4xx` that still carries `errors`, so decode the body; anything else that is not `2xx` is a transport error."
+    prerequisites:
+      - "A Kotlin 2.x compiler (`kotlinc`), JDK 21 or later, `kotlinx-serialization-core-jvm-1.13.0.jar` and `kotlinx-serialization-json-jvm-1.13.0.jar`"
+      - "Save as `main.kt`; run `kotlinc -Xplugin=$KOTLIN_HOME/lib/kotlinx-serialization-compiler-plugin.jar -cp <the two jars> main.kt -d out && kotlin -cp out:<the two jars> MainKt` — it serves a stub GraphQL endpoint on `127.0.0.1` and stops it"
+    code: |-
+      import com.sun.net.httpserver.HttpServer
+      import java.net.*
+      import java.net.http.*
+      import kotlinx.serialization.*
+      import kotlinx.serialization.json.Json
+
+      const val GQL = "application/graphql-response+json"
+
+      @Serializable data class GraphQLError(val message: String)
+      @Serializable data class GraphQLResponse<D>(val data: D? = null, val errors: List<GraphQLError> = emptyList())
+      @Serializable data class OrderData(val order: Order?)
+      @Serializable data class Order(val id: String, val status: String)
+
+      fun graphQLResult(response: HttpResponse<String>): GraphQLResponse<OrderData> {
+          val graphQL = response.headers().firstValue("Content-Type").orElse("").startsWith(GQL)
+          check(response.statusCode() in 200..299 || graphQL) { "HTTP ${response.statusCode()}: not GraphQL" }
+          return Json.decodeFromString(response.body())
+      }
+
+      fun main() {
+          val replies = ArrayDeque(listOf(
+              Triple(400, GQL, """{"errors":[{"message":"Cannot query field \"tracking\" on type \"Order\"."}]}"""),
+              Triple(422, GQL, """{"errors":[{"message":"Variable \"${'$'}id\" got invalid value 42."}]}"""),
+              Triple(502, "text/html", "<html>Bad Gateway</html>"),
+          ))
+          val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+          server.createContext("/graphql") { ex ->
+              val (status, type, reply) = replies.removeFirst()
+              ex.responseHeaders.add("Content-Type", type)
+              ex.sendResponseHeaders(status, reply.length.toLong())
+              ex.responseBody.use { it.write(reply.encodeToByteArray()) }
+          }
+          server.start()
+
+          HttpClient.newHttpClient().use { http ->
+              val query = """{"query":"{ order(id: \"A-1041\") { id status } }"}"""
+              val request = HttpRequest.newBuilder(URI("http://127.0.0.1:${server.address.port}/graphql"))
+                  .POST(HttpRequest.BodyPublishers.ofString(query)).build()
+              repeat(3) {
+                  val response = http.send(request, HttpResponse.BodyHandlers.ofString())
+                  println(runCatching { graphQLResult(response) }.getOrElse { "transport error: ${it.message}" })
+              }
+          }
+          server.stop(0)
+      }
+    expected: |-
+      GraphQLResponse(data=null, errors=[GraphQLError(message=Cannot query field "tracking" on type "Order".)])
+      GraphQLResponse(data=null, errors=[GraphQLError(message=Variable "$id" got invalid value 42.)])
+      transport error: HTTP 502: not GraphQL
+    validation:
+      status: ran
+      toolchain: kotlinc 2.4.21, JVM 21.0.12.1, kotlinx-serialization-json 1.13.0
+      date: "2026-11-16"
+  - id: graphql-mutation-errors
+    kind: code
+    title: "GraphQL: a mutation, and errors beside data"
+    note: "Read `errors` next to `data`: a field can fail while the rest of the response is fine, and the error's `path` says which one."
+    prerequisites:
+      - "A Kotlin 2.x compiler (`kotlinc`), JDK 17 or later, `kotlinx-serialization-core-jvm-1.13.0.jar` and `kotlinx-serialization-json-jvm-1.13.0.jar`"
+      - "Save as `main.kt`; run `kotlinc -Xplugin=$KOTLIN_HOME/lib/kotlinx-serialization-compiler-plugin.jar -cp <the two jars> main.kt -d out && kotlin -cp out:<the two jars> MainKt` — the replies are the bodies a server sends; the request goes out as in the previous card"
+    code: |-
+      import kotlinx.serialization.*
+      import kotlinx.serialization.json.*
+
+      // mutation CancelOrder($id: ID!, $reason: String!) { cancelOrder(id: $id, reason: $reason) { id status } }
+
+      @Serializable
+      data class GraphQLError(
+          val message: String,
+          val path: List<JsonElement> = emptyList(),
+          val extensions: JsonObject? = null,
+      )
+
+      @Serializable data class GraphQLResponse<D>(val data: D? = null, val errors: List<GraphQLError> = emptyList())
+      @Serializable data class CancelData(val cancelOrder: CancelledOrder?)
+      @Serializable data class CancelledOrder(val id: String, val status: String)
+
+      sealed interface CancelResult {
+          data class Cancelled(val order: CancelledOrder) : CancelResult
+          data class Rejected(val code: String, val message: String) : CancelResult   // a field error
+          data class Failed(val messages: List<String>) : CancelResult                // a request error: no data
+      }
+
+      fun interpret(response: GraphQLResponse<CancelData>): CancelResult {
+          response.data?.cancelOrder?.let { return CancelResult.Cancelled(it) }
+          val fieldError = response.errors.firstOrNull { it.path.firstOrNull() == JsonPrimitive("cancelOrder") }
+          if (response.data == null || fieldError == null) {
+              return CancelResult.Failed(response.errors.map { it.message })
+          }
+          val code = fieldError.extensions?.get("code")?.jsonPrimitive?.content ?: "UNKNOWN"
+          return CancelResult.Rejected(code, fieldError.message)
+      }
+
+      fun main() {
+          val replies = listOf(
+              """{"data":{"cancelOrder":{"id":"A-1042","status":"CANCELLED"}}}""",
+              """{"data":{"cancelOrder":null},"errors":[{"message":"Order A-1041 has already shipped",""" +
+                  """"path":["cancelOrder"],"extensions":{"code":"FAILED_PRECONDITION"}}]}""",
+              """{"errors":[{"message":""" +
+                  """"Variable \"${'$'}reason\" of required type \"String!\" was not provided."}]}""",
+          )
+          for (reply in replies) println(interpret(Json.decodeFromString(reply)))
+      }
+    expected: |-
+      Cancelled(order=CancelledOrder(id=A-1042, status=CANCELLED))
+      Rejected(code=FAILED_PRECONDITION, message=Order A-1041 has already shipped)
+      Failed(messages=[Variable "$reason" of required type "String!" was not provided.])
+    validation:
+      status: ran
+      toolchain: kotlinc 2.4.21, JVM 21.0.12.1, kotlinx-serialization-json 1.13.0
+      date: "2026-11-16"
+  - id: apollo-kotlin
+    kind: code
+    title: "GraphQL with Apollo Kotlin, in outline"
+    note: "Apollo generates a typed class per operation from your `.graphql` files and the schema — no hand-written models, no string queries."
+    applies:
+      platforms: [android, jvm]
+      runtime: an Android app or JVM service with the Apollo Kotlin Gradle plugin
+      requires: [apollo-runtime]
+      versions: { kotlin: ">=2.4", apollo-kotlin: "5.2.0" }
+    sources:
+      - title: Error handling — Apollo Kotlin docs
+        url: https://www.apollographql.com/docs/kotlin/essentials/errors
+      - title: Mutations — Apollo Kotlin docs
+        url: https://www.apollographql.com/docs/kotlin/essentials/mutations
+    prerequisites:
+      - "Gradle: `plugins { id(\"com.apollographql.apollo\") version \"5.2.0\" }`, `implementation(\"com.apollographql.apollo:apollo-runtime:5.2.0\")` and `apollo { service(\"service\") { packageName.set(\"com.example.shop\") } }`"
+      - "The schema (`schema.graphqls`) and the operations below in `src/main/graphql/`; building generates `OrderByIdQuery` and `CancelOrderMutation`"
+    code: |-
+      // src/main/graphql/Orders.graphql
+      //   query OrderById($id: ID!) { order(id: $id) { id status totalCents } }
+      //   mutation CancelOrder($id: ID!, $reason: String!) { cancelOrder(id: $id, reason: $reason) { id status } }
+
+      val apollo = ApolloClient.Builder()
+          .serverUrl("https://api.example.com/graphql")
+          .build()                                                   // one per app, like an OkHttpClient
+
+      sealed interface OrderLoad {
+          data class Loaded(val status: String) : OrderLoad
+          data class NotFound(val message: String) : OrderLoad
+          data class Offline(val cause: Throwable) : OrderLoad
+      }
+
+      suspend fun loadOrder(id: String): OrderLoad {
+          val response = apollo.query(OrderByIdQuery(id = id)).execute()
+          val order = response.data?.order
+          val failure = response.exception
+          return when {
+              order != null -> OrderLoad.Loaded(order.status)          // possibly partial data elsewhere
+              failure != null -> OrderLoad.Offline(failure)            // fetch error: no data
+              else -> OrderLoad.NotFound(response.errors?.firstOrNull()?.message ?: "no such order")
+          }
+      }
+
+      suspend fun cancel(id: String) = apollo
+          .mutation(CancelOrderMutation(id = id, reason = "customer request"))
+          .execute()
+          .dataOrThrow()
+          .cancelOrder
+    expected: "`loadOrder(\"A-1041\")` returns `Loaded(\"SHIPPED\")`; a network failure lands in `Offline` and a GraphQL error without data in `NotFound`."
+    validation:
+      status: excerpt
+      host: an Android app or JVM project with the Apollo Kotlin 5 Gradle plugin and a GraphQL schema
+  - id: grpc-kotlin
+    kind: code
+    title: "gRPC with grpc-kotlin: unary, server stream, deadline, status"
+    note: "Coroutine stubs make a unary call a `suspend fun` and a server stream a `Flow`; start each call's deadline when the call starts, and branch on `Status.Code`."
+    applies:
+      platforms: [android, jvm]
+      runtime: an Android app or JVM service with generated grpc-kotlin stubs
+      requires: [grpc-kotlin-stub, grpc-okhttp, protobuf-kotlin]
+      versions: { kotlin: ">=2.4", grpc-kotlin: "1.5.0", grpc-java: "1.76.0" }
+    sources:
+      - title: Kotlin basics tutorial — gRPC
+        url: https://grpc.io/docs/languages/kotlin/basics/
+      - title: Deadlines — gRPC
+        url: https://grpc.io/docs/guides/deadlines/
+      - title: Status codes — gRPC
+        url: https://grpc.io/docs/guides/status-codes/
+    prerequisites:
+      - "Gradle: the `com.google.protobuf` plugin with the `grpc` (`protoc-gen-grpc-java`) and `grpckt` (`protoc-gen-grpc-kotlin`) plugins and the `kotlin` builtin; `io.grpc:grpc-kotlin-stub:1.5.0`, `io.grpc:grpc-protobuf-lite` and `grpc-okhttp` (Android) or `grpc-protobuf` and `grpc-netty-shaded` (JVM)"
+      - "`orders.proto` declares `service Orders { rpc GetOrder(GetOrderRequest) returns (Order); rpc WatchOrder(WatchOrderRequest) returns (stream OrderUpdate); }`; `RetryableException` is your own wrapper that the retry policy recognises"
+    code: |-
+      class OrdersRepository(host: String) : Closeable {
+          private val channel = ManagedChannelBuilder.forAddress(host, 443)
+              .useTransportSecurity()                                 // TLS; usePlaintext() only for an emulator
+              .build()
+          private val stub = OrdersGrpcKt.OrdersCoroutineStub(channel)
+
+          suspend fun order(id: String): Order? = try {
+              stub.withDeadlineAfter(5, TimeUnit.SECONDS)               // computed now: this call only
+                  .getOrder(getOrderRequest { this.id = id })
+          } catch (e: StatusException) {
+              when (e.status.code) {
+                  Status.Code.NOT_FOUND -> null
+                  Status.Code.UNAVAILABLE -> throw RetryableException(e)   // transient; the call is a read
+                  else -> throw e                                     // DEADLINE_EXCEEDED, PERMISSION_DENIED…
+              }
+          }
+
+          // Server stream: the deadline starts when someone collects, so a re-collected flow gets a fresh one.
+          fun updates(id: String): Flow<OrderUpdate> = flow {
+              emitAll(stub.withDeadlineAfter(10, TimeUnit.MINUTES).watchOrder(watchOrderRequest { orderId = id }))
+          }
+
+          override fun close() {
+              channel.shutdown().awaitTermination(5, TimeUnit.SECONDS)
+          }
+      }
+
+      // In a ViewModel: collection ends, and the RPC is cancelled, when viewModelScope is.
+      // repository.updates("A-1041").onEach { _state.value = it.status.name }.launchIn(viewModelScope)
+    expected: "`order(\"A-1041\")` suspends until the unary reply or the 5-second deadline; each collection of `updates(\"A-1041\")` opens one RPC with its own 10-minute deadline, and cancelling the collector cancels the call."
+    validation:
+      status: excerpt
+      host: an Android app or JVM project with protoc-generated grpc-kotlin stubs and a reachable gRPC server
+  - id: websockets
+    kind: code
+    title: "Bonus: a WebSocket as a Flow with OkHttp"
+    note: "`callbackFlow` turns the listener into a cold stream: the socket opens on collect and closes when the collector is cancelled."
+    applies:
+      platforms: [android, jvm]
+      runtime: an Android app or JVM service with OkHttp and kotlinx.coroutines
+      requires: [okhttp, kotlinx-coroutines-core]
+      versions: { kotlin: ">=2.4", okhttp: "5.5.1", kotlinx-coroutines: ">=1.10" }
+    sources:
+      - title: OkHttp
+        url: https://lysine.dev/okhttp/
+      - title: callbackFlow — kotlinx.coroutines API
+        url: https://kotlinlang.org/api/kotlinx.coroutines/kotlinx-coroutines-core/kotlinx.coroutines.flow/callback-flow.html
+    prerequisites:
+      - "Gradle: `com.squareup.okhttp3:okhttp:5.5.1` and `org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.2`"
+      - "One shared `OkHttpClient`; a server at `wss://api.example.com/orders/live` that pushes order updates as text frames"
+    code: |-
+      fun OkHttpClient.liveOrders(url: String, subscribe: String): Flow<String> = callbackFlow {
+          val socket = newWebSocket(Request.Builder().url(url).build(), object : WebSocketListener() {
+              override fun onOpen(webSocket: WebSocket, response: Response) {
+                  webSocket.send(subscribe)                    // e.g. {"type":"subscribe","orderId":"A-1041"}
+              }
+              override fun onMessage(webSocket: WebSocket, text: String) {
+                  trySend(text)                                // the buffer below is unbounded: never dropped
+              }
+              override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
+                  webSocket.close(1000, null)
+                  close()                                      // the server said goodbye: complete the flow
+              }
+              override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+                  close(t)                                     // the collector sees the exception
+              }
+          })
+          awaitClose { socket.close(1000, "client gone") }     // collector cancelled → close the socket
+      }.buffer(Channel.UNLIMITED)                  // every order event matters; conflate() if only the latest does
+
+      // viewModelScope.launch {
+      //     client.liveOrders(url, subscribeJson)
+      //         .retryWhen { cause, attempt -> cause !is ProtocolException && attempt < 5 && backOff(attempt) }
+      //         .collect { frame -> _state.update { it.copy(lastEvent = frame) } }
+      // }
+      // ProtocolException covers a refused upgrade (e.g. 401): sign in again instead of retrying.
+    expected: Each text frame the server pushes reaches the collector in order, none dropped; cancelling the collecting coroutine closes the socket with code 1000.
+    validation:
+      status: excerpt
+      host: an Android app or JVM service with OkHttp and a WebSocket server
+  - id: choosing-a-protocol
+    kind: table
+    title: Choosing between REST, SOAP, gRPC and GraphQL
+    note: The server usually decides; when you get to choose, choose by who the clients are.
+    headers: [Concern, REST, SOAP, gRPC, GraphQL]
+    rows:
+      - ["Contract", "OpenAPI, optional", "WSDL + XSD, strict", "`.proto`, required", "schema (SDL), required"]
+      - ["Payload", "JSON, any shape", "XML envelope, verbose", "Protobuf binary, small", "JSON shaped by the query"]
+      - ["HTTP caching", "**yes** — `GET`, ETag, CDN", "no (all `POST`)", "no", "hard (`POST`); persisted queries over `GET` help"]
+      - ["Streaming", "SSE or chunked", "no", "**client, server and bidirectional**", "subscriptions over WebSocket"]
+      - ["Errors", "HTTP status + body", "`Fault` (HTTP 500; 400 for a SOAP 1.2 `Sender` fault)", "`Status.Code` in trailers", "`errors` beside `data`; request errors are `4xx` under `application/graphql-response+json`"]
+      - ["Android tooling", "Retrofit, Ktor, OkHttp", "hand-rolled XML (no maintained client)", "grpc-kotlin + grpc-okhttp + protobuf-lite", "Apollo Kotlin"]
+      - ["Best fit", "public APIs, simple CRUD, cacheable reads", "enterprise and government integrations you cannot change", "internal service-to-service, low latency, streaming", "many screens needing different slices of one graph"]
+  - id: protocols-rules
+    kind: rules
+    title: Rules worth saying out loud
+    note: Each protocol has one mistake that everyone makes once.
+    items:
+      - tone: bad
+        text: "Parsing untrusted XML with a default `DocumentBuilderFactory` — set `disallow-doctype-decl` (XXE, entity expansion), and `FEATURE_SECURE_PROCESSING` for size limits. On Android, `XmlPullParser` leaves `FEATURE_PROCESS_DOCDECL` off by default — keep it off."
+      - tone: bad
+        text: "Reading a missing `<valid>` or a fault as `false` — a SOAP `Server` fault, an HTML 502 or an empty body means **unknown**, and the user must not be told their data is invalid."
+      - tone: bad
+        text: "Building SOAP envelopes or GraphQL queries by string concatenation of user input — escape XML text; pass GraphQL values as `variables`."
+      - tone: bad
+        text: "Treating GraphQL HTTP 200 as success, or throwing away a `4xx` body — partial data is normal, and request errors arrive as `errors` with a `4xx` under `application/graphql-response+json`."
+      - tone: bad
+        text: "A gRPC call without a deadline: it can wait forever on a half-open connection. Set `withDeadlineAfter` on every call, at the moment of the call, and propagate the remaining time downstream."
+      - tone: good
+        text: "gRPC on Android: `grpc-okhttp` transport and the **lite** protobuf runtime (`protobuf-kotlin-lite`, `grpc-protobuf-lite`) to keep the APK small; reuse one `ManagedChannel` for the app."
+      - tone: good
+        text: "Map each protocol's failure — HTTP status, SOAP `Fault`, gRPC `Status.Code`, GraphQL `errors` — onto the same sealed error type, so screens do not care which one the backend speaks."
+      - tone: neutral
+        text: "Retry rules differ: gRPC `UNAVAILABLE` is usually transient — retry with backoff, and only idempotent calls; `DEADLINE_EXCEEDED` may hide a completed write. A SOAP `Client` fault never succeeds on retry, a `Server` fault might."

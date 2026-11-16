@@ -1,0 +1,482 @@
+id: kt-strings
+concept: strings.operations
+scope: shared
+title: "Strings — Standard Operations"
+group: Shared concepts
+subtitle: "UTF-16 `Char`s underneath, graphemes on screen — search, split, slice, compare, fold, normalize, build, format and match text correctly on the JVM."
+applies:
+  platforms: [jvm, android]
+  runtime: Kotlin/JVM standard library and the JDK's java.text
+  versions: { kotlin: ">=2.2", jvm: ">=21", android: "API 26+ (named regex groups)" }
+sources:
+  - title: Strings — Kotlin docs
+    url: https://kotlinlang.org/docs/strings.html
+  - title: kotlin.text — Kotlin standard library API
+    url: https://kotlinlang.org/api/core/kotlin-stdlib/kotlin.text/
+  - title: java.text.BreakIterator — Java SE 21 API
+    url: https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/text/BreakIterator.html
+  - title: java.text.Collator — Java SE 21 API
+    url: https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/text/Collator.html
+  - title: java.util.regex.Pattern — Java SE 21 API
+    url: https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/regex/Pattern.html
+cards:
+  - id: i-want-to
+    kind: table
+    title: I want to…
+    note: The standard call for each everyday job, and the trap that comes with it.
+    headers: [I want to…, Kotlin, Watch out]
+    rows:
+      - ["know if text contains a word", "`contains(x, ignoreCase = true)`, `startsWith`, `endsWith`", "accent-sensitive: `\"Émile\"` does not contain `\"emile\"` — normalize or collate first"]
+      - ["find where it is", "`indexOf`, `lastIndexOf`, `indexOfFirst { }`", "`-1` when absent; the index counts UTF-16 `Char`s, not characters"]
+      - ["split into fields", "`split(\";\")`, `split(\",\", limit = 2)`, `lines()`", "keeps empty fields: `\"a,,b\".split(\",\")` is `[a, , b]`, and `\"\".split(\",\")` is `[\"\"]`, not `[]`"]
+      - ["split into what a reader sees", "`BreakIterator.getCharacterInstance()` / `getWordInstance(locale)`", "`toList()` and `chunked(1)` break emoji and accents apart"]
+      - ["join", "`joinToString(\", \", prefix, postfix) { transform }`", "builds one string; no need for a `StringBuilder` by hand"]
+      - ["trim", "`trim()`, `trimStart()`, `trimEnd()`, `trim('-')`", "Kotlin's `trim()` uses `isWhitespace` (Unicode); Java's `String.trim()` only strips `<= U+0020`"]
+      - ["replace", "`replace(\"-\", \" \")` (all), `replaceFirst`, `replace(regex, \"…\")`, `replace(regex) { m -> }`", "in `replace(regex, \"…\")` `$1` and `\\` are special; the lambda's result is used literally"]
+      - ["cut a known prefix", "`removePrefix`, `removeSuffix`, `substringBefore('@')`, `substringAfterLast('/')`", "`substringBefore` returns the whole string when the delimiter is missing"]
+      - ["pad or repeat", "`padStart(8, '0')`, `padEnd`, `repeat(3)`", "counts `Char`s, so emoji and combining marks misalign columns"]
+      - ["take a piece", "`take(n)`, `substring(a, b)`, `slice(range)`, `last()`", "can cut a surrogate pair in half — check `isHighSurrogate()` or cut on graphemes"]
+      - ["measure for storage", "`encodeToByteArray().size` (UTF-8 bytes)", "a database column, an HTTP header or a push payload limits bytes: the family emoji is 8 `Char`s but 18 bytes"]
+      - ["sort for people", "`sortedWith(Collator.getInstance(locale))`", "`sorted()` compares UTF-16 units: `\"Zoe\" < \"adam\"`, and `Å` lands after `z` everywhere"]
+      - ["change case", "`uppercase()` (invariant), `uppercase(locale)` for display", "Java's `String.toUpperCase()` (an error in Kotlin 2.1+, still in Java code) uses the default locale: `\"title\"` becomes `\"TİTLE\"` on a Turkish device"]
+      - ["count characters", "graphemes via `BreakIterator`", "`length` counts UTF-16 units; `codePointCount` counts code points — neither is what a user sees"]
+  - id: what-a-character-is
+    kind: code
+    title: Char, code point, grapheme, byte — and slicing safely
+    note: "Count and cut on graphemes whenever a person will see the result (length limits, truncation, initials), and on UTF-8 bytes whenever storage or a protocol sets the limit."
+    prerequisites: &run
+      - "A Kotlin 2.x compiler (`kotlinc`) and JDK 21 or later; `BreakIterator` follows extended grapheme clusters from JDK 20, and Indic conjuncts such as क्षि count as one grapheme only from JDK 22 (Unicode 15.1) — the output below is from JDK 21"
+      - "Save as `main.kt`; run `kotlinc main.kt -include-runtime -d main.jar && java -jar main.jar`"
+    code: |-
+      import java.text.BreakIterator
+
+      fun graphemes(text: String): List<String> {
+          val boundaries = BreakIterator.getCharacterInstance().apply { setText(text) }
+          val result = mutableListOf<String>()
+          var start = boundaries.first()
+          var end = boundaries.next()
+          while (end != BreakIterator.DONE) {
+              result += text.substring(start, end)
+              start = end
+              end = boundaries.next()
+          }
+          return result
+      }
+
+      fun truncateForDisplay(name: String, max: Int): String {
+          val parts = graphemes(name)
+          return if (parts.size <= max) name else parts.take(max).joinToString("") + "…"
+      }
+
+      fun main() {
+          // The family emoji is three emoji glued by ZERO WIDTH JOINER (U+200D).
+          // ë is either one code point (U+00EB) or e + COMBINING DIAERESIS (U+0308).
+          val family = "\uD83D\uDC69\u200D\uD83D\uDC69\u200D\uD83D\uDC67"
+          val samples = mapOf(
+              "plain" to "Ana",
+              "family" to family,
+              "composed" to "Zo\u00EB",
+              "decomposed" to "Zoe\u0308",
+          )
+          for ((label, text) in samples) {
+              val codePoints = text.codePointCount(0, text.length)
+              val utf8Bytes = text.encodeToByteArray().size     // what a byte-limited column or header sees
+              println(
+                  "${label.padEnd(10)} chars ${text.length}  code points $codePoints" +
+                      "  graphemes ${graphemes(text).size}  UTF-8 bytes $utf8Bytes",
+              )
+          }
+
+          val display = "Zo\u00EB $family family"
+          println("take(5) ends inside a surrogate pair: ${display.take(5).last().isHighSurrogate()}")
+          println(truncateForDisplay(display, 5))
+      }
+    expected: |-
+      plain      chars 3  code points 3  graphemes 3  UTF-8 bytes 3
+      family     chars 8  code points 5  graphemes 1  UTF-8 bytes 18
+      composed   chars 3  code points 3  graphemes 3  UTF-8 bytes 4
+      decomposed chars 4  code points 4  graphemes 3  UTF-8 bytes 5
+      take(5) ends inside a surrogate pair: true
+      Zoë 👩‍👩‍👧…
+    validation: &ran
+      status: ran
+      toolchain: kotlinc 2.4.21, JVM 21.0.12.1
+      date: "2026-11-16"
+  - id: everyday-operations
+    kind: code
+    title: Search, split, trim, replace, pad
+    note: Parsing one line of a CSV-ish export — the calls you use every day, and what each returns at the edges.
+    prerequisites: *run
+    code: |-
+      fun main() {
+          val line = "  1042 ; Ana Lima ;  ana.lima@example.com ; paid  "
+          val (id, name, email, status) = line.split(";").map { it.trim() }
+
+          println(name.contains("lima", ignoreCase = true))          // search
+          println(name.indexOf("Lima") to name.indexOf("Silva"))      // -1 when absent
+          println(email.substringBefore('@') + " | " + email.substringAfter('@'))
+          println("ORD-" + id.padStart(8, '0'))                      // pad
+          println(status.uppercase().padEnd(8, '.') + "|")
+
+          println("a,,b,".split(","))                                 // empty fields are kept
+          println("a,,b,".split(",").filter { it.isNotEmpty() })
+          println("2026-11-16T10:00".split("-", limit = 2))           // stop after the first cut
+          println("one\ntwo\r\nthree".lines())                        // any line ending
+
+          println(email.substringBefore('@').replace('.', ' ')        // replace every match
+              .split(' ').joinToString(" ") { it.replaceFirstChar(Char::titlecase) })
+          println("Order 1042 shipped".removePrefix("Order ").removeSuffix(" shipped"))
+          println("--draft--".trim('-'))
+          println("missing".substringBefore('@'))                     // delimiter absent: whole string
+      }
+    expected: |-
+      true
+      (4, -1)
+      ana.lima | example.com
+      ORD-00001042
+      PAID....|
+      [a, , b, ]
+      [a, b]
+      [2026, 11-16T10:00]
+      [one, two, three]
+      Ana Lima
+      1042
+      draft
+      missing
+    validation: *ran
+  - id: compare-and-sort
+    kind: code
+    title: Compare and sort by locale
+    note: "`Collator` sorts the way a reader of that language expects; `compareTo` and `sorted()` compare UTF-16 units."
+    prerequisites: *run
+    code: |-
+      import java.text.Collator
+      import java.util.Locale
+
+      fun main() {
+          val customers = listOf("Zoë", "zoe", "Ångström", "Adam", "Örjan", "Émile", "eva")
+
+          println(customers.sorted())                                  // code units: capitals first, accents last
+          println(customers.sortedWith(String.CASE_INSENSITIVE_ORDER)) // still puts accented letters last
+
+          val english = Collator.getInstance(Locale.ENGLISH)
+          println(customers.sortedWith(english))
+          val swedish = Collator.getInstance(Locale.forLanguageTag("sv-SE"))
+          println(customers.sortedWith(swedish))                       // Å and Ö come after Z in Swedish
+
+          println("Zoe".compareTo("zoe", ignoreCase = true) == 0)
+          println("straße".equals("STRASSE", ignoreCase = true))       // false: compares one char at a time
+
+          val accentBlind = Collator.getInstance(Locale.FRENCH).apply { strength = Collator.PRIMARY }
+          println(accentBlind.compare("Émile", "emile") == 0)          // a search match, not an identity
+      }
+    expected: |-
+      [Adam, Zoë, eva, zoe, Ångström, Émile, Örjan]
+      [Adam, eva, zoe, Zoë, Ångström, Émile, Örjan]
+      [Adam, Ångström, Émile, eva, Örjan, zoe, Zoë]
+      [Adam, Émile, eva, zoe, Zoë, Ångström, Örjan]
+      true
+      false
+      true
+    validation: *ran
+  - id: case-and-normalize
+    kind: code
+    title: Case conversion with a Locale, and normalization
+    note: "Use `uppercase()` / `lowercase()` (invariant) for identifiers and keys, `uppercase(locale)` for text a person reads, and NFC before comparing."
+    prerequisites: *run
+    code: |-
+      import java.text.Normalizer
+      import java.util.Locale
+
+      // A Latin-script search key: strip the combining accents U+0300–U+036F that follow a Latin letter, then
+      // recompose — so Cyrillic й and ї, whose breve and diaeresis are in that range too, stay letters.
+      // Letters with no decomposition (đ, ł, ø, ß) stay as they are.
+      // To match rather than build a key, prefer a PRIMARY-strength Collator (see Compare and sort).
+      fun searchKey(text: String): String {
+          val decomposed = Normalizer.normalize(text, Normalizer.Form.NFD)
+          val withoutAccents = decomposed.replace(Regex("(?<=\\p{IsLatin})[\\u0300-\\u036F]+"), "")
+          return Normalizer.normalize(withoutAccents, Normalizer.Form.NFC).lowercase()
+      }
+
+      fun main() {
+          val turkish = Locale.forLanguageTag("tr-TR")
+          println("title".uppercase())              // invariant (Locale.ROOT): right for keys and enums
+          println("title".uppercase(turkish))       // dotted capital İ: right for a Turkish heading
+          println("TITLE".lowercase(turkish))       // dotless ı
+          println("straße".uppercase())             // one Char becomes two
+
+          val composed = "Caf\u00E9"             // é as one code point (NFC)
+          val decomposed = "Cafe\u0301"          // e + COMBINING ACUTE ACCENT (NFD)
+          println(composed == decomposed)
+          println(Normalizer.normalize(decomposed, Normalizer.Form.NFC) == composed)
+
+          println(searchKey("Émile Zoë") == searchKey("emile zoe"))
+          // The dakuten in が (U+3099) and the virama in हिन्दी (U+094D) are not Latin accents: they survive.
+          println(searchKey("がっこう") + " " + searchKey("हिन्दी"))
+          println(searchKey("Đà Nẵng") + " " + searchKey("Йошкар-Ола Київ"))
+      }
+    expected: |-
+      TITLE
+      TİTLE
+      tıtle
+      STRASSE
+      false
+      true
+      true
+      がっこう हिन्दी
+      đa nang йошкар-ола київ
+    validation: *ran
+  - id: build-strings
+    kind: compare
+    title: Building strings efficiently
+    note: Both print the same CSV; `+=` in a loop copies the whole string every pass, `buildString` and `joinToString` append into one buffer.
+    prerequisites: *run
+    columns:
+      - label: Concatenation in a loop
+        tone: bad
+        code: |-
+          data class Order(val id: Int, val customer: String, val totalCents: Long)
+
+          fun toCsv(orders: List<Order>): String {
+              var csv = "id,customer,total\n"
+              for (order in orders) {
+                  csv += order.id.toString() + "," + order.customer + "," +
+                      (order.totalCents / 100).toString() + "." +
+                      (order.totalCents % 100).toString().padStart(2, '0') + "\n"   // a new String each time
+              }
+              return csv
+          }
+
+          fun main() {
+              val orders = listOf(Order(1042, "Ana Lima", 12990), Order(1043, "Bo Chen", 1500))
+              print(toCsv(orders))
+          }
+      - label: buildString and joinToString
+        tone: good
+        code: |-
+          data class Order(val id: Int, val customer: String, val totalCents: Long)
+
+          fun money(cents: Long) = "${cents / 100}.${(cents % 100).toString().padStart(2, '0')}"
+
+          fun toCsv(orders: List<Order>): String = buildString {
+              appendLine("id,customer,total")
+              orders.joinTo(this, separator = "") { "${it.id},${it.customer},${money(it.totalCents)}\n" }
+          }
+
+          fun main() {
+              val orders = listOf(Order(1042, "Ana Lima", 12990), Order(1043, "Bo Chen", 1500))
+              print(toCsv(orders))
+          }
+    expected: |-
+      id,customer,total
+      1042,Ana Lima,129.90
+      1043,Bo Chen,15.00
+    validation: *ran
+  - id: templates-and-format
+    kind: code
+    title: Templates, raw strings and String.format with a Locale
+    note: "Templates for code-side text; `trimIndent`/`trimMargin` for multi-line literals; `format` only with an explicit `Locale`."
+    prerequisites: *run
+    code: |-
+      import java.util.Locale
+
+      data class Order(val id: Int, val customer: String, val totalCents: Long)
+
+      fun main() {
+          val order = Order(1042, "Ana Lima", 123456)
+          println("Order #${order.id} for ${order.customer.uppercase()}")   // any expression in ${}
+
+          val receipt = """
+              Order:    #${order.id}
+              Customer: ${order.customer}
+              Coupon:   ${'$'}5 off
+          """.trimIndent()                                                 // drops the common indent
+          println(receipt)
+
+          val query = """
+              |SELECT id, total
+              |  FROM orders
+              | WHERE customer = ?
+          """.trimMargin()                                                 // keeps indent after the '|'
+          println(query)
+
+          val json = $$"""{"price": "$12", "id": $${order.id}}"""          // Kotlin 2.2+: only $$ interpolates
+          println(json)
+
+          val amount = order.totalCents / 100.0
+          println(String.format(Locale.US, "%,.2f", amount))
+          println(String.format(Locale.GERMANY, "%,.2f", amount))
+          println("%-10s|%6d|".format(Locale.ROOT, "Ana", 42))              // column layout for logs
+      }
+    expected: |-
+      Order #1042 for ANA LIMA
+      Order:    #1042
+      Customer: Ana Lima
+      Coupon:   $5 off
+      SELECT id, total
+        FROM orders
+       WHERE customer = ?
+      {"price": "$12", "id": 1042}
+      1,234.56
+      1.234,56
+      Ana       |    42|
+    validation: *ran
+  - id: regular-expressions
+    kind: code
+    title: "Regex: named groups, findAll, replace with a lambda"
+    note: "Raw strings keep patterns readable, `findAll` is lazy, and `matches` needs the whole input while `containsMatchIn` accepts any part."
+    prerequisites: *run
+    code: |-
+      fun main() {
+          val log = """
+              2026-11-16 ORD-1042 paid 129.90
+              2026-11-16 ORD-1043 refunded 15.00
+              2026-11-17 ORD-1044 paid 42.00
+          """.trimIndent()
+          val entry = Regex("""(?<date>\d{4}-\d{2}-\d{2}) (?<id>ORD-\d+) (?<status>\w+) (?<amount>\d+\.\d{2})""")
+
+          for (match in entry.findAll(log)) {
+              println("${match.groups["id"]?.value} ${match.groups["status"]?.value}")
+          }
+          val paid = entry.findAll(log)
+              .filter { it.groups["status"]?.value == "paid" }
+              .sumOf { it.groups["amount"]!!.value.toBigDecimal() }
+          println("paid: $paid")
+
+          // A quoted local part, or a run without spaces or list punctuation (so +tags and non-ASCII);
+          // a comma or semicolon may join addresses, and the sentence's final punctuation is never taken.
+          val email = Regex("""("[^"\r\n]*"|[^\s@,;<>()"]+)@([^\s@,;<>()"]+?)(?=[.,;!?)>]?(?:[\s,;]|$))""")
+          val texts = listOf(
+              "Write to ana+shop@example.com, josé@exemplo.pt or bo-chen@example.org.",
+              "Mail ana@example.com,bo@example.org now; To: \"ana lima\"@example.com",
+          )
+          for (text in texts) {
+              val masked = email.replace(text) { match ->
+                  val (user, domain) = match.destructured
+                  "${user.trimStart('"').first()}***@$domain"            // the lambda's result is used literally
+              }
+              println(masked)
+          }
+
+          println(Regex("""\d{3}""").matches("1042"))                 // false: matches() is anchored
+          println(Regex("""\d+""").containsMatchIn("ORD-1042"))
+          println(Regex("""\d+""").find("ORD-1042")?.range)
+          println("v1.2.3".split(Regex.fromLiteral(".")))              // a literal dot, not "any char"
+      }
+    expected: |-
+      ORD-1042 paid
+      ORD-1043 refunded
+      ORD-1044 paid
+      paid: 171.90
+      Write to a***@example.com, j***@exemplo.pt or b***@example.org.
+      Mail a***@example.com,b***@example.org now; To: a***@example.com
+      false
+      true
+      4..7
+      [v1, 2, 3]
+    validation: *ran
+  - id: catastrophic-backtracking
+    kind: code
+    title: Catastrophic backtracking, measured
+    note: "Counting the engine's reads on JDK 21 shows a nested quantifier growing roughly with n² (the JDK memoizes the loop), a backreference after it growing about 16-fold per four extra letters, and the possessive form growing linearly."
+    prerequisites: *run
+    code: |-
+      // Counts how often the regex engine reads the input: a deterministic measure of its work.
+      class CountingInput(private val text: String) : CharSequence {
+          var reads = 0L
+              private set
+          override val length: Int get() = text.length
+          override fun get(index: Int): Char {
+              reads++
+              return text[index]
+          }
+          override fun subSequence(startIndex: Int, endIndex: Int) = text.subSequence(startIndex, endIndex)
+          override fun toString() = text
+      }
+
+      fun reads(regex: Regex, input: String): Long = CountingInput(input).also { regex.matches(it) }.reads
+
+      fun main() {
+          val nested = Regex("""^(\p{L}+ ?)*$""")            // nested quantifiers: the JDK memoizes the loop
+          val withBackreference = Regex("""^(\p{L}+ ?)*\1$""") // a backreference turns the memo off
+          val possessive = Regex("""^(?:\p{L}++ ?)*+$""")      // never gives characters back
+
+          // A near-miss: n letters, then a character the pattern cannot accept.
+          for (n in listOf(10, 14, 18, 22)) {
+              val nearMiss = "a".repeat(n) + "!"
+              println(
+                  "n=$n  nested ${reads(nested, nearMiss)}  backreference ${reads(withBackreference, nearMiss)}" +
+                      "  possessive ${reads(possessive, nearMiss)}",
+              )
+          }
+      }
+    expected: |-
+      n=10  nested 185  backreference 5649  possessive 14
+      n=14  nested 343  backreference 90553  possessive 18
+      n=18  nested 549  backreference 1449057  possessive 22
+      n=22  nested 803  backreference 23185161  possessive 26
+    validation: *ran
+  - id: long-input-and-unicode-names
+    kind: code
+    title: "Long input: StackOverflowError, possessive quantifiers and a length cap"
+    note: "A repeated group recurses once per repetition, so long input throws `StackOverflowError` — an `Error` that `catch (e: Exception)` misses — while the possessive form and a length cap stay safe, and `\\p{L}` instead of the ASCII-only `\\w` accepts real names."
+    prerequisites: *run
+    code: |-
+      // A display name: words that start with a letter, then letters, combining marks, apostrophes or
+      // hyphens, with single spaces between.
+      const val TAIL = """[\p{L}\p{M}'’-]"""
+
+      val asciiOnly = Regex("""^\w+(?: \w+)*$""")            // \w is [a-zA-Z0-9_] unless (?U) is set
+      val backtracking = Regex("""^\p{L}$TAIL*(?: \p{L}$TAIL*)*$""")     // right answers, a stack frame per word
+      val possessive = Regex("""^\p{L}$TAIL*+(?: \p{L}$TAIL*+)*+$""")   // same language, no backtracking
+
+      const val MAX_NAME = 200
+
+      fun isValidName(input: String) = input.length <= MAX_NAME && possessive.matches(input)
+
+      fun main() {
+          val names = listOf("José Lima", "Zoë", "李 小龍", "O'Brien", "Anne-Marie", "Ana  Lima", "", "-")
+          println("ascii only:  " + names.map { asciiOnly.matches(it) })
+          println("possessive:  " + names.map { possessive.matches(it) })
+
+          // 50,000 one-letter words: the repeated group recurses once per word.
+          val pasted = "a ".repeat(50_000).trim()
+          for ((label, regex) in listOf("backtracking" to backtracking, "possessive" to possessive)) {
+              // runCatching catches Throwable; a catch (e: Exception) would let the Error through.
+              val outcome = runCatching { regex.matches(pasted) }
+              println("$label: ${outcome.getOrNull() ?: outcome.exceptionOrNull()!!::class.simpleName}")
+          }
+          println("isValidName (capped at $MAX_NAME): ${isValidName(pasted)}")
+      }
+    expected: |-
+      ascii only:  [false, false, false, false, false, false, false, false]
+      possessive:  [true, true, true, true, true, false, false, false]
+      backtracking: StackOverflowError
+      possessive: true
+      isValidName (capped at 200): false
+    validation: *ran
+  - id: string-pitfalls
+    kind: rules
+    title: Pitfalls worth saying out loud
+    note: The bugs that ship most often.
+    items:
+      - tone: bad
+        text: "`length`, `take(n)` and `substring` work on UTF-16 `Char`s and cut emoji and accents; `reversed()` keeps surrogate pairs but swaps flags (🇵🇹 becomes 🇹🇵) and detaches accents and ZWJ parts. Use `BreakIterator` for anything a user sees."
+      - tone: bad
+        text: "`toUpperCase()` / `toLowerCase()` no longer compile in Kotlin 2.1+, but Java's `String.toUpperCase()` still uses the **default locale**: on a Turkish device `\"id\"` becomes `\"İD\"` — watch Java interop."
+      - tone: good
+        text: "`uppercase()` / `lowercase()` are locale-invariant — right for keys; pass `uppercase(locale)` for display text."
+      - tone: bad
+        text: "`String.format(\"%.2f\", x)` or `\"%.2f\".format(x)` without a `Locale` prints `1,50` in Germany — fine on screen, broken in a CSV, a URL or SQL. Pass `Locale.ROOT` for machine text."
+      - tone: bad
+        text: "Sorting names with `sorted()` or `compareTo`: code-unit order, wrong in every language. Use a `Collator` for the user's locale."
+      - tone: neutral
+        text: "Two strings that look equal may differ (NFC vs NFD). Normalize input at the boundary before comparing, hashing or storing as a key."
+      - tone: bad
+        text: "Concatenating in a loop is quadratic. Use `buildString`, `joinToString` or a `StringBuilder`."
+      - tone: bad
+        text: "`\\w` and `\\b` are ASCII-only in Java regexes: `José` fails `\\w+`. Use `\\p{L}` (letters) and `\\p{M}` (marks), or the `(?U)` flag."
+      - tone: bad
+        text: "A user-supplied pattern, a backreference after a nested group, or a repeated group over pasted text can hang or crash a thread. Escape with `Regex.escape`, cap the length, prefer possessive `++` / `*+`."
+      - tone: good
+        text: "Prefer raw strings `\"\"\"…\"\"\"` for regexes and multi-line text: no double escaping, and `trimIndent()` keeps the code indented."

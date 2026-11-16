@@ -1,0 +1,485 @@
+id: kt-accessibility
+concept: accessibility.practices
+scope: platform
+title: "Accessibility on Android"
+group: Quality & reach
+subtitle: "What TalkBack reads and how to shape it — content descriptions, Compose semantics and their Views equivalents, 48dp targets, focus order, live regions, text that survives 200%, contrast, reduced motion, and how to test it all."
+applies:
+  platforms: [android]
+  runtime: an Android app with Jetpack Compose (Views shown where they differ)
+  requires: [Jetpack Compose, androidx.core]
+  versions: { kotlin: ">=2.0", compose-bom: ">=2025.04.00", core-ktx: ">=1.13", android: "API 23+ (checks in Compose tests: API 34+)" }
+sources:
+  - title: Accessibility in Jetpack Compose — Android Developers
+    url: https://developer.android.com/develop/ui/compose/accessibility
+  - title: Semantics — Android Developers
+    url: https://developer.android.com/develop/ui/compose/accessibility/semantics
+  - title: Merging and clearing — Android Developers
+    url: https://developer.android.com/develop/ui/compose/accessibility/merging-clearing
+  - title: Test your app's accessibility — Android Developers
+    url: https://developer.android.com/guide/topics/ui/accessibility/testing
+  - title: Make apps more accessible — Android Developers
+    url: https://developer.android.com/guide/topics/ui/accessibility/apps
+cards:
+  - id: what-talkback-reads
+    kind: table
+    title: What TalkBack reads — Compose and Views
+    note: "Every node is read as label, role, state, then the action hint; each row is one of those, in both toolkits."
+    headers: [Need, Compose, Views]
+    rows:
+      - ["label a graphic or icon button", "`Icon(…, contentDescription = stringResource(…))`", "`android:contentDescription`"]
+      - ["skip a decorative graphic", "`contentDescription = null`; `semantics { hideFromAccessibility() }`", "`android:importantForAccessibility=\"no\"`"]
+      - ["label an input with visible text", "`TextField(label = { Text(…) })`", "`android:labelFor=\"@id/email\"` on the `TextView`"]
+      - ["one focus stop for a group", "`Modifier.semantics(mergeDescendants = true) {}`; `clickable` and `toggleable` merge", "`android:screenReaderFocusable=\"true\"` on the container (API 28; `ViewCompat.setScreenReaderFocusable`)"]
+      - ["replace the children entirely", "`clearAndSetSemantics { … }`", "`importantForAccessibility=\"no\"` on each child (or `noHideDescendants` on a wrapper), the description on the focusable parent"]
+      - ["role", "`clickable(role = Role.Button)`, `semantics { role = Role.Switch }`", "`AccessibilityDelegateCompat`: `info.className`, `info.roleDescription`"]
+      - ["state", "`stateDescription`, `toggleableState`, `selected`", "`ViewCompat.setStateDescription(view, …)`"]
+      - ["heading", "`semantics { heading() }`", "`ViewCompat.setAccessibilityHeading(view, true)`"]
+      - ["action hint (\"double-tap to …\")", "`clickable(onClickLabel = …)`", "`ViewCompat.replaceAccessibilityAction(view, ACTION_CLICK, label, null)`"]
+      - ["actions for swipes and nested buttons", "`customActions = listOf(CustomAccessibilityAction(label) { … })`", "`ViewCompat.addAccessibilityAction(view, label) { _, _ -> … }`"]
+      - ["announce a change", "`semantics { liveRegion = LiveRegionMode.Polite }`; `paneTitle` for sheets", "`android:accessibilityLiveRegion=\"polite\"`; `ViewCompat.setAccessibilityPaneTitle`"]
+      - ["reading order", "`isTraversalGroup`, `traversalIndex`", "`android:accessibilityTraversalBefore` / `After`"]
+      - ["anything custom", "the `semantics { }` block", "`ViewCompat.setAccessibilityDelegate(view, AccessibilityDelegateCompat)`"]
+  - id: content-descriptions
+    kind: code
+    title: Content descriptions — and when to pass null
+    note: "Describe what a graphic means or does in a localized string, pass `null` when the text beside it already says it, and never say \"button\" or \"icon\" because TalkBack adds the role."
+    prerequisites: &app
+      - "An Android Studio project with the Compose template (Kotlin 2.x and the Compose BOM)"
+      - "Call the composable from `setContent { }`, turn TalkBack on (Settings › Accessibility › TalkBack) and swipe through the screen"
+    code: |-
+      @Composable
+      fun OrderRow(order: Order, onReorder: () -> Unit) {
+          Row(verticalAlignment = Alignment.CenterVertically) {
+              Image(
+                  painter = painterResource(order.thumbnailRes),
+                  contentDescription = null,                 // decorative: the product name is read next
+                  modifier = Modifier.size(48.dp),
+              )
+              Column(Modifier.weight(1f).padding(horizontal = 12.dp)) {
+                  Text(order.productName)
+                  Row(verticalAlignment = Alignment.CenterVertically) {
+                      // This icon carries information colour alone cannot: describe it.
+                      Icon(
+                          imageVector = if (order.delayed) Icons.Filled.Warning else Icons.Filled.CheckCircle,
+                          contentDescription = stringResource(
+                              if (order.delayed) R.string.status_delayed else R.string.status_on_time,
+                          ),
+                      )
+                      Text(order.etaLabel)
+                  }
+              }
+              IconButton(onClick = onReorder) {
+                  // "Reorder Running shoes", not "Refresh icon": say the action and its object.
+                  Icon(
+                      Icons.Filled.Refresh,
+                      contentDescription = stringResource(R.string.reorder_product, order.productName),
+                  )
+              }
+          }
+      }
+    expected: "TalkBack reads \"Running shoes\", \"Delayed\", \"Arrives Tuesday\", then \"Reorder Running shoes, button, double-tap to activate\"; the thumbnail is skipped."
+    sources:
+      - title: API defaults — graphic elements — Android Developers
+        url: https://developer.android.com/develop/ui/compose/accessibility/api-defaults
+    validation: &excerpt
+      status: excerpt
+      host: an Android app with Jetpack Compose (needs the Android SDK and the Compose compiler plugin)
+  - id: semantics
+    kind: code
+    title: "Semantics: merge, clear, heading, state and custom actions"
+    note: "One focus stop per order, read as one sentence; nested buttons and swipe gestures move into the actions menu so TalkBack and Switch Access users reach them too."
+    prerequisites: *app
+    code: |-
+      @Composable
+      fun RecentOrders(orders: List<Order>, actions: OrderActions) {
+          LazyColumn {
+              item {
+                  Text(
+                      stringResource(R.string.recent_orders),
+                      style = MaterialTheme.typography.titleLarge,
+                      modifier = Modifier.semantics { heading() },     // TalkBack can jump from heading to heading
+                  )
+              }
+              items(orders, key = { it.id }) { order ->
+                  val archiveLabel = stringResource(R.string.archive_order)
+                  Row(
+                      Modifier
+                          // clickable merges the row's children into one focus stop
+                          .clickable(onClickLabel = stringResource(R.string.open_order)) { actions.open(order) }
+                          .semantics {
+                              stateDescription = order.statusLabel           // "Shipped", read as the row's state
+                              customActions = listOf(
+                                  CustomAccessibilityAction(archiveLabel) { actions.archive(order); true },
+                              )
+                          }
+                          .padding(16.dp),
+                  ) {
+                      Column(Modifier.weight(1f)) {
+                          Text(order.title)
+                          Text(order.dateLabel, style = MaterialTheme.typography.bodySmall)
+                      }
+                      // Still there for touch; for assistive tech it is the custom action above.
+                      IconButton(
+                          onClick = { actions.archive(order) },
+                          modifier = Modifier.clearAndSetSemantics { },
+                      ) {
+                          Icon(Icons.Filled.Delete, contentDescription = null)
+                      }
+                  }
+              }
+          }
+      }
+    expected: "Each row is one stop: \"Running shoes, 16 Nov, Shipped, double-tap to open order, actions available\"; the TalkBack menu (swipe down then right) offers \"Archive order\"."
+    sources:
+      - title: Semantics — custom actions, headings, state description — Android Developers
+        url: https://developer.android.com/develop/ui/compose/accessibility/semantics
+      - title: Merging and clearing — Android Developers
+        url: https://developer.android.com/develop/ui/compose/accessibility/merging-clearing
+    validation: *excerpt
+  - id: custom-component
+    kind: code
+    title: A custom component made accessible — with 48dp targets
+    note: "Five drawn stars become one adjustable, slider-like node for TalkBack and Switch Access; each star still keeps a 48dp touch target."
+    prerequisites: *app
+    code: |-
+      @Composable
+      fun StarRating(rating: Int, onRatingChange: (Int) -> Unit, modifier: Modifier = Modifier) {
+          val label = stringResource(R.string.rate_product)
+          val state = pluralStringResource(R.plurals.star_count, rating, rating)    // "3 stars"
+          Row(
+              modifier.clearAndSetSemantics {                    // the five icons become one node
+                  contentDescription = label
+                  stateDescription = state
+                  progressBarRangeInfo = ProgressBarRangeInfo(rating.toFloat(), 1f..5f, steps = 3)
+                  setProgress { target ->
+                      onRatingChange(target.roundToInt().coerceIn(1, 5))
+                      true
+                  }
+              },
+          ) {
+              for (star in 1..5) {
+                  Icon(
+                      imageVector = if (star <= rating) Icons.Filled.Star else Icons.Outlined.Star,
+                      contentDescription = null,
+                      modifier = Modifier
+                          .clickable { onRatingChange(star) }
+                          .minimumInteractiveComponentSize()     // reserves 48dp; put it before any size
+                          .size(24.dp),
+                  )
+              }
+          }
+      }
+      // Views: the same contract through ViewCompat.setAccessibilityDelegate — set a RangeInfo,
+      // a state description, and handle ACTION_SET_PROGRESS in performAccessibilityAction.
+    expected: "TalkBack reads \"Rate this product, 3 stars\" once instead of five unlabelled images, and its adjust gestures call `setProgress` to move to 4 or 2 stars; a tap anywhere in a star's 48dp box selects it."
+    sources:
+      - title: API defaults — minimum touch target sizes — Android Developers
+        url: https://developer.android.com/develop/ui/compose/accessibility/api-defaults
+    validation: *excerpt
+  - id: focus-and-order
+    kind: code
+    title: Focus order, traversal groups and keyboard operation
+    note: "Group columns with `isTraversalGroup` so TalkBack does not read across them; move keyboard and switch focus to where the user must act next."
+    prerequisites: *app
+    code: |-
+      @Composable
+      fun CheckoutForm(
+          state: CheckoutState,
+          onEmail: (String) -> Unit,
+          onCard: (String) -> Unit,
+          onPay: () -> Unit,
+      ) {
+          val focusManager = LocalFocusManager.current
+          val cardFocus = remember { FocusRequester() }
+          LaunchedEffect(state.cardError) {
+              if (state.cardError != null) cardFocus.requestFocus()      // land on the problem, not the top
+          }
+          Column(Modifier.verticalScroll(rememberScrollState())) {
+              // Two columns of label/value: without groups TalkBack reads "Subtotal, Shipping, €120, €9.90".
+              Row {
+                  val column = Modifier.semantics { isTraversalGroup = true }
+                  SummaryColumn(stringResource(R.string.subtotal), state.subtotal, Modifier.weight(1f).then(column))
+                  SummaryColumn(stringResource(R.string.shipping), state.shipping, Modifier.weight(1f).then(column))
+              }
+              OutlinedTextField(
+                  value = state.email, onValueChange = onEmail,
+                  label = { Text(stringResource(R.string.email)) },
+                  keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email, imeAction = ImeAction.Next),
+                  keyboardActions = KeyboardActions(onNext = { focusManager.moveFocus(FocusDirection.Down) }),
+              )
+              OutlinedTextField(
+                  value = state.card, onValueChange = onCard,
+                  label = { Text(stringResource(R.string.card_number)) },
+                  isError = state.cardError != null,
+                  supportingText = { state.cardError?.let { Text(it) } },   // read with the field
+                  modifier = Modifier.focusRequester(cardFocus),
+              )
+              Button(onClick = onPay, modifier = Modifier.fillMaxWidth()) { Text(stringResource(R.string.pay)) }
+          }
+      }
+    expected: "TalkBack reads \"Subtotal, €120\" then \"Shipping, €9.90\"; Tab or the IME's Next moves from email to card; a rejected card moves keyboard focus straight to that field with its error."
+    sources:
+      - title: Modify traversal order — Android Developers
+        url: https://developer.android.com/develop/ui/compose/accessibility/traversal
+      - title: Request focus — Android Developers
+        url: https://developer.android.com/develop/ui/compose/touch-input/focus/request-focus
+    validation: *excerpt
+  - id: announcements
+    kind: code
+    title: Announcements and live regions
+    note: "Announce state changes through semantics — a live region, a pane title, a Snackbar — not with `announceForAccessibility`, which is deprecated from API 36."
+    prerequisites: *app
+    code: |-
+      @Composable
+      fun OrderSearch(state: OrderSearchState, onQueryChange: (String) -> Unit) {
+          Column {
+              OutlinedTextField(
+                  value = state.query,
+                  onValueChange = onQueryChange,
+                  label = { Text(stringResource(R.string.search_orders)) },
+              )
+              // Read politely each time it changes, without moving focus out of the field.
+              // The count changes once per (debounced) search, not on every keystroke.
+              Text(
+                  pluralStringResource(R.plurals.results_count, state.results.size, state.results.size),
+                  modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite },
+              )
+              LazyColumn { items(state.results, key = { it.id }) { OrderRow(it, onReorder = {}) } }
+          }
+      }
+
+      @Composable
+      fun FilterSheet(content: @Composable () -> Unit) {
+          val title = stringResource(R.string.filter_orders)
+          // A custom sheet: paneTitle makes TalkBack announce it like a window opening.
+          Surface(Modifier.fillMaxWidth().semantics { paneTitle = title }) { content() }
+      }
+
+      // Transient confirmation: Material's Snackbar is already announced.
+      suspend fun confirmArchived(snackbar: SnackbarHostState, message: String) {
+          snackbar.showSnackbar(message, duration = SnackbarDuration.Short)
+      }
+      // Views: android:accessibilityLiveRegion="polite" and ViewCompat.setAccessibilityPaneTitle(view, title).
+    expected: "Typing \"shoe\" leaves focus in the field while TalkBack says \"3 results\"; opening the sheet announces \"Filter orders\"; archiving announces the Snackbar text."
+    sources:
+      - title: Semantics — alerts, window-like components — Android Developers
+        url: https://developer.android.com/develop/ui/compose/accessibility/semantics
+      - title: View API changes in API 36 — Android Developers
+        url: https://developer.android.com/sdk/api_diff/36/changes/android.view.View
+    validation: *excerpt
+  - id: scaling-and-motion
+    kind: code
+    title: Text that survives 200%
+    note: "Size text in `sp`, give rows a minimum rather than a fixed height, let them wrap and let the screen scroll, then look at the 200% preview."
+    prerequisites: *app
+    code: |-
+      // Text in sp follows the user's font size: up to 200% on Android 14+, scaled non-linearly.
+      @Composable
+      fun TotalRow(label: String, amount: String) {
+          FlowRow(                                                // wraps instead of clipping at large sizes
+              Modifier.fillMaxWidth().heightIn(min = 48.dp),     // a minimum, never a fixed height
+              horizontalArrangement = Arrangement.SpaceBetween,
+          ) {
+              Text(label, style = MaterialTheme.typography.bodyLarge)
+              Text(amount, style = MaterialTheme.typography.titleMedium)
+          }
+      }
+
+      @Composable
+      fun OrderSummary(order: Order) {
+          Column(Modifier.verticalScroll(rememberScrollState())) {   // at 200% the content outgrows the screen
+              TotalRow(stringResource(R.string.subtotal), order.subtotalLabel)
+              TotalRow(stringResource(R.string.shipping_and_handling), order.shippingLabel)
+              TotalRow(stringResource(R.string.total), order.totalLabel)
+          }
+      }
+
+      @Preview(name = "100%")
+      @Preview(name = "200%", fontScale = 2f)
+      @Composable
+      private fun TotalRowPreview() = TotalRow("Shipping and handling", "€9.90")
+    expected: The 200% preview wraps each amount under its label and the summary scrolls; nothing is clipped or overlapped.
+    sources:
+      - title: Non-linear font scaling to 200% — Android 14 features
+        url: https://developer.android.com/about/versions/14/features#non-linear-font-scaling
+      - title: Flow layouts — Android Developers
+        url: https://developer.android.com/develop/ui/compose/layouts/flow
+    validation: *excerpt
+  - id: reduced-motion
+    kind: code
+    title: Reduced motion and a pause control for moving content
+    note: "Compose and Animator animations already jump to their end when the user removes animations, but motion you start yourself — an auto-advancing carousel — must check the scale, stop under TalkBack and offer Pause."
+    prerequisites: *app
+    code: |-
+      import android.view.accessibility.AccessibilityManager
+      import androidx.compose.runtime.saveable.rememberSaveable
+      import androidx.compose.ui.MotionDurationScale
+
+      @Composable
+      fun PromoCarousel(promos: List<Promo>) {
+          val pagerState = rememberPagerState { promos.size }
+          var playing by rememberSaveable { mutableStateOf(true) }
+          val accessibility = LocalContext.current.getSystemService(AccessibilityManager::class.java)
+
+          LaunchedEffect(pagerState, playing, promos.size) {
+              if (!playing || promos.size < 2) return@LaunchedEffect
+              while (true) {
+                  delay(5_000)
+                  // Checked on every tick, so turning either setting on mid-run stops the carousel.
+                  // Compose hands the system animator duration scale to every animation; 0 = "Remove animations".
+                  val reduceMotion = (coroutineContext[MotionDurationScale]?.scaleFactor ?: 1f) == 0f
+                  if (reduceMotion || accessibility.isTouchExplorationEnabled) continue
+                  pagerState.animateScrollToPage((pagerState.currentPage + 1) % promos.size)
+              }
+          }
+
+          Column {
+              HorizontalPager(state = pagerState) { page -> PromoCard(promos[page]) }
+              // WCAG 2.2.2: content that moves on its own for more than 5 s needs a way to pause it.
+              TextButton(onClick = { playing = !playing }) {
+                  Text(stringResource(if (playing) R.string.pause_promos else R.string.play_promos))
+              }
+          }
+      }
+    expected: "With Remove animations or TalkBack on the carousel never advances on its own; otherwise it moves every 5 s until the user taps Pause, and an empty or single-item list never schedules a page change."
+    sources:
+      - title: Understanding Pause, Stop, Hide — W3C WCAG 2.2
+        url: https://www.w3.org/WAI/WCAG22/Understanding/pause-stop-hide.html
+      - title: MotionDurationScale — Android Developers
+        url: https://developer.android.com/reference/kotlin/androidx/compose/ui/MotionDurationScale
+    validation: *excerpt
+  - id: contrast-check
+    kind: code
+    title: Check contrast in code
+    note: "Run the WCAG ratio over your theme's colour pairs in a unit test, so a palette change that drops below 4.5:1 fails the build."
+    prerequisites:
+      - A Kotlin 2.x compiler (`kotlinc`) and JDK 17 or later
+      - "Save as `main.kt`; run `kotlinc main.kt -include-runtime -d main.jar && java -jar main.jar` (in a project, the same loop asserts in a JVM unit test)"
+    code: |-
+      import java.util.Locale
+      import kotlin.math.pow
+
+      // WCAG 2.x relative luminance of an sRGB color written as 0xRRGGBB.
+      fun luminance(rgb: Int): Double {
+          fun linear(shift: Int): Double {
+              val c = ((rgb shr shift) and 0xFF) / 255.0
+              return if (c <= 0.04045) c / 12.92 else ((c + 0.055) / 1.055).pow(2.4)
+          }
+          return 0.2126 * linear(16) + 0.7152 * linear(8) + 0.0722 * linear(0)
+      }
+
+      fun contrastRatio(foreground: Int, background: Int): Double {
+          val (lighter, darker) = listOf(luminance(foreground), luminance(background)).sortedDescending()
+          return (lighter + 0.05) / (darker + 0.05)
+      }
+
+      // WCAG AA: 4.5:1 for body text; 3:1 for large text (18sp, or 14sp bold) and for icons and borders.
+      enum class Use(val minimum: Double) { BODY_TEXT(4.5), LARGE_TEXT(3.0), ICON(3.0) }
+      data class ColorPair(val name: String, val foreground: Int, val background: Int, val use: Use)
+
+      fun main() {
+          val theme = listOf(
+              ColorPair("body on surface", 0x1D1B20, 0xFEF7FF, Use.BODY_TEXT),
+              ColorPair("error on surface", 0xB3261E, 0xFEF7FF, Use.BODY_TEXT),
+              ColorPair("hint on white", 0x9E9E9E, 0xFFFFFF, Use.BODY_TEXT),
+              ColorPair("hint on white, 18sp", 0x9E9E9E, 0xFFFFFF, Use.LARGE_TEXT),
+              ColorPair("outline icon on white", 0x79747E, 0xFFFFFF, Use.ICON),
+          )
+          for (pair in theme) {
+              val ratio = contrastRatio(pair.foreground, pair.background)
+              val verdict = if (ratio >= pair.use.minimum) "pass" else "FAIL"
+              val line = "%-22s %5.2f:1  %s (needs %.1f)"
+              println(line.format(Locale.ROOT, pair.name, ratio, verdict, pair.use.minimum))
+          }
+      }
+    expected: |-
+      body on surface        16.23:1  pass (needs 4.5)
+      error on surface        6.21:1  pass (needs 4.5)
+      hint on white           2.68:1  FAIL (needs 4.5)
+      hint on white, 18sp     2.68:1  FAIL (needs 3.0)
+      outline icon on white   4.55:1  pass (needs 3.0)
+    applies:
+      platforms: [jvm, android]
+      runtime: Kotlin/JVM standard library
+      versions: { kotlin: ">=2.0", jvm: ">=17" }
+    sources:
+      - title: Understanding contrast (minimum) — W3C WCAG 2.2
+        url: https://www.w3.org/WAI/WCAG22/Understanding/contrast-minimum.html
+    validation:
+      status: ran
+      toolchain: kotlinc 2.4.21, JVM 21.0.12.1
+      date: "2026-11-16"
+  - id: automated-checks
+    kind: code
+    title: Accessibility checks in Compose and Espresso tests
+    note: "The Accessibility Test Framework — the engine behind Accessibility Scanner — runs on every test action once enabled; assert your own semantics beside it."
+    prerequisites:
+      - "`androidTestImplementation(\"androidx.compose.ui:ui-test-junit4-accessibility\")` and `debugImplementation(\"androidx.compose.ui:ui-test-manifest\")` from Compose 1.11+ (BOM 2026.04.01) for the `v2` rule; the checks themselves arrived in 1.8, run on API 34+ devices and not under Robolectric"
+      - "`androidTestImplementation(\"androidx.test.espresso:espresso-accessibility\")` for the shared validator and `androidx.test:runner` for `@SdkSuppress`"
+      - "Run with `./gradlew connectedDebugAndroidTest`"
+    code: |-
+      import androidx.compose.ui.test.junit4.accessibility.enableAccessibilityChecks
+      import androidx.compose.ui.test.junit4.v2.createAndroidComposeRule
+      import androidx.compose.ui.test.tryPerformAccessibilityChecks
+      import androidx.test.filters.SdkSuppress
+
+      @SdkSuppress(minSdkVersion = 34)                    // the checks need API 34+; older devices skip the class
+      class RecentOrdersAccessibilityTest {
+          @get:Rule val composeRule = createAndroidComposeRule<ComponentActivity>()
+
+          @Before
+          fun enableChecks() {
+              // One validator for Compose and Espresso, so a hybrid screen is checked by the same rules.
+              val validator = AccessibilityChecks.enable().setRunChecksFromRootView(true)
+              composeRule.enableAccessibilityChecks(validator)          // labels, contrast, 48dp targets, order
+          }
+
+          @Test
+          fun orderRowsCarryStateAndActions() {
+              composeRule.setContent { AppTheme { RecentOrders(sampleOrders, FakeOrderActions()) } }
+
+              composeRule.onNode(hasText("Running shoes") and hasClickAction())
+                  .assert(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "Shipped"))
+                  .assert(SemanticsMatcher.keyIsDefined(SemanticsActions.CustomActions))
+                  .performClick()                                         // each action also runs the checks
+
+              composeRule.onRoot().tryPerformAccessibilityChecks()        // or check the whole screen explicitly
+          }
+      }
+
+      // A Views-only screen: AccessibilityChecks.enable() once in the class; every ViewAction then checks.
+    expected: "On an API 34+ device a row without a label, an icon button under 48dp or grey-on-white text fails the test with the Accessibility Test Framework's finding; below API 34 the class is skipped, not failed."
+    applies:
+      platforms: [android]
+      runtime: an instrumented test on an Android 14+ device or emulator
+      versions: { kotlin: ">=2.0", compose-bom: ">=2026.04.01", espresso: ">=3.6", android: "API 34+ for the checks" }
+    sources:
+      - title: Accessibility testing in Compose — Android Developers
+        url: https://developer.android.com/develop/ui/compose/accessibility/testing
+      - title: Test your app's accessibility (Views) — Android Developers
+        url: https://developer.android.com/guide/topics/ui/accessibility/views/testing-views
+    validation:
+      status: excerpt
+      host: an instrumented test on an Android 14+ (API 34) device or emulator
+  - id: test-it-and-pitfalls
+    kind: rules
+    title: Test it by hand, and the pitfalls
+    note: Automated checks catch labels, contrast and sizes; only a screen reader session catches a confusing journey.
+    items:
+      - tone: good
+        text: "TalkBack: **swipe right / left** for next / previous, **double-tap** to activate, **two-finger swipe** to scroll, **swipe down then right** (or a three-finger tap) for the TalkBack menu and its actions, **swipe down then left** for back."
+      - tone: good
+        text: "Run **Accessibility Scanner** on every new screen, and Compose **UI Check** in the preview pane; try **Switch Access** and **Voice Access** for the main journey."
+      - tone: good
+        text: "Test at **200% font** and **Display size: largest**, with **Remove animations** on, in dark theme — in previews (`fontScale = 2f`) and on a device."
+      - tone: bad
+        text: "`Modifier.clickable` on a `Box` with an icon and no label: TalkBack says \"unlabelled, button\". Give it a `contentDescription` or text."
+      - tone: bad
+        text: "Colour as the only signal (a red border for an error): add text, an icon with a description, or `semantics { error(…) }`."
+      - tone: bad
+        text: "`clearAndSetSemantics { }` everywhere to silence noise: it also hides the content from tests and autofill. Prefer `mergeDescendants` or `hideFromAccessibility()`."
+      - tone: bad
+        text: "Fixed `height(48.dp)` around text or `maxLines = 1` on a label: clipped at 200%. Use `heightIn(min = …)` and let text wrap."
+      - tone: neutral
+        text: "Swipe, drag and long-press gestures need a custom action or a visible alternative — TalkBack users cannot perform them directly."

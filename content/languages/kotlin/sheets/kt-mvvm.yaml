@@ -1,0 +1,563 @@
+id: kt-mvvm
+concept: ui.mvvm-state
+scope: platform
+title: "MVVM — ViewModel, UiState & Events"
+group: Android
+subtitle: "A view model as a plain class exposing StateFlow<UiState>: intents as methods, atomic updates, events as state, a bound text field, cancellable loading — tested on the JVM, wired into Android."
+applies:
+  platforms: [jvm, android]
+  runtime: Kotlin/JVM with kotlinx.coroutines
+  requires: [kotlinx-coroutines-core]
+  versions: { kotlin: ">=2.0", kotlinx-coroutines: ">=1.10", jvm: ">=17" }
+sources:
+  - title: UI layer — Android Developers
+    url: https://developer.android.com/topic/architecture/ui-layer
+  - title: UI events — Android Developers
+    url: https://developer.android.com/topic/architecture/ui-layer/events
+  - title: StateFlow and SharedFlow — Android Developers
+    url: https://developer.android.com/kotlin/flow/stateflow-and-sharedflow
+cards:
+  - id: swiftui-to-android-mvvm
+    kind: table
+    title: "SwiftUI @Observable → Android MVVM"
+    note: The same roles; Android adds a lifetime (the back-stack entry) and a lifecycle for collection.
+    headers: [SwiftUI, Android / Kotlin, Note]
+    rows:
+      - ["`@Observable final class OrdersModel`", "`class OrdersViewModel : ViewModel()` — or a plain class taking a `CoroutineScope`", "the plain class runs and tests on the JVM"]
+      - ["`private(set) var orders`", "`private val _state = MutableStateFlow(…)` + `val state = _state.asStateFlow()`", "one immutable `UiState` per screen"]
+      - ["`@MainActor`", "`viewModelScope` (runs on `Dispatchers.Main.immediate`)", "a dispatcher, not compiler-checked isolation"]
+      - ["`func load() async` called from `.task`", "`fun load()` launching in `viewModelScope`, or `stateIn(…, WhileSubscribed(5_000), …)`", "the view calls intents; it never awaits"]
+      - ["`@State var vm = OrdersModel()`", "`viewModel()` / `hiltViewModel()`", "survives rotation; cleared when the destination leaves the back stack"]
+      - ["`@Bindable` + `$vm.query`", "a `TextFieldState` (owned by the field, or held in the ViewModel) + `snapshotFlow`", "avoid `value` + `onValueChange` backed by a `StateFlow`"]
+      - ["`@SceneStorage`", "`SavedStateHandle`", "survives process death; small values only"]
+      - ["observing with `withObservationTracking`", "`collectAsStateWithLifecycle()`", "stops collecting below STARTED"]
+      - ["dependencies via `init`", "constructor parameters + a `ViewModelProvider.Factory` (or Hilt `@Inject constructor`)", "fakes in tests"]
+  - id: plain-class-view-model
+    kind: code
+    title: A view model is a plain class
+    note: "Expose a read-only `StateFlow`, take intents as methods and the scope as a parameter — no Android type inside, and a restarted load cancels the one in flight."
+    prerequisites: &runtest
+      - A Kotlin 2.x compiler (`kotlinc`), JDK 17 or later, `kotlinx-coroutines-core-jvm-1.10.2.jar` and `kotlinx-coroutines-test-jvm-1.10.2.jar`
+      - "Save as `main.kt`; run `kotlinc -cp kotlinx-coroutines-core-jvm-1.10.2.jar:kotlinx-coroutines-test-jvm-1.10.2.jar main.kt -d out && kotlin -cp out:kotlinx-coroutines-core-jvm-1.10.2.jar:kotlinx-coroutines-test-jvm-1.10.2.jar MainKt`"
+      - "Or, in a Gradle project: `implementation(\"org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.2\")` and `testImplementation(\"org.jetbrains.kotlinx:kotlinx-coroutines-test:1.10.2\")`"
+    code: |-
+      @file:OptIn(ExperimentalCoroutinesApi::class)
+
+      import kotlinx.coroutines.*
+      import kotlinx.coroutines.flow.*
+      import kotlinx.coroutines.test.*
+      import java.io.IOException
+
+      sealed interface OrdersUiState {
+          data object Loading : OrdersUiState
+          data class Content(val orderIds: List<Int>) : OrdersUiState
+          data class Error(val message: String) : OrdersUiState
+      }
+
+      class OrdersViewModel(private val fetchOrders: suspend () -> List<Int>, private val scope: CoroutineScope) {
+          private val _state = MutableStateFlow<OrdersUiState>(OrdersUiState.Loading)
+          val state: StateFlow<OrdersUiState> = _state.asStateFlow()        // the view can read, never write
+          private var loadJob: Job? = null
+
+          fun load() {                                                       // an intent is a method
+              loadJob?.cancel()                                              // a second tap restarts, never races
+              _state.value = OrdersUiState.Loading
+              loadJob = scope.launch {
+                  _state.value = try {
+                      OrdersUiState.Content(fetchOrders())
+                  } catch (e: IOException) {                     // expected; anything else is a bug: let it crash
+                      OrdersUiState.Error("Couldn't load orders (${e.message})")
+                  }
+              }
+          }
+      }
+
+      fun main() = runTest {
+          val replies = ArrayDeque(listOf<suspend () -> List<Int>>(           // the fake repository, one per call
+              { delay(1_000); listOf(1041) },                      // slow: superseded before it answers
+              { delay(200); throw IOException("offline") },
+              { delay(300); listOf(1042, 1043) },
+          ))
+          val vm = OrdersViewModel({ replies.removeFirst().invoke() }, scope = this)  // viewModelScope in the app
+          backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.state.collect { println(it) } }
+
+          vm.load()
+          advanceTimeBy(100)
+          vm.load()                                                             // restarts the slow load; it fails
+          advanceUntilIdle()
+          vm.load()                                                             // the user taps Retry
+      }
+    expected: |-
+      Loading
+      Error(message=Couldn't load orders (offline))
+      Loading
+      Content(orderIds=[1042, 1043])
+    sources:
+      - title: State holders and UI state — Android Developers
+        url: https://developer.android.com/topic/architecture/ui-layer/stateholders
+    validation: &rantest
+      status: ran
+      toolchain: kotlinc 2.4.21, JVM 21.0.12.1, kotlinx-coroutines-core and -test 1.10.2
+      date: "2026-11-16"
+  - id: ui-state-shape
+    kind: compare
+    title: "UiState: flags in a data class, or a sealed interface"
+    note: "Mutually exclusive screens are a sealed interface; keep a data class for fields that vary independently (a form, a refresh spinner over content)."
+    columns:
+      - label: Flags — impossible states compile
+        tone: bad
+        code: |-
+          data class OrdersUiState(
+              val isLoading: Boolean = false,
+              val orders: List<String> = emptyList(),
+              val error: String? = null,             // isLoading AND error both set compiles: a screen nobody designed
+          )
+
+          fun render(state: OrdersUiState): String = when {
+              state.isLoading -> "spinner"
+              state.error != null -> "error: ${state.error}"
+              else -> "${state.orders.size} orders"  // also what "not loaded yet" looks like
+          }
+
+          fun main() {
+              println(render(OrdersUiState(isLoading = true)))
+              println(render(OrdersUiState(error = "offline")))
+              println(render(OrdersUiState(orders = listOf("#1042", "#1043"))))
+          }
+      - label: Sealed — one case at a time
+        tone: good
+        code: |-
+          sealed interface OrdersUiState {
+              data object Loading : OrdersUiState
+              data class Content(val orders: List<String>) : OrdersUiState
+              data class Error(val message: String) : OrdersUiState
+          }
+
+          fun render(state: OrdersUiState): String = when (state) {   // exhaustive: a new state breaks the build here
+              OrdersUiState.Loading -> "spinner"
+              is OrdersUiState.Error -> "error: ${state.message}"
+              is OrdersUiState.Content -> "${state.orders.size} orders"
+          }
+
+          fun main() {
+              println(render(OrdersUiState.Loading))
+              println(render(OrdersUiState.Error("offline")))
+              println(render(OrdersUiState.Content(listOf("#1042", "#1043"))))
+          }
+    prerequisites: &run
+      - A Kotlin 2.x compiler (`kotlinc`), JDK 17 or later, and `kotlinx-coroutines-core-jvm-1.10.2.jar`
+      - "Save as `main.kt`; run `kotlinc -cp kotlinx-coroutines-core-jvm-1.10.2.jar main.kt -d out && kotlin -cp out:kotlinx-coroutines-core-jvm-1.10.2.jar MainKt`"
+      - "Or, in a Gradle project: `implementation(\"org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.2\")`"
+    expected: |-
+      spinner
+      error: offline
+      2 orders
+    validation: &ran
+      status: ran
+      toolchain: kotlinc 2.4.21, JVM 21.0.12.1, kotlinx-coroutines-core 1.10.2
+      date: "2026-11-16"
+  - id: atomic-update
+    kind: code
+    title: Update state atomically
+    note: "`update { }` is a compare-and-set loop: the lambda may run more than once, so keep it a pure `copy`."
+    prerequisites: *run
+    code: |-
+      import kotlinx.coroutines.*
+      import kotlinx.coroutines.flow.*
+
+      data class KitchenUiState(val newOrders: Int = 0, val acknowledged: Int = 0)
+
+      fun main() = runBlocking {
+          val state = MutableStateFlow(KitchenUiState())
+
+          withContext(Dispatchers.Default) {                       // two writers on different threads
+              launch {                                             // orders pushed by the server
+                  repeat(10_000) { state.update { it.copy(newOrders = it.newOrders + 1) } }
+              }
+              launch {                                             // the cook tapping "Seen"
+                  repeat(10_000) { state.update { it.copy(acknowledged = it.acknowledged + 1) } }
+              }
+          }
+          // With `state.value = state.value.copy(...)` both writers read the same old value
+          // and one overwrites the other: the totals come out short, and differently each run.
+          println(state.value)
+
+          val before = state.getAndUpdate { it.copy(acknowledged = 0) }   // read-and-reset in one step
+          println("cleared ${before.acknowledged} acknowledgements -> ${state.value}")
+      }
+    expected: |-
+      KitchenUiState(newOrders=10000, acknowledged=10000)
+      cleared 10000 acknowledgements -> KitchenUiState(newOrders=10000, acknowledged=0)
+    sources:
+      - title: update — kotlinx.coroutines API
+        url: https://kotlinlang.org/api/kotlinx.coroutines/kotlinx-coroutines-core/kotlinx.coroutines.flow/update.html
+    validation: *ran
+  - id: bound-field-cancellable-search
+    kind: code
+    title: A text field drives a cancellable search
+    note: "The field owns its text and reports each edit; `transformLatest` cancels the stale request and catches a failure inside, so one error never ends the search (the `Job` version is in Compose — State & Data Flow)."
+    prerequisites: *runtest
+    code: |-
+      @file:OptIn(ExperimentalCoroutinesApi::class)
+
+      import kotlinx.coroutines.*
+      import kotlinx.coroutines.flow.*
+      import kotlinx.coroutines.test.*
+      import java.io.IOException
+
+      sealed interface SearchUiState {
+          data object Idle : SearchUiState
+          data class Searching(val query: String) : SearchUiState
+          data class Results(val query: String, val orderIds: List<Int>) : SearchUiState
+          data class Failed(val query: String) : SearchUiState
+      }
+
+      class OrderSearchViewModel(search: suspend (String) -> List<Int>, scope: CoroutineScope) {
+          private val query = MutableStateFlow("")
+
+          val results: StateFlow<SearchUiState> = query
+              .transformLatest { q ->                                   // a new query cancels the running search
+                  if (q.isBlank()) {
+                      emit(SearchUiState.Idle)
+                  } else {
+                      emit(SearchUiState.Searching(q))
+                      val outcome = try { SearchUiState.Results(q, search(q)) }   // caught INSIDE: one failure
+                          catch (e: IOException) { SearchUiState.Failed(q) }        // must not end later searches
+                      emit(outcome)
+                  }
+              }
+              .stateIn(scope, SharingStarted.WhileSubscribed(5_000), SearchUiState.Idle)
+
+          fun onQueryChange(text: String) { query.value = text }            // the field owns its text, reports it
+      }
+
+      fun main() = runTest {
+          val vm = OrderSearchViewModel(scope = backgroundScope, search = { q ->
+              delay(200)                                                    // the server takes 200 ms...
+              if (q == "#1") throw IOException("503")                      // ...and fails once
+              listOf(1042, 1043, 1049).filter { "#$it".startsWith(q) }
+          })
+          backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.results.collect { println(it) } }
+
+          // (what the user typed, then the pause before the next edit): "#1" fails; the next three come fast
+          for ((typed, pause) in listOf("#1" to 300L, "#10" to 100L, "#104" to 100L, "#1042" to 400L)) {
+              vm.onQueryChange(typed)
+              advanceTimeBy(pause)
+          }
+      }
+    expected: |-
+      Idle
+      Searching(query=#1)
+      Failed(query=#1)
+      Searching(query=#10)
+      Searching(query=#104)
+      Searching(query=#1042)
+      Results(query=#1042, orderIds=[1042])
+    validation: *rantest
+  - id: events-as-state
+    kind: code
+    title: One-off events are state
+    note: "A `SharedFlow` event emitted while the screen is stopped is dropped and a `Channel` event can be lost when the collector is cancelled mid-handling, but a `userMessage` in state waits until the UI shows it and says so."
+    prerequisites: *runtest
+    code: |-
+      @file:OptIn(ExperimentalCoroutinesApi::class)
+
+      import kotlinx.coroutines.*
+      import kotlinx.coroutines.flow.*
+      import kotlinx.coroutines.test.*
+
+      sealed interface UserMessage {                              // what to say; the UI picks the string resource
+          data class OrderCancelled(val orderId: Int) : UserMessage
+      }
+
+      data class OrderDetailUiState(val status: String, val userMessage: UserMessage? = null)
+
+      class OrderDetailViewModel(private val scope: CoroutineScope) {
+          private val _state = MutableStateFlow(OrderDetailUiState(status = "PLACED"))
+          val state: StateFlow<OrderDetailUiState> = _state.asStateFlow()
+          val events = MutableSharedFlow<UserMessage>()           // the fragile way, kept to compare
+
+          fun onCancelTapped() {
+              scope.launch {
+                  delay(500)                                      // the server call; the user leaves meanwhile
+                  _state.update { it.copy(status = "CANCELLED", userMessage = UserMessage.OrderCancelled(1042)) }
+                  events.emit(UserMessage.OrderCancelled(1042))   // no collector right now: the event is dropped
+              }
+          }
+
+          fun onUserMessageShown() = _state.update { it.copy(userMessage = null) }
+      }
+
+      fun main() = runTest {
+          val vm = OrderDetailViewModel(scope = this)
+          vm.onCancelTapped()
+          advanceUntilIdle()                                      // the screen is stopped: nobody collects
+
+          val seen = mutableListOf<UserMessage>()                 // the screen is STARTED again
+          backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.events.collect { seen += it } }
+          println("SharedFlow event: ${seen.ifEmpty { "lost" }}")
+
+          vm.state.value.userMessage?.let { message ->            // state-based: still waiting to be shown
+              println("snackbar for $message")
+              vm.onUserMessageShown()                             // consuming it is an event back to the VM
+          }
+          println(vm.state.value)
+      }
+    expected: |-
+      SharedFlow event: lost
+      snackbar for OrderCancelled(orderId=1042)
+      OrderDetailUiState(status=CANCELLED, userMessage=null)
+    sources:
+      - title: UI events — Handle ViewModel events (Android Developers)
+        url: https://developer.android.com/topic/architecture/ui-layer/events
+    validation: *rantest
+  - id: android-viewmodel
+    kind: code
+    title: "The Android ViewModel: viewModelScope, SavedStateHandle, stateIn"
+    note: "Subclass `ViewModel` for the back-stack lifetime, catch inside `flatMapLatest` so the next query recovers from an error, and `WhileSubscribed(5_000)` keeps upstream alive through a rotation."
+    applies:
+      platforms: [android]
+      runtime: an Android app with androidx.lifecycle
+      requires: [androidx.lifecycle, kotlinx-coroutines-android]
+      versions: { kotlin: ">=2.0", lifecycle: ">=2.8", android: "API 21+ (lifecycle 2.8–2.9), API 23+ (lifecycle 2.10+)" }
+    prerequisites:
+      - "An Android Studio project with `androidx.lifecycle:lifecycle-viewmodel` and `lifecycle-viewmodel-savedstate` (2.8 or later; `-ktx` is empty since 2.8)"
+      - "An `OrderRepository` with `fun observeOrders(query: String): Flow<List<Order>>` and `suspend fun cancel(orderId: Int)`, held by your `Application` subclass `OrdersApplication`"
+      - "The `OrdersUiState` sealed interface from the cards above"
+    code: |-
+      class OrdersViewModel(
+          private val repository: OrderRepository,              // constructor injection: a fake in tests
+          private val savedStateHandle: SavedStateHandle,
+      ) : ViewModel() {
+          val query: StateFlow<String> = savedStateHandle.getStateFlow("query", "")   // survives process death
+
+          @OptIn(ExperimentalCoroutinesApi::class)
+          val uiState: StateFlow<OrdersUiState> = query
+              .flatMapLatest { q ->
+                  repository.observeOrders(q)                       // Flow<List<Order>>, e.g. from Room
+                      .map<List<Order>, OrdersUiState> { OrdersUiState.Content(it) }
+                      .onStart { emit(OrdersUiState.Loading) }
+                      .catch { emit(OrdersUiState.Error(it.message ?: "Couldn't load orders")) }   // per query
+              }
+              .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), OrdersUiState.Loading)
+
+          fun onQueryChange(text: String) { savedStateHandle["query"] = text }
+
+          fun onCancelTapped(orderId: Int) {
+              viewModelScope.launch { repository.cancel(orderId) }  // cancelled when the ViewModel is cleared
+          }
+
+          companion object {
+              val Factory: ViewModelProvider.Factory = viewModelFactory {
+                  initializer {
+                      val app = this[APPLICATION_KEY] as OrdersApplication
+                      OrdersViewModel(app.orderRepository, createSavedStateHandle())
+                  }
+              }
+          }
+      }
+    expected: The screen gets Loading, then the orders matching the saved query; a repository error shows Error for that query only, the query survives rotation and process death, and upstream stops 5 s after the screen is backgrounded.
+    sources:
+      - title: Saved State module for ViewModel — Android Developers
+        url: https://developer.android.com/topic/libraries/architecture/viewmodel/viewmodel-savedstate
+      - title: Create ViewModels with dependencies — Android Developers
+        url: https://developer.android.com/topic/libraries/architecture/viewmodel/viewmodel-factories
+    validation:
+      status: excerpt
+      host: an Android app with androidx.lifecycle (needs the Android SDK)
+  - id: compose-binding
+    kind: code
+    title: "Binding it in Compose: collectAsStateWithLifecycle and a TextFieldState"
+    note: "State flows down, lambdas flow up; only the route-level composable sees the ViewModel."
+    applies:
+      platforms: [android]
+      runtime: an Android app with Jetpack Compose
+      requires: [Jetpack Compose, androidx.lifecycle]
+      versions: { kotlin: ">=2.0", compose-material3: ">=1.4.0", lifecycle: ">=2.8", android: "API 21+ (lifecycle 2.8–2.9), API 23+ (lifecycle 2.10+)" }
+    prerequisites:
+      - "An Android Studio project with the Compose template, plus `androidx.lifecycle:lifecycle-viewmodel-compose` and `lifecycle-runtime-compose`, and Material 3 1.4 or later (the `TextField(state = …)` overload)"
+      - "The `OrdersViewModel` of the card above, and an `OrderRow` composable"
+    code: |-
+      @Composable
+      fun OrdersRoute(vm: OrdersViewModel = viewModel(factory = OrdersViewModel.Factory)) {
+          val uiState by vm.uiState.collectAsStateWithLifecycle()        // collects only while STARTED
+
+          // The field owns its text (Google's "conforming approach"); the VM only receives it. For edits the
+          // VM makes itself (Clear, autocomplete), hold a TextFieldState in the VM and call clearText() there.
+          val queryState = rememberTextFieldState(initialText = vm.query.value)
+          LaunchedEffect(queryState) {                                  // field -> VM on every edit
+              snapshotFlow { queryState.text.toString() }.collectLatest { vm.onQueryChange(it) }
+          }
+
+          OrdersScreen(uiState, queryState, onCancel = vm::onCancelTapped)   // children get state and lambdas
+      }
+
+      @Composable
+      fun OrdersScreen(uiState: OrdersUiState, queryState: TextFieldState, onCancel: (Int) -> Unit) {
+          Column {
+              TextField(state = queryState, lineLimits = TextFieldLineLimits.SingleLine)
+              when (uiState) {
+                  OrdersUiState.Loading -> CircularProgressIndicator()
+                  is OrdersUiState.Error -> Text(uiState.message)
+                  is OrdersUiState.Content -> LazyColumn {
+                      items(uiState.orders, key = { it.id }) { order ->
+                          OrderRow(order, onCancel = { onCancel(order.id) })
+                      }
+                  }
+              }
+          }
+      }
+    expected: Typing filters the list as the field changes; the list stops updating while the app is in the background and resumes when it returns.
+    sources:
+      - title: Migrate to state-based text fields — ViewModel StateFlow architecture (Android Developers)
+        url: https://developer.android.com/develop/ui/compose/text/migrate-state-based
+      - title: State holders and UI state — Android Developers
+        url: https://developer.android.com/topic/architecture/ui-layer/stateholders
+    validation:
+      status: excerpt
+      host: an Android app with Jetpack Compose (needs the Android SDK and the Compose compiler plugin)
+  - id: testing-the-view-model
+    kind: code
+    title: "Testing the view model: Main dispatcher, fake repository, errors"
+    note: "`Dispatchers.setMain` stands in for Android's main thread and `runTest` skips the delays, and each check fails if its guarded line (the `IOException` catch, the error reset) is removed."
+    prerequisites: *runtest
+    code: |-
+      @file:OptIn(ExperimentalCoroutinesApi::class)
+
+      import kotlinx.coroutines.*
+      import kotlinx.coroutines.flow.*
+      import kotlinx.coroutines.test.*
+      import java.io.IOException
+
+      data class OrderUiState(val loading: Boolean = false, val status: String? = null, val error: String? = null)
+
+      class OrderViewModel(private val fetchStatus: suspend (orderId: Int) -> String) {
+          private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)   // = viewModelScope
+          private val _state = MutableStateFlow(OrderUiState())
+          val state: StateFlow<OrderUiState> = _state.asStateFlow()
+          private var refreshJob: Job? = null
+
+          fun refresh(orderId: Int) {
+              refreshJob?.cancel()                                 // a newer refresh replaces a slower one
+              _state.update { it.copy(loading = true, error = null) }
+              refreshJob = scope.launch {
+                  _state.value = try {
+                      OrderUiState(status = fetchStatus(orderId))
+                  } catch (e: IOException) {                      // NOT Exception: cancellation must pass through
+                      _state.value.copy(loading = false, error = e.message)
+                  }
+              }
+          }
+
+          fun clear() = scope.cancel()                             // ViewModel.onCleared() in the app
+      }
+
+      fun main() = runTest {                                       // a @Test function in JUnit
+          Dispatchers.setMain(StandardTestDispatcher(testScheduler))   // a MainDispatcherRule: before each test
+          var reply: suspend () -> String = { delay(1_000); throw IOException("server error") }
+          val vm = OrderViewModel { reply() }                  // the fake repository
+
+          vm.refresh(1042)
+          advanceUntilIdle()
+          check(vm.state.value == OrderUiState(error = "server error"))   // an expected failure is state
+
+          reply = { delay(1_000); "READY" }
+          vm.refresh(1042)
+          runCurrent()
+          check(vm.state.value == OrderUiState(loading = true))   // the next refresh clears the error at once
+          vm.clear()
+          println("refresh test passed after $currentTime ms of virtual time")
+          Dispatchers.resetMain()                                  // ...and after; no rule: @AfterEach/finally
+      }
+    expected: |-
+      refresh test passed after 1000 ms of virtual time
+    sources:
+      - title: Testing Kotlin coroutines on Android — Android Developers
+        url: https://developer.android.com/kotlin/coroutines/test
+      - title: Testing Kotlin flows on Android — Android Developers
+        url: https://developer.android.com/kotlin/flow/test
+    validation: *rantest
+  - id: testing-cancellation-and-stale-replies
+    kind: code
+    title: "Testing cancellation: a slower, older reply never lands"
+    note: "A newer refresh cancels the one in flight, and the check fails both when the `Job` is not cancelled and when `catch (e: Exception)` turns the cancellation into an error."
+    prerequisites: *runtest
+    code: |-
+      @file:OptIn(ExperimentalCoroutinesApi::class)
+
+      import kotlinx.coroutines.*
+      import kotlinx.coroutines.flow.*
+      import kotlinx.coroutines.test.*
+      import java.io.IOException
+
+      data class OrderUiState(val loading: Boolean = false, val status: String? = null, val error: String? = null)
+
+      class OrderViewModel(private val fetchStatus: suspend (orderId: Int) -> String) {
+          private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)   // = viewModelScope
+          private val _state = MutableStateFlow(OrderUiState())
+          val state: StateFlow<OrderUiState> = _state.asStateFlow()
+          private var refreshJob: Job? = null
+
+          fun refresh(orderId: Int) {
+              refreshJob?.cancel()                                 // a newer refresh replaces a slower one
+              _state.update { it.copy(loading = true, error = null) }
+              refreshJob = scope.launch {
+                  _state.value = try {
+                      OrderUiState(status = fetchStatus(orderId))
+                  } catch (e: IOException) {                      // NOT Exception: cancellation must pass through
+                      _state.value.copy(loading = false, error = e.message)
+                  }
+              }
+          }
+
+          fun clear() = scope.cancel()                             // ViewModel.onCleared() in the app
+      }
+
+      fun main() = runTest {                                       // a @Test function in JUnit
+          Dispatchers.setMain(StandardTestDispatcher(testScheduler))   // a MainDispatcherRule: before each test
+          var reply: suspend () -> String = { delay(5_000); "PLACED (stale)" }
+          val vm = OrderViewModel { reply() }
+
+          vm.refresh(1042)
+          runCurrent()                                         // a slow request is in flight...
+          reply = { delay(1_000); "READY" }
+          vm.refresh(1042)
+          runCurrent()                                         // ...and a newer refresh cancels it
+          check(vm.state.value == OrderUiState(loading = true)) { "cancellation became ${vm.state.value}" }
+          advanceUntilIdle()
+          check(vm.state.value == OrderUiState(status = "READY")) { "the stale reply landed: ${vm.state.value}" }
+          vm.clear()
+          println("cancellation test passed after $currentTime ms of virtual time")
+          Dispatchers.resetMain()                                  // ...and after; no rule: @AfterEach/finally
+      }
+    expected: |-
+      cancellation test passed after 1000 ms of virtual time
+    sources:
+      - title: Cancellation and timeouts — Kotlin docs
+        url: https://kotlinlang.org/docs/cancellation-and-timeouts.html
+    validation: *rantest
+  - id: mvvm-rules
+    kind: rules
+    title: Rules and pitfalls
+    note: What a reviewer flags first in a view model.
+    items:
+      - tone: bad
+        text: "A public `MutableStateFlow`: any composable can write state, and the view model stops being the single source of truth."
+      - tone: bad
+        text: "`Context`, `View`, `Resources` or a `NavController` inside the view model — it outlives them and leaks. Expose ids or a message model; the UI resolves strings."
+      - tone: bad
+        text: "`_state.value = _state.value.copy(…)` from more than one coroutine: updates are lost. Use `update { }`."
+      - tone: bad
+        text: "`collectAsState()` on Android keeps collecting in the background; use `collectAsStateWithLifecycle()`."
+      - tone: bad
+        text: "`catch (e: IllegalStateException)`, `catch (e: Exception)` or `runCatching` around a suspend call also catches `CancellationException` — catch the I/O type, or rethrow `CancellationException`."
+      - tone: bad
+        text: "`catch` after `flatMapLatest` ends the stream for good on the first error — catch inside it, per inner flow."
+      - tone: good
+        text: "One `UiState` per screen; a sealed interface when its modes exclude each other, so `when` is exhaustive."
+      - tone: good
+        text: "Inject repositories and the scope (or the dispatcher) through the constructor, so a test can pass fakes and virtual time."
+      - tone: good
+        text: "Pass the ViewModel only to the route-level composable; children take state and lambdas, which keeps them previewable."
+      - tone: neutral
+        text: "`stateIn(…, WhileSubscribed(5_000), initial)` for state derived from repositories; a plain `MutableStateFlow` for state the view model writes itself."

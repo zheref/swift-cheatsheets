@@ -1,0 +1,539 @@
+id: kt-media3
+concept: media.video-streaming
+scope: platform
+title: "Video Streaming — Media3 ExoPlayer, HLS & DASH"
+group: Networking & media
+subtitle: "Which Media3 module plays which protocol, how a multivariant playlist drives adaptive bitrate, playing in Compose and in Views, MediaItems with live and DRM configuration, track selection, state and error recovery, lifecycle, background playback and downloads."
+applies:
+  platforms: [android]
+  runtime: an Android app with AndroidX Media3 (ExoPlayer)
+  requires: [androidx.media3:media3-exoplayer, androidx.media3:media3-exoplayer-hls, androidx.media3:media3-exoplayer-dash, androidx.media3:media3-ui-compose-material3]
+  versions: { kotlin: ">=2.4", media3: "1.11.1", compose: "1.12.0", lifecycle: "2.11.0", android: "API 23+" }
+sources:
+  - title: ExoPlayer — Android Developers
+    url: https://developer.android.com/media/media3/exoplayer
+  - title: Supported formats — Media3 ExoPlayer
+    url: https://developer.android.com/media/media3/exoplayer/supported-formats
+  - title: HLS — Media3 ExoPlayer
+    url: https://developer.android.com/media/media3/exoplayer/hls
+  - title: RFC 8216 — HTTP Live Streaming
+    url: https://www.rfc-editor.org/rfc/rfc8216
+cards:
+  - id: protocol-support
+    kind: table
+    title: Protocol against support, and the module each needs
+    note: The core `media3-exoplayer` plays progressive files; each adaptive protocol is a separate module of the **same** Media3 version.
+    headers: [Protocol, Manifest, Media3 module, DRM on Android, Note]
+    rows:
+      - ["**HLS**", "`.m3u8` multivariant + media playlists", "`media3-exoplayer-hls`", "AES-128; Widevine (`cenc` API 19+, `cbcs` API 25+); PlayReady on Android TV; not FairPlay", "the most common; low-latency HLS supported"]
+      - ["**DASH**", "`.mpd`", "`media3-exoplayer-dash`", "Widevine, PlayReady (some devices), ClearKey", "the usual choice for Widevine-protected catalogues"]
+      - ["**SmoothStreaming**", "`/Manifest`", "`media3-exoplayer-smoothstreaming`", "PlayReady", "legacy Microsoft format"]
+      - ["Progressive MP4, WebM, MP3", "none", "`media3-exoplayer` (built in)", "ClearKey at most", "**no adaptive bitrate**; fine for short clips"]
+      - ["RTSP", "none", "`media3-exoplayer-rtsp`", "—", "IP cameras, not consumer streaming"]
+      - ["UI", "—", "`media3-ui-compose-material3` (Compose) or `media3-ui` (`PlayerView`)", "—", "background playback: `media3-session`"]
+  - id: hls-abr
+    kind: code
+    title: What a multivariant playlist holds, and how ABR picks
+    note: "ExoPlayer does this for you; knowing the rule — the best rendition within a fraction of measured bandwidth, up to the smallest that fills the view — explains what you configure."
+    prerequisites:
+      - A Kotlin 2.x compiler (`kotlinc`) and JDK 17 or later
+      - "Save as `main.kt`; run `kotlinc main.kt -include-runtime -d main.jar && java -jar main.jar`"
+    code: |-
+      import java.net.URI
+
+      data class Rendition(val bandwidth: Long, val width: Int, val height: Int, val codecs: String, val uri: URI)
+
+      private val attribute = Regex("""([A-Z0-9-]+)=("[^"]*"|[^,]*)""")    // quoted values may contain commas
+
+      fun parseMultivariant(base: URI, text: String): List<Rendition> {
+          val lines = text.lines().map(String::trim).filter(String::isNotEmpty)
+          require(lines.firstOrNull() == "#EXTM3U") { "not an HLS playlist" }
+          return lines.zipWithNext().filter { (tag, _) -> tag.startsWith("#EXT-X-STREAM-INF:") }.map { (tag, uri) ->
+              val attrs = attribute.findAll(tag.substringAfter(':'))
+                  .associate { it.groupValues[1] to it.groupValues[2].trim('"') }
+              val (w, h) = attrs.getValue("RESOLUTION").split('x').map(String::toInt)
+              Rendition(attrs.getValue("BANDWIDTH").toLong(), w, h, attrs["CODECS"].orEmpty(), base.resolve(uri))
+          }.sortedBy { it.bandwidth }
+      }
+
+      /**
+       * The highest rendition within 70% of measured throughput (ExoPlayer's default fraction), among those up to
+       * the smallest one that fills the view — a simplification of DefaultTrackSelector, which compares pixels.
+       */
+      fun pick(renditions: List<Rendition>, measuredBps: Long, viewHeight: Int, fraction: Double = 0.7): Rendition {
+          val fillsView = renditions.filter { it.height >= viewHeight * 0.98 }.minByOrNull { it.height }
+          val useful = renditions.filter { fillsView == null || it.height <= fillsView.height }
+          return useful.lastOrNull { it.bandwidth <= measuredBps * fraction } ?: renditions.first()   // never stall
+      }
+
+      fun main() {
+          val playlist = """
+              #EXTM3U
+              #EXT-X-INDEPENDENT-SEGMENTS
+              #EXT-X-STREAM-INF:BANDWIDTH=6000000,RESOLUTION=1920x1080,CODECS="avc1.640028,mp4a.40.2"
+              1080p/index.m3u8
+              #EXT-X-STREAM-INF:BANDWIDTH=800000,RESOLUTION=640x360,CODECS="avc1.4d401e,mp4a.40.2"
+              360p/index.m3u8
+              #EXT-X-STREAM-INF:BANDWIDTH=2800000,RESOLUTION=1280x720,CODECS="avc1.4d401f,mp4a.40.2"
+              720p/index.m3u8
+          """.trimIndent()
+          val renditions = parseMultivariant(URI("https://cdn.example.com/trailers/arrival/master.m3u8"), playlist)
+          renditions.forEach { println("${it.height}p ${it.bandwidth / 1000} kbps → ${it.uri}") }
+          val conditions = listOf(Triple("3G", 600_000L, 1080), Triple("4G", 5_000_000L, 1080),
+              Triple("Wi-Fi", 20_000_000L, 1080), Triple("Wi-Fi, 640 px view", 20_000_000L, 640),
+              Triple("Wi-Fi, 1000 px view", 20_000_000L, 1000))
+          for ((label, bps, view) in conditions) println("$label: ${pick(renditions, bps, view).height}p")
+      }
+    expected: |-
+      360p 800 kbps → https://cdn.example.com/trailers/arrival/360p/index.m3u8
+      720p 2800 kbps → https://cdn.example.com/trailers/arrival/720p/index.m3u8
+      1080p 6000 kbps → https://cdn.example.com/trailers/arrival/1080p/index.m3u8
+      3G: 360p
+      4G: 720p
+      Wi-Fi: 1080p
+      Wi-Fi, 640 px view: 720p
+      Wi-Fi, 1000 px view: 1080p
+    validation:
+      status: ran
+      toolchain: kotlinc 2.4.21, JVM 21.0.12.1
+      date: "2026-11-16"
+  - id: play-in-compose
+    kind: code
+    title: Play a stream in Compose
+    note: "Since Media3 1.10, the `Player` composable in `media3-ui-compose-material3` replaces wrapping `PlayerView` in `AndroidView`; create the player on start and release it on stop."
+    sources:
+      - title: Get started with Compose-based UI — Media3
+        url: https://developer.android.com/media/media3/ui/compose
+      - title: Player composable — Media3 API reference
+        url: https://developer.android.com/reference/kotlin/androidx/media3/ui/compose/material3/Player.composable
+    prerequisites: &compose
+      - "The Compose template project, plus `androidx.media3:media3-exoplayer`, `media3-exoplayer-hls` and `media3-ui-compose-material3` (all 1.11.1) and `androidx.lifecycle:lifecycle-runtime-compose` 2.11.0"
+      - "`<uses-permission android:name=\"android.permission.INTERNET\"/>` in the manifest; call `TrailerPlayer(url)` from a screen"
+    code: |-
+      @OptIn(UnstableApi::class)
+      @Composable
+      fun TrailerPlayer(url: String, modifier: Modifier = Modifier) {
+          val context = LocalContext.current
+          var player by remember { mutableStateOf<ExoPlayer?>(null) }
+          var resumeAtMs by rememberSaveable(url) { mutableLongStateOf(0L) }    // survives rotation, process death
+
+          LifecycleStartEffect(url) {                         // STARTED: build; STOPPED or left: release
+              val exo = ExoPlayer.Builder(context).build().apply {
+                  setMediaItem(MediaItem.fromUri(url), resumeAtMs)
+                  prepare()
+                  playWhenReady = true
+              }
+              player = exo
+              onStopOrDispose {
+                  resumeAtMs = exo.currentPosition
+                  exo.release()                               // frees the hardware decoder for other apps
+                  player = null
+              }
+          }
+
+          Player(player = player, modifier = modifier.fillMaxWidth().aspectRatio(16f / 9f))   // video and controls
+      }
+    expected: The trailer plays in a 16:9 frame with Material 3 controls; leaving the screen or backgrounding the app releases the player, and returning resumes at the saved position.
+    validation: &excerpt-compose
+      status: excerpt
+      host: an Android app with Jetpack Compose and Media3 (needs the Android SDK and the Compose compiler plugin)
+  - id: play-in-views
+    kind: code
+    title: Play a stream with PlayerView, and the lifecycle rule
+    note: "One player per screen, created in `onStart` and released in `onStop` (API 24+), with the position saved — never kept in a static or a ViewModel that outlives its view."
+    sources:
+      - title: Hello world! — Media3 ExoPlayer
+        url: https://developer.android.com/media/media3/exoplayer/hello-world
+    prerequisites:
+      - "An Android project with `media3-exoplayer`, `media3-exoplayer-dash` and `media3-ui` (1.11.1); `activity_trailer.xml` holds an `androidx.media3.ui.PlayerView` with id `player_view` and `android:keepScreenOn=\"true\"`"
+      - "Start the activity with the extra `url` pointing to a `.mpd` manifest"
+    code: |-
+      class TrailerActivity : AppCompatActivity() {
+          private lateinit var playerView: PlayerView
+          private var player: ExoPlayer? = null
+          private var resumeAtMs = 0L
+
+          override fun onCreate(savedInstanceState: Bundle?) {
+              super.onCreate(savedInstanceState)
+              setContentView(R.layout.activity_trailer)
+              playerView = findViewById(R.id.player_view)
+              resumeAtMs = savedInstanceState?.getLong("position") ?: 0L
+          }
+
+          override fun onStart() {
+              super.onStart()
+              val url = requireNotNull(intent.getStringExtra("url"))
+              player = ExoPlayer.Builder(this).build().also { exo ->
+                  playerView.player = exo
+                  val item = MediaItem.Builder().setUri(url).setMimeType(MimeTypes.APPLICATION_MPD).build()
+                  exo.setMediaItem(item, resumeAtMs)
+                  exo.prepare()
+                  exo.playWhenReady = true
+              }
+          }
+
+          override fun onStop() {
+              super.onStop()
+              player?.let {
+                  resumeAtMs = it.currentPosition
+                  it.release()
+              }
+              playerView.player = null
+              player = null
+          }
+
+          override fun onSaveInstanceState(outState: Bundle) {
+              super.onSaveInstanceState(outState)
+              outState.putLong("position", player?.currentPosition ?: resumeAtMs)
+          }
+      }
+    expected: The DASH stream plays with the default controls; switching apps releases the decoder, and coming back resumes where the user left off.
+    validation:
+      status: excerpt
+      host: an Android app using the View system and Media3 (needs the Android SDK)
+  - id: media-items
+    kind: code
+    title: "Building MediaItems: MIME hints, live configuration, captions and DRM"
+    note: "Give the MIME type when the URL has no `.m3u8` or `.mpd` extension, and attach the DRM license server to the item itself."
+    sources:
+      - title: Media items — Media3 ExoPlayer
+        url: https://developer.android.com/media/media3/exoplayer/media-items
+      - title: Live streaming — Media3 ExoPlayer
+        url: https://developer.android.com/media/media3/exoplayer/live-streaming
+      - title: Digital rights management — Media3 ExoPlayer
+        url: https://developer.android.com/media/media3/exoplayer/drm
+    prerequisites:
+      - "`media3-exoplayer`, `media3-exoplayer-hls` and `media3-exoplayer-dash` (1.11.1)"
+      - "`Title` is your catalogue model; `licenseToken` comes from your backend for this user and title"
+    code: |-
+      fun Title.toMediaItem(licenseToken: String?): MediaItem = MediaItem.Builder()
+          .setMediaId(id)
+          .setUri(streamUrl)                                         // e.g. https://cdn.example.com/play?id=42
+          .setMimeType(if (isDash) MimeTypes.APPLICATION_MPD else MimeTypes.APPLICATION_M3U8)
+          .setMediaMetadata(MediaMetadata.Builder().setTitle(name).setArtworkUri(posterUrl.toUri()).build())
+          .setSubtitleConfigurations(captions.map { track ->
+              MediaItem.SubtitleConfiguration.Builder(track.url.toUri())
+                  .setMimeType(MimeTypes.TEXT_VTT)
+                  .setLanguage(track.language)
+                  .setSelectionFlags(if (track.isDefault) C.SELECTION_FLAG_DEFAULT else 0)
+                  .build()
+          })
+          .apply {
+              if (isLive) setLiveConfiguration(
+                  MediaItem.LiveConfiguration.Builder()
+                      .setTargetOffsetMs(8_000)                       // stay 8 s behind the live edge
+                      .setMaxPlaybackSpeed(1.04f)                     // catch up gently if we drift
+                      .build(),
+              )
+              if (licenseToken != null) setDrmConfiguration(
+                  MediaItem.DrmConfiguration.Builder(C.WIDEVINE_UUID)
+                      .setLicenseUri("https://license.example.com/widevine")
+                      .setLicenseRequestHeaders(mapOf("Authorization" to "Bearer $licenseToken"))
+                      .setMultiSession(false)
+                      .build(),
+              )
+          }
+          .build()
+    expected: An item that ExoPlayer routes to the HLS or DASH module without sniffing, with captions, a live latency target and a Widevine license request carrying the user's token.
+    validation: &excerpt
+      status: excerpt
+      host: an Android app with Media3 (needs the Android SDK)
+  - id: track-selection
+    kind: code
+    title: Adaptive bitrate limits and track selection
+    note: "Constrain ABR with `TrackSelectionParameters` — reset the caps, then cap size and bitrate on cellular and prefer languages — instead of forcing one rendition."
+    sources:
+      - title: Track selection — Media3 ExoPlayer
+        url: https://developer.android.com/media/media3/exoplayer/track-selection
+    prerequisites:
+      - "`media3-exoplayer` (1.11.1); `isMetered` from `ConnectivityManager.isActiveNetworkMetered`"
+      - "Call `applyQualityPolicy` after building the player and whenever the network or the setting changes"
+    code: |-
+      enum class Quality { AUTO, DATA_SAVER, BEST }
+
+      fun ExoPlayer.applyQualityPolicy(quality: Quality, isMetered: Boolean, audioLanguage: String) {
+          trackSelectionParameters = trackSelectionParameters.buildUpon()
+              .clearVideoSizeConstraints()                                  // undo what an earlier call set
+              .setMaxVideoBitrate(Int.MAX_VALUE)
+              .clearViewportSizeConstraints()
+              .apply {
+                  when {
+                      quality == Quality.DATA_SAVER || (quality == Quality.AUTO && isMetered) ->
+                          setMaxVideoSizeSd().setMaxVideoBitrate(1_500_000)        // ABR adapts below the cap
+                      quality == Quality.AUTO -> setViewportSizeToPhysicalDisplaySize(true)   // fit the screen
+                      else -> Unit                                                  // BEST: no caps at all
+                  }
+              }
+              .setPreferredAudioLanguage(audioLanguage)
+              .setPreferredTextLanguage(audioLanguage)
+              .build()
+      }
+
+      /** What is playing now — for a "720p · 2.8 Mbps" debug overlay. */
+      fun Player.currentVideoFormat(): String? = currentTracks.groups
+          .firstOrNull { it.type == C.TRACK_TYPE_VIDEO && it.isSelected }
+          ?.let { group -> (0 until group.length).firstOrNull(group::isTrackSelected)?.let(group::getTrackFormat) }
+          ?.let { "${it.height}p · ${it.bitrate / 1000} kbps" }
+    expected: On a metered network the player stays at SD and under 1.5 Mbps while still switching between the renditions that fit; back on Wi-Fi in AUTO the caps are cleared and only the screen size limits it; audio and captions follow the user's language.
+    validation: *excerpt
+  - id: state-errors-live
+    kind: code
+    title: Player state, buffering, errors and recovery; live versus VOD
+    note: "Drive the UI from `Player.Listener`; recover from falling behind a live window by seeking to the default position and preparing again."
+    sources:
+      - title: Player events — Media3 ExoPlayer
+        url: https://developer.android.com/media/media3/exoplayer/listening-to-player-events
+      - title: Live streaming — Media3 ExoPlayer
+        url: https://developer.android.com/media/media3/exoplayer/live-streaming
+    prerequisites:
+      - "`media3-exoplayer` (1.11.1); `PlaybackUi` is your screen state, rendered by the composable or view"
+      - "`player.addListener(PlaybackObserver(player) { ui = it })` after building, `removeListener` before `release()`"
+    code: |-
+      data class PlaybackUi(
+          val buffering: Boolean = false,
+          val playing: Boolean = false,
+          val live: Boolean = false,
+          val error: String? = null,
+      )
+
+      class PlaybackObserver(private val player: Player, private val render: (PlaybackUi) -> Unit) :
+          Player.Listener {
+          private var ui = PlaybackUi()
+
+          override fun onEvents(player: Player, events: Player.Events) {      // one callback per batch of changes
+              ui = ui.copy(
+                  buffering = player.playbackState == Player.STATE_BUFFERING,
+                  playing = player.isPlaying,
+                  live = player.isCurrentMediaItemLive,                       // hide the seek bar, show "LIVE"
+              )
+              render(ui)
+          }
+
+          override fun onPlayerError(error: PlaybackException) {
+              when (error.errorCode) {
+                  PlaybackException.ERROR_CODE_BEHIND_LIVE_WINDOW -> {        // paused too long on a live stream
+                      player.seekToDefaultPosition()
+                      player.prepare()
+                  }
+                  PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED,
+                  PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT -> show("Offline. Tap to retry.")
+                  PlaybackException.ERROR_CODE_DRM_LICENSE_ACQUISITION_FAILED -> show("Not available here.")
+                  else -> show("Playback failed (${error.errorCodeName}).")
+              }
+          }
+
+          private fun show(message: String) {
+              ui = ui.copy(error = message)
+              render(ui)
+          }
+
+          fun retry() {                                        // the retry button: prepare() resumes in place
+              ui = ui.copy(error = null)
+              player.prepare()
+          }
+      }
+    expected: The spinner shows while buffering, "LIVE" replaces the seek bar on live items, a live stream left paused rejoins at the live edge by itself, and network failures offer a retry that continues from the same position.
+    validation: *excerpt
+  - id: live-vs-vod-playlist
+    kind: code
+    title: Live versus on-demand, read from the media playlist
+    note: "A live playlist has no `#EXT-X-ENDLIST` and slides forward; the player starts a few target durations behind its end, and a position that slides out of the window is the `BehindLiveWindow` error."
+    prerequisites:
+      - A Kotlin 2.x compiler (`kotlinc`) and JDK 17 or later
+      - "Save as `main.kt`; run `kotlinc main.kt -include-runtime -d main.jar && java -jar main.jar`"
+    code: |-
+      data class MediaPlaylist(
+          val live: Boolean,
+          val targetSeconds: Double,
+          val firstSequence: Long,
+          val segments: List<Double>,
+      ) {
+          val windowSeconds get() = segments.sum()
+          val lastSequence get() = firstSequence + segments.size - 1
+          /** RFC 8216: start no closer than three target durations from the end of a live playlist. */
+          val defaultStartSeconds get() = if (live) (windowSeconds - 3 * targetSeconds).coerceAtLeast(0.0) else 0.0
+      }
+
+      fun parseMediaPlaylist(text: String): MediaPlaylist {
+          val lines = text.lines().map(String::trim)
+          fun tag(name: String) = lines.firstOrNull { it.startsWith("$name:") }?.substringAfter(':')
+          return MediaPlaylist(
+              live = "#EXT-X-ENDLIST" !in lines && tag("#EXT-X-PLAYLIST-TYPE") != "VOD",
+              targetSeconds = tag("#EXT-X-TARGETDURATION")!!.toDouble(),
+              firstSequence = tag("#EXT-X-MEDIA-SEQUENCE")?.toLong() ?: 0,
+              segments = lines.filter { it.startsWith("#EXTINF:") }
+                  .map { it.removePrefix("#EXTINF:").substringBefore(',').toDouble() },
+          )
+      }
+
+      fun playlist(firstSequence: Long, count: Int, ended: Boolean) = buildString {
+          appendLine("#EXTM3U")
+          appendLine("#EXT-X-TARGETDURATION:6")
+          appendLine("#EXT-X-MEDIA-SEQUENCE:$firstSequence")
+          repeat(count) { appendLine("#EXTINF:6.0,\nseg${firstSequence + it}.ts") }
+          if (ended) appendLine("#EXT-X-ENDLIST")
+      }
+
+      fun main() {
+          val vod = parseMediaPlaylist(playlist(0, 100, ended = true))
+          println("VOD: ${vod.windowSeconds} s, seekable from 0, start at ${vod.defaultStartSeconds}")
+
+          val live = parseMediaPlaylist(playlist(1200, 5, ended = false))
+          println("live: window ${live.windowSeconds} s, segments ${live.firstSequence}..${live.lastSequence}")
+          println("live: start at ${live.defaultStartSeconds} s, three target durations behind the edge")
+
+          val pausedAt = 1201L                                         // paused on this segment for a minute
+          val refreshed = parseMediaPlaylist(playlist(1210, 5, ended = false))
+          val gone = pausedAt < refreshed.firstSequence
+          println(if (gone) "segment $pausedAt is gone: BehindLiveWindow, rejoin at the live edge" else "resume")
+      }
+    expected: |-
+      VOD: 600.0 s, seekable from 0, start at 0.0
+      live: window 30.0 s, segments 1200..1204
+      live: start at 12.0 s, three target durations behind the edge
+      segment 1201 is gone: BehindLiveWindow, rejoin at the live edge
+    validation:
+      status: ran
+      toolchain: kotlinc 2.4.21, JVM 21.0.12.1
+      date: "2026-11-16"
+  - id: background-playback
+    kind: code
+    title: Background playback with a MediaSessionService, in outline
+    note: "Background audio lives in a `MediaSessionService` that owns the player and audio focus; the screen controls it through a `MediaController`."
+    sources:
+      - title: Background playback with a MediaSessionService — Media3
+        url: https://developer.android.com/media/media3/session/background-playback
+    prerequisites:
+      - "`media3-session` and `media3-exoplayer` (1.11.1), `androidx.lifecycle` 2.11.0 and `kotlinx-coroutines-guava`; add `PlaybackConnection(context)` to the screen's `lifecycle`; the manifest declares `FOREGROUND_SERVICE` and `FOREGROUND_SERVICE_MEDIA_PLAYBACK`, and the service with `android:foregroundServiceType=\"mediaPlayback\"`, `android:exported=\"true\"` and the `androidx.media3.session.MediaSessionService` intent filter"
+      - "`Downloads.readOnly` comes from the next card"
+    code: |-
+      class PlaybackService : MediaSessionService() {
+          private var session: MediaSession? = null
+
+          override fun onCreate() {
+              super.onCreate()
+              val audio = AudioAttributes.Builder()
+                  .setUsage(C.USAGE_MEDIA)
+                  .setContentType(C.AUDIO_CONTENT_TYPE_MOVIE)
+                  .build()
+              val sources = DefaultMediaSourceFactory(this).setDataSourceFactory(Downloads.readOnly(this))
+              val player = ExoPlayer.Builder(this)
+                  .setMediaSourceFactory(sources)                             // downloads play offline
+                  .setAudioAttributes(audio, /* handleAudioFocus = */ true)   // pause for calls and other apps
+                  .setHandleAudioBecomingNoisy(true)                          // pause when headphones come out
+                  .build()
+              session = MediaSession.Builder(this, player).build()           // notification, lock screen, Bluetooth
+          }
+
+          override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? = session
+
+          @OptIn(UnstableApi::class)
+          override fun onTaskRemoved(rootIntent: Intent?) = pauseAllPlayersAndStopSelf()   // swiped away: stop
+
+          override fun onDestroy() {
+              session?.run {
+                  player.release()
+                  release()
+              }
+              session = null
+              super.onDestroy()
+          }
+      }
+
+      // The screen talks to the service through a MediaController: connect on start, release on stop.
+      class PlaybackConnection(private val context: Context) : DefaultLifecycleObserver {
+          private var future: ListenableFuture<MediaController>? = null
+
+          override fun onStart(owner: LifecycleOwner) {
+              val token = SessionToken(context, ComponentName(context, PlaybackService::class.java))
+              future = MediaController.Builder(context, token).buildAsync()   // await() it in a coroutine
+          }
+
+          override fun onStop(owner: LifecycleOwner) {
+              future?.let(MediaController::releaseFuture)                   // otherwise the service never stops
+              future = null
+          }
+      }
+    expected: Playback continues with the screen off, pauses for a phone call or unplugged headphones, and shows media controls in the notification and on the lock screen.
+    validation: *excerpt
+  - id: offline-downloads
+    kind: code
+    title: Offline downloads with DownloadManager, in outline
+    note: "Download through `DownloadManager` and a cache, with `DownloadHelper` choosing the renditions, and play a completed download from `request.toMediaItem()`, read off the main thread, so the stream keys match."
+    sources:
+      - title: Downloading media — Media3 ExoPlayer
+        url: https://developer.android.com/media/media3/exoplayer/downloading-media
+    prerequisites:
+      - "`media3-exoplayer`, `-hls`, `-datasource` and `-database` (1.11.1); the manifest declares `FOREGROUND_SERVICE`, `FOREGROUND_SERVICE_DATA_SYNC`, and `TrailerDownloadService` (your `DownloadService` subclass returning `Downloads.manager(this)`) with `android:exported=\"false\"`, `android:foregroundServiceType=\"dataSync\"` and the `androidx.media3.exoplayer.downloadService.action.RESTART` intent filter"
+      - "DRM titles also need an offline licence: download it with `OfflineLicenseHelper` and store its `keySetId` on the request"
+    code: |-
+      @OptIn(UnstableApi::class)
+      object Downloads {                                                     // one database, cache and manager
+          private var database: StandaloneDatabaseProvider? = null
+          private var cache: SimpleCache? = null
+          private var manager: DownloadManager? = null
+          private val http = DefaultHttpDataSource.Factory()
+
+          @Synchronized private fun database(context: Context) =
+              database ?: StandaloneDatabaseProvider(context.applicationContext).also { database = it }
+
+          @Synchronized private fun cache(context: Context) = cache ?: SimpleCache(   // NoOp: never evicted
+              File(context.filesDir, "downloads"), NoOpCacheEvictor(), database(context)).also { cache = it }
+
+          @Synchronized fun manager(context: Context): DownloadManager = manager ?: DownloadManager(
+              context.applicationContext, database(context), cache(context), http, Executors.newFixedThreadPool(2),
+          ).also { manager = it }
+
+          /** Plays downloaded titles from disk and streams the rest without caching them. */
+          fun readOnly(context: Context): DataSource.Factory = CacheDataSource.Factory()
+              .setCache(cache(context)).setUpstreamDataSourceFactory(http).setCacheWriteDataSinkFactory(null)
+
+          /** Call on the main thread; DownloadHelper picks the renditions (stream keys) to keep. */
+          fun download(context: Context, titleId: String, hlsUrl: String) {
+              val item = MediaItem.Builder().setMediaId(titleId).setUri(hlsUrl)
+                  .setMimeType(MimeTypes.APPLICATION_M3U8).build()            // the URL may have no .m3u8
+              val helper = DownloadHelper.Factory()
+                  .setRenderersFactory(DefaultRenderersFactory(context))
+                  .setDataSourceFactory(http)
+                  .create(item)
+              helper.prepare(object : DownloadHelper.Callback {
+                  override fun onPrepared(helper: DownloadHelper, tracksInfoAvailable: Boolean) {
+                      val request = helper.getDownloadRequest(titleId, null)   // default selection, not all
+                      DownloadService.sendAddDownload(context, TrailerDownloadService::class.java, request, false)
+                      helper.release()
+                  }
+                  override fun onPrepareError(helper: DownloadHelper, e: IOException) = helper.release()
+              })
+          }
+
+          /** The item to play offline, or null when the title is not (fully) downloaded: stream it instead. */
+          suspend fun offlineItem(context: Context, titleId: String): MediaItem? = withContext(Dispatchers.IO) {
+              val download = manager(context).downloadIndex.getDownload(titleId)   // a database read
+              download?.takeIf { it.state == Download.STATE_COMPLETED }?.request?.toMediaItem()
+          }
+      }
+    expected: "`download(context, \"arrival\", url)` queues the default rendition of an HLS title in the background; once complete, the title plays from the cache in airplane mode."
+    validation: *excerpt
+  - id: video-pitfalls
+    kind: rules
+    title: Pitfalls worth saying out loud
+    note: Most playback bugs are lifecycle bugs.
+    items:
+      - tone: bad
+        text: "Forgetting `release()`: hardware decoders are few — a leaked player makes the **next** video fail with a decoder error. Release in `onStop`, or in `onStopOrDispose` in Compose."
+      - tone: bad
+        text: "Several `ExoPlayer` instances for one screen (one per list item, a new one on every recomposition). Share one player and move it between surfaces."
+      - tone: bad
+        text: "Mixing Media3 module versions: `media3-exoplayer`, `-hls`, `-dash`, `-ui` and `-session` must all be the same version."
+      - tone: bad
+        text: "Touching the player off its application thread (normally the main thread) — it throws `Player is accessed on the wrong thread`."
+      - tone: bad
+        text: "Downloading segments yourself or reading the download directory — use `DownloadManager` and `CacheDataSource`, which keep the stream keys consistent. DRM: download the offline licence yourself (`OfflineLicenseHelper`) and store its `keySetId` on the request."
+      - tone: good
+        text: "Pick the protocol by DRM and catalogue: HLS for reach, DASH with Widevine for protected premium content; both need their Media3 module."
+      - tone: good
+        text: "Constrain adaptive bitrate (`setMaxVideoSizeSd()`, `setMaxVideoBitrate`) rather than pinning one track — pinning turns every network dip into a stall."
+      - tone: good
+        text: "Use `@OptIn(UnstableApi::class)` deliberately: the Compose UI, `DownloadManager` and cache APIs are marked unstable and can change between minor versions."
+      - tone: neutral
+        text: "Widevine L1 (hardware) is required by most studios for HD; L3 devices may be capped at SD. Check `MediaDrm` security level before promising 1080p."

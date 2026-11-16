@@ -1,0 +1,824 @@
+id: kt-networking-rest
+concept: networking.rest
+scope: platform
+title: "Networking — REST with Ktor, OkHttp & Retrofit"
+group: Networking & media
+subtitle: "Which client to pick, typed GET and POST as suspend functions with kotlinx.serialization, a sealed error type, timeouts, cancellation and retry, single-flight token refresh, pagination as a Flow, ETags, progress, and the same calls with Ktor, OkHttp and Retrofit."
+applies:
+  platforms: [jvm, android]
+  runtime: Kotlin/JVM with kotlinx.coroutines and kotlinx.serialization; the JDK's java.net.http client
+  requires: [kotlinx-coroutines-core, kotlinx-serialization-json]
+  versions: { kotlin: ">=2.4", kotlinx-coroutines: ">=1.10", kotlinx-serialization: ">=1.13", jvm: ">=21" }
+sources:
+  - title: java.net.http.HttpClient — Java SE 21 API
+    url: https://docs.oracle.com/en/java/javase/21/docs/api/java.net.http/java/net/http/HttpClient.html
+  - title: Ktor Client — Ktor docs
+    url: https://ktor.io/docs/client-create-and-configure.html
+  - title: OkHttp
+    url: https://lysine.dev/okhttp/
+  - title: Retrofit
+    url: https://lysine.dev/retrofit/
+  - title: Connect to the network — Android Developers
+    url: https://developer.android.com/develop/connectivity/network-ops/connecting
+cards:
+  - id: which-client
+    kind: table
+    title: Which HTTP client
+    note: On Android pick Retrofit or Ktor over OkHttp; on a JVM backend or a script, the JDK client is already there.
+    headers: [Client, What it is, Coroutines, Reach for it when]
+    rows:
+      - ["**OkHttp** 5", "the HTTP engine: connection pool, HTTP/2, TLS, cache, interceptors, `Authenticator`", "`okhttp-coroutines` adds `executeAsync()`", "you need the transport underneath Retrofit or Ktor, or raw control"]
+      - ["**Retrofit** 3", "a typed interface over OkHttp, generated at run time", "`suspend` methods in the interface", "an Android app talking to one REST API; the most common choice"]
+      - ["**Ktor client** 3", "a multiplatform client with plugins (`ContentNegotiation`, `Auth`, `HttpTimeout`, `HttpRequestRetry`)", "suspend all the way down", "Kotlin Multiplatform, or you prefer code over annotations; runs on the OkHttp or CIO engine"]
+      - ["**`java.net.http.HttpClient`**", "the JDK's client (JDK 11+), HTTP/2, `sendAsync` returns a `CompletableFuture`", "`sendAsync(…).await()` from `kotlinx.coroutines.future`", "JVM services, tools and tests — **not on Android**"]
+      - ["`HttpURLConnection`", "the legacy built-in client", "blocking only", "never in new code"]
+  - id: typed-get-post
+    kind: code
+    title: A typed GET and POST
+    note: "Send `Accept` and `Content-Type`, give every request a timeout, and check the status before you decode the body."
+    prerequisites: &run
+      - "A Kotlin 2.x compiler (`kotlinc`), JDK 21 or later (`HttpClient` is `AutoCloseable` from 21), `kotlinx-coroutines-core-jvm-1.10.2.jar`, `kotlinx-serialization-core-jvm-1.13.0.jar` and `kotlinx-serialization-json-jvm-1.13.0.jar`"
+      - "Save as `main.kt`; run `kotlinc -Xplugin=$KOTLIN_HOME/lib/kotlinx-serialization-compiler-plugin.jar -cp <the three jars> main.kt -d out && kotlin -cp out:<the three jars> MainKt` — it serves its own API on `127.0.0.1` and stops it"
+      - "Or, in a Gradle project: `implementation(\"org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.2\")`, `implementation(\"org.jetbrains.kotlinx:kotlinx-serialization-json:1.13.0\")` and the `kotlin(\"plugin.serialization\")` plugin"
+    code: |-
+      import com.sun.net.httpserver.HttpServer
+      import java.net.*
+      import java.net.http.*
+      import java.time.Duration
+      import kotlinx.coroutines.future.await
+      import kotlinx.coroutines.runBlocking
+      import kotlinx.serialization.*
+      import kotlinx.serialization.json.Json
+
+      @Serializable data class Order(val id: String, val totalCents: Long)
+      @Serializable data class NewOrder(val sku: String, val quantity: Int)
+
+      class OrdersApi(private val base: URI, private val http: HttpClient) {
+          private val json = Json { ignoreUnknownKeys = true }      // tolerate fields the server adds later
+
+          suspend fun order(id: String): Order = send(HttpRequest.newBuilder(base.resolve("orders/$id")))
+
+          suspend fun create(order: NewOrder): Order = send(
+              HttpRequest.newBuilder(base.resolve("orders")).header("Content-Type", "application/json")
+                  .POST(HttpRequest.BodyPublishers.ofString(json.encodeToString(order))))
+
+          private suspend inline fun <reified T> send(builder: HttpRequest.Builder): T {
+              val request = builder.header("Accept", "application/json").timeout(Duration.ofSeconds(10)).build()
+              val response = http.sendAsync(request, HttpResponse.BodyHandlers.ofString()).await()
+              check(response.statusCode() in 200..299) { "HTTP ${response.statusCode()}" }   // not an IOException
+              return json.decodeFromString(response.body())
+          }
+      }
+
+      fun main() = runBlocking {
+          val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+          server.createContext("/orders") { ex ->
+              if (ex.requestMethod == "POST") println("server got ${ex.requestHeaders.getFirst("Content-Type")}")
+              val body = if (ex.requestMethod == "POST") """{"id":"A-1042","totalCents":2598,"currency":"EUR"}"""
+                  else """{"id":"A-1041","totalCents":1299}"""
+              ex.sendResponseHeaders(if (ex.requestMethod == "POST") 201 else 200, body.length.toLong())
+              ex.responseBody.use { it.write(body.encodeToByteArray()) }
+          }
+          server.start()
+
+          HttpClient.newHttpClient().use { http ->
+              val api = OrdersApi(URI("http://127.0.0.1:${server.address.port}/"), http)
+              println(api.order("A-1041"))
+              println(api.create(NewOrder("BOOK-7", 2)))
+          }
+          server.stop(0)
+      }
+    expected: |-
+      Order(id=A-1041, totalCents=1299)
+      server got application/json
+      Order(id=A-1042, totalCents=2598)
+    validation: &ran
+      status: ran
+      toolchain: kotlinc 2.4.21, JVM 21.0.12.1, kotlinx-coroutines-core 1.10.2, kotlinx-serialization-json 1.13.0
+      date: "2026-11-16"
+  - id: sealed-error-type
+    kind: code
+    title: A sealed error type the screen can `when` over
+    note: "Map every failure — transport, status, body — onto one sealed hierarchy at the client's edge, so each screen handles all of them and nothing else."
+    prerequisites:
+      - "A Kotlin 2.x compiler (`kotlinc`), JDK 17 or later, `kotlinx-serialization-core-jvm-1.13.0.jar` and `kotlinx-serialization-json-jvm-1.13.0.jar`"
+      - "Save as `main.kt`; run `kotlinc -Xplugin=$KOTLIN_HOME/lib/kotlinx-serialization-compiler-plugin.jar -cp <the two jars> main.kt -d out && kotlin -cp out:<the two jars> MainKt` — a fake transport stands in for the network"
+    code: |-
+      import java.io.IOException
+      import kotlinx.serialization.*
+      import kotlinx.serialization.json.Json
+
+      @Serializable data class Order(val id: String, val totalCents: Long)
+
+      sealed class ApiError(cause: Throwable? = null) : Exception(cause) {
+          data class Http(val status: Int) : ApiError()
+          data class Network(val reason: String?) : ApiError()
+          class Decoding(cause: SerializationException) : ApiError(cause)
+      }
+
+      suspend fun fetchOrder(id: String, get: suspend (path: String) -> Pair<Int, String>): Order {
+          val (status, body) = try {
+              get("orders/$id")                                 // the transport: java.net.http, OkHttp, Ktor
+          } catch (e: IOException) {                          // refused, reset, HttpTimeoutException
+              throw ApiError.Network(e.message)
+          }
+          if (status !in 200..299) throw ApiError.Http(status)
+          return try {
+              Json.decodeFromString<Order>(body)
+          } catch (e: SerializationException) {              // e.g. a captive portal's HTML with a 200
+              throw ApiError.Decoding(e)
+          }
+      }
+
+      fun userMessage(error: ApiError): String = when (error) {   // exhaustive: no else branch
+          is ApiError.Http -> if (error.status == 404) "No such order." else "Server error ${error.status}."
+          is ApiError.Network -> "Check your connection."
+          is ApiError.Decoding -> "Unexpected response. Try again later."
+      }
+
+      suspend fun main() {
+          val replies = mapOf(
+              "orders/A-9999" to (404 to """{"error":"not_found"}"""),
+              "orders/A-1042" to (200 to "<html>Sign in to the café Wi-Fi</html>"),
+          )
+          for (id in listOf("A-9999", "A-1042", "A-1043")) {
+              try {
+                  fetchOrder(id) { path -> replies[path] ?: throw IOException("Connection refused") }
+              } catch (e: ApiError) {
+                  println("$id: ${e::class.simpleName} → ${userMessage(e)}")
+              }
+          }
+      }
+    expected: |-
+      A-9999: Http → No such order.
+      A-1042: Decoding → Unexpected response. Try again later.
+      A-1043: Network → Check your connection.
+    validation:
+      status: ran
+      toolchain: kotlinc 2.4.21, JVM 21.0.12.1, kotlinx-serialization-json 1.13.0
+      date: "2026-11-16"
+  - id: timeout-cancel-retry
+    kind: code
+    title: Timeouts, cancellation and retry with backoff
+    note: "Wrap only idempotent calls (GET, PUT, DELETE, or a POST with an `Idempotency-Key`); time out each attempt with `withTimeoutOrNull`, honour a capped `Retry-After`, and let every cancellation — the caller's timeout included — pass untouched."
+    prerequisites: &run-test
+      - "A Kotlin 2.x compiler (`kotlinc`), JDK 17 or later, `kotlinx-coroutines-core-jvm-1.10.2.jar` and `kotlinx-coroutines-test-jvm-1.10.2.jar`"
+      - "Save as `main.kt`; run `kotlinc -cp kotlinx-coroutines-core-jvm-1.10.2.jar:kotlinx-coroutines-test-jvm-1.10.2.jar main.kt -d out && kotlin -cp out:kotlinx-coroutines-core-jvm-1.10.2.jar:kotlinx-coroutines-test-jvm-1.10.2.jar MainKt` — virtual time, so it finishes at once"
+      - "Or, in a Gradle project: `implementation(\"org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.2\")` and `testImplementation(\"org.jetbrains.kotlinx:kotlinx-coroutines-test:1.10.2\")`"
+    code: |-
+      import java.io.IOException
+      import kotlinx.coroutines.*
+      import kotlinx.coroutines.test.*
+
+      class HttpStatusException(val status: Int, val retryAfterMs: Long? = null) : IOException("HTTP $status")
+      class AttemptTimeoutException(ms: Long) : IOException("attempt timed out after $ms ms")
+
+      private val retryable = setOf(408, 429, 500, 502, 503, 504)
+      private const val MAX_WAIT_MS = 10_000L
+
+      suspend fun <T : Any> withRetry(maxAttempts: Int = 5, timeoutMs: Long = 2_000, call: suspend (Int) -> T): T {
+          var backoffMs = 200L
+          for (attempt in 1..maxAttempts) {
+              val waitMs = try {
+                  // withTimeoutOrNull returns null only for OUR timeout; the caller's cancellation still throws.
+                  return withTimeoutOrNull(timeoutMs) { call(attempt) } ?: throw AttemptTimeoutException(timeoutMs)
+              } catch (e: IOException) {                         // refused, reset, HttpTimeoutException, 5xx, ours
+                  if (attempt == maxAttempts || (e is HttpStatusException && e.status !in retryable)) throw e
+                  (e as? HttpStatusException)?.retryAfterMs ?: backoffMs
+              }
+              delay(minOf(waitMs, MAX_WAIT_MS))                  // production: add jitter to the backoff
+              backoffMs *= 2
+          }
+          error("unreachable")
+      }
+
+      fun main() = runTest {
+          val order = withRetry { attempt ->
+              println("t=${currentTime}ms attempt $attempt")
+              when (attempt) {
+                  1 -> awaitCancellation()                         // the server hangs
+                  2 -> throw IOException("Connection refused")
+                  3 -> throw HttpStatusException(503, retryAfterMs = 120_000)   // honoured, but capped
+                  else -> "order A-1041"
+              }
+          }
+          println("t=${currentTime}ms got $order")
+
+          val screen = launch { withRetry { throw HttpStatusException(503) } }
+          delay(300)                                             // the user leaves during a back-off
+          screen.cancelAndJoin()
+          println("t=${currentTime}ms cancelled=${screen.isCancelled}")
+
+          val gaveUp = runCatching { withTimeout(1_500) { withRetry(maxAttempts = 1) { awaitCancellation() } } }
+          println("caller's own withTimeout: ${gaveUp.exceptionOrNull()?.javaClass?.simpleName}")
+      }
+    expected: |-
+      t=0ms attempt 1
+      t=2200ms attempt 2
+      t=2600ms attempt 3
+      t=12600ms attempt 4
+      t=12600ms got order A-1041
+      t=12900ms cancelled=true
+      caller's own withTimeout: TimeoutCancellationException
+    validation:
+      status: ran
+      toolchain: kotlinc 2.4.21, JVM 21.0.12.1, kotlinx-coroutines-core and -test 1.10.2
+      date: "2026-11-16"
+  - id: retry-after
+    kind: code
+    title: Reading Retry-After in both forms
+    note: "`Retry-After` is either delta-seconds or an HTTP-date; turn both into a wait against an injected clock, cap it without overflowing, treat a past date as now and anything else as no hint."
+    prerequisites:
+      - A Kotlin 2.x compiler (`kotlinc`) and JDK 17 or later
+      - "Save as `main.kt`; run `kotlinc main.kt -include-runtime -d main.jar && java -jar main.jar` — feed the result to the previous card's `HttpStatusException(retryAfterMs = …)`"
+    code: |-
+      import java.time.*
+      import java.time.format.DateTimeFormatter
+
+      /** Retry-After as delta-seconds ("120") or an IMF-fixdate; null when unreadable, capped otherwise. */
+      fun retryAfterMs(header: String?, now: Instant, maxMs: Long = 10_000): Long? {
+          val value = header?.trim() ?: return null
+          if (value.isNotEmpty() && value.all { it in '0'..'9' }) {             // delta-seconds: digits only
+              val seconds = value.toLongOrNull() ?: Long.MAX_VALUE             // too long for a Long: just huge
+              return if (seconds > maxMs / 1_000) maxMs else seconds * 1_000   // no overflow on the way to the cap
+          }
+          val date = runCatching { ZonedDateTime.parse(value, DateTimeFormatter.RFC_1123_DATE_TIME) }.getOrNull()
+              ?: return null                                                   // "-5", "soon": not a Retry-After
+          return Duration.between(now, date.toInstant()).toMillis().coerceIn(0, maxMs)   // a past date means now
+      }
+
+      fun main() {
+          val now = Instant.parse("2026-11-16T10:00:00Z")                  // an injected clock in the app
+          val headers = listOf("3", "120", "9223372036854775807", "-5", "Mon, 16 Nov 2026 10:00:05 GMT",
+              "Mon, 16 Nov 2026 09:00:00 GMT", "soon")
+          for (header in headers) println("Retry-After: $header → wait ${retryAfterMs(header, now)} ms")
+      }
+    expected: |-
+      Retry-After: 3 → wait 3000 ms
+      Retry-After: 120 → wait 10000 ms
+      Retry-After: 9223372036854775807 → wait 10000 ms
+      Retry-After: -5 → wait null ms
+      Retry-After: Mon, 16 Nov 2026 10:00:05 GMT → wait 5000 ms
+      Retry-After: Mon, 16 Nov 2026 09:00:00 GMT → wait 0 ms
+      Retry-After: soon → wait null ms
+    validation:
+      status: ran
+      toolchain: kotlinc 2.4.21, JVM 21.0.12.1
+      date: "2026-11-16"
+  - id: cancellable-send
+    kind: code
+    title: Cancelling a java.net.http transfer for real
+    note: "`await()` cancels the JDK's future with `cancel(false)`, which leaves the transfer running; `cancel(true)` from `invokeOnCancellation` aborts it — the demo cancels only once the server signals the transfer started."
+    prerequisites:
+      - "A Kotlin 2.x compiler (`kotlinc`), JDK 21 or later and `kotlinx-coroutines-core-jvm-1.10.2.jar`"
+      - "Save as `main.kt`; run `kotlinc -cp kotlinx-coroutines-core-jvm-1.10.2.jar main.kt -d out && kotlin -cp out:kotlinx-coroutines-core-jvm-1.10.2.jar MainKt` — swap in `sendAsync(…).await()` to see the server send all 20 MB"
+    code: |-
+      import com.sun.net.httpserver.HttpServer
+      import java.net.*
+      import java.net.http.*
+      import java.util.concurrent.CompletionException
+      import kotlinx.coroutines.*
+
+      suspend fun <T> HttpClient.sendCancellable(request: HttpRequest, handler: HttpResponse.BodyHandler<T>) =
+          suspendCancellableCoroutine<HttpResponse<T>> { cont ->
+              val future = sendAsync(request, handler)
+              cont.invokeOnCancellation { future.cancel(true) }        // await() uses cancel(false): no abort
+              future.whenComplete { response, error ->
+                  if (error == null) cont.resumeWith(Result.success(response))
+                  else cont.resumeWith(Result.failure((error as? CompletionException)?.cause ?: error))
+              }
+          }
+
+      fun main() = runBlocking {
+          val started = CompletableDeferred<Unit>()
+          val outcome = CompletableDeferred<String>()
+          val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0).apply { start() }
+          server.createContext("/csv") { ex ->
+              ex.sendResponseHeaders(200, 320L * 65_536)                   // 20 MB, sent slowly
+              started.complete(Unit)
+              outcome.complete(runCatching {
+                  repeat(320) {
+                      ex.responseBody.write(ByteArray(65_536))
+                      Thread.sleep(10)
+                  }
+              }.fold({ "sent all 20 MB" }, { "stopped: the client is gone" }))
+          }
+          try {
+              HttpClient.newHttpClient().use { http ->
+                  val request = HttpRequest.newBuilder(URI("http://127.0.0.1:${server.address.port}/csv")).build()
+                  val download = launch { http.sendCancellable(request, HttpResponse.BodyHandlers.ofByteArray()) }
+                  withTimeoutOrNull(3_000) { started.await() }             // cancel only once the transfer runs
+                  download.cancelAndJoin()                                 // the user leaves the screen
+                  println("download cancelled; the server ${withTimeoutOrNull(2_000) { outcome.await() }}")
+              }
+          } finally {
+              server.stop(0)                                               // also when a wait timed out
+          }
+      }
+    expected: |-
+      download cancelled; the server stopped: the client is gone
+    validation:
+      status: ran
+      toolchain: kotlinc 2.4.21, JVM 21.0.12.1, kotlinx-coroutines-core 1.10.2
+      date: "2026-11-16"
+  - id: bearer-single-flight-refresh
+    kind: code
+    title: Bearer auth with a single-flight refresh behind a Mutex
+    note: "When several requests hit 401 at once, one refresh runs in the store's own scope and every waiting caller shares its result; once it ends, the next 401 may try again."
+    prerequisites:
+      - "A Kotlin 2.x compiler (`kotlinc`), JDK 17 or later and `kotlinx-coroutines-core-jvm-1.10.2.jar`"
+      - "Save as `main.kt`; run `kotlinc -cp kotlinx-coroutines-core-jvm-1.10.2.jar main.kt -d out && kotlin -cp out:kotlinx-coroutines-core-jvm-1.10.2.jar MainKt` — a fake API and token endpoint stand in for the network"
+    code: |-
+      import kotlinx.coroutines.*
+
+      class TokenStore(initial: String, private val scope: CoroutineScope, // the store's scope, not a caller's
+                       private val refresh: suspend () -> String) {
+          @Volatile var accessToken: String = initial                     // also set at sign-in
+          private var inFlight: Deferred<String>? = null
+
+          suspend fun refreshAfter(rejected: String): String? {             // null: that refresh failed
+              val shared = synchronized(this) {
+                  if (accessToken != rejected) return accessToken            // already refreshed
+                  inFlight ?: scope.async { refresh().also { accessToken = it } }.also { job ->
+                      inFlight = job
+                      job.invokeOnCompletion { synchronized(this) { inFlight = null } }   // next 401: a new one
+                  }
+              }
+              return try {
+                  shared.await()
+              } catch (e: Exception) {
+                  currentCoroutineContext().ensureActive()                   // our caller left: rethrow that
+                  null                                                        // this refresh failed
+              }
+          }
+      }
+
+      fun main() = runBlocking {
+          val scenarios = mapOf<String, List<suspend () -> String>>(
+              "refresh works" to listOf({ "fresh" }),
+              "network down" to listOf({ throw java.io.IOException("connection reset") }, { "fresh" }),
+              "refresh rejected" to listOf({ error("400 invalid_grant") }),
+          )
+          for ((label, replies) in scenarios) {
+              val pending = ArrayDeque(replies)
+              var calls = 0
+              val store = TokenStore("expired", CoroutineScope(SupervisorJob())) {
+                  calls++
+                  delay(50)                                               // three 401s arrive meanwhile
+                  pending.removeFirst()()
+              }
+              val tokens = List(3) { async { store.refreshAfter("expired") ?: "401" } }.awaitAll()
+              println("$label: $tokens, token endpoint calls=$calls")
+              if (pending.isNotEmpty()) println("  network back: ${store.refreshAfter("expired")}, calls=$calls")
+          }
+      }
+    expected: |-
+      refresh works: [fresh, fresh, fresh], token endpoint calls=1
+      network down: [401, 401, 401], token endpoint calls=1
+        network back: fresh, calls=2
+      refresh rejected: [401, 401, 401], token endpoint calls=1
+    validation:
+      status: ran
+      toolchain: kotlinc 2.4.21, JVM 21.0.12.1, kotlinx-coroutines-core 1.10.2
+      date: "2026-11-16"
+  - id: bearer-refresh-cancellation
+    kind: code
+    title: One caller leaving does not cancel the shared refresh
+    note: "Because the refresh is a `Deferred` in the store's scope, cancelling the caller that started it leaves the others with their new token and still one call to the token endpoint."
+    prerequisites:
+      - "A Kotlin 2.x compiler (`kotlinc`), JDK 17 or later and `kotlinx-coroutines-core-jvm-1.10.2.jar`"
+      - "Save as `main.kt`; run `kotlinc -cp kotlinx-coroutines-core-jvm-1.10.2.jar main.kt -d out && kotlin -cp out:kotlinx-coroutines-core-jvm-1.10.2.jar MainKt` — the `TokenStore` is the previous card's"
+    code: |-
+      import kotlinx.coroutines.*
+
+      class TokenStore(initial: String, private val scope: CoroutineScope, // the store's scope, not a caller's
+                       private val refresh: suspend () -> String) {
+          @Volatile var accessToken: String = initial                     // also set at sign-in
+          private var inFlight: Deferred<String>? = null
+
+          suspend fun refreshAfter(rejected: String): String? {             // null: that refresh failed
+              val shared = synchronized(this) {
+                  if (accessToken != rejected) return accessToken            // already refreshed
+                  inFlight ?: scope.async { refresh().also { accessToken = it } }.also { job ->
+                      inFlight = job
+                      job.invokeOnCompletion { synchronized(this) { inFlight = null } }   // next 401: a new one
+                  }
+              }
+              return try {
+                  shared.await()
+              } catch (e: Exception) {
+                  currentCoroutineContext().ensureActive()                   // our caller left: rethrow that
+                  null                                                        // this refresh failed
+              }
+          }
+      }
+
+      suspend fun authorizedGet(tokens: TokenStore, send: suspend (token: String) -> Int): Int {
+          val token = tokens.accessToken
+          val status = send(token)
+          if (status != 401) return status
+          return tokens.refreshAfter(token)?.let { send(it) } ?: 401       // retry once, or 401: signed out
+      }
+
+      fun main() = runBlocking {
+          var calls = 0
+          val store = TokenStore("expired", CoroutineScope(SupervisorJob())) {
+              calls++
+              delay(50)                                                   // the token endpoint is slow
+              "fresh"
+          }
+          val requests = List(3) { async { authorizedGet(store) { token -> if (token == "fresh") 200 else 401 } } }
+          yield()                                                         // all three now wait on one refresh
+          requests[0].cancel()                                            // the user leaves that screen
+          val others = requests.drop(1).awaitAll()
+          println("first cancelled: ${requests[0].isCancelled}, others: $others, token endpoint calls=$calls")
+      }
+    expected: |-
+      first cancelled: true, others: [200, 200], token endpoint calls=1
+    validation:
+      status: ran
+      toolchain: kotlinc 2.4.21, JVM 21.0.12.1, kotlinx-coroutines-core 1.10.2
+      date: "2026-11-16"
+  - id: pagination-flow
+    kind: code
+    title: Cursor pagination as a Flow
+    note: A cold `flow { }` fetches the next page only when the collector wants more, so `take(5)` costs two requests, not every page.
+    prerequisites: *run
+    code: |-
+      import com.sun.net.httpserver.HttpServer
+      import java.net.*
+      import java.net.http.*
+      import kotlinx.coroutines.flow.*
+      import kotlinx.coroutines.future.await
+      import kotlinx.serialization.*
+      import kotlinx.serialization.json.Json
+
+      @Serializable data class Order(val id: String)
+      @Serializable data class Page(val items: List<Order>, val nextCursor: String? = null)
+
+      fun orders(http: HttpClient, base: String): Flow<Order> = flow {
+          var cursor: String? = null
+          do {
+              val query = "limit=3" + (cursor?.let { "&after=${URLEncoder.encode(it, Charsets.UTF_8)}" } ?: "")
+              val request = HttpRequest.newBuilder(URI("$base/orders?$query")).build()
+              val response = http.sendAsync(request, HttpResponse.BodyHandlers.ofString()).await()
+              check(response.statusCode() == 200) { "HTTP ${response.statusCode()}" }
+              val page = Json.decodeFromString<Page>(response.body())
+              emitAll(page.items.asFlow())
+              cursor = page.nextCursor
+          } while (cursor != null)
+      }
+
+      suspend fun main() {
+          val all = (1041..1047).map { Order("A-$it") }
+          val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+          server.createContext("/orders") { ex ->
+              println("server: ${ex.requestURI.query}")
+              val start = all.indexOfFirst { it.id == ex.requestURI.query.substringAfter("after=", "") } + 1
+              val items = all.drop(start).take(3)
+              val body = Json.encodeToString(Page(items, items.last().id.takeIf { start + 3 < all.size }))
+              ex.sendResponseHeaders(200, body.length.toLong())
+              ex.responseBody.use { it.write(body.encodeToByteArray()) }
+          }
+          server.start()
+
+          HttpClient.newHttpClient().use { http ->
+              val base = "http://127.0.0.1:${server.address.port}"
+              println(orders(http, base).take(5).map { it.id }.toList())
+              println("all: ${orders(http, base).count()}")
+          }
+          server.stop(0)
+      }
+    expected: |-
+      server: limit=3
+      server: limit=3&after=A-1043
+      [A-1041, A-1042, A-1043, A-1044, A-1045]
+      server: limit=3
+      server: limit=3&after=A-1043
+      server: limit=3&after=A-1046
+      all: 7
+    validation: *ran
+  - id: etag-conditional
+    kind: code
+    title: Caching with ETag and If-None-Match
+    note: "Send back the ETag you stored; a `304 Not Modified` has no body, so you reuse the cached one — OkHttp's `Cache` does this for you."
+    prerequisites: &run-plain
+      - "A Kotlin 2.x compiler (`kotlinc`) and JDK 21 or later (`HttpClient` is `AutoCloseable` from 21)"
+      - "Save as `main.kt`; run `kotlinc main.kt -include-runtime -d main.jar && java -jar main.jar` — it serves its own endpoint on `127.0.0.1` and stops it; in an app, call these blocking functions from `Dispatchers.IO`"
+    code: |-
+      import com.sun.net.httpserver.HttpServer
+      import java.net.*
+      import java.net.http.*
+
+      data class Cached(val etag: String, val body: String)
+
+      fun getCached(http: HttpClient, uri: URI, cache: MutableMap<URI, Cached>): String {
+          val cached = cache[uri]
+          val request = HttpRequest.newBuilder(uri).apply { cached?.let { header("If-None-Match", it.etag) } }
+          val response = http.send(request.build(), HttpResponse.BodyHandlers.ofString())
+          if (response.statusCode() == 304) return "304, cached: ${cached!!.body}"
+          check(response.statusCode() == 200) { "HTTP ${response.statusCode()}" }
+          response.headers().firstValue("ETag").ifPresent { cache[uri] = Cached(it, response.body()) }
+          return "200: ${response.body()}"
+      }
+
+      fun main() {
+          var catalog = """["BOOK-7","PEN-2"]"""
+          val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+          server.createContext("/catalog") { ex ->
+              val etag = "\"${catalog.hashCode().toUInt().toString(16)}\""     // a version of the representation
+              ex.responseHeaders.add("ETag", etag)
+              ex.responseHeaders.add("Cache-Control", "no-cache")            // store it, but revalidate each time
+              if (ex.requestHeaders.getFirst("If-None-Match") == etag) {
+                  ex.sendResponseHeaders(304, -1)                            // -1: no body
+                  ex.close()
+              } else {
+                  ex.sendResponseHeaders(200, catalog.length.toLong())
+                  ex.responseBody.use { it.write(catalog.encodeToByteArray()) }
+              }
+          }
+          server.start()
+
+          val cache = mutableMapOf<URI, Cached>()                            // on disk in an app
+          val uri = URI("http://127.0.0.1:${server.address.port}/catalog")
+          HttpClient.newHttpClient().use { http ->
+              println(getCached(http, uri, cache))
+              println(getCached(http, uri, cache))
+              catalog = """["BOOK-7","PEN-2","MUG-1"]"""                     // the server's data changes
+              println(getCached(http, uri, cache))
+          }
+          server.stop(0)
+      }
+    expected: |-
+      200: ["BOOK-7","PEN-2"]
+      304, cached: ["BOOK-7","PEN-2"]
+      200: ["BOOK-7","PEN-2","MUG-1"]
+    validation:
+      status: ran
+      toolchain: kotlinc 2.4.21, JVM 21.0.12.1
+      date: "2026-11-16"
+  - id: upload-download-progress
+    kind: code
+    title: Download with progress, checked
+    note: "Check the status before you write a byte, report progress against `Content-Length`, and show an indeterminate bar when a chunked response has none."
+    prerequisites: *run-plain
+    code: |-
+      import com.sun.net.httpserver.HttpServer
+      import java.io.*
+      import java.net.*
+      import java.net.http.*
+
+      class CountingInputStream(input: InputStream, private val onRead: (Long) -> Unit) : FilterInputStream(input) {
+          private var count = 0L
+          override fun read(b: ByteArray, off: Int, len: Int): Int = super.read(b, off, len).also {
+              if (it > 0) count += it
+              onRead(count)
+          }
+      }
+
+      fun download(http: HttpClient, uri: URI, target: OutputStream, onProgress: (percent: Long?) -> Unit): Long {
+          val response = http.send(HttpRequest.newBuilder(uri).build(), HttpResponse.BodyHandlers.ofInputStream())
+          return response.body().use { body ->
+              if (response.statusCode() != 200) throw IOException("HTTP ${response.statusCode()}")   // not the file
+              val total = response.headers().firstValueAsLong("Content-Length").orElse(-1).takeIf { it > 0 }
+              CountingInputStream(body) { done -> onProgress(total?.let { done * 100 / it }) }.copyTo(target)
+          }
+      }
+
+      fun main() {
+          val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+          server.createContext("/files/") { ex ->
+              val path = ex.requestURI.path
+              ex.sendResponseHeaders(if ("missing" in path) 404 else 200, if ("receipt" in path) 262_144L else 0)
+              ex.responseBody.use { if ("missing" !in path) it.write(ByteArray(262_144)) }    // length 0: chunked
+          }
+          server.start()
+
+          val base = "http://127.0.0.1:${server.address.port}/files"
+          val sink = ByteArrayOutputStream()                     // a file's output stream in the app
+          HttpClient.newHttpClient().use { http ->
+              for (name in listOf("receipt.pdf", "export.pdf", "missing.pdf")) {
+                  var bar = ""
+                  val result = runCatching {
+                      download(http, URI("$base/$name"), sink) { bar = it?.let { "$it%" } ?: "indeterminate" }
+                  }
+                  println("$name: " + result.fold({ "$it bytes, bar at $bar" }, { it.message }))
+              }
+          }
+          server.stop(0)
+      }
+    expected: |-
+      receipt.pdf: 262144 bytes, bar at 100%
+      export.pdf: 262144 bytes, bar at indeterminate
+      missing.pdf: HTTP 404
+    validation:
+      status: ran
+      toolchain: kotlinc 2.4.21, JVM 21.0.12.1
+      date: "2026-11-16"
+  - id: upload-progress
+    kind: code
+    title: Upload with progress
+    note: "Stream the file through a counting `InputStream` and pass its length, so the server gets `Content-Length` and the user gets a real percentage."
+    prerequisites: *run-plain
+    code: |-
+      import com.sun.net.httpserver.HttpServer
+      import java.io.*
+      import java.net.*
+      import java.net.http.*
+
+      class CountingInputStream(input: InputStream, private val onRead: (Long) -> Unit) : FilterInputStream(input) {
+          private var count = 0L
+          override fun read(b: ByteArray, off: Int, len: Int): Int = super.read(b, off, len).also {
+              if (it > 0) count += it
+              onRead(count)
+          }
+      }
+
+      fun upload(http: HttpClient, uri: URI, file: File, onPercent: (Long) -> Unit): Int {
+          val body = if (file.length() == 0L) HttpRequest.BodyPublishers.noBody() else {   // fromPublisher: >0
+              val stream = HttpRequest.BodyPublishers.ofInputStream {
+                  CountingInputStream(file.inputStream()) { read -> onPercent(read * 100 / file.length()) }
+              }
+              HttpRequest.BodyPublishers.fromPublisher(stream, file.length())             // sets Content-Length
+          }
+          if (file.length() == 0L) onPercent(100)                       // nothing to send counts as done
+          val request = HttpRequest.newBuilder(uri).PUT(body).build()
+          return http.send(request, HttpResponse.BodyHandlers.discarding()).statusCode()
+      }
+
+      fun main() {
+          val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0).apply { start() }
+          server.createContext("/") { ex ->
+              val received = ex.requestBody.readAllBytes().size
+              println("server: Content-Length ${ex.requestHeaders.getFirst("Content-Length")}, received $received")
+              ex.use { it.sendResponseHeaders(204, -1) }
+          }
+
+          HttpClient.newHttpClient().use { http ->
+              for (size in listOf(256 * 1024, 0)) {                    // a receipt, and an empty file
+                  val file = File.createTempFile("receipt", ".pdf").apply { writeBytes(ByteArray(size)) }
+                  var shown = -1L                                      // read into the client, not yet acknowledged
+                  val status = upload(http, URI("http://127.0.0.1:${server.address.port}/"), file) { shown = it }
+                  println("status $status, progress bar ended at $shown%")
+                  file.delete()
+              }
+          }
+          server.stop(0)
+      }
+    expected: |-
+      server: Content-Length 262144, received 262144
+      status 204, progress bar ended at 100%
+      server: Content-Length 0, received 0
+      status 204, progress bar ended at 100%
+    validation:
+      status: ran
+      toolchain: kotlinc 2.4.21, JVM 21.0.12.1
+      date: "2026-11-16"
+  - id: ktor-client
+    kind: code
+    title: The same API with the Ktor client
+    note: "`expectSuccess` turns non-2xx into exceptions, `HttpRequestRetry` retries idempotent calls, and the `Auth` plugin refreshes once — returning `null` signs the user out."
+    applies:
+      platforms: [android, jvm]
+      runtime: an Android app or JVM service with the Ktor client
+      requires: [ktor-client-okhttp, ktor-client-content-negotiation, ktor-serialization-kotlinx-json, ktor-client-auth]
+      versions: { kotlin: ">=2.4", ktor: "3.6.1" }
+    sources:
+      - title: Bearer authentication in Ktor Client — Ktor docs
+        url: https://ktor.io/docs/client-bearer-auth.html
+      - title: Response validation — Ktor docs
+        url: https://ktor.io/docs/client-response-validation.html
+      - title: Retrying failed requests — Ktor docs
+        url: https://ktor.io/docs/client-request-retry.html
+    prerequisites:
+      - "Gradle: `io.ktor:ktor-client-okhttp`, `ktor-client-content-negotiation`, `ktor-serialization-kotlinx-json` and `ktor-client-auth`, all 3.6.1, and the `kotlin(\"plugin.serialization\")` plugin"
+      - "`TokenStorage` is your own persistence (`load`, `save`, `clear`); `Order`, `NewOrder` and `TokenResponse` are `@Serializable`; the `Json` is your app's shared instance; on sign-out elsewhere also call `client.authProvider<BearerAuthProvider>()?.clearToken()`"
+    code: |-
+      fun ordersClient(tokens: TokenStorage, json: Json) = HttpClient(OkHttp) {
+          expectSuccess = true                          // 4xx: ClientRequestException, 5xx: ServerResponseException
+          install(ContentNegotiation) { json(json) }
+          install(HttpRequestRetry) {                   // before HttpTimeout; requests can opt out with noRetry()
+              retryOnExceptionOrServerErrors(maxRetries = 3)
+              exponentialDelay()
+          }
+          install(HttpTimeout) {
+              requestTimeoutMillis = 10_000
+              connectTimeoutMillis = 5_000
+          }
+          install(Auth) {
+              bearer {
+                  loadTokens { tokens.load()?.let { BearerTokens(it.access, it.refresh) } }
+                  refreshTokens {                       // called once for concurrent 401s
+                      val refreshToken = oldTokens?.refreshToken ?: return@refreshTokens null
+                      try {
+                          val form = parametersOf("grant_type" to listOf("refresh_token"),
+                              "refresh_token" to listOf(refreshToken))
+                          val fresh: TokenResponse = client.submitForm("https://auth.example.com/token", form) {
+                              markAsRefreshTokenRequest()                   // never itself refreshed
+                          }.body()
+                          tokens.save(fresh.accessToken, fresh.refreshToken)   // the server may rotate it
+                          BearerTokens(fresh.accessToken, fresh.refreshToken)
+                      } catch (e: ResponseException) {      // 400 invalid_grant: the session is over
+                          tokens.clear()
+                          client.authProvider<BearerAuthProvider>()?.clearToken()   // forget the cached one too
+                          null                              // the 401 reaches the caller: show sign-in
+                      }
+                  }
+              }
+          }
+          defaultRequest { url("https://api.example.com/v1/") }
+      }
+
+      suspend fun HttpClient.order(id: String): Order = get("orders/$id").body()
+
+      suspend fun HttpClient.create(order: NewOrder): Order = post("orders") {
+          retry { noRetry() }                           // a POST without an Idempotency-Key is never retried
+          contentType(ContentType.Application.Json)
+          setBody(order)
+      }.body()
+    expected: The same typed calls; a 404 throws `ClientRequestException` with `response.status`, an expired token is refreshed once and the request replayed, and a refused refresh clears the tokens and surfaces the 401.
+    validation:
+      status: excerpt
+      host: an Android app or JVM service with the Ktor 3 client (Gradle dependencies above)
+  - id: okhttp-retrofit
+    kind: code
+    title: OkHttp with a Cache and an Authenticator, Retrofit on top
+    note: "Configure one `OkHttpClient` for the whole app; Retrofit turns a `suspend` interface into calls on it."
+    applies:
+      platforms: [android, jvm]
+      runtime: an Android app with OkHttp and Retrofit
+      requires: [okhttp, retrofit, converter-kotlinx-serialization]
+      versions: { kotlin: ">=2.4", okhttp: "5.5.1", retrofit: "3.0.0" }
+    sources:
+      - title: Recipes (Cache, Authenticator, timeouts) — OkHttp
+        url: https://lysine.dev/okhttp/recipes/
+      - title: Caching — OkHttp
+        url: https://lysine.dev/okhttp/features/caching/
+      - title: Declarations — Retrofit
+        url: https://lysine.dev/retrofit/declarations/
+    prerequisites:
+      - "Gradle: `com.squareup.okhttp3:okhttp:5.5.1`, `com.squareup.retrofit2:retrofit:3.0.0` and `com.squareup.retrofit2:converter-kotlinx-serialization:3.0.0` (Retrofit's POM asks for OkHttp 4.12; Gradle resolves it up to 5.5.1)"
+      - "`TokenStore` is the store from the single-flight card, plus a blocking `refreshBlocking(rejected) = runBlocking { refreshAfter(rejected) }` for OkHttp's thread"
+    code: |-
+      class TokenAuthenticator(private val tokens: TokenStore) : Authenticator {
+          // OkHttp calls this on its own thread after a 401; returning null gives up.
+          override fun authenticate(route: Route?, response: Response): Request? {
+              if (response.priorResponse != null) return null                     // already retried once
+              val rejected = response.request.header("Authorization")?.removePrefix("Bearer ") ?: return null
+              val fresh = tokens.refreshBlocking(rejected) ?: return null          // null: signed out
+              return response.request.newBuilder().header("Authorization", "Bearer $fresh").build()
+          }
+      }
+
+      fun okHttp(context: Context, tokens: TokenStore) = OkHttpClient.Builder()
+          .cache(Cache(File(context.cacheDir, "http"), 20L * 1024 * 1024))         // honours ETag, Cache-Control
+          .addInterceptor { chain ->
+              val token = tokens.accessToken
+              chain.proceed(chain.request().newBuilder().header("Authorization", "Bearer $token").build())
+          }
+          .authenticator(TokenAuthenticator(tokens))
+          .connectTimeout(5, TimeUnit.SECONDS)
+          .callTimeout(15, TimeUnit.SECONDS)
+          .build()
+
+      interface OrdersService {
+          @GET("orders/{id}")
+          suspend fun order(@Path("id") id: String): Order                        // HttpException on non-2xx
+
+          @POST("orders")                                                     // retrofit2.Response, not okhttp3's
+          suspend fun create(@Body order: NewOrder): retrofit2.Response<Order>
+      }
+
+      private val apiJson = Json { ignoreUnknownKeys = true }
+
+      fun ordersService(client: OkHttpClient): OrdersService = Retrofit.Builder()
+          .baseUrl("https://api.example.com/v1/")                                 // must end with /
+          .client(client)
+          .addConverterFactory(apiJson.asConverterFactory("application/json".toMediaType()))
+          .build()
+          .create(OrdersService::class.java)
+    expected: "`ordersService(okHttp(context, tokens)).order(\"A-1041\")` suspends off the main thread and returns an `Order`; GETs are revalidated from the disk cache, and a 401 is retried once with a refreshed token or given up when the refresh failed."
+    validation:
+      status: excerpt
+      host: an Android app with OkHttp 5 and Retrofit 3 (Gradle dependencies above)
+  - id: rest-pitfalls
+    kind: rules
+    title: Pitfalls worth saying out loud
+    note: The bugs that ship most often in Android networking code.
+    items:
+      - tone: bad
+        text: "Network on the main thread — Android throws `NetworkOnMainThreadException`. Call `suspend` APIs from `viewModelScope`; wrap blocking calls (`OkHttp execute()`, `HttpClient.send`) in `withContext(Dispatchers.IO)`."
+      - tone: bad
+        text: "Leaking response bodies: every OkHttp `Response` must be closed — `response.use { }` — or connections leak until the pool starves. Retrofit and Ktor close for you when you read `body()`."
+      - tone: bad
+        text: "Cleartext `http://` on Android: blocked by default since API 28. Do not turn on `usesCleartextTraffic`; allow a dev host only in a debug `network_security_config.xml`."
+      - tone: bad
+        text: "Catching `Exception` around a suspend call and swallowing `CancellationException` — the coroutine keeps running after its screen is gone. Rethrow it, or catch the specific types."
+      - tone: bad
+        text: "Retrying a POST blindly: a timeout does not mean the server did nothing. Retry only idempotent requests, or send an `Idempotency-Key` header — and opt POSTs out of client-wide retry plugins."
+      - tone: good
+        text: "One client instance per app (OkHttp, Ktor or the JDK's): it owns the connection pool and cache. Creating one per request throws both away."
+      - tone: good
+        text: "Cancelling the coroutine cancels Retrofit's and Ktor's call. With `java.net.http`, `await()` only stops waiting and `HttpRequest.timeout` stops at the headers, so a slow body runs on — abort it with `future.cancel(true)` from `invokeOnCancellation` (the `cancellable-send` card)."
+      - tone: good
+        text: "Decode with `ignoreUnknownKeys = true` for responses, so a server adding a field does not crash old app versions; check the status **before** decoding."

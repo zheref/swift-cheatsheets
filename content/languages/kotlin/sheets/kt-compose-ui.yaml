@@ -1,0 +1,566 @@
+id: kt-compose-ui
+concept: ui.views-layout-animation
+scope: platform
+title: "Jetpack Compose — Layout, Lists, Navigation & Animation"
+group: Android
+subtitle: Composables with their inputs and local state, Modifier order, Row/Column/Box, lazy lists with keys, Scaffold, Navigation Compose and Navigation 3, animation and the rules that keep recomposition cheap.
+applies:
+  platforms: [android]
+  runtime: an Android app with Jetpack Compose
+  requires: [Jetpack Compose, Material 3, Navigation Compose]
+  versions: { kotlin: ">=2.0.20", compose-bom: ">=2024.09.00", navigation-compose: ">=2.8.0", android: "API 21+ at these minimums (Compose 1.10+ needs 23, Navigation 2.10+ needs 24)" }
+sources:
+  - title: Compose layout basics — Android Developers
+    url: https://developer.android.com/develop/ui/compose/layouts/basics
+  - title: Compose modifiers — Android Developers
+    url: https://developer.android.com/develop/ui/compose/modifiers
+  - title: Lists and grids — Android Developers
+    url: https://developer.android.com/develop/ui/compose/lists
+  - title: Type safety in Kotlin DSL and Navigation Compose — Android Developers
+    url: https://developer.android.com/guide/navigation/design/type-safety
+  - title: Quick guide to animations in Compose — Android Developers
+    url: https://developer.android.com/develop/ui/compose/animation/quick-guide
+  - title: Follow best practices (performance) — Android Developers
+    url: https://developer.android.com/develop/ui/compose/performance/bestpractices
+cards:
+  - id: swiftui-to-compose
+    kind: table
+    title: SwiftUI → Compose
+    note: The same declarative ideas with a different layout vocabulary; screen state and effects are on kt-compose-state.
+    headers: [SwiftUI, Compose, Note]
+    rows:
+      - ["`struct … : View` with `body`", "`@Composable fun OrderRow(order, onClick, modifier)`", "a function, not an object; it emits UI and returns `Unit`"]
+      - ["`@State private var expanded`", "`var expanded by remember { mutableStateOf(false) }`", "UI-only state inside the component; `rememberSaveable` when it must survive rotation and process death, like `@SceneStorage`"]
+      - ["`VStack` / `HStack` / `ZStack`", "`Column` / `Row` / `Box`", "children wrap their content unless a modifier says otherwise"]
+      - ["`spacing:` / `alignment:`", "`verticalArrangement = Arrangement.spacedBy(8.dp)` / `horizontalAlignment`", "arrangement is along the main axis, alignment across it"]
+      - ["`.frame(maxWidth: .infinity)`", "`Modifier.fillMaxWidth()`", "`size`, `requiredSize`, `wrapContentSize` cover the rest"]
+      - ["`Spacer()` / `.layoutPriority`", "`Modifier.weight(1f)` (in `Row`/`Column` only)", "weighted children share what is left after the others are measured"]
+      - ["view modifiers", "a `Modifier` chain", "order matters in both, but reads in reverse: SwiftUI's `.padding().background()` is Compose's `Modifier.background().padding()`"]
+      - ["`List` / `LazyVStack` + `ForEach(id:)`", "`LazyColumn { items(list, key = { it.id }) }`", "`key` is the identity; `contentType` helps reuse"]
+      - ["`LazyVGrid(.adaptive(minimum:))`", "`LazyVerticalGrid(GridCells.Adaptive(minSize = 160.dp))`", "—"]
+      - ["`NavigationStack(path:)` + `navigationDestination(for:)`", "Navigation 3: `NavDisplay` over a back stack you own; or `NavHost` + `composable<Route>`", "Navigation 3 is the closest match: the path is your list"]
+      - ["`.animation(_:value:)` / `withAnimation`", "`animate*AsState` / `AnimatedContent` / `updateTransition`", "`animate*AsState` defaults to a spring"]
+      - ["`.transition(.move(edge:))`", "`AnimatedVisibility(visible, enter = …, exit = …)`", "removes the content from composition when hidden"]
+      - ["`ViewModifier` / `@ViewBuilder` content", "a `Modifier` extension / a `@Composable` lambda parameter (slot)", "—"]
+      - ["`GeometryReader`", "`BoxWithConstraints`", "prefer plain modifiers; measure only when the layout depends on it"]
+      - ["`Equatable` + `.equatable()`", "stable parameters and strong skipping", "on by default since Kotlin 2.0.20"]
+  - id: composable-component
+    kind: code
+    title: A component — inputs, modifier and a slot
+    note: Data and events in as parameters, `modifier` as the first optional one, and a composable lambda (slot) for the part callers customise.
+    prerequisites: &app
+      - "An Android Studio project with the Compose template (Kotlin 2.x with the `org.jetbrains.kotlin.plugin.compose` Gradle plugin, the Compose BOM, `material3` and `androidx.activity:activity-compose`)"
+      - "`java.time` needs API 26, or core library desugaring below it; call the screen from `setContent { }` or open the `@Preview`"
+    code: |-
+      data class Order(val id: String, val customer: String, val totalCents: Long,
+                       val status: OrderStatus, val placedAt: Instant)
+
+      enum class OrderStatus { Pending, Shipped, Delivered }
+
+      @Composable
+      fun OrderRow(
+          order: Order,
+          onClick: () -> Unit,
+          modifier: Modifier = Modifier,                    // the caller decides size and outer spacing
+          trailing: @Composable RowScope.() -> Unit = {},   // a slot: price, chip, menu — the caller chooses
+      ) {
+          Row(
+              modifier = modifier
+                  .fillMaxWidth()
+                  .clickable(onClick = onClick)
+                  .padding(horizontal = 16.dp, vertical = 12.dp),
+              verticalAlignment = Alignment.CenterVertically,
+              horizontalArrangement = Arrangement.spacedBy(12.dp),
+          ) {
+              Column(Modifier.weight(1f)) {
+                  Text(order.customer, style = MaterialTheme.typography.titleMedium)
+                  Text("#${order.id}", style = MaterialTheme.typography.bodySmall)
+              }
+              trailing()
+          }
+      }
+
+      @Preview(showBackground = true)
+      @Composable
+      private fun OrderRowPreview() {
+          val placedAt = Instant.parse("2026-11-16T09:30:00Z")
+          val order = Order("1042", "Grace Hopper", 4_250, OrderStatus.Shipped, placedAt)
+          MaterialTheme {
+              OrderRow(order, onClick = {}) {
+                  Text(NumberFormat.getCurrencyInstance(Locale.US).format(order.totalCents / 100.0))
+              }
+          }
+      }
+    expected: "A full-width tappable row: the customer name over `#1042`, and `$42.50` — read from the order — at the end from the trailing slot."
+    validation: &excerpt
+      status: excerpt
+      host: an Android app with Jetpack Compose (needs the Android SDK and the Compose compiler plugin)
+  - id: modifier-order
+    kind: compare
+    title: Modifier order decides the result
+    note: Each modifier wraps everything after it — clip before background, clickable before the inner padding (a real pay action would be a `Button`; this shows the order).
+    prerequisites: *app
+    columns:
+      - label: Padding outside the target, background unclipped
+        tone: bad
+        code: |-
+          @Composable
+          fun PayButton(onPay: () -> Unit) {
+              Text(
+                  text = "Pay now",
+                  modifier = Modifier
+                      .padding(16.dp)                  // space first…
+                      .clickable(onClick = onPay)      // …so the padding is not tappable
+                      .background(MaterialTheme.colorScheme.primaryContainer)
+                      .clip(RoundedCornerShape(12.dp)) // too late: the background is already drawn square
+                      .padding(horizontal = 24.dp, vertical = 12.dp),
+              )
+          }
+      - label: Shape first, whole pill tappable
+        tone: good
+        code: |-
+          @Composable
+          fun PayButton(onPay: () -> Unit, modifier: Modifier = Modifier) {
+              Text(
+                  text = "Pay now",
+                  modifier = modifier                  // outer spacing comes from the caller
+                      .clip(RoundedCornerShape(12.dp)) // background and ripple follow the shape
+                      .background(MaterialTheme.colorScheme.primaryContainer)
+                      .clickable(role = Role.Button, onClick = onPay)   // TalkBack says "button"
+                      .padding(horizontal = 24.dp, vertical = 12.dp),
+              )
+          }
+    expected: "Left: a square background and a ripple that stops short of the 16 dp margin. Right: a rounded pill whose whole area — padding included — responds to the tap and is announced as a button."
+    validation: *excerpt
+  - id: layout-containers
+    kind: code
+    title: Row, Column, Box — arrangement, alignment, sizing, weight
+    note: "`weight` shares the leftover space, `fillMaxWidth` takes the offered width, `Box` stacks and aligns children on top of each other."
+    prerequisites: *app
+    code: |-
+      @Composable
+      fun OrderHeader(order: Order, itemCount: Int, total: String, modifier: Modifier = Modifier) {
+          Column(
+              modifier = modifier.fillMaxWidth().padding(16.dp),
+              verticalArrangement = Arrangement.spacedBy(8.dp),       // gaps between children
+          ) {
+              Row(verticalAlignment = Alignment.CenterVertically) {
+                  Box(contentAlignment = Alignment.Center) {             // avatar with a status dot on top
+                      Text(
+                          text = order.customer.take(1),
+                          modifier = Modifier
+                              .size(40.dp)
+                              .background(MaterialTheme.colorScheme.secondaryContainer, CircleShape)
+                              .wrapContentSize(),                     // centre the letter inside the 40 dp circle
+                      )
+                      Box(
+                          Modifier.align(Alignment.BottomEnd).size(10.dp)
+                              .background(MaterialTheme.colorScheme.primary, CircleShape),
+                      )
+                  }
+                  Spacer(Modifier.width(12.dp))
+                  Text(
+                      text = order.customer,
+                      modifier = Modifier.weight(1f),                  // takes what the avatar leaves
+                      maxLines = 1,
+                      overflow = TextOverflow.Ellipsis,
+                  )
+              }
+              Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                  Text("$itemCount items", style = MaterialTheme.typography.bodyMedium)
+                  Text(total, style = MaterialTheme.typography.titleMedium)
+              }
+          }
+      }
+    expected: An avatar circle with a dot at its bottom-right, the customer name ellipsised to the remaining width, and a second row with the item count at the start and the total at the end.
+    validation: *excerpt
+  - id: shaping-list-items
+    kind: code
+    title: Shaping a lazy list — headers, entries and unique keys (runs on the JVM)
+    note: "The ViewModel builds the rows and their keys in plain Kotlin; a key used twice makes `LazyColumn` throw, so overlapping pages are de-duplicated first, keeping the newer copy."
+    applies:
+      platforms: [jvm, android]
+      runtime: Kotlin/JVM
+      versions: { kotlin: ">=2.0", jvm: ">=17" }
+    prerequisites:
+      - A Kotlin 2.x compiler (`kotlinc`) and JDK 17 or later
+      - "Save as `main.kt`; run `kotlinc main.kt -include-runtime -d main.jar && java -jar main.jar`"
+    code: |-
+      import java.time.Instant
+      import java.time.LocalDate
+      import java.time.ZoneId
+
+      data class Order(val id: String, val customer: String, val status: String, val placedAt: Instant)
+
+      sealed interface OrderListItem {
+          data class Header(val day: LocalDate) : OrderListItem
+          data class Entry(val order: Order) : OrderListItem
+      }
+
+      // The LazyColumn key: unique across the whole list (prefixed by kind), stable, and a saveable String
+      val OrderListItem.key: String
+          get() = when (this) {
+              is OrderListItem.Header -> "day-$day"
+              is OrderListItem.Entry -> "order-${order.id}"
+          }
+
+      val OrderListItem.contentType: String
+          get() = if (this is OrderListItem.Header) "header" else "order"
+
+      fun buildItems(orders: List<Order>, zone: ZoneId): List<OrderListItem> =
+          orders
+              .associateBy { it.id }.values                  // a later page repeats an order: the newer copy wins
+              .sortedByDescending { it.placedAt }
+              .groupBy { it.placedAt.atZone(zone).toLocalDate() }   // the user's day, not UTC
+              .flatMap { (day, ofDay) -> listOf(OrderListItem.Header(day)) + ofDay.map(OrderListItem::Entry) }
+
+      fun main() {
+          val page1 = listOf(
+              Order("1043", "Adele", "pending", Instant.parse("2026-11-16T08:15:00Z")),
+              Order("1042", "Grace", "pending", Instant.parse("2026-11-15T23:40:00Z")),   // the 16th in Madrid
+          )
+          val page2 = listOf(
+              Order("1042", "Grace", "shipped", Instant.parse("2026-11-15T23:40:00Z")),   // changed since page 1
+              Order("1041", "Ada", "delivered", Instant.parse("2026-11-15T09:05:00Z")),
+          )
+          val items = buildItems(page1 + page2, ZoneId.of("Europe/Madrid"))
+          val keys = items.map { it.key }
+          require(keys.size == keys.toSet().size) { "duplicate LazyColumn keys: $keys" }
+          for (item in items) {
+              val status = (item as? OrderListItem.Entry)?.order?.status.orEmpty()
+              println("${item.contentType.padEnd(6)} ${item.key.padEnd(16)} $status".trimEnd())
+          }
+      }
+    expected: |-
+      header day-2026-11-16
+      order  order-1043       pending
+      order  order-1042       shipped
+      header day-2026-11-15
+      order  order-1041       delivered
+    validation:
+      status: ran
+      toolchain: kotlinc 2.4.21, JVM 21.0.12.1
+      date: "2026-11-16"
+  - id: lazy-lists
+    kind: code
+    title: LazyColumn and LazyVerticalGrid with keys and content types
+    note: "`key` keeps state and animations with the item when it moves; `contentType` lets Compose reuse a row only for a row of the same shape."
+    prerequisites:
+      - "The Compose template project; `OrderListItem`, `key` and `contentType` from the card above, `OrderRow` from the component card"
+      - "`java.time` needs API 26, or core library desugaring below it"
+    code: |-
+      @Composable
+      fun OrderList(items: List<OrderListItem>, onOpen: (String) -> Unit, modifier: Modifier = Modifier) {
+          val dayFormat = remember { DateTimeFormatter.ofLocalizedDate(FormatStyle.MEDIUM) }
+          LazyColumn(
+              modifier = modifier,
+              contentPadding = PaddingValues(vertical = 8.dp),         // scrolls under, unlike Modifier.padding
+          ) {
+              items(items, key = { it.key }, contentType = { it.contentType }) { item ->
+                  when (item) {
+                      is OrderListItem.Header -> Text(
+                          text = dayFormat.format(item.day),
+                          style = MaterialTheme.typography.labelLarge,
+                          modifier = Modifier.padding(16.dp).animateItem(),   // headers move with their rows
+                      )
+                      is OrderListItem.Entry -> OrderRow(
+                          order = item.order,
+                          onClick = { onOpen(item.order.id) },
+                          modifier = Modifier.animateItem(),
+                      )
+                  }
+              }
+          }
+      }
+
+      @Composable
+      fun ProductGrid(products: List<Product>, modifier: Modifier = Modifier) {
+          LazyVerticalGrid(
+              columns = GridCells.Adaptive(minSize = 160.dp),           // as many 160 dp+ columns as fit
+              modifier = modifier,
+              contentPadding = PaddingValues(16.dp),
+              horizontalArrangement = Arrangement.spacedBy(12.dp),
+              verticalArrangement = Arrangement.spacedBy(12.dp),
+          ) {
+              items(products, key = { it.sku }) { product -> ProductCard(product) }
+          }
+      }
+    expected: "Day headers and order rows that only compose what is on screen; inserting or reordering orders animates rows and headers (`animateItem`, foundation 1.7+). The grid shows two columns on most phones (one below about 364 dp, where 2 × 160 + 12 + 32 no longer fits) and more on wider windows."
+    validation: *excerpt
+  - id: scaffold-material3
+    kind: code
+    title: Scaffold and the Material 3 building blocks
+    note: "`Scaffold` places the app bar, FAB and snackbars, and hands you the padding that keeps content clear of them."
+    prerequisites: &icons
+      - "The Compose template project, with Material Symbols icons downloaded from Google Fonts Icons (Android tab) as `res/drawable/refresh_24.xml`, `add_24.xml`, `expand_more_24.xml`, `arrow_upward_24.xml` — the docs no longer recommend the `material-icons-core` artifact"
+      - "`OrderList` from the lazy-lists card and `data class OrdersUiState(val items: List<OrderListItem>, val errorMessage: String?)`"
+    code: |-
+      @OptIn(ExperimentalMaterial3Api::class)   // TopAppBar and scroll behaviours: experimental in material3 1.4
+      @Composable
+      fun OrdersScreen(
+          state: OrdersUiState,
+          onOpen: (String) -> Unit,
+          onNewOrder: () -> Unit,
+          onRefresh: () -> Unit,
+      ) {
+          val snackbarHostState = remember { SnackbarHostState() }
+          val scrollBehavior = TopAppBarDefaults.enterAlwaysScrollBehavior()
+          LaunchedEffect(state.errorMessage) {
+              state.errorMessage?.let { snackbarHostState.showSnackbar(it) }
+          }
+          Scaffold(
+              modifier = Modifier.nestedScroll(scrollBehavior.nestedScrollConnection),   // the bar hides on scroll
+              topBar = {
+                  TopAppBar(
+                      title = { Text("Orders") },
+                      actions = {
+                          IconButton(onClick = onRefresh) {
+                              Icon(painterResource(R.drawable.refresh_24), contentDescription = "Refresh")
+                          }
+                      },
+                      scrollBehavior = scrollBehavior,
+                  )
+              },
+              floatingActionButton = {
+                  ExtendedFloatingActionButton(
+                      text = { Text("New order") },
+                      icon = { Icon(painterResource(R.drawable.add_24), contentDescription = null) },
+                      onClick = onNewOrder,
+                  )
+              },
+              snackbarHost = { SnackbarHost(snackbarHostState) },
+          ) { innerPadding ->
+              OrderList(state.items, onOpen, Modifier.padding(innerPadding))   // or the bar covers row one
+          }
+      }
+    expected: An app bar titled Orders with a refresh action that hides on scroll, a New order FAB at the bottom end, the list between them clear of the system bars, and a snackbar whenever `errorMessage` changes to a value.
+    sources:
+      - title: Scaffold — Android Developers
+        url: https://developer.android.com/develop/ui/compose/components/scaffold
+      - title: Material Design icons — Android Developers
+        url: https://developer.android.com/develop/ui/compose/graphics/images/material
+    validation: *excerpt
+  - id: type-safe-navigation
+    kind: code
+    title: Navigation Compose with type-safe routes and arguments
+    note: "`@Serializable` routes with `NavHost` (Navigation 2.8+) — the path for existing apps and Fragment interop; Compose-only apps can start on Navigation 3 (next card)."
+    prerequisites:
+      - "The Compose template project, plus `androidx.navigation:navigation-compose` 2.8 or later, `lifecycle-viewmodel-compose`, `lifecycle-runtime-compose`, and the `org.jetbrains.kotlin.plugin.serialization` Gradle plugin with `kotlinx-serialization-json`"
+      - "`OrdersScreen` from the Scaffold card, an `OrdersViewModel` exposing `state: StateFlow<OrdersUiState>`, and an `OrderDetailScreen(orderId, onBack)`"
+    code: |-
+      @Serializable data object Orders
+
+      @Serializable data class OrderDetail(val orderId: String)
+
+      @Composable
+      fun ShopNavHost(navController: NavHostController = rememberNavController()) {
+          NavHost(navController = navController, startDestination = Orders) {
+              composable<Orders> {
+                  val viewModel: OrdersViewModel = viewModel()
+                  val state by viewModel.state.collectAsStateWithLifecycle()
+                  OrdersScreen(
+                      state = state,
+                      onOpen = { id -> navController.navigate(OrderDetail(orderId = id)) },
+                      onNewOrder = { /* navigate to checkout */ },
+                      onRefresh = viewModel::refresh,
+                  )
+              }
+              composable<OrderDetail> { backStackEntry ->
+                  val route: OrderDetail = backStackEntry.toRoute()          // typed argument, no Bundle keys
+                  OrderDetailScreen(orderId = route.orderId, onBack = { navController.popBackStack() })
+              }
+          }
+      }
+
+      class OrderDetailViewModel(savedStateHandle: SavedStateHandle) : ViewModel() {
+          private val orderId = savedStateHandle.toRoute<OrderDetail>().orderId   // the same typed route
+      }
+
+      // After checkout: show the new order, and make Back return to the list, not to the checkout
+      fun NavController.showPlacedOrder(id: String) = navigate(OrderDetail(id)) {
+          popUpTo<Orders>()
+          launchSingleTop = true
+      }
+    expected: The list opens first; tapping an order pushes its detail with the id as a typed argument; after checkout, Back from the new order returns straight to the list.
+    sources:
+      - title: Design your navigation graph — Android Developers
+        url: https://developer.android.com/guide/navigation/design
+      - title: Type safety in Kotlin DSL and Navigation Compose — Android Developers
+        url: https://developer.android.com/guide/navigation/design/type-safety
+    validation: *excerpt
+  - id: navigation3
+    kind: code
+    title: Navigation 3 — a back stack you own
+    note: "What the docs now recommend for Compose-only apps: the back stack is a saveable list of `NavKey`s, navigating is adding or removing a key, and `NavDisplay` shows the top one."
+    applies:
+      platforms: [android]
+      runtime: an Android app with Jetpack Compose
+      requires: [Jetpack Compose, Navigation 3]
+      versions: { kotlin: ">=2.0.20", navigation3: ">=1.0.0", lifecycle-viewmodel-navigation3: ">=2.10.0", compose: ">=1.9 (required by Navigation 3)", android: "API 23+ (Navigation 3 1.2+ needs 24)" }
+    prerequisites:
+      - "`androidx.navigation3:navigation3-runtime` and `navigation3-ui` 1.0 or later, `androidx.lifecycle:lifecycle-viewmodel-navigation3` 2.10 or later, the `org.jetbrains.kotlin.plugin.serialization` Gradle plugin and `kotlinx-serialization-core`; compile SDK 36"
+      - "`OrdersScreen`, `OrdersViewModel` and `OrderDetailScreen` as in the Navigation Compose card"
+    code: |-
+      @Serializable data object Orders : NavKey
+
+      @Serializable data class OrderDetail(val orderId: String) : NavKey
+
+      @Composable
+      fun ShopNavDisplay() {
+          val backStack = rememberNavBackStack(Orders)        // survives rotation and process death
+          NavDisplay(
+              backStack = backStack,
+              onBack = { backStack.removeLastOrNull() },
+              entryDecorators = listOf(
+                  rememberSaveableStateHolderNavEntryDecorator(),   // rememberSaveable state per entry
+                  rememberViewModelStoreNavEntryDecorator(),        // viewModel() scoped to the entry
+              ),
+              entryProvider = entryProvider {
+                  entry<Orders> {
+                      val viewModel: OrdersViewModel = viewModel()
+                      val state by viewModel.state.collectAsStateWithLifecycle()
+                      OrdersScreen(
+                          state = state,
+                          onOpen = { id -> backStack.add(OrderDetail(orderId = id)) },   // navigate: push a key
+                          onNewOrder = { /* push a Checkout key */ },
+                          onRefresh = viewModel::refresh,
+                      )
+                  }
+                  entry<OrderDetail> { key ->
+                      OrderDetailScreen(orderId = key.orderId, onBack = { backStack.removeLastOrNull() })
+                  }
+              },
+          )
+      }
+
+      // After checkout: drop any open detail and the checkout, then show the new order above the list
+      fun MutableList<NavKey>.showPlacedOrder(id: String) {
+          removeAll { it != Orders }
+          add(OrderDetail(id))
+      }
+    expected: The list opens first; tapping an order pushes its detail; system Back pops it; the stack and each entry's saved state come back after process death, and an entry's ViewModel is cleared when its key leaves the stack.
+    sources:
+      - title: Navigation 3 basics — Android Developers
+        url: https://developer.android.com/guide/navigation/navigation-3/basics
+      - title: Save and manage navigation state (Navigation 3) — Android Developers
+        url: https://developer.android.com/guide/navigation/navigation-3/save-state
+    validation: *excerpt
+  - id: animation
+    kind: code
+    title: "Local state, animate*AsState, AnimatedContent, AnimatedVisibility, updateTransition"
+    note: "`expanded` is UI-only state the card owns with `rememberSaveable` (screen state belongs in a ViewModel — kt-compose-state), and it drives every animation here."
+    prerequisites:
+      - "The Compose template project, with the Material Symbols drawable `res/drawable/expand_more_24.xml` (see the Scaffold card)"
+      - "`Order` and `OrderStatus` from the component card and an `OrderLineItems(order, modifier)` composable"
+    code: |-
+      @Composable
+      fun ExpandableOrder(order: Order) {
+          var expanded by rememberSaveable { mutableStateOf(false) }   // local; survives rotation and scrolling
+          val transition = updateTransition(targetState = expanded, label = "order card")
+          val elevation by transition.animateDp(label = "elevation") { if (it) 6.dp else 1.dp }
+          val arrowRotation by transition.animateFloat(label = "arrow") { if (it) 180f else 0f }
+          val colors = MaterialTheme.colorScheme
+          val badgeColor by animateColorAsState(                        // a single value
+              targetValue = if (order.status == OrderStatus.Delivered) colors.primaryContainer
+                  else colors.tertiaryContainer,
+              label = "badge colour",
+          )
+          Card(
+              onClick = { expanded = !expanded },
+              elevation = CardDefaults.cardElevation(defaultElevation = elevation),
+          ) {
+              Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                  Text(order.customer, Modifier.weight(1f))
+                  AnimatedContent(                                       // swapped content: the label slides in
+                      targetState = order.status,
+                      modifier = Modifier
+                          .drawBehind { drawRoundRect(badgeColor, cornerRadius = CornerRadius(size.height / 2)) }
+                          .padding(horizontal = 12.dp, vertical = 4.dp),
+                      transitionSpec = { (fadeIn() + slideInVertically { it / 2 }) togetherWith fadeOut() },
+                      label = "status",
+                  ) { status -> Text(status.name, style = MaterialTheme.typography.labelMedium) }
+                  Icon(
+                      painter = painterResource(R.drawable.expand_more_24),
+                      contentDescription = if (expanded) "Collapse" else "Expand",
+                      modifier = Modifier.graphicsLayer { rotationZ = arrowRotation },
+                  )
+              }
+              AnimatedVisibility(visible = expanded) {           // in a Column: fades and expands vertically
+                  OrderLineItems(order, Modifier.padding(start = 16.dp, end = 16.dp, bottom = 16.dp))
+              }
+          }
+      }
+    expected: "A status change cross-fades the badge colour and slides the new label in; a tap raises the card, turns the arrow and expands the line items, all from one `expanded` flag kept across rotation."
+    sources:
+      - title: Quick guide to animations in Compose — Android Developers
+        url: https://developer.android.com/develop/ui/compose/animation/quick-guide
+    validation: *excerpt
+  - id: performance-patterns
+    kind: code
+    title: Keeping recomposition cheap
+    note: Cache expensive work with `remember(keys)`, dampen fast state with `derivedStateOf`, and read fast-changing values in lambda modifiers so only layout or draw re-runs.
+    prerequisites: *icons
+    code: |-
+      @Composable
+      fun OrderHistory(orders: List<Order>, onOpen: (String) -> Unit) {
+          val listState = rememberLazyListState()
+          val scope = rememberCoroutineScope()
+          val newestFirst = remember(orders) { orders.sortedByDescending { it.placedAt } }   // when orders change
+          val showJumpToTop by remember {
+              derivedStateOf { listState.firstVisibleItemIndex > 3 }   // recompose when this flips, not per pixel
+          }
+          Box {
+              Column {
+                  CollapsingTitle(fade = {                         // a lambda: read later, in the draw phase
+                      if (listState.firstVisibleItemIndex > 0) 1f else listState.firstVisibleItemScrollOffset / 300f
+                  })
+                  LazyColumn(state = listState) {
+                      items(newestFirst, key = { it.id }) { order ->
+                          OrderRow(order, onClick = { onOpen(order.id) })
+                      }
+                  }
+              }
+              AnimatedVisibility(showJumpToTop, Modifier.align(Alignment.BottomEnd).padding(16.dp)) {
+                  SmallFloatingActionButton(onClick = { scope.launch { listState.animateScrollToItem(0) } }) {
+                      Icon(painterResource(R.drawable.arrow_upward_24), contentDescription = "Back to top")
+                  }
+              }
+          }
+      }
+
+      @Composable
+      private fun CollapsingTitle(fade: () -> Float) {
+          Text(
+              text = "Order history",
+              style = MaterialTheme.typography.headlineSmall,
+              modifier = Modifier
+                  .padding(16.dp)
+                  .graphicsLayer { alpha = 1f - fade().coerceIn(0f, 1f) },   // no recomposition per frame
+          )
+      }
+    expected: Scrolling fades the title and shows a back-to-top button past the fourth row without recomposing the screen on every scroll frame; the sort by `placedAt` runs only when `orders` changes.
+    sources:
+      - title: Follow best practices (performance) — Android Developers
+        url: https://developer.android.com/develop/ui/compose/performance/bestpractices
+    validation: *excerpt
+  - id: performance-rules
+    kind: rules
+    title: What recomposes, and how to keep it cheap
+    note: The rules worth saying out loud in a review or an interview; the key and `derivedStateOf` rules are on kt-compose-state.
+    items:
+      - tone: good
+        text: "**Strong skipping** is on by default since Kotlin 2.0.20: stable parameters are compared with `equals`, unstable ones (`List`, classes from modules without the Compose compiler) with `===`. Pass the same instance when nothing changed; never build a new list in the composable body."
+      - tone: bad
+        text: "`@Immutable` on a class that holds a large list makes every skip check an element-by-element `equals` — it can cost more than the recomposition it saves."
+      - tone: bad
+        text: "`list.indexOf(item)` inside `items { }` scans the whole list for every composed row; use `itemsIndexed`. And give mixed rows a `contentType`."
+      - tone: good
+        text: "State that changes every frame (scroll, animation) belongs in lambda modifiers — `offset { }`, `graphicsLayer { }`, `drawBehind { }` — so Compose skips composition and goes straight to layout or draw."
+      - tone: bad
+        text: "Writing to state after reading it in the same composition (a backwards write) schedules another recomposition — forever. Write state only from events and effects."
+      - tone: good
+        text: "Ship a **Baseline Profile** (the `androidx.baselineprofile` Gradle plugin, a Macrobenchmark `BaselineProfileRule`, `androidx.profileinstaller`): ART pre-compiles startup and scroll paths, about 30% faster from the first launch."
+      - tone: bad
+        text: "Judging performance on a debug build: Compose is interpreted and unminified there. Measure a release build with R8 enabled."
+      - tone: neutral
+        text: "Layout Inspector's recomposition counts and the Compose compiler reports show which composables do not skip and which classes are inferred unstable."

@@ -132,6 +132,143 @@ cards:
       toolchain: kotlinc 2.2.20, JVM 17.0.15, junit-jupiter-api 5.10.1
       date: "2026-11-11"
       host: a JUnit Platform launcher (Gradle `test`) to run the tests
+  - id: test-doubles
+    kind: table
+    title: Test doubles — which to use when
+    note: Reach for the simplest double that lets the test assert on an outcome; a framework mock is the last resort, not the default.
+    headers: [Double, What it is, Use it when, In Kotlin]
+    rows:
+      - ["**Fake**", "a working, simplified implementation (an in-memory repository)", "the default for collaborators you own; assert on the state it ends in", "a small class implementing the interface"]
+      - ["**Stub**", "returns canned answers and records nothing", "a dependency only feeds input: a clock, a feature flag, an approving payment gateway", "a `fun interface` lambda: `PaymentGateway { true }`"]
+      - ["**Spy**", "a fake or real object that also records its calls", "the outcome is a call leaving the system: an email, an analytics event", "a lambda or small class that appends to a `sent` list"]
+      - ["**Mock**", "a generated double with expectations verified by a framework", "code you cannot fake cheaply (a final SDK class), or when the interaction itself is the contract", "MockK: `every { gateway.charge(any()) } returns true`, then `verify(exactly = 1) { gateway.charge(12990) }`"]
+      - ["**Dummy**", "passed in but never used", "a parameter the path under test ignores", "`Logger { }` or a default argument"]
+  - id: fakes-stubs-spies
+    kind: code
+    title: A hand-written fake, a stub and a spy
+    note: "Interfaces at the seams make every double a few lines, and the test checks outcomes — the fake's state and the spy's recorded calls — rather than call sequences."
+    prerequisites:
+      - A Kotlin 2.x compiler (`kotlinc`) and JDK 17 or later
+      - "Save as `main.kt`; run `kotlinc main.kt -include-runtime -d main.jar && java -jar main.jar` — in a project the body of `main` is a `@Test` and the doubles live in `src/test`"
+    code: |-
+      data class Order(val id: String, val email: String, val totalCents: Long, val paid: Boolean = false)
+
+      interface OrderRepository {
+          fun find(id: String): Order?
+          fun save(order: Order)
+      }
+
+      fun interface PaymentGateway { fun charge(amountCents: Long): Boolean }
+
+      fun interface EmailSender { fun send(to: String, subject: String) }
+
+      class CheckoutService(
+          private val orders: OrderRepository, private val payments: PaymentGateway, private val email: EmailSender,
+      ) {
+          fun pay(orderId: String): Result<Order> {
+              val order = orders.find(orderId) ?: return Result.failure(NoSuchElementException(orderId))
+              if (order.paid) return Result.success(order)      // a repeated tap; concurrent taps need a lock
+              if (!payments.charge(order.totalCents)) return Result.failure(IllegalStateException("declined"))
+              val paid = order.copy(paid = true).also(orders::save)
+              email.send(order.email, "Order ${order.id} confirmed")
+              return Result.success(paid)
+          }
+      }
+
+      // Fake: a working in-memory implementation you own; assert on its state.
+      class InMemoryOrderRepository(vararg seed: Order) : OrderRepository {
+          private val byId = seed.associateBy { it.id }.toMutableMap()
+          override fun find(id: String) = byId[id]
+          override fun save(order: Order) { byId[order.id] = order }
+      }
+
+      fun main() {
+          val ana = Order("ORD-1042", "ana@example.com", 12990)
+          val bo = Order("ORD-1043", "bo@example.com", 500)
+          val orders = InMemoryOrderRepository(ana, bo)
+          val sent = mutableListOf<String>()
+          val email = EmailSender { to, subject -> sent += "$to: $subject" }          // spy: records what left
+
+          val approving = CheckoutService(orders, payments = { true }, email = email)   // stub: always approves
+          approving.pay(ana.id)
+          approving.pay(ana.id)                                                          // the second tap on "Pay"
+          val declined = CheckoutService(orders, payments = { false }, email = email).pay(bo.id)
+
+          println("paid: ${orders.find(ana.id)?.paid}, ${orders.find(bo.id)?.paid}")    // state, from the fake
+          println("declined: ${declined.exceptionOrNull()?.message}")
+          println("emails sent: $sent")                                                  // calls, from the spy
+      }
+    expected: |-
+      paid: true, false
+      declined: declined
+      emails sent: [ana@example.com: Order ORD-1042 confirmed]
+    validation: &ran-2026-11-16
+      status: ran
+      toolchain: kotlinc 2.4.21, JVM 21.0.12.1
+      date: "2026-11-16"
+  - id: http-integration
+    kind: code
+    title: An integration test across a real HTTP boundary
+    note: "Serve canned responses from a `com.sun.net.httpserver.HttpServer` bound to the literal `127.0.0.1` on port 0 (not `localhost` or the loopback address, which can resolve to `::1` on IPv6-first CI) and point the real client at it, so headers, status handling and parsing are exercised with no network."
+    prerequisites:
+      - A Kotlin 2.x compiler (`kotlinc`) and JDK 21 or later (`HttpClient` is `AutoCloseable` from 21)
+      - "Save as `main.kt`; run `kotlinc main.kt -include-runtime -d main.jar && java -jar main.jar` — it starts its own server on a free loopback port and stops it"
+      - "In a JUnit class, start the server in `@BeforeEach` and `stop(0)` it in `@AfterEach`, one fresh server per test"
+    code: |-
+      import com.sun.net.httpserver.HttpServer
+      import java.io.IOException
+      import java.net.*
+      import java.net.http.*
+      import java.time.Duration
+
+      class InventoryClient(private val base: URI, private val token: String, private val http: HttpClient) {
+          fun available(sku: String): Int? {
+              val request = HttpRequest.newBuilder(base.resolve("/stock/$sku"))
+                  .header("Authorization", "Bearer $token").timeout(Duration.ofSeconds(2)).build()
+              val response = http.send(request, HttpResponse.BodyHandlers.ofString())
+              return when (response.statusCode()) {
+                  200 -> response.body().trim().toInt()
+                  404 -> null                                    // an unknown SKU is an answer, not an error
+                  else -> throw IOException("inventory returned ${response.statusCode()}")
+              }
+          }
+      }
+
+      fun main() {
+          val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)     // port 0: any free port
+          server.createContext("/stock/") { exchange ->
+              val (status, body) = when {
+                  exchange.requestHeaders.getFirst("Authorization") != "Bearer test-token" -> 401 to "no token"
+                  exchange.requestURI.path == "/stock/SHOE-42" -> 200 to "3"      // the exact path, nothing else
+                  exchange.requestURI.path == "/stock/BUSY-1" -> 503 to "try again later"
+                  else -> 404 to "unknown sku"
+              }
+              exchange.sendResponseHeaders(status, body.toByteArray().size.toLong())
+              exchange.responseBody.use { it.write(body.toByteArray()) }
+          }
+          server.start()
+          try {
+              HttpClient.newHttpClient().use { http ->
+                  val client = InventoryClient(URI("http://127.0.0.1:${server.address.port}"), "test-token", http)
+                  val skus = listOf("SHOE-42", "HAT-7", "BUSY-1")                     // printed in call order
+                  println(skus.map { sku -> runCatching { client.available(sku) }.getOrElse { it.message } })
+              }
+          } finally {
+              server.stop(0)                                     // nothing is left listening
+          }
+      }
+    expected: |-
+      [3, null, inventory returned 503]
+    applies:
+      platforms: [jvm]
+      runtime: Kotlin/JVM with the JDK's java.net.http and jdk.httpserver (neither exists on Android)
+      versions: { kotlin: ">=2.0", jvm: ">=21" }
+    sources:
+      - title: java.net.http.HttpClient — Java SE 21 API
+        url: https://docs.oracle.com/en/java/javase/21/docs/api/java.net.http/java/net/http/HttpClient.html
+      - title: com.sun.net.httpserver.HttpServer — Java SE 21 API
+        url: https://docs.oracle.com/en/java/javase/21/docs/api/jdk.httpserver/com/sun/net/httpserver/HttpServer.html
+    validation: *ran-2026-11-16
   - id: testing-principles
     kind: rules
     title: Principles worth stating
