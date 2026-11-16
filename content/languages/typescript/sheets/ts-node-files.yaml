@@ -147,6 +147,726 @@ cards:
       await rm(dir, { recursive: true });
     expected: "[ 'start', 'save', 'stop' ]"
     validation: *ran
+  - id: where-things-belong
+    kind: table
+    title: Where things belong
+    note: Node has no sandbox to choose for you — pick the folder from what the data is and how long it must live.
+    headers: [Data, Where, Survives, Use for]
+    rows:
+      - ["scratch for one operation", "`fs.mkdtemp(path.join(os.tmpdir(), \"app-\"))`", "until reboot or a temp cleaner", "intermediate files; always a unique subfolder, removed in `finally`"]
+      - ["per-user app data", "Linux `$XDG_DATA_HOME` (else `~/.local/share`), macOS `~/Library/Application Support`, Windows `%LOCALAPPDATA%` (machine-specific, may be large)", "yes", "databases and state the app owns; build it from `os.homedir()`"]
+      - ["per-user settings", "Linux `$XDG_CONFIG_HOME` (else `~/.config`), macOS Application Support, Windows `%APPDATA%` (roams with the user: keep it small)", "yes", "files the user may edit or back up"]
+      - ["cache", "Linux `$XDG_CACHE_HOME` (else `~/.cache`), macOS `~/Library/Caches`, Windows `%LOCALAPPDATA%`", "**may be deleted at any time**", "re-downloadable or re-computable data only"]
+      - ["paths the user typed", "resolve against `process.cwd()`", "—", "a CLI's arguments; the cwd is wherever the user stood, not where your code is"]
+      - ["files shipped with the code", "`import.meta.dirname`, `new URL(\"./x.json\", import.meta.url)`", "read-only in practice", "templates, fixtures, assets next to the module"]
+      - ["server data", "a path from configuration (`DATA_DIR`) on a mounted volume", "as long as the volume", "never inside the install folder: container images are ephemeral or read-only"]
+  - id: paths-and-file-urls
+    kind: code
+    title: Paths with node:path, files as URLs
+    note: "Build every path with `node:path` and every file URL with `pathToFileURL` — string concatenation breaks on separators, `..` and `#`."
+    prerequisites: *run
+    code: |-
+      import { tmpdir } from "node:os";
+      import path from "node:path";
+      import { fileURLToPath, pathToFileURL } from "node:url";
+
+      const dataDir = path.join(tmpdir(), "orders-app");      // only computes paths: no file is created
+
+      // join normalises separators and ".."; resolve also makes the result absolute.
+      const report = path.join(dataDir, "exports", "2026", "..", "Q3 report #1.csv");
+      console.log(path.relative(dataDir, report), "|", path.parse(report).name, "|", path.extname(report));
+
+      // A name from a user or a zip entry must stay inside its folder. This check is lexical only:
+      // if entries can be symlinks, also compare `await realpath(target)` with `await realpath(base)`.
+      function safeJoin(base: string, untrusted: string): string {
+        const target = path.resolve(base, untrusted);
+        const rel = path.relative(base, target);
+        if (rel === ".." || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel)) {
+          throw new Error(`refusing a path outside ${path.basename(base)}: ${untrusted}`);
+        }
+        return target;
+      }
+      console.log(path.relative(dataDir, safeJoin(dataDir, "invoices/1042.pdf")));
+      try {
+        safeJoin(dataDir, "../../etc/passwd");
+      } catch (err) {
+        console.log((err as Error).message);
+      }
+
+      // "file://" + path would end the path at "#"; pathToFileURL escapes it, and round-trips.
+      const url = pathToFileURL(report);
+      console.log(url.href.split("/").at(-1), fileURLToPath(url) === report);
+
+      // Next to this module, wherever the process was started from (Node 20.11+).
+      const schema = fileURLToPath(new URL("./schema.json", import.meta.url));
+      console.log(path.dirname(schema) === import.meta.dirname);
+    expected: |-
+      exports/Q3 report #1.csv | Q3 report #1 | .csv
+      invoices/1042.pdf
+      refusing a path outside orders-app: ../../etc/passwd
+      Q3%20report%20%231.csv true
+      true
+    sources:
+      - title: Path — Node.js
+        url: https://nodejs.org/api/path.html
+      - title: URL — Node.js
+        url: https://nodejs.org/api/url.html
+    validation: &ran16
+      status: ran
+      toolchain: Node 24.16.0, TypeScript 5.9.3
+      date: "2026-11-16"
+  - id: durable-write
+    kind: code
+    title: "Real durability: fsync the file and the directory"
+    note: "When \"the power went out right after save\" must be survivable — a journal, a ledger, a payment record — at a cost of milliseconds per sync, so not for every keystroke."
+    prerequisites: *run
+    code: |-
+      import { randomUUID } from "node:crypto";
+      import { mkdtemp, open, readdir, readFile, rename, rm } from "node:fs/promises";
+      import { tmpdir } from "node:os";
+      import { basename, dirname, join } from "node:path";
+
+      async function writeFileDurable(path: string, data: string): Promise<void> {
+        const dir = dirname(path);
+        const temp = join(dir, `.${basename(path)}.${randomUUID()}.tmp`);
+        try {
+          const file = await open(temp, "wx");
+          try {
+            await file.writeFile(data, "utf8");
+            await file.sync();             // 1. bytes on the device (on macOS, libuv's fsync issues F_FULLFSYNC)
+          } finally {
+            await file.close();
+          }
+          await rename(temp, path);        // 2. atomic replace on POSIX; best effort on Windows (MoveFileEx)
+        } catch (err) {
+          await rm(temp, { force: true }); // never leave a half-written sibling behind
+          throw err;
+        }
+        if (process.platform === "win32") return;   // Windows cannot flush a directory handle
+        const folder = await open(dir, "r");
+        try {
+          await folder.sync();             // 3. the rename is durable only once the directory entry is flushed
+        } finally {
+          await folder.close();
+        }
+      }
+
+      const dir = await mkdtemp(join(tmpdir(), "ledger-"));
+      try {
+        const ledger = join(dir, "ledger.json");
+        await writeFileDurable(ledger, JSON.stringify({ balance: 120 }));
+        await writeFileDurable(ledger, JSON.stringify({ balance: 95 }));
+        console.log(await readFile(ledger, "utf8"), await readdir(dir));
+      } finally {
+        await rm(dir, { recursive: true, force: true });
+      }
+    expected: |-
+      {"balance":95} [ 'ledger.json' ]
+    sources:
+      - title: filehandle.sync — Node.js
+        url: https://nodejs.org/api/fs.html#filehandlesync
+      - title: fsync — The Open Group Base Specifications
+        url: https://pubs.opengroup.org/onlinepubs/9799919799/functions/fsync.html
+    validation: *ran16
+  - id: streaming-large-write
+    kind: code
+    title: Streaming a large write with backpressure
+    note: "Exporting more rows than fit in memory: batch rows into ~64 KB writes, and wait for `drain` whenever `write()` returns false."
+    prerequisites: *run
+    code: |-
+      import { once } from "node:events";
+      import { createWriteStream } from "node:fs";
+      import { mkdtemp, readFile, rm } from "node:fs/promises";
+      import { tmpdir } from "node:os";
+      import { join } from "node:path";
+      import { finished } from "node:stream/promises";
+
+      function* orderRows(count: number): Generator<string> {
+        for (let id = 1; id <= count; id++) {
+          yield `${id},customer-${id % 977},${(((id * 37) % 10_000) / 100).toFixed(2)}\n`;
+        }
+      }
+
+      async function exportCsv(path: string, rows: Iterable<string>): Promise<void> {
+        const out = createWriteStream(path, { highWaterMark: 1 << 16 });
+        let batch = "id,customer,total\n";
+        for (const row of rows) {
+          batch += row;
+          if (batch.length < 1 << 16) continue;               // one syscall per ~64 KB, not per row
+          if (!out.write(batch)) await once(out, "drain");    // the disk is behind: stop producing
+          batch = "";
+        }
+        out.end(batch);
+        await finished(out);                                   // resolves once flushed and closed; rejects on error
+      }
+
+      const dir = await mkdtemp(join(tmpdir(), "export-"));
+      try {
+        const file = join(dir, "orders.csv");
+        await exportCsv(file, orderRows(200_000));
+        const lines = (await readFile(file, "utf8")).trimEnd().split("\n");
+        console.log(lines.length - 1, "rows;", lines[1], "...", lines.at(-1));
+      } finally {
+        await rm(dir, { recursive: true, force: true });
+      }
+      // Ignoring write()'s false still "works" — by buffering the whole export in memory.
+    expected: |-
+      200000 rows; 1,customer-1,0.37 ... 200000,customer-692,0.00
+    sources:
+      - title: Backpressuring in streams — Node.js
+        url: https://nodejs.org/en/learn/modules/backpressuring-in-streams
+    validation: *ran16
+  - id: external-merge-sort
+    kind: code
+    title: "Algorithm — external merge sort, phase 1: sorted runs"
+    note: "Phase 1 of sorting a file larger than memory: sort chunks that fit and spill each one to a run file, which the k-way merge card then combines."
+    prerequisites: *run
+    code: |-
+      import { createReadStream } from "node:fs";
+      import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+      import { tmpdir } from "node:os";
+      import { join } from "node:path";
+      import { createInterface } from "node:readline";
+
+      // Memory holds one chunk of lines at a time; each chunk is sorted and spilled to its own run file.
+      async function makeRuns(input: string, chunkLines: number, dir: string): Promise<string[]> {
+        const runs: string[] = [];
+        let chunk: string[] = [];
+        const spill = async () => {
+          const run = join(dir, `run-${runs.length}.txt`);
+          await writeFile(run, `${chunk.sort().join("\n")}\n`);
+          runs.push(run);
+          chunk = [];
+        };
+        const file = createReadStream(input);
+        try {
+          for await (const line of createInterface({ input: file, crlfDelay: Infinity })) {
+            chunk.push(line);
+            if (chunk.length === chunkLines) await spill();
+          }
+        } finally {
+          file.destroy();                                      // closed even if a spill fails (disk full)
+        }
+        if (chunk.length) await spill();                       // the last, shorter chunk
+        return runs;
+      }
+
+      const dir = await mkdtemp(join(tmpdir(), "sort-"));
+      try {
+        const ids = Array.from({ length: 10_000 }, (_, i) => `ORD-${(i * 7_919) % 10_007}`);   // distinct, shuffled
+        await writeFile(join(dir, "orders.txt"), `${ids.join("\n")}\n`);
+
+        const runs = await makeRuns(join(dir, "orders.txt"), 2_500, dir);
+        const first = (await readFile(runs[0]!, "utf8")).split("\n").slice(0, 3);
+        console.log(runs.length, "runs:", (await readdir(dir)).filter((f) => f.startsWith("run-")).sort(), first);
+        // Phase 2 merges the runs into one sorted file: the k-way merge card.
+      } finally {
+        await rm(dir, { recursive: true, force: true });
+      }
+    expected: |-
+      4 runs: [ 'run-0.txt', 'run-1.txt', 'run-2.txt', 'run-3.txt' ] [ 'ORD-0', 'ORD-1000', 'ORD-10005' ]
+    applies:
+      versions: { node: ">=22.18", typescript: ">=5.2" }
+    validation: *ran16
+  - id: kway-merge-files
+    kind: code
+    title: Algorithm — k-way merge of sorted files
+    note: "Combine files that are each sorted — regional exports, or the runs of an external sort — into one sorted file with one line per file in memory, closing every file even when the write fails."
+    prerequisites: *run
+    code: |-
+      import { createReadStream, createWriteStream } from "node:fs";
+      import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+      import { tmpdir } from "node:os";
+      import { join } from "node:path";
+      import { createInterface } from "node:readline";
+      import { pipeline } from "node:stream/promises";
+
+      // One line per file in memory. A scan is O(k) per line; a min-heap makes it O(log k) for many files.
+      async function* mergeSorted(files: string[]): AsyncGenerator<string> {
+        const inputs = files.map((f) => createReadStream(f));
+        const lines = inputs.map((input) =>
+          createInterface({ input, crlfDelay: Infinity })[Symbol.asyncIterator]());
+        try {
+          const heads: (string | undefined)[] = await Promise.all(lines.map(async (l) => (await l.next()).value));
+          for (;;) {
+            let min = -1;
+            for (const [i, h] of heads.entries()) {
+              if (h !== undefined && (min === -1 || h < heads[min]!)) min = i;   // the same order as sort()
+            }
+            if (min === -1) return;
+            yield `${heads[min]}\n`;
+            heads[min] = (await lines[min]!.next()).value;
+          }
+        } finally {
+          for (const input of inputs) input.destroy();          // readline's own close leaves the files open
+        }
+      }
+
+      const dir = await mkdtemp(join(tmpdir(), "merge-"));
+      try {
+        const shards = {                                        // each regional export is already sorted
+          "eu.txt": "ORD-1002\nORD-1005\n",
+          "us.txt": "ORD-1001\nORD-1004\nORD-1006\n",
+          "apac.txt": "ORD-1003\n",
+        };
+        for (const [name, body] of Object.entries(shards)) await writeFile(join(dir, name), body);
+
+        const out = join(dir, "all.txt");
+        await pipeline(mergeSorted(Object.keys(shards).map((n) => join(dir, n))), createWriteStream(out));
+        console.log((await readFile(out, "utf8")).trimEnd().split("\n").join(" "));
+      } finally {
+        await rm(dir, { recursive: true, force: true });
+      }
+    expected: |-
+      ORD-1001 ORD-1002 ORD-1003 ORD-1004 ORD-1005 ORD-1006
+    sources:
+      - title: stream.pipeline — Node.js
+        url: https://nodejs.org/api/stream.html#streampipelinesource-transforms-destination-options
+    validation: *ran16
+  - id: offset-index
+    kind: code
+    title: Algorithm — an offset index for random access
+    note: "Jump to line n of a huge log without reading what comes before it: index each line's byte offset once, then read by position."
+    prerequisites: *run
+    code: |-
+      import { createReadStream } from "node:fs";
+      import { mkdtemp, open, rm, stat, writeFile } from "node:fs/promises";
+      import { tmpdir } from "node:os";
+      import { join } from "node:path";
+
+      // One streaming pass; the index costs 8 bytes per line, not the line itself.
+      async function buildIndex(file: string): Promise<number[]> {
+        const offsets = [0];
+        let position = 0;
+        for await (const chunk of createReadStream(file, { highWaterMark: 1 << 16 }) as AsyncIterable<Buffer>) {
+          for (let i = chunk.indexOf(10); i !== -1; i = chunk.indexOf(10, i + 1)) offsets.push(position + i + 1);
+          position += chunk.length;
+        }
+        if (offsets.at(-1) === position) offsets.pop();       // a trailing newline starts no line
+        return offsets;
+      }
+
+      // Fixed-width records need no index (offset = n × size); a sorted file can be binary-searched by seeking.
+      async function readLine(file: string, index: readonly number[], n: number): Promise<string> {
+        const start = index[n]!;
+        const end = index[n + 1] ?? (await stat(file)).size;
+        const handle = await open(file, "r");
+        try {
+          const buffer = Buffer.alloc(end - start);
+          const { bytesRead } = await handle.read(buffer, 0, buffer.length, start);   // positional: no seek
+          return buffer.subarray(0, bytesRead).toString("utf8").replace(/\r?\n$/, "");
+        } finally {
+          await handle.close();
+        }
+      }
+
+      const dir = await mkdtemp(join(tmpdir(), "index-"));
+      try {
+        const log = join(dir, "deliveries.log");
+        const cities = ["Zürich", "São Paulo", "Kraków", "Lyon"];   // multi-byte: offsets count bytes
+        const line = (i: number) => `#${i} delivered to ${cities[i % 4]}\n`;
+        await writeFile(log, Array.from({ length: 50_000 }, (_, i) => line(i)).join(""));
+        const index = await buildIndex(log);
+        console.log(index.length, "lines");
+        console.log(await readLine(log, index, 31_415), "|", await readLine(log, index, 49_999));
+      } finally {
+        await rm(dir, { recursive: true, force: true });
+      }
+    expected: |-
+      50000 lines
+      #31415 delivered to Lyon | #49999 delivered to Lyon
+    validation: *ran16
+  - id: tail-n-lines
+    kind: code
+    title: Algorithm — tail -n
+    note: "The last n lines of a log of any size, read backwards in blocks — and the same answers as `tail -n` for 0, blank lines and CRLF."
+    prerequisites: *run
+    code: |-
+      import { mkdtemp, open, rm, writeFile } from "node:fs/promises";
+      import { tmpdir } from "node:os";
+      import { join } from "node:path";
+
+      async function lastLines(file: string, count: number): Promise<string[]> {
+        if (count <= 0) return [];                            // .slice(-0) would return everything
+        const handle = await open(file, "r");
+        try {
+          let position = (await handle.stat()).size;
+          const blocks: Buffer[] = [];
+          let newlines = 0;
+          // count + 1 newlines guarantee the first wanted line is complete (and a split UTF-8 char is not in it).
+          while (position > 0 && newlines <= count) {
+            const size = Math.min(1 << 16, position);
+            position -= size;
+            const block = Buffer.alloc(size);
+            await handle.read(block, 0, size, position);
+            for (const byte of block) if (byte === 10) newlines++;
+            blocks.unshift(block);
+          }
+          const text = Buffer.concat(blocks).toString("utf8");
+          if (text === "") return [];
+          // Drop only the final newline: blank lines are lines. CRLF or LF.
+          return text.replace(/\r?\n$/, "").split(/\r?\n/).slice(-count);
+        } finally {
+          await handle.close();
+        }
+      }
+
+      const dir = await mkdtemp(join(tmpdir(), "tail-"));
+      try {
+        const log = join(dir, "access.log");
+        await writeFile(log, Array.from({ length: 50_000 }, (_, i) => `GET /orders/${i} 200\r\n`).join(""));
+        console.log(await lastLines(log, 2), (await lastLines(log, 0)).length);
+        await writeFile(log, "started\n\nstopped\n\n");     // blank lines are lines, as in tail -n
+        console.log(await lastLines(log, 2));
+      } finally {
+        await rm(dir, { recursive: true, force: true });
+      }
+    expected: |-
+      [ 'GET /orders/49998 200', 'GET /orders/49999 200' ] 0
+      [ 'stopped', '' ]
+    validation: *ran16
+  - id: dedupe-and-checksum
+    kind: code
+    title: Algorithm — dedupe and checksum
+    note: "Two one-pass jobs on files of any size: count the distinct lines, and a SHA-256 for an upload or a cache key."
+    prerequisites: *run
+    code: |-
+      import { createHash } from "node:crypto";
+      import { createReadStream } from "node:fs";
+      import { mkdtemp, rm, writeFile } from "node:fs/promises";
+      import { tmpdir } from "node:os";
+      import { join } from "node:path";
+      import { createInterface } from "node:readline";
+
+      // A fixed 32-byte digest instead of the line itself — worth it when lines are long.
+      async function distinctLines(file: string): Promise<number> {
+        const seen = new Set<string>();
+        for await (const line of createInterface({ input: createReadStream(file), crlfDelay: Infinity })) {
+          seen.add(createHash("sha256").update(line).digest("base64"));
+        }
+        return seen.size;
+      }
+
+      // Feed the hash chunk by chunk; the file is never in memory.
+      async function sha256(file: string): Promise<string> {
+        const hash = createHash("sha256");
+        for await (const chunk of createReadStream(file)) hash.update(chunk);
+        return hash.digest("hex");
+      }
+
+      const dir = await mkdtemp(join(tmpdir(), "logs-"));
+      try {
+        const log = join(dir, "requests.log");
+        const request = (i: number) => `POST /v1/orders customer=${i % 1_000} items=${"sku-123,".repeat(20)}\n`;
+        await writeFile(log, Array.from({ length: 30_000 }, (_, i) => request(i)).join(""));
+        console.log(await distinctLines(log), "distinct |", (await sha256(log)).slice(0, 16));
+      } finally {
+        await rm(dir, { recursive: true, force: true });
+      }
+    expected: |-
+      1000 distinct | e14de7737d99846c
+    sources:
+      - title: Crypto — Node.js
+        url: https://nodejs.org/api/crypto.html
+    validation: *ran16
+  - id: enumerating-directories
+    kind: code
+    title: Enumerating directories
+    note: "`opendir` walks lazily and lets you skip a subtree, while `readdir` with `recursive` and `glob` are eager conveniences — and none of them promises an order, so sort."
+    prerequisites: *run
+    code: |-
+      import { glob, mkdir, mkdtemp, opendir, readdir, rm, stat, writeFile } from "node:fs/promises";
+      import { tmpdir } from "node:os";
+      import { dirname, join, relative } from "node:path";
+
+      // Lazy: one open handle per level of depth, and node_modules is never even opened.
+      async function totalBytes(dir: string, skip: ReadonlySet<string>): Promise<number> {
+        let total = 0;
+        for await (const entry of await opendir(dir)) {        // the handle closes when the loop ends
+          const full = join(dir, entry.name);
+          if (entry.isDirectory() && !skip.has(entry.name)) total += await totalBytes(full, skip);
+          else if (entry.isFile()) total += (await stat(full)).size;
+        }
+        return total;
+      }
+
+      const root = await mkdtemp(join(tmpdir(), "project-"));
+      try {
+        const files = { "src/app.ts": 300, "src/data/rates.csv": 50, "reports/q3.csv": 20,
+          "node_modules/big/index.js": 10_000, "node_modules/big/fixture.csv": 500 };
+        for (const [file, size] of Object.entries(files)) {
+          await mkdir(dirname(join(root, file)), { recursive: true });
+          await writeFile(join(root, file), "x".repeat(size));
+        }
+        console.log(await totalBytes(root, new Set(["node_modules"])), "bytes outside node_modules");
+
+        // Eager and recursive: fine for small trees. parentPath (Node 20.12+) is the entry's folder.
+        const entries = await readdir(root, { recursive: true, withFileTypes: true });
+        const paths = entries.filter((e) => e.isFile()).map((e) => relative(root, join(e.parentPath, e.name)));
+        console.log(paths.sort().join(", "));
+
+        // Pattern matching (stable since Node 22.17); exclude stops the walk from descending.
+        const csvs: string[] = [];
+        for await (const file of glob("**/*.csv", { cwd: root, exclude: (name) => name === "node_modules" })) {
+          csvs.push(file);
+        }
+        console.log(csvs.sort());
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    expected: |-
+      370 bytes outside node_modules
+      node_modules/big/fixture.csv, node_modules/big/index.js, reports/q3.csv, src/app.ts, src/data/rates.csv
+      [ 'reports/q3.csv', 'src/data/rates.csv' ]
+    sources:
+      - title: fsPromises.opendir — Node.js
+        url: https://nodejs.org/api/fs.html#fspromisesopendirpath-options
+      - title: fsPromises.glob — Node.js
+        url: https://nodejs.org/api/fs.html#fspromisesglobpattern-options
+    validation: *ran16
+  - id: attributes-and-permissions
+    kind: code
+    title: Attributes and permissions
+    note: "Create a secret with mode `0o600` from the first byte, mark a script executable, read size and times with `stat`."
+    prerequisites: *run
+    code: |-
+      import { chmod, mkdtemp, rm, stat, utimes, writeFile } from "node:fs/promises";
+      import { tmpdir } from "node:os";
+      import { join } from "node:path";
+
+      const mode = async (file: string) => ((await stat(file)).mode & 0o777).toString(8);
+      const dir = await mkdtemp(join(tmpdir(), "perms-"));
+      try {
+        // Private from creation: writing first and chmod-ing after leaves a window where others can read it.
+        const credentials = join(dir, "credentials.json");
+        await writeFile(credentials, JSON.stringify({ apiKey: "placeholder" }), { mode: 0o600, flag: "wx" });
+
+        // An executable script: chmod is exact (the umask only filters modes at creation).
+        const deploy = join(dir, "deploy.sh");
+        await writeFile(deploy, "#!/bin/sh\necho deploying\n");
+        await chmod(deploy, 0o755);
+        console.log(await mode(credentials), await mode(deploy));
+
+        // Size, kind and times. lstat instead reports on a symlink itself rather than its target.
+        const releasedAt = new Date("2026-11-16T09:30:00Z");
+        await utimes(deploy, releasedAt, releasedAt);
+        const info = await stat(deploy);
+        console.log(info.size, info.isFile(), info.isDirectory(), info.mtime.toISOString());
+      } finally {
+        await rm(dir, { recursive: true, force: true });
+      }
+      // Windows honours only the owner-write bit (read-only or not); protect secrets there with ACLs.
+    expected: |-
+      600 755
+      25 true false 2026-11-16T09:30:00.000Z
+    validation: *ran16
+  - id: single-writer-lock
+    kind: code
+    title: Advisory locking — one writer across processes
+    note: "Two copies of a CLI or a cron job must not write the same file, so publish the lock with link() — it appears whole or not at all — and report a dead owner instead of reclaiming it, which two waiters would both do (for takeover, use SQLite or a lock library with leases)."
+    prerequisites: *run
+    code: |-
+      import { spawnSync } from "node:child_process";
+      import { randomUUID } from "node:crypto";
+      import { link, mkdtemp, readFile, rm, unlink, writeFile } from "node:fs/promises";
+      import { tmpdir } from "node:os";
+      import { join } from "node:path";
+
+      async function tryLock(lockFile: string): Promise<(() => Promise<void>) | null> {   // null: busy
+        const draft = `${lockFile}.${randomUUID()}`;
+        await writeFile(draft, JSON.stringify({ pid: process.pid }), { flag: "wx" });
+        try {
+          await link(draft, lockFile);        // publishes it whole and atomically; EEXIST if it is held
+          return () => unlink(lockFile);
+        } catch (err) {
+          if ((err as NodeJS.ErrnoException).code === "EEXIST") return null;
+          throw err;                          // EPERM (Linux) or ENOTSUP (macOS): no hard links on FAT, some shares
+        } finally {
+          await unlink(draft).catch(() => {});   // the lock is held either way; a crash can leave
+        }                                        // *.lock.<uuid> drafts behind, and they are safe to delete
+      }
+
+      async function whyBusy(lockFile: string): Promise<string> {   // reports; never reclaims
+        try {
+          const { pid } = JSON.parse(await readFile(lockFile, "utf8")) as { pid: number };
+          process.kill(pid, 0);               // signal 0 only checks that the process exists
+          return "held by a running process";
+        } catch (err) {
+          const code = (err as NodeJS.ErrnoException).code;
+          if (code === "ESRCH") return "its owner has exited: check, then delete the lock by hand";
+          return code === "EPERM" ? "held by another user's process" : "changing hands: retry shortly";
+        }
+      }
+
+      const dir = await mkdtemp(join(tmpdir(), "lock-"));
+      try {
+        const lockFile = join(dir, "sync.lock");
+        console.log("first:", (await tryLock(lockFile)) ? "writer" : "busy");   // keeps the lock: never released
+        console.log("second:", (await tryLock(lockFile)) ? "writer" : await whyBusy(lockFile));
+
+        const exited = spawnSync(process.execPath, ["--version"]).pid;   // a process that has already ended
+        await writeFile(lockFile, JSON.stringify({ pid: exited }));       // the writer crashed holding the lock
+        console.log("after a crash:", (await tryLock(lockFile)) ? "writer" : await whyBusy(lockFile));
+      } finally {
+        await rm(dir, { recursive: true, force: true });
+      }
+    expected: |-
+      first: writer
+      second: held by a running process
+      after a crash: its owner has exited: check, then delete the lock by hand
+    sources:
+      - title: fsPromises.link — Node.js
+        url: https://nodejs.org/api/fs.html#fspromiseslinkexistingpath-newpath
+      - title: process.kill — Node.js
+        url: https://nodejs.org/api/process.html#processkillpid-signal
+    validation: *ran16
+  - id: files-are-blocking-work
+    kind: compare
+    title: "Files are blocking work: sync APIs stop the event loop"
+    note: "Both columns answer the same, but while `readFileSync` runs every other request and timer waits, whereas promise APIs run on libuv's threadpool — sync is fine only in startup code and short CLIs."
+    prerequisites: *run
+    columns:
+      - label: Blocks every client while it reads
+        tone: bad
+        code: |-
+          import { readFileSync } from "node:fs";
+          import { mkdtemp, rm, writeFile } from "node:fs/promises";
+          import { createServer } from "node:http";
+          import { type AddressInfo } from "node:net";
+          import { tmpdir } from "node:os";
+          import { join } from "node:path";
+
+          const dir = await mkdtemp(join(tmpdir(), "serve-"));
+          const prices = join(dir, "prices.json");
+          const server = createServer((_req, res) => {
+            const body = readFileSync(prices, "utf8");          // the whole process stops here
+            res.writeHead(200, { "content-type": "application/json" }).end(body);
+          });
+          try {
+            await writeFile(prices, JSON.stringify({ sku: "A-1", cents: 1299 }));
+            await new Promise<void>((ready) => server.listen(0, "127.0.0.1", ready));
+            const { port } = server.address() as AddressInfo;
+            const res = await fetch(`http://127.0.0.1:${port}/prices`);
+            console.log(res.status, await res.text());
+          } finally {
+            server.close();
+            await rm(dir, { recursive: true, force: true });
+          }
+      - label: Waits without blocking
+        tone: good
+        code: |-
+          import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+          import { createServer } from "node:http";
+          import { type AddressInfo } from "node:net";
+          import { tmpdir } from "node:os";
+          import { join } from "node:path";
+
+          const dir = await mkdtemp(join(tmpdir(), "serve-"));
+          const prices = join(dir, "prices.json");
+          // The read runs on libuv's threadpool (4 threads by default, UV_THREADPOOL_SIZE),
+          // shared with dns.lookup, zlib and crypto — thousands of parallel reads queue there.
+          const server = createServer(async (_req, res) => {
+            const body = await readFile(prices, "utf8");        // other requests run meanwhile
+            res.writeHead(200, { "content-type": "application/json" }).end(body);
+          });
+          try {
+            await writeFile(prices, JSON.stringify({ sku: "A-1", cents: 1299 }));
+            await new Promise<void>((ready) => server.listen(0, "127.0.0.1", ready));
+            const { port } = server.address() as AddressInfo;
+            const res = await fetch(`http://127.0.0.1:${port}/prices`);
+            console.log(res.status, await res.text());
+          } finally {
+            server.close();
+            await rm(dir, { recursive: true, force: true });
+          }
+    expected: '200 {"sku":"A-1","cents":1299}'
+    sources:
+      - title: Don't block the event loop — Node.js
+        url: https://nodejs.org/en/learn/asynchronous-work/dont-block-the-event-loop
+      - title: Thread pool work scheduling — libuv
+        url: https://docs.libuv.org/en/v1.x/threadpool.html
+    validation: *ran16
+  - id: errors-by-code
+    kind: table
+    title: Error handling by errno code
+    note: "Just try the operation and branch on `err.code` — checking with `existsSync` first is a race whose answer is stale."
+    headers: [Code, Means, Typical cause, Handle it by]
+    rows:
+      - ["`ENOENT`", "no such file or directory", "first run, a missing config, a missing parent folder", "a default value, or `mkdir(dir, { recursive: true })` first"]
+      - ["`EEXIST`", "already exists", "`open(path, \"wx\")`, `link`, `mkdir` without `recursive`", "someone else created it first: treat it as busy, or as already done"]
+      - ["`EACCES` / `EPERM`", "permission denied", "wrong owner or mode; on Windows also a file another process holds open", "report the path; on Windows retry a `rename` briefly"]
+      - ["`EISDIR` / `ENOTDIR`", "wrong kind of entry", "reading a folder, or a file in the middle of a path", "validate user-supplied paths"]
+      - ["`ENOTEMPTY`", "directory not empty", "`rmdir`, or `rename` onto a non-empty folder", "decide whether its contents may go; only then `rm(dir, { recursive: true })`"]
+      - ["`EXDEV`", "cross-device link", "`rename` from `os.tmpdir()` to another volume", "put the temp file next to the target; or copy, then unlink"]
+      - ["`EMFILE` / `ENFILE`", "too many open files", "`Promise.all` over thousands of `open`s, leaked handles", "limit concurrency; close handles in `finally`"]
+      - ["`ENOSPC` / `EDQUOT`", "no space / over quota", "disk full in the middle of a write", "keep the old file (atomic write), surface the error"]
+      - ["`EBUSY`", "resource busy", "Windows: an antivirus or editor holds the file", "retry with backoff"]
+      - ["`EROFS`", "read-only file system", "a container's read-only root", "write to the configured data volume or `os.tmpdir()`"]
+  - id: testing-file-code
+    kind: code
+    title: Testing file code in a temp directory
+    note: "A fresh `mkdtemp` folder per test, removed whatever happens — and test the missing-file and corrupt-file paths, not only the happy one."
+    prerequisites:
+      - Node.js 22.18 or later (it runs `.mts` files directly by stripping the types)
+      - "Save as `main.mts` and run `node main.mts` — or name test files `*.test.mts` and run them all with `node --test`"
+      - "Optional type-check: `npm i -D typescript @types/node`, then `npx tsc --noEmit --strict --target esnext --module nodenext main.mts`"
+    code: |-
+      import assert from "node:assert/strict";
+      import { randomUUID } from "node:crypto";
+      import { mkdtemp, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+      import { tmpdir } from "node:os";
+      import { join } from "node:path";
+      import { afterEach, beforeEach, test } from "node:test";
+
+      type Settings = { theme: string };
+      const defaults: Settings = { theme: "light" };
+
+      // Under test: a missing file is a normal first run; anything else is a real error.
+      async function loadSettings(file: string): Promise<Settings> {
+        try {
+          return { ...defaults, ...JSON.parse(await readFile(file, "utf8")) };
+        } catch (err) {
+          if ((err as NodeJS.ErrnoException).code === "ENOENT") return defaults;
+          throw err;
+        }
+      }
+
+      async function saveSettings(file: string, settings: Settings): Promise<void> {
+        const temp = `${file}.${randomUUID()}.tmp`;           // unique: two saves never share a temp file
+        await writeFile(temp, JSON.stringify(settings), { flag: "wx" });
+        await rename(temp, file);
+      }
+
+      // One folder per test: no test sees another's files, even when `node --test` runs files in parallel.
+      let dir = "";
+      beforeEach(async () => {
+        dir = await mkdtemp(join(tmpdir(), "settings-test-"));
+      });
+      afterEach(() => rm(dir, { recursive: true, force: true }));
+
+      test("a missing file means defaults", async () => {
+        assert.deepEqual(await loadSettings(join(dir, "settings.json")), defaults);
+      });
+
+      test("a corrupt file is an error, not a silent reset", async () => {
+        await writeFile(join(dir, "settings.json"), "{ not json");
+        await assert.rejects(loadSettings(join(dir, "settings.json")), SyntaxError);
+      });
+
+      test("saving leaves no temporary file behind", async () => {
+        await saveSettings(join(dir, "settings.json"), { theme: "dark" });
+        assert.deepEqual(await readdir(dir), ["settings.json"]);
+        assert.equal((await loadSettings(join(dir, "settings.json"))).theme, "dark");
+      });
+    expected: "All three tests pass — `✔ a missing file means defaults`, `✔ a corrupt file is an error, not a silent reset`, `✔ saving leaves no temporary file behind`, then `tests 3`, `pass 3`, `fail 0` — and the process exits 0 (the timings vary)."
+    sources:
+      - title: Test runner — Node.js
+        url: https://nodejs.org/api/test.html
+    validation:
+      status: ran
+      toolchain: Node 24.16.0, TypeScript 5.9.3
+      date: "2026-11-16"
+      check: exit-code
   - id: data-loss-rules
     kind: rules
     title: Rules that prevent data loss

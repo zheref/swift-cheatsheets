@@ -1,0 +1,591 @@
+id: ts-networking-rest
+concept: networking.rest
+scope: platform
+title: "Networking — REST with fetch"
+group: "Networking & media"
+subtitle: "fetch as a typed client: status checks and validated decoding, timeouts, retry with jitter, token refresh, pagination, ETags and progress."
+applies:
+  platforms: [browser, node]
+  runtime: Node.js 22.18+ or a browser (fetch, AbortSignal, Streams); the examples run on Node.js against a local server
+  versions: { typescript: ">=5.5", node: ">=22.18", zod: ">=4.0", browsers: "Baseline 2024" }
+sources:
+  - title: Using the Fetch API — MDN
+    url: https://developer.mozilla.org/en-US/docs/Web/API/Fetch_API/Using_Fetch
+  - title: AbortSignal — MDN
+    url: https://developer.mozilla.org/en-US/docs/Web/API/AbortSignal
+  - title: HTTP caching — MDN
+    url: https://developer.mozilla.org/en-US/docs/Web/HTTP/Guides/Caching
+  - title: Cross-Origin Resource Sharing (CORS) — MDN
+    url: https://developer.mozilla.org/en-US/docs/Web/HTTP/Guides/CORS
+  - title: Zod documentation
+    url: https://zod.dev/
+  - title: HTTP — Node.js documentation
+    url: https://nodejs.org/api/http.html
+cards:
+  - id: what-fetch-does-not-do
+    kind: table
+    title: What fetch does — and what you add
+    note: "`fetch` is a transport, not a client: every row on the right is code you own once, in one wrapper."
+    headers: [Concern, "fetch on its own", "What the wrapper adds"]
+    rows:
+      - - HTTP errors
+        - "Resolves for **every** status; only a network failure or an abort rejects"
+        - "Check `response.ok` / `response.status` before reading the body"
+      - - Decoding
+        - "`response.json()` returns `Promise<any>` and throws `SyntaxError` on an HTML error page"
+        - "Parse `unknown` with a schema (`zod`) — `as Order` checks nothing"
+      - - Timeout
+        - "None — a stalled server hangs the call for minutes"
+        - "`signal: AbortSignal.timeout(ms)`, combined with the caller's signal via `AbortSignal.any`"
+      - - Retry
+        - None
+        - "Backoff with jitter, idempotent requests only, honour `Retry-After`"
+      - - Auth
+        - "Cookies by `credentials`; no token handling"
+        - "`Authorization: Bearer`, one shared refresh on `401`"
+      - - "Cross-origin (browser)"
+        - "Blocked unless the API answers with CORS headers; an `Authorization` or JSON `content-type` header triggers an `OPTIONS` preflight"
+        - "Server: `Access-Control-Allow-Origin` (an exact origin, never `*` with `credentials: \"include\"`), `-Allow-Headers`, `-Allow-Credentials`"
+      - - Caching
+        - "Browser: the HTTP cache obeys `Cache-Control`/`ETag`. Node: **no cache at all**"
+        - "`cache:` option in the browser; an ETag map in Node"
+      - - Uploads
+        - "`body` takes a string, `Blob`, `FormData`, `URLSearchParams` or a stream"
+        - "`FormData` for multipart file uploads — and **no** manual `content-type`, so the boundary is set for you"
+      - - Progress
+        - "No events; the body is a `ReadableStream`"
+        - "Count bytes while reading `response.body` (download) or a stream body (upload)"
+  - id: typed-get-and-post
+    kind: code
+    title: A typed GET and POST
+    note: "One function owns the status check and the decode, so a 404 or a renamed field fails loudly at the boundary instead of as `undefined` three screens later."
+    prerequisites: &zod
+      - Node.js 22.18 or later (it runs `.mts` files directly by stripping the types)
+      - "`npm i zod`"
+      - "Save as `main.mts` and run `node main.mts`"
+    code: |-
+      import { z } from "zod";
+
+      type Fetch = (url: URL, init?: RequestInit) => Promise<Response>;
+
+      const ORDERS: Record<string, object> = {
+        "/orders/o-1": { id: "o-1", total: 42.5, status: "paid" },
+        "/orders/o-3": { id: "o-3", total: "42.50", status: "paid" },   // a backend regression
+      };
+
+      const shopApi: Fetch = async (url, init) => {        // the stand-in API, injected; omit it to use fetch
+        if (init?.method === "POST") {
+          const { total } = JSON.parse(String(init.body)) as { total: number };   // pick fields: never spread
+          return Response.json({ id: "o-2", total, status: "open" }, { status: 201 });
+        }
+        const order = ORDERS[url.pathname];
+        return order ? Response.json(order) : Response.json({ error: "not found" }, { status: 404 });
+      };
+
+      const Order = z.object({ id: z.string(), total: z.number(), status: z.enum(["open", "paid"]) });
+
+      class HttpError extends Error {
+        status: number;
+
+        constructor(status: number, body: string) {
+          super(`HTTP ${status}: ${body}`);
+          this.status = status;
+        }
+      }
+
+      async function request<T>(schema: z.ZodType<T>, path: string, init: RequestInit = {}, send: Fetch = fetch) {
+        const headers = new Headers(init.headers);
+        headers.set("accept", "application/json");
+        const response = await send(new URL(path, "https://api.shop.example"), { ...init, headers });
+        if (!response.ok) throw new HttpError(response.status, await response.text());
+        return schema.parse(await response.json());       // unknown in, Order out, or a ZodError naming the field
+      }
+
+      const order = await request(Order, "/orders/o-1", {}, shopApi);
+      const created = await request(Order, "/orders", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ total: 19.99 }),
+      }, shopApi);
+      console.log(order.status, order.total, "|", created.id, created.status, created.total);
+
+      for (const path of ["/orders/o-9", "/orders/o-3"]) {
+        await request(Order, path, {}, shopApi).catch((e) =>
+          console.log(e instanceof z.ZodError ? e.issues[0]?.path : `${e}`));
+      }
+    expected: |-
+      paid 42.5 | o-2 open 19.99
+      Error: HTTP 404: {"error":"not found"}
+      [ 'total' ]
+    validation: &ran
+      status: ran
+      toolchain: Node 24.16.0, TypeScript 5.9.3
+      date: "2026-11-16"
+  - id: api-client-error-union
+    kind: code
+    title: A small API client with errors as a union
+    note: "Return a `Result` whose error is a discriminated union, keep the body read inside the guarded region, and inject `fetch`: callers must handle every failure kind — even a proxy's HTML page with status 200 — and tests need no server."
+    prerequisites: *zod
+    code: |-
+      import { z } from "zod";
+
+      type ApiError =
+        | { kind: "network"; message: string }
+        | { kind: "timeout" }
+        | { kind: "http"; status: number }
+        | { kind: "decode"; detail: string };
+
+      type Result<T> = { ok: true; value: T } | { ok: false; error: ApiError };
+
+      type Fetch = (url: URL, init?: RequestInit) => Promise<Response>;
+
+      const fail = (error: ApiError) => ({ ok: false as const, error });
+
+      async function call<T>(schema: z.ZodType<T>, url: URL, send: Fetch): Promise<Result<T>> {
+        let body: unknown;
+        try {
+          const response = await send(url, { signal: AbortSignal.timeout(5_000) });
+          if (!response.ok) {
+            await response.body?.cancel();                 // release the connection
+            return fail({ kind: "http", status: response.status });
+          }
+          body = await response.json();                    // inside the try: a cut-off or HTML body lands below
+        } catch (e) {
+          if (e instanceof SyntaxError) return fail({ kind: "decode", detail: "body is not JSON" });
+          if (e instanceof DOMException && e.name === "TimeoutError") return fail({ kind: "timeout" });
+          return fail({ kind: "network", message: String(e) });
+        }
+
+        const parsed = schema.safeParse(body);
+        if (parsed.success) return { ok: true, value: parsed.data };
+        return fail({ kind: "decode", detail: parsed.error.issues.map((i) => `${i.path}: ${i.code}`).join(", ") });
+      }
+
+      const Order = z.object({ id: z.string(), total: z.number() });
+
+      const getOrder = (id: string, send: Fetch = fetch) =>
+        call(Order, new URL(`/orders/${encodeURIComponent(id)}`, "https://api.shop.example"), send);
+
+      const fake: Fetch = async ({ pathname }) => {
+        if (pathname === "/orders/o-1") return Response.json({ id: "o-1", total: 42.5 });
+        if (pathname === "/orders/o-2") return Response.json({ id: "o-2", total: "42.50" });
+        if (pathname === "/orders/o-3") return new Response("<html>Down for maintenance</html>");   // a proxy, 200
+        if (pathname === "/orders/o-4") throw new TypeError("fetch failed");
+        return new Response(null, { status: 404 });
+      };
+
+      for (const id of ["o-1", "o-2", "o-3", "o-4", "o-5"]) {
+        console.log(id, JSON.stringify(await getOrder(id, fake)));   // the injected transport: no server needed
+      }
+    expected: |-
+      o-1 {"ok":true,"value":{"id":"o-1","total":42.5}}
+      o-2 {"ok":false,"error":{"kind":"decode","detail":"total: invalid_type"}}
+      o-3 {"ok":false,"error":{"kind":"decode","detail":"body is not JSON"}}
+      o-4 {"ok":false,"error":{"kind":"network","message":"TypeError: fetch failed"}}
+      o-5 {"ok":false,"error":{"kind":"http","status":404}}
+    validation: *ran
+  - id: timeout-and-cancellation
+    kind: code
+    title: Timeout and cancellation with AbortSignal
+    note: "Give every request a deadline, and let the caller cancel too: `AbortSignal.any` combines both, and the error's `name` tells them apart."
+    prerequisites: &node
+      - Node.js 22.18 or later (it runs `.mts` files directly by stripping the types)
+      - "Save as `main.mts` and run `node main.mts`"
+    code: |-
+      import { createServer } from "node:http";
+      import { once } from "node:events";
+      import type { AddressInfo } from "node:net";
+
+      const server = createServer((_req, res) => {
+        const timer = setTimeout(() => res.end("report ready"), 200);   // a slow export endpoint
+        res.on("close", () => clearTimeout(timer));                     // the client left: stop the work
+      }).listen(0, "127.0.0.1");
+      await once(server, "listening");
+      const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/reports/export`;
+
+      async function exportReport(timeoutMs: number, userSignal?: AbortSignal): Promise<string> {
+        const deadline = AbortSignal.timeout(timeoutMs);
+        const signal = userSignal ? AbortSignal.any([userSignal, deadline]) : deadline;
+        const response = await fetch(url, { signal });
+        return response.text();                       // the body read is covered by the same signal
+      }
+
+      async function attempt(label: string, timeoutMs: number, signal?: AbortSignal) {
+        try {
+          console.log(label, await exportReport(timeoutMs, signal));
+        } catch (e) {
+          const name = (e as DOMException).name;       // TimeoutError: retry later. AbortError: the user moved on.
+          console.log(label, name);
+        }
+      }
+
+      await attempt("50 ms deadline:", 50);
+      const leaveScreen = new AbortController();
+      setTimeout(() => leaveScreen.abort(), 20);
+      await attempt("user navigated away:", 5_000, leaveScreen.signal);
+      await attempt("2 s deadline:", 2_000);
+      server.close();
+    expected: |-
+      50 ms deadline: TimeoutError
+      user navigated away: AbortError
+      2 s deadline: report ready
+    validation: *ran
+  - id: retry-backoff-jitter
+    kind: code
+    title: Retry with exponential backoff and jitter
+    note: "Retry only what is safe to repeat (GET, PUT, DELETE, or a POST with an `Idempotency-Key`) and never what the caller cancelled, cap every delay including `Retry-After`, randomise it, and inject the randomness and the sleep so the test is instant."
+    prerequisites: *node
+    code: |-
+      type RetryOptions = {
+        retries: number;
+        baseMs: number;
+        capMs: number;
+        signal?: AbortSignal;
+        random: () => number;                              // injected, like sleep, so tests run instantly
+        sleep: (ms: number, signal?: AbortSignal) => Promise<void>;
+      };
+
+      const RETRYABLE = new Set([408, 429, 500, 502, 503, 504]);
+
+      async function withRetry(send: (signal?: AbortSignal) => Promise<Response>, o: RetryOptions) {
+        for (let attempt = 0; ; attempt++) {
+          let response: Response | undefined;
+          try {
+            response = await send(o.signal);
+            if (!RETRYABLE.has(response.status) || attempt === o.retries) return response;
+            await response.body?.cancel();                 // free the connection before waiting
+          } catch (e) {
+            if (o.signal?.aborted || attempt === o.retries) throw e;   // the caller gave up: never retry that
+          }
+
+          const jittered = Math.round(o.random() * Math.min(o.capMs, o.baseMs * 2 ** attempt));   // full jitter
+          const retryAfter = Number(response?.headers.get("retry-after"));   // seconds; an HTTP date falls back
+          await o.sleep(Math.min(o.capMs, retryAfter > 0 ? retryAfter * 1000 : jittered), o.signal);
+        }
+      }
+
+      const options: RetryOptions = {
+        retries: 4, baseMs: 100, capMs: 10_000,
+        random: () => 0.5, sleep: async (ms) => console.log(`waited ${ms} ms`),
+      };
+
+      const replies = [
+        () => Promise.reject(new TypeError("fetch failed")),
+        () => new Response(null, { status: 429, headers: { "retry-after": "3600" } }),   // an hour: capped
+        () => Response.json({ id: "o-1" }),
+      ];
+      let calls = 0;
+      const response = await withRetry(async () => replies[calls++]!(), options);
+      console.log(response.status, "after", calls, "attempts");
+
+      const closedScreen = AbortSignal.abort();            // the user already left: fetch rejects at once
+      const getOrder = (signal?: AbortSignal) => fetch("https://api.shop.example/orders/o-1", { signal });
+      await withRetry(getOrder, { ...options, signal: closedScreen })   // no "waited" line follows: not retried
+        .catch((e: DOMException) => console.log(e.name));
+    expected: |-
+      waited 50 ms
+      waited 10000 ms
+      200 after 3 attempts
+      AbortError
+    sources:
+      - title: Exponential Backoff And Jitter — AWS Architecture Blog
+        url: https://aws.amazon.com/blogs/architecture/exponential-backoff-and-jitter/
+      - title: Retry-After — MDN
+        url: https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Retry-After
+    validation: *ran
+  - id: bearer-single-flight-refresh
+    kind: code
+    title: Bearer auth with a single-flight refresh on 401
+    note: "When five requests hit an expired token at once, exactly one refresh runs and the others wait for it, and a refused refresh becomes a typed sign-out instead of `Bearer undefined` (the cookie-authenticated refresh endpoint also needs the security sheet's CSRF check)."
+    prerequisites: *zod
+    code: |-
+      import { z } from "zod";
+
+      class SignedOutError extends Error {}
+
+      const BASE = "https://api.shop.example";
+
+      let refreshes = 0;
+      let sessionRevoked = false;
+
+      async function send(url: URL, init?: RequestInit): Promise<Response> {   // the stand-in API
+        const valid = !sessionRevoked && new Headers(init?.headers).get("authorization") === "Bearer fresh";
+        if (url.pathname !== "/token/refresh") return new Response(null, { status: valid ? 200 : 401 });
+        refreshes++;
+        await new Promise((resolve) => setTimeout(resolve, 20));   // all five 401s arrive meanwhile
+        return sessionRevoked ? new Response(null, { status: 401 }) : Response.json({ accessToken: "fresh" });
+      }
+
+      class AuthedClient {
+        #token = "expired";                              // in a browser the refresh token is an HttpOnly cookie
+        #refreshing: Promise<string> | null = null;
+        #authorized = (path: string, token: string) =>
+          send(new URL(path, BASE), { headers: { authorization: `Bearer ${token}` } });
+
+        async get(path: string): Promise<Response> {
+          const used = this.#token;
+          const response = await this.#authorized(path, used);
+          if (response.status !== 401) return response;
+          await response.body?.cancel();
+          const token = this.#token !== used ? this.#token : await this.#refresh();   // already refreshed?
+          return this.#authorized(path, token);            // retried once; a second 401 goes to the caller
+        }
+
+        #refresh(): Promise<string> {
+          this.#refreshing ??= send(new URL("/token/refresh", BASE), { method: "POST", credentials: "include" })
+            .then(async (r) => {
+              if (!r.ok) throw new SignedOutError(`refresh refused (${r.status}): sign in again`);
+              return (this.#token = z.object({ accessToken: z.string() }).parse(await r.json()).accessToken);
+            })
+            .finally(() => (this.#refreshing = null));
+          return this.#refreshing;
+        }
+      }
+
+      const client = new AuthedClient();
+      const orders = await Promise.all([1, 2, 3, 4, 5].map((n) => client.get(`/orders/o-${n}`)));   // all at once
+      console.log(orders.map((r) => r.status).join(" "), "| refreshes:", refreshes);
+
+      sessionRevoked = true;                               // signed out on another device; the old token expires
+      await client.get("/orders/o-6").catch((e) => console.log(e instanceof SignedOutError, e.message));
+    expected: |-
+      200 200 200 200 200 | refreshes: 1
+      true refresh refused (401): sign in again
+    sources:
+      - title: Authorization header — MDN
+        url: https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Authorization
+    validation: *ran
+  - id: cursor-pagination-iterator
+    kind: code
+    title: Cursor pagination as an async iterator
+    note: "Callers write `for await` and never see cursors; pages are fetched only as they are consumed, so `break` stops the requests."
+    prerequisites: *zod
+    code: |-
+      import { createServer } from "node:http";
+      import { once } from "node:events";
+      import type { AddressInfo } from "node:net";
+      import { z } from "zod";
+
+      const ALL = Array.from({ length: 7 }, (_, i) => ({ id: `o-${i + 1}` }));
+      let requests = 0;
+      const server = createServer((req, res) => {
+        requests++;
+        const params = new URL(req.url ?? "/", "http://localhost").searchParams;
+        const start = Number(params.get("cursor") ?? 0);
+        const end = start + Number(params.get("limit"));
+        res.end(JSON.stringify({ items: ALL.slice(start, end), nextCursor: end < ALL.length ? `${end}` : null }));
+      }).listen(0, "127.0.0.1");
+      await once(server, "listening");
+      const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+
+      const Page = z.object({ items: z.array(z.object({ id: z.string() })), nextCursor: z.string().nullable() });
+
+      async function* orders(signal?: AbortSignal) {
+        let cursor: string | null = null;
+        do {
+          const url = new URL("/orders?limit=3", base);
+          if (cursor) url.searchParams.set("cursor", cursor);   // opaque: never compute it yourself
+          const response = await fetch(url, { signal });
+          if (!response.ok) throw new Error(`HTTP ${response.status}`);
+          const page = Page.parse(await response.json());
+          yield* page.items;
+          cursor = page.nextCursor;
+        } while (cursor);
+      }
+
+      const firstFour: string[] = [];
+      for await (const order of orders()) {
+        firstFour.push(order.id);
+        if (firstFour.length === 4) break;             // page 3 is never requested
+      }
+      console.log(firstFour.join(" "), "| requests:", requests);
+      console.log((await Array.fromAsync(orders())).length, "orders | requests:", requests);
+      server.close();
+    expected: |-
+      o-1 o-2 o-3 o-4 | requests: 2
+      7 orders | requests: 5
+    validation: *ran
+  - id: etag-conditional-requests
+    kind: code
+    title: Caching with ETag and If-None-Match
+    note: "The server tags a representation and answers an empty `304` while the client's `If-None-Match` still matches, which browsers do for you per `Cache-Control` but Node's cacheless fetch leaves to you."
+    prerequisites: *node
+    code: |-
+      import { createServer } from "node:http";
+      import { once } from "node:events";
+      import type { AddressInfo } from "node:net";
+
+      let catalog = { version: 1, products: ["mug", "tote"] };
+      const statuses: number[] = [];
+      const server = createServer((req, res) => {
+        const etag = `"catalog-v${catalog.version}"`;
+        res.setHeader("etag", etag);
+        res.setHeader("cache-control", "no-cache");     // may be stored, but must be revalidated every time
+        res.statusCode = req.headers["if-none-match"] === etag ? 304 : 200;
+        statuses.push(res.statusCode);
+        res.end(res.statusCode === 304 ? undefined : JSON.stringify(catalog.products));
+      }).listen(0, "127.0.0.1");
+      await once(server, "listening");
+      const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/catalog`;
+
+      const cache = new Map<string, { etag: string; body: string[] }>();
+
+      async function getCatalog(): Promise<string[]> {
+        const hit = cache.get(url);
+        const response = await fetch(url, { headers: hit ? { "if-none-match": hit.etag } : {} });
+        if (response.status === 304 && hit) return hit.body;   // no body was sent: reuse the stored one
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const body = (await response.json()) as string[];
+        const etag = response.headers.get("etag");
+        if (etag) cache.set(url, { etag, body });
+        return body;
+      }
+
+      console.log(await getCatalog());
+      console.log(await getCatalog());
+      catalog = { version: 2, products: ["mug", "tote", "cap"] };
+      console.log(await getCatalog());
+      console.log("server answered", statuses.join(", "));
+      server.close();
+    expected: |-
+      [ 'mug', 'tote' ]
+      [ 'mug', 'tote' ]
+      [ 'mug', 'tote', 'cap' ]
+      server answered 200, 304, 200
+    sources:
+      - title: ETag — MDN
+        url: https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/ETag
+      - title: "RequestInit: cache — MDN"
+        url: https://developer.mozilla.org/en-US/docs/Web/API/RequestInit
+    validation: *ran
+  - id: download-progress
+    kind: code
+    title: Download with progress
+    note: "Progress is bytes counted while the body streams, and `Content-Length` is a total only for an uncompressed response whose `Content-Encoding` the page can see (cross-origin that takes `Access-Control-Expose-Headers: Content-Encoding`), so clamp it and fall back to an indeterminate bar."
+    prerequisites: *node
+    code: |-
+      import { createServer } from "node:http";
+      import { once } from "node:events";
+      import { gzipSync } from "node:zlib";
+      import type { AddressInfo } from "node:net";
+
+      const sprite = Buffer.alloc(300_000, 7);           // a thumbnail sprite for the video scrubber
+
+      const server = createServer((req, res) => {
+        if (req.url === "/chunked") {
+          res.write(sprite.subarray(0, 100_000));        // write() before end(): no Content-Length
+          res.end(sprite.subarray(100_000));
+        } else if (req.url === "/gzip") {
+          res.setHeader("content-encoding", "gzip").end(gzipSync(sprite));   // Content-Length: the compressed size
+        } else {
+          res.end(sprite);                               // one end(): Node sends Content-Length
+        }
+      }).listen(0, "127.0.0.1");
+      await once(server, "listening");
+      const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+
+      async function download(url: string, onProgress: (fraction?: number) => void) {
+        const response = await fetch(url);
+        if (!response.ok || !response.body) throw new Error(`HTTP ${response.status}`);
+
+        const length = Number(response.headers.get("content-length"));
+        const total = !response.headers.has("content-encoding") && length > 0 ? length : undefined;
+
+        const chunks: Uint8Array<ArrayBuffer>[] = [];
+        let loaded = 0;
+        const reader = response.body.getReader();
+        for (let read = await reader.read(); !read.done; read = await reader.read()) {
+          chunks.push(read.value);
+          loaded += read.value.length;
+          onProgress(total ? Math.min(1, loaded / total) : undefined);   // undefined: an indeterminate bar
+        }
+        return new Uint8Array(await new Blob(chunks).arrayBuffer());
+      }
+
+      for (const route of ["/plain", "/chunked", "/gzip"]) {
+        const fractions: (number | undefined)[] = [];
+        const file = await download(base + route, (fraction) => fractions.push(fraction));
+        const last = fractions.at(-1);
+        const progress = last === undefined ? "indeterminate bar" : `${last * 100}%`;
+        console.log(`${route}: ${file.length} bytes, progress ${progress}`);
+      }
+      server.close();
+    expected: |-
+      /plain: 300000 bytes, progress 100%
+      /chunked: 300000 bytes, progress indeterminate bar
+      /gzip: 300000 bytes, progress indeterminate bar
+    applies:
+      platforms: [browser, node]
+      versions: { typescript: ">=5.7", node: ">=22.18", browsers: "Baseline 2024" }
+    sources:
+      - title: Using readable streams — MDN
+        url: https://developer.mozilla.org/en-US/docs/Web/API/Streams_API/Using_readable_streams
+    validation: *ran
+  - id: upload-progress
+    kind: code
+    title: Upload with progress
+    note: "A stream body is pulled only as fast as the socket drains, so counting pulled bytes is upload progress in Node and in Chromium over HTTP/2, while `XMLHttpRequest.upload.onprogress` remains the portable choice in browsers."
+    prerequisites: *node
+    code: |-
+      import { createServer } from "node:http";
+      import { once } from "node:events";
+      import type { AddressInfo } from "node:net";
+
+      const server = createServer(async (req, res) => {
+        let received = 0;
+        for await (const chunk of req) received += (chunk as Buffer).length;
+        res.end(String(received));
+      }).listen(0, "127.0.0.1");
+      await once(server, "listening");
+      const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/media/upload`;
+
+      async function upload(data: Uint8Array, onProgress: (fraction: number) => void): Promise<string> {
+        let sent = 0;
+        const body = new ReadableStream<Uint8Array>({
+          pull(controller) {
+            if (sent === data.length) return controller.close();
+            const chunk = data.subarray(sent, sent + 64 * 1024);
+            controller.enqueue(chunk);
+            sent += chunk.length;
+            onProgress(sent / data.length);
+          },
+        });
+        // `duplex: "half"` is required for a stream body; lib.dom does not declare it yet
+        const init: RequestInit & { duplex: "half" } = { method: "PUT", body, duplex: "half" };
+        const response = await fetch(url, init);
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        return response.text();
+      }
+
+      const seen: number[] = [];
+      const received = await upload(new Uint8Array(1_000_000), (f) => seen.push(f));
+      console.log(`server received ${received} bytes; progress ended at ${seen.at(-1)} after ${seen.length} steps`);
+      server.close();
+    expected: "server received 1000000 bytes; progress ended at 1 after 16 steps"
+    sources:
+      - title: "Request: duplex — MDN"
+        url: https://developer.mozilla.org/en-US/docs/Web/API/Request/duplex
+      - title: "XMLHttpRequest: upload property — MDN"
+        url: https://developer.mozilla.org/en-US/docs/Web/API/XMLHttpRequest/upload
+    validation: *ran
+  - id: rest-rules
+    kind: rules
+    title: Rules worth saying out loud
+    note: The bugs that reach production because fetch looked simple.
+    items:
+      - tone: bad
+        text: "`await res.json() as Order` — a type assertion, not a check. Parse `unknown` with a schema at the boundary."
+      - tone: bad
+        text: "Assuming `fetch` throws on `404`/`500`. It resolves; branch on `response.ok` before reading the body."
+      - tone: good
+        text: "Every request gets a deadline (`AbortSignal.timeout`) and accepts the caller's `signal` — a screen that closes cancels its requests, and a cancelled request is never retried."
+      - tone: good
+        text: "Retry idempotent requests only, with capped, jittered backoff; a retry storm without jitter is a self-inflicted outage."
+      - tone: good
+        text: "One refresh in flight per session: share the promise, retry the original request once, sign out on a refused refresh or a second `401`."
+      - tone: neutral
+        text: "A body can be read **once** — `response.clone()` before reading if two consumers need it; `body.cancel()` a response you discard."
+      - tone: bad
+        text: "Building query strings by concatenation. `new URL()` + `searchParams.set` encodes for you; `encodeURIComponent` for path segments."
+      - tone: neutral
+        text: "In real apps a query cache (TanStack Query, RTK Query) owns dedupe, staleness and refetching; these cards are what it does underneath."

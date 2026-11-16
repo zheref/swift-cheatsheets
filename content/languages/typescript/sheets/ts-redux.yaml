@@ -1,0 +1,667 @@
+id: ts-redux
+concept: architecture.unidirectional-core
+scope: platform
+title: "Redux — Core Loop"
+group: "State management"
+subtitle: "State → action → reducer → new state → subscribers; effects in middleware. Plain redux 5, written by hand once, so Redux Toolkit holds no mysteries."
+applies:
+  platforms: [browser, node]
+  runtime: any ES2022+ engine; the examples run on Node.js
+  requires: [redux]
+  versions: { typescript: ">=5.5", node: ">=22.18", redux: ">=5.0" }
+sources:
+  - title: Redux Fundamentals — Redux
+    url: https://redux.js.org/tutorials/fundamentals/part-1-overview
+  - title: Redux Style Guide — Redux
+    url: https://redux.js.org/style-guide/
+  - title: createStore (deprecated) — Redux
+    url: https://redux.js.org/api/createstore
+cards:
+  - id: the-nouns
+    kind: table
+    title: The nouns, and their TCA twins
+    note: "Every Redux answer starts here, and this sheet shows them in the legacy core (`redux` alone) so the loop is visible before Redux Toolkit writes it for you."
+    headers: [Noun, In Redux, TCA counterpart]
+    rows:
+      - - "**State**"
+        - "one plain, serialisable object tree, replaced — never mutated — on every change"
+        - "`@ObservableState struct State`"
+      - - "**Action**"
+        - "a plain object `{ type: \"cart/productAdded\", payload }`; a discriminated union in TypeScript"
+        - "`enum Action`"
+      - - "**Reducer**"
+        - "`(state, action) => newState`: pure, synchronous, no I/O, no `Date.now()`"
+        - "`Reduce { state, action in … }`"
+      - - "**Store**"
+        - "holds the state, runs the reducer on `dispatch`, notifies `subscribe` listeners"
+        - "`Store` / `StoreOf<Feature>`"
+      - - "**dispatch**"
+        - "`store.dispatch(action)` — the only way state changes"
+        - "`store.send(.action)`"
+      - - "**Selector**"
+        - "`(state) => value` that reads or derives; memoised when the derivation is costly"
+        - "reading `store.count`; computed properties"
+      - - "**Middleware**"
+        - "wraps `dispatch`: logging, thunks, effects that react to actions and dispatch results"
+        - "`Effect` (`.run`, `.cancellable`) and `@Dependency`"
+      - - "**Subscriber**"
+        - "a view that re-reads its selection after every dispatch and re-renders if it changed"
+        - "SwiftUI observation of the store"
+      - - "**Golden rule**"
+        - "reducers are pure and synchronous; effects never touch state, they dispatch"
+        - "the same"
+  - id: minimal-feature
+    kind: code
+    title: A minimal feature, end to end
+    note: "How Redux works underneath — learn the loop once here, then write it with Redux Toolkit (next sheet), because `createStore` is deprecated."
+    prerequisites: &run
+      - Node.js 22.18 or later (it runs `.mts` files directly by stripping the types)
+      - "`npm i redux`"
+      - "Save as `main.mts` and run `node main.mts`"
+    code: |-
+      // Legacy core, shown to make the loop visible: createStore is deprecated in favour of
+      // Redux Toolkit's configureStore, and the legacy_ alias only removes the strikethrough.
+      import { legacy_createStore as createStore } from "redux";
+
+      type Line = { sku: string; name: string; unitPrice: number; qty: number };
+      type CartState = { lines: Line[] };
+
+      // Everything that can happen to the cart, as events in the past tense.
+      type CartAction =
+        | { type: "cart/productAdded"; payload: { sku: string; name: string; unitPrice: number } }
+        | { type: "cart/quantityChanged"; payload: { sku: string; qty: number } };
+
+      function cartReducer(state: CartState = { lines: [] }, action: CartAction): CartState {
+        switch (action.type) {
+          case "cart/productAdded": {
+            const existing = state.lines.find((l) => l.sku === action.payload.sku);
+            if (!existing) return { lines: [...state.lines, { ...action.payload, qty: 1 }] };
+            return { lines: state.lines.map((l) => (l === existing ? { ...l, qty: l.qty + 1 } : l)) };
+          }
+          case "cart/quantityChanged": {
+            const { sku, qty } = action.payload;
+            if (qty <= 0) return { lines: state.lines.filter((l) => l.sku !== sku) };
+            return { lines: state.lines.map((l) => (l.sku === sku ? { ...l, qty } : l)) };
+          }
+          default:
+            return state;   // Redux's own @@INIT action, and anything another feature dispatches
+        }
+      }
+
+      const store = createStore(cartReducer);
+      const total = (s: CartState) => s.lines.reduce((sum, l) => sum + l.unitPrice * l.qty, 0);
+
+      store.subscribe(() => {
+        const state = store.getState();
+        console.log(`${state.lines.length} lines, total ${total(state).toFixed(2)}`);
+      });
+
+      const mug = { sku: "MUG", name: "Mug", unitPrice: 12.5 };
+      store.dispatch({ type: "cart/productAdded", payload: mug });
+      store.dispatch({ type: "cart/productAdded", payload: mug });
+      store.dispatch({ type: "cart/productAdded", payload: { sku: "TEE", name: "T-shirt", unitPrice: 20 } });
+      store.dispatch({ type: "cart/quantityChanged", payload: { sku: "MUG", qty: 0 } });
+      // store.dispatch({ type: "cart/addItem" }) does not compile: not a CartAction
+    expected: |-
+      1 lines, total 12.50
+      1 lines, total 25.00
+      2 lines, total 45.00
+      1 lines, total 20.00
+    validation: &ran
+      status: ran
+      toolchain: Node 24.16.0, TypeScript 5.9.3
+      date: "2026-11-16"
+  - id: events-not-setters
+    kind: compare
+    title: "Actions are events, not setters"
+    note: "Name what happened (`productAdded`), not what to write (`setLines`), so the rule lives once in the reducer instead of in every click handler."
+    prerequisites: *run
+    columns:
+      - label: Setter — logic in the handler
+        tone: bad
+        code: |-
+          import { legacy_createStore as createStore } from "redux";
+
+          type Product = { sku: string; unitPrice: number };
+          type Line = Product & { qty: number };
+          type CartAction = { type: "cart/setLines"; payload: Line[] };
+
+          function cartReducer(lines: Line[] = [], action: CartAction): Line[] {
+            return action.type === "cart/setLines" ? action.payload : lines;
+          }
+
+          const store = createStore(cartReducer);
+
+          // The rule is copied into every "Add" button; the action log only says "lines changed".
+          function onAddClicked(product: Product) {
+            const lines = store.getState();
+            const next = lines.some((l) => l.sku === product.sku)
+              ? lines.map((l) => (l.sku === product.sku ? { ...l, qty: l.qty + 1 } : l))
+              : [...lines, { ...product, qty: 1 }];
+            store.dispatch({ type: "cart/setLines", payload: next });
+          }
+
+          onAddClicked({ sku: "MUG", unitPrice: 12.5 });
+          onAddClicked({ sku: "MUG", unitPrice: 12.5 });
+          console.log(JSON.stringify(store.getState()));
+      - label: Event — logic in the reducer
+        tone: good
+        code: |-
+          import { legacy_createStore as createStore } from "redux";
+
+          type Product = { sku: string; unitPrice: number };
+          type Line = Product & { qty: number };
+          type CartAction = { type: "cart/productAdded"; payload: Product };
+
+          function cartReducer(lines: Line[] = [], action: CartAction): Line[] {
+            if (action.type !== "cart/productAdded") return lines;
+            const p = action.payload;
+            return lines.some((l) => l.sku === p.sku)
+              ? lines.map((l) => (l.sku === p.sku ? { ...l, qty: l.qty + 1 } : l))
+              : [...lines, { ...p, qty: 1 }];
+          }
+
+          const store = createStore(cartReducer);
+
+          // Any button, a keyboard shortcut or a test sends the same event.
+          const onAddClicked = (product: Product) => store.dispatch({ type: "cart/productAdded", payload: product });
+
+          onAddClicked({ sku: "MUG", unitPrice: 12.5 });
+          onAddClicked({ sku: "MUG", unitPrice: 12.5 });
+          console.log(JSON.stringify(store.getState()));
+    expected: |-
+      [{"sku":"MUG","unitPrice":12.5,"qty":2}]
+    validation: *ran
+  - id: immutable-updates
+    kind: code
+    title: Immutable updates
+    note: "Copy each object on the path to the change and share the rest, so `===` tells a subscriber exactly what changed — and freeze state in tests to catch a slip."
+    prerequisites: &run-plain
+      - Node.js 22.18 or later (it runs `.mts` files directly by stripping the types)
+      - "Save as `main.mts` and run `node main.mts`"
+    code: |-
+      type Line = { sku: string; qty: number };
+      type Order = { id: string; shipping: { city: string; express: boolean }; lines: Line[] };
+
+      const changeQty = (order: Order, sku: string, qty: number): Order =>
+        ({ ...order, lines: order.lines.map((l) => (l.sku === sku ? { ...l, qty } : l)) });
+
+      const chooseExpress = (order: Order): Order =>
+        ({ ...order, shipping: { ...order.shipping, express: true } });
+
+      // In development and tests: an accidental mutation throws instead of silently not rendering.
+      function deepFreeze<T>(value: T): T {
+        if (typeof value === "object" && value !== null) {
+          Object.values(value).forEach(deepFreeze);
+          Object.freeze(value);
+        }
+        return value;
+      }
+
+      const before = deepFreeze<Order>({
+        id: "1042",
+        shipping: { city: "Lisbon", express: false },
+        lines: [{ sku: "MUG", qty: 1 }, { sku: "TEE", qty: 2 }],
+      });
+
+      const after = chooseExpress(changeQty(before, "TEE", 3));
+      console.log("new order object:", after !== before);
+      console.log("MUG line shared:", after.lines[0] === before.lines[0]);
+      console.log("TEE line copied:", after.lines[1] !== before.lines[1], after.lines[1]?.qty);
+      console.log("before untouched:", before.lines[1]?.qty, before.shipping.express);
+
+      function buggyChangeQty(order: Order, sku: string, qty: number): Order {
+        const line = order.lines.find((l) => l.sku === sku);
+        if (line) line.qty = qty;      // same references out: every === check says "nothing changed"
+        return order;
+      }
+
+      try {
+        buggyChangeQty(before, "MUG", 5);
+      } catch (e) {
+        console.log((e as TypeError).message);
+      }
+    expected: |-
+      new order object: true
+      MUG line shared: true
+      TEE line copied: true 3
+      before untouched: 2 false
+      Cannot assign to read only property 'qty' of object '#<Object>'
+    sources:
+      - title: Immutable update patterns — Redux
+        url: https://redux.js.org/usage/structuring-reducers/immutable-update-patterns
+    applies:
+      platforms: [browser, node]
+      versions: { typescript: ">=5.0", node: ">=22.18" }
+    validation: *ran
+  - id: middleware-and-thunks
+    kind: code
+    title: Middleware by hand — a thunk with injected dependencies
+    note: "Async work never runs in a reducer: a thunk is a function you dispatch, and middleware runs it with `dispatch`, `getState` and injected dependencies."
+    prerequisites: *run
+    code: |-
+      import { applyMiddleware, legacy_createStore as createStore, type Dispatch, type Middleware } from "redux";
+
+      type CheckoutState = { status: "idle" | "submitting" | "placed" | "failed"; orderId?: string };
+      type CheckoutAction =
+        | { type: "checkout/submitted" }
+        | { type: "checkout/orderPlaced"; payload: { orderId: string } }
+        | { type: "checkout/orderFailed"; payload: { error: string } };
+
+      function checkoutReducer(state: CheckoutState = { status: "idle" }, action: CheckoutAction): CheckoutState {
+        switch (action.type) {
+          case "checkout/submitted": return { status: "submitting" };
+          case "checkout/orderPlaced": return { status: "placed", orderId: action.payload.orderId };
+          case "checkout/orderFailed": return { status: "failed" };
+          default: return state;
+        }
+      }
+
+      // Injected once: the app passes the real HTTP client, tests pass a fake.
+      type Deps = { api: { placeOrder(cartId: string): Promise<string> } };
+      type Thunk = (dispatch: Dispatch<CheckoutAction>, getState: () => CheckoutState, deps: Deps) => Promise<void>;
+
+      // Middleware sees every dispatch first: a function is run, anything else goes on to the reducer.
+      const thunkWith = (deps: Deps): Middleware<{ (thunk: Thunk): Promise<void> }, CheckoutState> =>
+        (api) => (next) => (action) =>
+          typeof action === "function" ? (action as Thunk)(api.dispatch, api.getState, deps) : next(action);
+
+      const placeOrder = (cartId: string): Thunk => async (dispatch, getState, { api }) => {
+        if (getState().status === "submitting") return;  // a double click places one order
+        dispatch({ type: "checkout/submitted" });
+        let orderId: string;
+        try {
+          orderId = await api.placeOrder(cartId);
+        } catch (e) {
+          dispatch({ type: "checkout/orderFailed", payload: { error: (e as Error).message } });
+          return;
+        }
+        // Outside the try: a bug in a reducer or subscriber is not reported as "card declined".
+        dispatch({ type: "checkout/orderPlaced", payload: { orderId } });
+      };
+
+      const fakeApi = { placeOrder: async (cartId: string) => `ORD-for-${cartId}` };
+      const store = createStore(checkoutReducer, applyMiddleware(thunkWith({ api: fakeApi })));
+      store.subscribe(() => console.log("status:", store.getState().status));
+
+      // A double click: the second dispatch finds "submitting" and does nothing.
+      await Promise.all([store.dispatch(placeOrder("cart-7")), store.dispatch(placeOrder("cart-7"))]);
+      console.log(store.getState());
+    expected: |-
+      status: submitting
+      status: placed
+      { status: 'placed', orderId: 'ORD-for-cart-7' }
+    sources:
+      - title: Middleware — Redux
+        url: https://redux.js.org/understanding/history-and-design/middleware
+      - title: Writing logic with thunks — Redux
+        url: https://redux.js.org/usage/writing-logic-thunks
+    validation: *ran
+  - id: effects-with-cancellation
+    kind: code
+    title: Effects that react to actions, with cancellation
+    note: "TCA's `.cancellable(id:, cancelInFlight: true)` by hand: the effect runs after the reducer, aborts the superseded request, skips an empty field, and reports every outcome as an action for the reducer (next card) to judge."
+    prerequisites: *run
+    code: |-
+      import { applyMiddleware, legacy_createStore as createStore, type Middleware } from "redux";
+      import { setTimeout as sleep } from "node:timers/promises";
+
+      type CheckFinished = { code: string; discount: number | null; failed: boolean };
+      type PromoAction =
+        | { type: "promo/codeEdited"; payload: string }
+        | { type: "promo/checkFinished"; payload: CheckFinished };
+
+      const lastResult = (state: CheckFinished | null = null, action: PromoAction) =>
+        action.type === "promo/checkFinished" ? action.payload : state;
+
+      type ValidatePromo = (code: string, signal: AbortSignal) => Promise<number | null>;
+
+      const promoEffects = (validatePromo: ValidatePromo): Middleware => (api) => {
+        let inFlight: AbortController | undefined;
+        return (next) => (action) => {
+          const result = next(action);
+          const edited = action as PromoAction;
+          if (edited.type !== "promo/codeEdited") return result;
+
+          inFlight?.abort();     // the user typed again: drop the old check (a real field also debounces)
+          if (!edited.payload) return result;          // a cleared field needs no check
+          const { signal } = (inFlight = new AbortController());
+          const finish = (discount: number | null, failed = false) =>
+            api.dispatch({ type: "promo/checkFinished", payload: { code: edited.payload, discount, failed } });
+
+          validatePromo(edited.payload, signal).then(finish, () => {
+            if (!signal.aborted) finish(null, true);    // the network failed: "try again", not "invalid"
+          });
+          return result;
+        };
+      };
+
+      const fakeValidatePromo: ValidatePromo = (code, signal) => {
+        console.log("request for", code);
+        return sleep(20, code === "SAVE20" ? 20 : null, { signal }).catch((error: unknown) => {
+          console.log("request aborted for", code);
+          throw error;
+        });
+      };
+
+      const store = createStore(lastResult, applyMiddleware(promoEffects(fakeValidatePromo)));
+      const edit = (code: string) => store.dispatch({ type: "promo/codeEdited", payload: code });
+
+      for (const code of ["SAVE2", "SAVE20"]) edit(code);
+      await sleep(50);
+      console.log(store.getState());
+
+      edit("");                          // cleared: no request is sent
+      console.log("after clearing: no new request");
+    expected: |-
+      request for SAVE2
+      request for SAVE20
+      request aborted for SAVE2
+      { code: 'SAVE20', discount: 20, failed: false }
+      after clearing: no new request
+    sources:
+      - title: Side effects approaches — Redux
+        url: https://redux.js.org/usage/side-effects-approaches
+    validation: *ran
+  - id: results-in-the-reducer
+    kind: code
+    title: Stale, failed and cleared results in the reducer
+    note: "The reducer decides what an effect's answer means: an answer for an older code is ignored, a network failure is not \"invalid\", and an empty field is not \"checking\"."
+    prerequisites: *run-plain
+    code: |-
+      type CheckFinished = { code: string; discount: number | null; failed: boolean };
+      type PromoAction =
+        | { type: "promo/codeEdited"; payload: string }
+        | { type: "promo/checkFinished"; payload: CheckFinished };
+
+      type Status = "empty" | "checking" | "checked" | "unreachable";
+      type PromoState = { code: string; status: Status; discount: number | null };
+
+      const initial: PromoState = { code: "", status: "empty", discount: null };
+
+      function promoReducer(state = initial, action: PromoAction): PromoState {
+        if (action.type === "promo/codeEdited") {
+          return { code: action.payload, status: action.payload ? "checking" : "empty", discount: null };
+        }
+        if (action.type !== "promo/checkFinished" || action.payload.code !== state.code) return state;
+        const { discount, failed } = action.payload;
+        return { ...state, status: failed ? "unreachable" : "checked", discount };
+      }
+
+      const actions: PromoAction[] = [
+        { type: "promo/codeEdited", payload: "SAVE20" },
+        { type: "promo/checkFinished", payload: { code: "SAVE2", discount: null, failed: false } },   // stale
+        { type: "promo/checkFinished", payload: { code: "SAVE20", discount: null, failed: true } },
+        { type: "promo/codeEdited", payload: "" },
+      ];
+
+      let state = initial;
+      for (const action of actions) {
+        state = promoReducer(state, action);
+        console.log(state.status.padEnd(12), JSON.stringify(state));
+      }
+    expected: |-
+      checking     {"code":"SAVE20","status":"checking","discount":null}
+      checking     {"code":"SAVE20","status":"checking","discount":null}
+      unreachable  {"code":"SAVE20","status":"unreachable","discount":null}
+      empty        {"code":"","status":"empty","discount":null}
+    applies:
+      platforms: [browser, node]
+      versions: { typescript: ">=5.0", node: ">=22.18" }
+    validation: *ran
+  - id: selectors-derived-state
+    kind: code
+    title: Selectors and derived state
+    note: "Store the minimum, derive totals and flags in selectors, and memoise a costly one on its input reference so unrelated actions do not recompute it."
+    prerequisites: *run
+    code: |-
+      import { combineReducers, legacy_createStore as createStore } from "redux";
+
+      type Line = { sku: string; unitPrice: number; qty: number };
+      type Action = { type: "cart/productAdded"; payload: Omit<Line, "qty"> } | { type: "ui/themeToggled" };
+
+      const cart = (lines: Line[] = [], action: Action): Line[] =>
+        action.type === "cart/productAdded" ? [...lines, { ...action.payload, qty: 1 }] : lines;
+
+      const darkMode = (on = false, action: Action): boolean => (action.type === "ui/themeToggled" ? !on : on);
+
+      const rootReducer = combineReducers({ cart, darkMode });
+      type RootState = ReturnType<typeof rootReducer>;
+
+      // Immutable updates make a reference check exact: same array in, same answer out.
+      function memoizeOne<A, R>(compute: (input: A) => R): (input: A) => R {
+        let last: { input: A; result: R } | undefined;
+        return (input) => {
+          if (last && Object.is(last.input, input)) return last.result;
+          last = { input, result: compute(input) };
+          return last.result;
+        };
+      }
+
+      let computed = 0;
+      const selectLines = (s: RootState) => s.cart;
+      const summarise = memoizeOne((lines: Line[]) => {
+        computed++;
+        const subtotal = lines.reduce((sum, l) => sum + l.unitPrice * l.qty, 0);
+        return { count: lines.length, subtotal, freeShipping: subtotal >= 50 };   // derived, never stored
+      });
+      const selectCartSummary = (s: RootState) => summarise(selectLines(s));
+
+      const store = createStore(rootReducer);
+      store.dispatch({ type: "cart/productAdded", payload: { sku: "LAMP", unitPrice: 45 } });
+      const first = selectCartSummary(store.getState());
+
+      store.dispatch({ type: "ui/themeToggled" });
+      console.log("same object after an unrelated action:", selectCartSummary(store.getState()) === first);
+
+      store.dispatch({ type: "cart/productAdded", payload: { sku: "BULB", unitPrice: 8 } });
+      console.log(selectCartSummary(store.getState()), "computed", computed, "times");
+    expected: |-
+      same object after an unrelated action: true
+      { count: 2, subtotal: 53, freeShipping: true } computed 2 times
+    sources:
+      - title: Deriving data with selectors — Redux
+        url: https://redux.js.org/usage/deriving-data-selectors
+    validation: *ran
+  - id: subscribe-a-ui
+    kind: code
+    title: Subscribing a UI
+    note: "`subscribe` fires after every dispatch, so a view selects its slice, compares it with the last value and renders only on change — exactly what `useSelector` does."
+    prerequisites:
+      - Node.js 22.18 or later (it runs `.mts` files directly by stripping the types)
+      - "`npm i redux jsdom @types/jsdom` (jsdom stands in for the page)"
+      - "Save as `main.mts` and run `node main.mts`"
+    code: |-
+      import { JSDOM } from "jsdom";
+      import { legacy_createStore as createStore, type Store } from "redux";
+
+      type State = { lines: { sku: string; qty: number }[]; promoCode: string };
+      type Action = { type: "cart/productAdded"; payload: string } | { type: "promo/codeEdited"; payload: string };
+
+      function reducer(state: State = { lines: [], promoCode: "" }, action: Action): State {
+        switch (action.type) {
+          case "cart/productAdded": return { ...state, lines: [...state.lines, { sku: action.payload, qty: 1 }] };
+          case "promo/codeEdited": return { ...state, promoCode: action.payload };
+          default: return state;
+        }
+      }
+
+      function observe<S, T>(store: Store<S>, select: (s: S) => T, render: (value: T) => void): () => void {
+        let current = select(store.getState());
+        render(current);
+        return store.subscribe(() => {
+          const next = select(store.getState());
+          if (Object.is(next, current)) return;
+          current = next;
+          render(next);
+        });
+      }
+
+      const { document } = new JSDOM(`<button id="cart">Cart <span id="badge"></span></button>`).window;
+      const badge = document.querySelector("#badge")!;
+      const store = createStore(reducer);
+
+      const unsubscribe = observe(store, (s) => s.lines.length, (count) => {
+        badge.textContent = String(count);
+        console.log("badge rendered:", badge.textContent);
+      });
+
+      store.dispatch({ type: "cart/productAdded", payload: "MUG" });
+      store.dispatch({ type: "promo/codeEdited", payload: "SAVE" });   // count unchanged: no render
+      store.dispatch({ type: "cart/productAdded", payload: "TEE" });
+      unsubscribe();                                                    // the view went away
+      store.dispatch({ type: "cart/productAdded", payload: "CAP" });
+      console.log("store has", store.getState().lines.length, "lines; badge shows", badge.textContent);
+    expected: |-
+      badge rendered: 0
+      badge rendered: 1
+      badge rendered: 2
+      store has 3 lines; badge shows 2
+    validation: *ran
+  - id: testing-reducer-and-effect
+    kind: code
+    title: Testing a reducer and an effect
+    note: "A reducer and a thunk are both plain functions, so test the first with state in and state out, and the second with a recording `dispatch` and a fake API."
+    prerequisites:
+      - Node.js 22.18 or later (it runs `.mts` files directly by stripping the types)
+      - "Save as `checkout.test.mts` and run `node --test checkout.test.mts` (or `node checkout.test.mts`)"
+    code: |-
+      import assert from "node:assert/strict";
+      import { test } from "node:test";
+
+      // The reducer and thunk from the middleware card, repeated because the runner needs one file.
+      type CheckoutState = { status: "idle" | "submitting" | "placed" | "failed"; orderId?: string };
+      type CheckoutAction =
+        | { type: "checkout/submitted" } | { type: "checkout/orderFailed" }
+        | { type: "checkout/orderPlaced"; payload: { orderId: string } };
+
+      function checkoutReducer(state: CheckoutState = { status: "idle" }, action: CheckoutAction): CheckoutState {
+        switch (action.type) {
+          case "checkout/submitted": return { status: "submitting" };
+          case "checkout/orderPlaced": return { status: "placed", orderId: action.payload.orderId };
+          case "checkout/orderFailed": return { status: "failed" };
+          default: return state;
+        }
+      }
+
+      type Deps = { api: { placeOrder(cartId: string): Promise<string> } };
+      type GetState = () => CheckoutState;
+      type Thunk = (dispatch: (a: CheckoutAction) => void, getState: GetState, deps: Deps) => Promise<void>;
+
+      const placeOrder = (cartId: string): Thunk => async (dispatch, getState, deps) => {
+        if (getState().status === "submitting") return;
+        dispatch({ type: "checkout/submitted" });
+        let orderId: string;
+        try {
+          orderId = await deps.api.placeOrder(cartId);
+        } catch {
+          dispatch({ type: "checkout/orderFailed" });
+          return;
+        }
+        dispatch({ type: "checkout/orderPlaced", payload: { orderId } });
+      };
+
+      test("reducer: a placed order records its id", () => {
+        const placed: CheckoutAction = { type: "checkout/orderPlaced", payload: { orderId: "ORD-1" } };
+        assert.deepEqual(checkoutReducer({ status: "submitting" }, placed), { status: "placed", orderId: "ORD-1" });
+      });
+
+      test("effect: a declined card dispatches submitted, then failed", async () => {
+        const dispatched: string[] = [];
+        const api = { placeOrder: async () => Promise.reject(new Error("card declined")) };
+        await placeOrder("cart-7")((a) => dispatched.push(a.type), () => ({ status: "idle" }), { api });
+        assert.deepEqual(dispatched, ["checkout/submitted", "checkout/orderFailed"]);
+      });
+
+    expected: "Two passing tests (`ℹ pass 2`, `ℹ fail 0`); the process exits 0."
+    sources:
+      - title: Writing tests — Redux
+        url: https://redux.js.org/usage/writing-tests
+    applies:
+      platforms: [node]
+      versions: { typescript: ">=5.0", node: ">=22.18" }
+    validation:
+      status: ran
+      toolchain: Node 24.16.0, TypeScript 5.9.3
+      date: "2026-11-16"
+      check: exit-code
+  - id: testing-the-double-click-guard
+    kind: code
+    title: Testing the double-click guard
+    note: "A guard that reads `getState` is tested by handing the thunk the state it guards against, and a fake API that fails the test if it is called."
+    prerequisites:
+      - Node.js 22.18 or later (it runs `.mts` files directly by stripping the types)
+      - "Save as `guard.test.mts` and run `node --test guard.test.mts` (or `node guard.test.mts`)"
+    code: |-
+      import assert from "node:assert/strict";
+      import { test } from "node:test";
+
+      // The thunk from the middleware card, repeated because the runner needs one file.
+      type CheckoutState = { status: "idle" | "submitting" | "placed" | "failed"; orderId?: string };
+      type CheckoutAction =
+        | { type: "checkout/submitted" } | { type: "checkout/orderFailed" }
+        | { type: "checkout/orderPlaced"; payload: { orderId: string } };
+
+      type Deps = { api: { placeOrder(cartId: string): Promise<string> } };
+      type GetState = () => CheckoutState;
+      type Thunk = (dispatch: (a: CheckoutAction) => void, getState: GetState, deps: Deps) => Promise<void>;
+
+      const placeOrder = (cartId: string): Thunk => async (dispatch, getState, deps) => {
+        if (getState().status === "submitting") return;  // a double click places one order
+        dispatch({ type: "checkout/submitted" });
+        let orderId: string;
+        try {
+          orderId = await deps.api.placeOrder(cartId);
+        } catch {
+          dispatch({ type: "checkout/orderFailed" });
+          return;
+        }
+        dispatch({ type: "checkout/orderPlaced", payload: { orderId } });
+      };
+
+      test("a second click while submitting sends nothing", async () => {
+        const dispatched: string[] = [];
+        const api = { placeOrder: async () => assert.fail("must not call the API") };
+        await placeOrder("cart-7")((a) => dispatched.push(a.type), () => ({ status: "submitting" }), { api });
+        assert.deepEqual(dispatched, []);
+      });
+
+      test("the first click goes through", async () => {
+        const dispatched: string[] = [];
+        const api = { placeOrder: async () => "ORD-1042" };
+        await placeOrder("cart-7")((a) => dispatched.push(a.type), () => ({ status: "idle" }), { api });
+        assert.deepEqual(dispatched, ["checkout/submitted", "checkout/orderPlaced"]);
+      });
+    expected: "Two passing tests (`ℹ pass 2`, `ℹ fail 0`); the process exits 0."
+    sources:
+      - title: Writing tests — Redux
+        url: https://redux.js.org/usage/writing-tests
+    applies:
+      platforms: [node]
+      versions: { typescript: ">=5.0", node: ">=22.18" }
+    validation:
+      status: ran
+      toolchain: Node 24.16.0, TypeScript 5.9.3
+      date: "2026-11-16"
+      check: exit-code
+  - id: redux-rules
+    kind: rules
+    title: Rules and pitfalls
+    note: The things interviewers poke at.
+    items:
+      - tone: good
+        text: "Reducers are pure and synchronous: no `fetch`, no `Date.now()`, no `Math.random()` — pass such values in the action's payload."
+      - tone: good
+        text: "Keep state minimal and serialisable (no class instances, `Map`, `Date` or promises); derive the rest in selectors."
+      - tone: good
+        text: "Prefix action types with the feature (`cart/productAdded`) so the log reads as a story and two features never collide."
+      - tone: good
+        text: "Dispatch the success action outside the `try` that awaits the request: otherwise a reducer bug is reported to the user as a failed request."
+      - tone: bad
+        text: "Mutating state in a reducer: subscribers compare with `===`, so the view silently does not update. Copy, or let Redux Toolkit's Immer do it."
+      - tone: bad
+        text: "Throwing in a reducer's `default` branch: Redux dispatches its own `@@redux/INIT…` action, and other features' actions reach every reducer."
+      - tone: bad
+        text: "Two dispatches for one event (`setLines` then `setTotal`): a subscriber can render the moment between them."
+      - tone: legacy
+        text: "Plain `redux` with `createStore` is legacy and for learning the loop; new code uses Redux Toolkit (`configureStore`, `createSlice`), which writes all of the above for you."

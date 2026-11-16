@@ -223,7 +223,10 @@ change that adds or edits one as you would code. Each snippet runs with a scratc
 `TMPDIR` and none of your environment beyond `PATH` and `LANG`; C# builds ignore MSBuild and
 NuGet files above their work folder.
 
-`--lang kotlin,csharp` limits the run; `--require-all` fails it when a toolchain is missing;
+`--lang kotlin,csharp` limits the run, and `--sheets ts-rxjs,ts-timers` limits it to the named
+sheets (read from their files, so a sheet still being written need not be listed yet);
+`--content <dir>` reads a draft content root kept outside `content/`; `--require-all` fails
+the run when a toolchain is missing;
 `--json <file>` writes the report. CI runs the TypeScript and C# examples on every pull
 request; the Kotlin ones run wherever `kotlinc` and their jars are installed.
 

@@ -1,0 +1,417 @@
+id: ts-video-streaming
+concept: media.video-streaming
+scope: platform
+title: "Video Streaming — HLS, DASH & Media Source"
+group: "Networking & media"
+subtitle: "Native HLS in Safari, hls.js and dash.js on Media Source Extensions everywhere else: renditions and ABR, player state and recovery, live, tracks and DRM."
+applies:
+  platforms: [browser]
+  runtime: a browser page with a `<video>` element (Media Source Extensions or native HLS)
+  versions: { typescript: ">=5.5", hls.js: ">=1.5", browsers: "Baseline 2024" }
+sources:
+  - title: hls.js — API documentation
+    url: https://github.com/video-dev/hls.js/blob/master/docs/API.md
+  - title: Media Source Extensions API — MDN
+    url: https://developer.mozilla.org/en-US/docs/Web/API/Media_Source_Extensions_API
+  - title: Encrypted Media Extensions API — MDN
+    url: https://developer.mozilla.org/en-US/docs/Web/API/Encrypted_Media_Extensions_API
+  - title: HTTP Live Streaming — Apple Developer
+    url: https://developer.apple.com/streaming/
+  - title: dash.js — DASH Industry Forum
+    url: https://dashif.org/dash.js/
+cards:
+  - id: protocol-browser-support
+    kind: table
+    title: Protocol against browser
+    note: "Feature-detect — `Hls.isSupported()` first, then `video.canPlayType` (which now says \"maybe\" in Chrome too) — never sniff the user agent: the same stream needs a different path per row."
+    headers: [Browser, HLS, DASH, "Media Source", "DRM key system (EME)"]
+    rows:
+      - - Safari on macOS
+        - "**Native** (`video.src = …m3u8`), or hls.js"
+        - "dash.js on MSE"
+        - "`MediaSource` and `ManagedMediaSource`"
+        - "FairPlay `com.apple.fps`"
+      - - Safari on iPhone / iPad
+        - "**Native**; hls.js from iOS 17.1"
+        - "dash.js from iOS 17.1 only"
+        - "`ManagedMediaSource` only (iOS 17.1+; iPadOS had `MediaSource` earlier)"
+        - "FairPlay"
+      - - Chrome, Edge (desktop)
+        - "hls.js on MSE (recommended); recent Chrome also plays HLS natively, unevenly"
+        - "dash.js on MSE"
+        - "`MediaSource`"
+        - "Widevine `com.widevine.alpha`; Edge on Windows also PlayReady `com.microsoft.playready`"
+      - - Chrome on Android
+        - "Native, but hls.js gives you ABR control"
+        - "dash.js on MSE"
+        - "`MediaSource`"
+        - "Widevine"
+      - - Firefox
+        - "hls.js on MSE"
+        - "dash.js on MSE"
+        - "`MediaSource`"
+        - "Widevine"
+  - id: multivariant-and-abr
+    kind: code
+    title: What a multivariant playlist holds, and how ABR picks
+    note: "The multivariant playlist (like a DASH MPD's `Representation`s) lists renditions by bandwidth, resolution and codecs plus the audio groups, and the player picks the best one that fits the measured throughput with headroom and the player's size."
+    prerequisites:
+      - Node.js 22.18 or later (it runs `.mts` files directly by stripping the types)
+      - "Save as `main.mts` and run `node main.mts`"
+    code: |-
+      const MULTIVARIANT = `#EXTM3U
+      #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="aac",NAME="English",LANGUAGE="en",DEFAULT=YES,URI="audio/en.m3u8"
+      #EXT-X-STREAM-INF:BANDWIDTH=800000,RESOLUTION=640x360,CODECS="avc1.4d401e,mp4a.40.2",AUDIO="aac"
+      360p.m3u8
+      #EXT-X-STREAM-INF:BANDWIDTH=2500000,RESOLUTION=1280x720,CODECS="avc1.4d401f,mp4a.40.2",AUDIO="aac"
+      720p.m3u8
+      #EXT-X-STREAM-INF:BANDWIDTH=6000000,RESOLUTION=1920x1080,CODECS="avc1.640028,mp4a.40.2",AUDIO="aac"
+      1080p.m3u8`;
+
+      type Rendition = { bandwidth: number; height: number; uri: string };
+
+      function attributes(line: string): Map<string, string> {
+        const attrs = new Map<string, string>();
+        for (const [, key, quoted, bare] of line.matchAll(/([A-Z0-9-]+)=(?:"([^"]*)"|([^,]*))/g)) {
+          attrs.set(key!, quoted ?? bare ?? "");          // KEY="quoted" or KEY=bare
+        }
+        return attrs;
+      }
+
+      function parseMultivariant(text: string) {
+        const lines = text.split("\n").map((l) => l.trim());
+        const renditions: Rendition[] = [];
+        const media: string[] = [];
+        lines.forEach((line, i) => {
+          const attrs = attributes(line);
+          if (line.startsWith("#EXT-X-STREAM-INF:")) {
+            const height = Number(attrs.get("RESOLUTION")?.split("x")[1] ?? 0);
+            renditions.push({ bandwidth: Number(attrs.get("BANDWIDTH")), height, uri: lines[i + 1] ?? "" });
+          } else if (line.startsWith("#EXT-X-MEDIA:")) {
+            media.push(`${attrs.get("TYPE")}:${attrs.get("LANGUAGE")}`);
+          }
+        });
+        return { renditions: renditions.toSorted((a, b) => a.bandwidth - b.bandwidth), media };
+      }
+
+      function chooseRendition(renditions: Rendition[], measuredBps: number, playerHeight: number): Rendition {
+        const fits = renditions.filter((r) => r.bandwidth <= measuredBps * 0.8 && r.height <= playerHeight);
+        return fits.at(-1) ?? renditions[0]!;           // nothing fits: the lowest, not a stall
+      }
+
+      const { renditions, media } = parseMultivariant(MULTIVARIANT);
+      console.log(renditions.map((r) => `${r.height}p@${r.bandwidth / 1000}k`).join(" "), "|", media.join(" "));
+      for (const [mbps, height] of [[1.5, 1080], [4, 1080], [9, 1080], [9, 720], [0.3, 1080]] as const) {
+        console.log(`${mbps} Mbps, ${height}px player ->`, chooseRendition(renditions, mbps * 1e6, height).uri);
+      }
+    expected: |-
+      360p@800k 720p@2500k 1080p@6000k | AUDIO:en
+      1.5 Mbps, 1080px player -> 360p.m3u8
+      4 Mbps, 1080px player -> 720p.m3u8
+      9 Mbps, 1080px player -> 1080p.m3u8
+      9 Mbps, 720px player -> 720p.m3u8
+      0.3 Mbps, 1080px player -> 360p.m3u8
+    applies:
+      platforms: [browser, node]
+      runtime: any ES2023 engine; runs on Node.js
+      versions: { typescript: ">=5.5", node: ">=22.18" }
+    sources:
+      - title: HTTP Live Streaming 2nd Edition — IETF draft (EXT-X-STREAM-INF, EXT-X-MEDIA)
+        url: https://datatracker.ietf.org/doc/draft-pantos-hls-rfc8216bis/
+    validation:
+      status: ran
+      toolchain: Node 24.16.0, TypeScript 5.9.3
+      date: "2026-11-16"
+  - id: play-hls
+    kind: code
+    title: Play HLS with hls.js, falling back to native
+    note: "Use hls.js wherever Media Source exists (it gives you ABR control and events), `video.src` with the `.m3u8` only where native HLS is all there is, and always return a cleanup."
+    prerequisites: &page
+      - "`npm i hls.js`"
+      - "A page containing `<video id=\"player\" controls playsinline></video>`; the stream's origin must send CORS headers for the page (hls.js fetches playlists and segments itself)"
+      - "Bundle with Vite or esbuild and load the output with `<script type=\"module\">`"
+    code: |-
+      import Hls from "hls.js";
+
+      export function playStream(video: HTMLVideoElement, src: string): () => void {
+        if (Hls.isSupported()) {                         // MediaSource or ManagedMediaSource is available
+          const hls = new Hls({ capLevelToPlayerSize: true });   // no 1080p into a 360-px player
+          hls.on(Hls.Events.MANIFEST_PARSED, (_event, data) => {
+            const heights = data.levels.map((level) => level.height);
+            console.log(`${data.levels.length} renditions, up to ${Math.max(...heights)}p`);
+          });
+          hls.loadSource(src);
+          hls.attachMedia(video);
+          return () => hls.destroy();                    // stops loading and frees the SourceBuffers
+        }
+        if (video.canPlayType("application/vnd.apple.mpegurl")) {
+          video.src = src;                               // the browser does HLS (and ABR) itself
+          return () => {
+            video.removeAttribute("src");
+            video.load();                                // actually releases the stream
+          };
+        }
+        throw new Error("This browser cannot play HLS");
+      }
+
+      const video = document.querySelector<HTMLVideoElement>("#player")!;
+      const stop = playStream(video, "https://media.example/courses/intro/master.m3u8");
+      window.addEventListener("pagehide", stop, { once: true });
+    expected: "The lesson plays: through hls.js in Chrome, Firefox, Edge and Safari on macOS (logging `3 renditions, up to 1080p`), natively on iPhones without Media Source."
+    validation: &compiled
+      status: compiled
+      toolchain: Node 24.16.0, TypeScript 5.9.3
+      date: "2026-11-16"
+      host: a browser page with a `<video>` element and an HLS stream
+  - id: player-state-recovery
+    kind: code
+    title: Player state, buffering and error recovery
+    note: "Model the UI as one state union, offer Retry once hls.js has spent its own load retries instead of looping, rebuild the media pipeline at most once per 5 s, and remove every listener on teardown."
+    prerequisites: *page
+    code: |-
+      import Hls from "hls.js";
+
+      export type PlayerState =
+        | { kind: "loading" }
+        | { kind: "playing"; height: number }
+        | { kind: "buffering" }
+        | { kind: "failed"; reason: string; retry?: () => void };
+
+      export function attachPlayer(video: HTMLVideoElement, src: string, render: (s: PlayerState) => void) {
+        const hls = new Hls();                             // network retries: fragLoadPolicy, playlistLoadPolicy
+        const listeners = new AbortController();           // one abort removes every video listener
+        const teardown = () => {
+          listeners.abort();
+          hls.destroy();
+        };
+
+        let height = 0;
+        let lastMediaRecovery = -Infinity;
+        render({ kind: "loading" });
+        video.addEventListener("waiting", () => render({ kind: "buffering" }), { signal: listeners.signal });
+        video.addEventListener("playing", () => render({ kind: "playing", height }), { signal: listeners.signal });
+        hls.on(Hls.Events.LEVEL_SWITCHED, (_event, data) => {
+          height = hls.levels[data.level]?.height ?? 0;  // ABR moved to another rendition
+          if (!video.paused) render({ kind: "playing", height });
+        });
+
+        hls.on(Hls.Events.ERROR, (_event, data) => {
+          if (!data.fatal) return;                       // hls.js already retries these
+          if (data.type === Hls.ErrorTypes.MEDIA_ERROR && performance.now() - lastMediaRecovery > 5_000) {
+            lastMediaRecovery = performance.now();
+            return hls.recoverMediaError();              // a decode/append error: rebuild once per 5 s at most
+          }
+          if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {   // its retry policy is spent: let the user decide
+            // No levels yet means the manifest itself failed: load it again rather than resume.
+            const retry = () => (hls.levels.length === 0 ? hls.loadSource(src) : hls.startLoad());
+            return render({ kind: "failed", reason: data.details, retry });
+          }
+          teardown();
+          render({ kind: "failed", reason: data.details });
+        });
+
+        hls.loadSource(src);
+        hls.attachMedia(video);
+        return teardown;                                   // call when the view goes away
+      }
+    expected: "The UI moves through loading → playing (with the current height) ⇄ buffering; an outage that outlasts hls.js's retries shows **failed** with a Retry action (reloading the manifest if it never arrived), a decode error recovers at most once per 5 s, anything else tears the player down; the returned function removes the listeners and destroys hls."
+    sources:
+      - title: hls.js API — Fatal error recovery
+        url: https://github.com/video-dev/hls.js/blob/master/docs/API.md#fatal-error-recovery
+    validation: *compiled
+  - id: live-vs-vod
+    kind: code
+    title: Live versus on-demand, and low latency
+    note: "A playlist without `#EXT-X-ENDLIST` is live: it is reloaded, its window slides, and the UI needs a live badge and a \"go to live\" button instead of a full scrub bar."
+    prerequisites: *page
+    code: |-
+      import Hls from "hls.js";
+
+      const video = document.querySelector<HTMLVideoElement>("#player")!;
+      const liveBadge = document.querySelector<HTMLElement>("#live-badge")!;
+      const goLive = document.querySelector<HTMLButtonElement>("#go-live")!;
+
+      const hls = new Hls({
+        lowLatencyMode: true,          // LL-HLS: partial segments and blocking reloads, when the stream has them
+        liveSyncDurationCount: 3,      // regular live: stay three segments behind the edge
+        backBufferLength: 30,          // keep 30 s behind the playhead — a three-hour stream must not fill memory
+      });
+
+      hls.on(Hls.Events.LEVEL_LOADED, (_event, { details }) => {
+        liveBadge.hidden = !details.live;
+        goLive.hidden = !details.live;
+        if (!details.live) console.log(`on demand: ${Math.round(details.totalduration)} s`);
+      });
+
+      goLive.addEventListener("click", () => {
+        if (hls.liveSyncPosition !== null) video.currentTime = hls.liveSyncPosition;   // jump back to the edge
+      });
+
+      video.addEventListener("timeupdate", () => {
+        if (!liveBadge.hidden) liveBadge.title = `${hls.latency.toFixed(1)} s behind live`;
+      });
+
+      hls.loadSource("https://media.example/events/keynote/master.m3u8");
+      hls.attachMedia(video);
+    expected: "For the live keynote the badge and **Go live** button appear and the badge's tooltip shows the latency; for an on-demand lesson they stay hidden and its duration is logged."
+    validation: *compiled
+  - id: captions-audio-tracks
+    kind: code
+    title: Captions and audio tracks
+    note: "Alternate audio and subtitles are separate renditions that hls.js exposes as track lists you bind to menus, with `subtitleTrack = -1` for captions off."
+    prerequisites:
+      - "`npm i hls.js`"
+      - "A page containing `<video id=\"player\" controls playsinline></video>`, `<select id=\"audio\"></select>` and `<select id=\"captions\"></select>`"
+      - "Bundle with Vite or esbuild and load the output with `<script type=\"module\">`"
+    code: |-
+      import Hls, { type MediaPlaylist } from "hls.js";
+
+      const video = document.querySelector<HTMLVideoElement>("#player")!;
+      const audioMenu = document.querySelector<HTMLSelectElement>("#audio")!;
+      const captionMenu = document.querySelector<HTMLSelectElement>("#captions")!;
+
+      function fill(menu: HTMLSelectElement, tracks: MediaPlaylist[], selected: number, offLabel?: string) {
+        const options = tracks.map((t) => new Option(t.lang ? `${t.name} (${t.lang})` : t.name, String(t.id)));
+        menu.replaceChildren(...(offLabel ? [new Option(offLabel, "-1")] : []), ...options);
+        menu.value = String(selected);
+      }
+
+      const hls = new Hls({ renderTextTracksNatively: true });   // captions as the video's own text tracks
+      hls.on(Hls.Events.AUDIO_TRACKS_UPDATED, (_event, { audioTracks }) =>
+        fill(audioMenu, audioTracks, hls.audioTrack));
+      hls.on(Hls.Events.SUBTITLE_TRACKS_UPDATED, (_event, { subtitleTracks }) =>
+        fill(captionMenu, subtitleTracks, hls.subtitleTrack, "Captions off"));
+
+      audioMenu.addEventListener("change", () => (hls.audioTrack = Number(audioMenu.value)));
+      captionMenu.addEventListener("change", () => (hls.subtitleTrack = Number(captionMenu.value)));
+
+      hls.loadSource("https://media.example/courses/intro/master.m3u8");
+      hls.attachMedia(video);
+
+      // Native HLS (iPhone) exposes the same subtitles as `video.textTracks`:
+      // for (const track of video.textTracks) track.mode = track.language === "es" ? "showing" : "disabled";
+    expected: "The menus list **English (en)** and **Español (es)** audio and **Captions off / English (en)**; choosing an item switches the audio rendition or the captions without restarting playback."
+    sources:
+      - title: TextTrack.mode — MDN
+        url: https://developer.mozilla.org/en-US/docs/Web/API/TextTrack/mode
+    validation: *compiled
+  - id: dash-with-dashjs
+    kind: code
+    title: DASH with dash.js
+    note: "DASH has no native player in any browser, so dash.js parses the MPD and feeds Media Source, with DRM data keyed by the same EME key-system names."
+    prerequisites:
+      - "`npm i dashjs`"
+      - "A page containing `<video id=\"player\" controls playsinline></video>`; the MPD and its segments served with CORS"
+      - "Bundle with Vite or esbuild and load the output with `<script type=\"module\">`"
+    code: |-
+      import { MediaPlayer } from "dashjs";
+
+      declare const viewerToken: string;                   // issued by your sign-in for this playback session
+      const video = document.querySelector<HTMLVideoElement>("#player")!;
+      const spinner = document.querySelector<HTMLElement>("#spinner")!;
+      const player = MediaPlayer().create();
+
+      const licenceHeaders = { authorization: `Bearer ${viewerToken}` };   // every licence server checks the viewer
+      player.setProtectionData({
+        "com.widevine.alpha": {
+          serverURL: "https://drm.example/widevine/license", httpRequestHeaders: licenceHeaders, priority: 0,
+        },
+        "com.microsoft.playready": {
+          serverURL: "https://drm.example/playready/license", httpRequestHeaders: licenceHeaders, priority: 1,
+        },
+      });
+
+      player.on(MediaPlayer.events.PLAYBACK_WAITING, () => (spinner.hidden = false));
+      player.on(MediaPlayer.events.PLAYBACK_PLAYING, () => (spinner.hidden = true));
+      player.on(MediaPlayer.events.ERROR, (event) => console.error("dash.js error", event));
+      const logLiveOnce = () => {                          // fires per period: a multi-period MPD would repeat it
+        console.log("live:", player.isDynamic());          // a dynamic MPD (type="dynamic") is a live stream
+        player.off(MediaPlayer.events.STREAM_INITIALIZED, logLiveOnce);
+      };
+      player.on(MediaPlayer.events.STREAM_INITIALIZED, logLiveOnce);
+
+      player.initialize(video, "https://media.example/courses/intro/manifest.mpd", false);   // false: no autoplay
+      window.addEventListener("pagehide", () => player.destroy(), { once: true });
+    expected: "The DASH lesson plays through Media Source with a spinner while buffering; protected content requests a Widevine licence (preferred) or a PlayReady one, whichever the browser has, sending the viewer's token either way."
+    applies:
+      platforms: [browser]
+      runtime: a browser page with Media Source Extensions
+      versions: { typescript: ">=5.5", dashjs: ">=5.0" }
+    sources:
+      - title: dash.js — Setup
+        url: https://dashif.org/dash.js/pages/quickstart/setup.html
+      - title: dash.js — DRM
+        url: https://dashif.org/dash.js/pages/usage/drm.html
+      - title: dash.js — MediaPlayerEvents
+        url: https://cdn.dashjs.org/latest/jsdoc/MediaPlayerEvents.html
+    validation:
+      status: excerpt
+      host: a browser page with Media Source Extensions (dash.js is not installed here)
+  - id: drm-key-systems
+    kind: code
+    title: "DRM: which key system applies, and wiring it into hls.js"
+    note: "Encrypted Media Extensions is one API over three DRMs, so ask the browser which key system it has, give the player a licence URL per system, and send the viewer's credentials with every licence request — the CDM, not your code, decrypts."
+    prerequisites: *page
+    code: |-
+      import Hls from "hls.js";
+
+      declare const viewerToken: string;                 // issued by your sign-in for this playback session
+      const KEY_SYSTEMS = {
+        "com.apple.fps": "FairPlay — Safari",
+        "com.widevine.alpha": "Widevine — Chrome, Firefox, Edge, Android",
+        "com.microsoft.playready": "PlayReady — Edge on Windows, many TVs",
+      };
+
+      async function availableKeySystem(): Promise<keyof typeof KEY_SYSTEMS | null> {
+        const config: MediaKeySystemConfiguration[] = [{
+          initDataTypes: ["cenc", "sinf", "skd"],
+          videoCapabilities: [{ contentType: 'video/mp4; codecs="avc1.640028"' }],
+        }];
+        for (const keySystem of Object.keys(KEY_SYSTEMS) as (keyof typeof KEY_SYSTEMS)[]) {
+          const access = await navigator.requestMediaKeySystemAccess(keySystem, config).catch(() => null);
+          if (access) return keySystem;                  // a rejection (NotSupportedError) means: try the next one
+        }
+        return null;
+      }
+
+      const keySystem = await availableKeySystem();
+      console.log(keySystem ? KEY_SYSTEMS[keySystem] : "no DRM here: offer the clear (free preview) stream");
+
+      const hls = new Hls({
+        emeEnabled: true,
+        drmSystems: {
+          "com.apple.fps": {
+            licenseUrl: "https://drm.example/fps/license",
+            serverCertificateUrl: "https://drm.example/fps/cert",
+          },
+          "com.widevine.alpha": { licenseUrl: "https://drm.example/widevine/license" },
+          "com.microsoft.playready": { licenseUrl: "https://drm.example/playready/license" },
+        },
+        licenseXhrSetup: (xhr) => xhr.setRequestHeader("authorization", `Bearer ${viewerToken}`),   // who may watch
+      });
+      hls.loadSource("https://media.example/courses/premium/master.m3u8");
+      hls.attachMedia(document.querySelector<HTMLVideoElement>("#player")!);
+    expected: "Logs the DRM this browser offers (e.g. `Widevine — Chrome, Firefox, Edge, Android` in Chrome) and plays the protected lesson after the licence request succeeds."
+    sources:
+      - title: "Navigator: requestMediaKeySystemAccess() — MDN"
+        url: https://developer.mozilla.org/en-US/docs/Web/API/Navigator/requestMediaKeySystemAccess
+    validation: *compiled
+  - id: video-pitfalls
+    kind: rules
+    title: Pitfalls worth saying out loud
+    note: The bugs that only show up on someone else's device.
+    items:
+      - tone: bad
+        text: "Calling `video.play()` without handling its promise. Autoplay with sound is blocked: it rejects with `NotAllowedError`. Autoplay only `muted` + `playsinline`, or play from a click."
+      - tone: bad
+        text: "Forgetting CORS. hls.js and dash.js fetch playlists, segments and keys themselves, so the media origin must send `Access-Control-Allow-Origin` — native `video.src` does not need it."
+      - tone: good
+        text: "`hls.destroy()` / `player.destroy()` when the view goes away; a leaked player keeps downloading and holds its SourceBuffers in memory."
+      - tone: good
+        text: "Bound the buffers (`backBufferLength`, `maxBufferLength`) for long or live streams; MSE throws `QuotaExceededError` when they fill."
+      - tone: good
+        text: "Offer the codecs every target decodes (H.264/AAC everywhere; HEVC and AV1 as extra renditions) and list them in `CODECS` so players skip what they cannot play."
+      - tone: neutral
+        text: "Segment duration sets the floor for latency and the ceiling for ABR agility: 6 s segments mean roughly 20 s behind live; LL-HLS parts get it to 2–5 s."
+      - tone: bad
+        text: "DRM as access control. It stops casual copying; who may watch is decided by the licence server checking your own auth."

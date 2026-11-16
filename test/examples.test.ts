@@ -87,15 +87,37 @@ describe("collecting examples", () => {
   });
 });
 
+describe("running only some sheets", () => {
+  it("reads the named sheets from their files, listed in language.yaml or not, and nothing else", async () => {
+    const root = contentRoot("kotlin", [{ id: "listed", kind: "code", code: "a", expected: "x", validation: ran }]);
+    const draft = { id: "draft", cards: [{ id: "new", kind: "code", code: "b", expected: "x", validation: ran }] };
+    fs.writeFileSync(path.join(root, "content/languages/kotlin/sheets/draft.yaml"), JSON.stringify(draft));
+    expect(collectExamples(root).map((e) => e.id)).toEqual(["kotlin/s--listed"]);
+    expect(collectExamples(root, ["draft", "no-such-sheet"]).map((e) => e.id)).toEqual(["kotlin/draft--new"]);
+    const skipped: Runner = { probe: async () => ({ missing: "no kotlinc" }), run: async () => [] };
+    const report = await runExamples(root, { languages: ["kotlin"], sheets: ["draft"], runners: { kotlin: skipped }, log: () => {} });
+    expect(report.outcomes.map((o) => o.id)).toEqual(["kotlin/draft--new"]);
+  });
+
+  it("reads another content root when one is named", async () => {
+    const root = contentRoot("kotlin", [{ id: "here", kind: "code", code: "a", expected: "x", validation: ran }]);
+    const other = contentRoot("kotlin", [{ id: "there", kind: "code", code: "b", expected: "x", validation: ran }]);
+    expect(collectExamples(root, undefined, path.join(other, "content")).map((e) => e.id)).toEqual(["kotlin/s--there"]);
+    const skipped: Runner = { probe: async () => ({ missing: "no kotlinc" }), run: async () => [] };
+    const report = await runExamples(root, { languages: ["kotlin"], content: path.join(other, "content"), runners: { kotlin: skipped }, log: () => {} });
+    expect(report.outcomes.map((o) => o.id)).toEqual(["kotlin/s--there"]);
+  });
+});
+
 describe("an example's TypeScript run options", () => {
   it("carries the JSX dialect and the run conditions from the card to the runner", () => {
     const root = contentRoot("typescript", [
-      { id: "a", kind: "code", code: "x", validation: { ...ran, jsx: "react", conditions: ["browser"] } },
+      { id: "a", kind: "code", code: "x", validation: { ...ran, jsx: "react", conditions: ["browser"], resolution: "bundler" } },
       { id: "b", kind: "code", code: "y", validation: ran },
     ]);
-    expect(collectExamples(root).map(({ id, jsx, conditions }) => ({ id, jsx, conditions }))).toEqual([
-      { id: "typescript/s--a", jsx: "react", conditions: ["browser"] },
-      { id: "typescript/s--b", jsx: undefined, conditions: undefined },
+    expect(collectExamples(root).map(({ id, jsx, conditions, resolution }) => ({ id, jsx, conditions, resolution }))).toEqual([
+      { id: "typescript/s--a", jsx: "react", conditions: ["browser"], resolution: "bundler" },
+      { id: "typescript/s--b", jsx: undefined, conditions: undefined, resolution: undefined },
     ]);
   });
 
@@ -109,6 +131,8 @@ describe("an example's TypeScript run options", () => {
     expect(problems({ ...ran, jsx: "solid" })).toEqual(["Solid JSX needs Solid's own compiler: the example can be `compiled`, not `ran`"]);
     expect(problems({ status: "excerpt", host: "a browser", jsx: "react" })).toEqual(["an excerpt is not compiled: it has no JSX dialect to compile with"]);
     expect(problems({ ...ran, status: "compiled", conditions: ["browser"] })).toEqual(["only a 'ran' example has run conditions"]);
+    expect(problems({ ...ran, status: "compiled", resolution: "bundler" })).toEqual([]);
+    expect(problems({ status: "excerpt", host: "a browser", resolution: "bundler" })).toEqual(["an excerpt is not compiled: it has no module resolution to compile with"]);
   });
 });
 
@@ -228,6 +252,9 @@ describe("running examples", () => {
       const react = 'import { renderToString } from "react-dom/server";\nconst Hi = ({ name }: { name: string }) => <b>Hi {name}</b>;\nconsole.log(renderToString(<Hi name="Ada" />));';
       const solid = 'import { createSignal } from "solid-js";\nexport function Counter() {\n  const [n, setN] = createSignal(0);\n  return <button onClick={() => setN(n() + 1)}>{n()}</button>;\n}';
       const signals = 'import { createEffect, createRoot, createSignal } from "solid-js";\ncreateRoot(() => {\n  const [n, setN] = createSignal(1);\n  createEffect(() => console.log(n()));\n  queueMicrotask(() => setN(2));\n});';
+      const chakra =
+        'import { ChakraProvider, Text, defaultSystem } from "@chakra-ui/react";\nimport { renderToStaticMarkup } from "react-dom/server";\n' +
+        'const html = renderToStaticMarkup(<ChakraProvider value={defaultSystem}><Text>hello</Text></ChakraProvider>);\nconsole.log(html.replace(/ class="[^"]*"/g, "").replace(/<style[^]*?<\\/style>/g, ""));';
       const root = contentRoot("typescript", [
         { id: "rx", kind: "code", code: 'import { map, of } from "rxjs";\nof(1, 2).pipe(map((n) => n * 10)).subscribe((v) => console.log(v));', expected: "10\n20", validation: ran },
         { id: "react", kind: "code", code: react, expected: "<b>Hi <!-- -->Ada</b>", validation: { ...ran, jsx: "react" } },
@@ -236,6 +263,8 @@ describe("running examples", () => {
         { id: "solid-ran", kind: "code", code: solid, expected: "x", validation: { ...ran, jsx: "solid" } },
         { id: "signals", kind: "code", code: signals, expected: "1\n2", validation: { ...ran, conditions: ["browser"] } },
         { id: "no-such-lib", kind: "code", code: 'import x from "left-pad-not-installed";\nconsole.log(x);', expected: "x", validation: ran },
+        { id: "chakra", kind: "code", code: chakra, expected: "<p>hello</p>", validation: { ...ran, jsx: "react", resolution: "bundler" } },
+        { id: "chakra-node-next", kind: "code", code: chakra, expected: "<p>hello</p>", validation: { ...ran, jsx: "react" } },
       ]);
       const report = await runExamples(root, { languages: ["typescript"], runners: { typescript: typescriptRunner(ROOT) }, log: () => {} });
       expect(report.outcomes.map((o) => [o.id, o.result])).toEqual([
@@ -246,6 +275,8 @@ describe("running examples", () => {
         ["typescript/s--solid-ran", "fail"],
         ["typescript/s--signals", "pass"],
         ["typescript/s--no-such-lib", "fail"],
+        ["typescript/s--chakra", "pass"],
+        ["typescript/s--chakra-node-next", "fail"], // its declarations do not resolve without bundler resolution
       ]);
       expect(report.outcomes[2]!.detail).toMatch(/^tsc: \S+\.tsx\(\d+,\d+\): error TS2322/);
       expect(report.outcomes[4]!.detail).toBe("Solid JSX needs Solid's own compiler: mark the example `compiled`, not `ran`");

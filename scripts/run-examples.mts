@@ -3,7 +3,13 @@
  * `validation` status on a card is something this machine can reproduce
  * (zheref/swift-cheatsheets#3, AC-2).
  *
- *   node scripts/run-examples.mts [--lang typescript,kotlin,csharp] [--require-all] [--json <file>]
+ *   node scripts/run-examples.mts [--lang typescript,kotlin,csharp] [--sheets <id>,<id>] [--content <dir>]
+ *                                 [--require-all] [--json <file>]
+ *
+ * `--sheets` runs only the named sheets — for iterating on one — read straight from their
+ * files, so a sheet still being written need not be listed in its language.yaml yet.
+ * `--content` reads the catalogs of another content root (`<dir>/languages/<id>/`), such as a
+ * draft kept outside `content/`; the toolchains and example libraries are still this repository's.
  *
  * Every `code` card — and every column of a `compare` card — whose `validation.status` is
  * `ran` is compiled and executed, and its standard output must equal `expected` (or, with
@@ -16,8 +22,9 @@
  *               each example is a `.mts` module, as its setup tells the reader. The libraries an
  *               example imports come from `examples/node_modules` (`npm ci --prefix examples`):
  *               the site never depends on them. `validation.jsx` makes an example a `.tsx` file
- *               (`react`: bundled-free transform with esbuild, then run; `solid`: type-checked
- *               only), and `validation.conditions` are Node export conditions for the run
+ *               (`react`: the automatic JSX transform, nothing bundled, then run; `solid`:
+ *               type-checked only), `validation.conditions` are Node export conditions for the
+ *               run, and `validation.resolution: bundler` type-checks with bundler resolution
  *   kotlin      `kotlinc` and the `kotlin` runner beside it ($KOTLINC), plus the jars the examples
  *               import: $KOTLIN_CLASSPATH (colon-separated), else every jar in
  *               `examples/kotlin/lib` (`node scripts/fetch-example-jars.mts`)
@@ -57,6 +64,8 @@ export interface Example {
   jsx?: "react" | "solid";
   /** TypeScript only: Node export conditions the run needs, e.g. `browser`. */
   conditions?: string[];
+  /** TypeScript only: type-check with bundler module resolution, for a library whose types need it. */
+  resolution?: "bundler";
 }
 
 export interface Outcome {
@@ -72,12 +81,15 @@ interface RawCard {
   code?: string;
   columns?: { label: string; code: string }[];
   expected?: string;
-  validation?: { status: string; check?: string; jsx?: "react" | "solid"; conditions?: string[] };
+  validation?: { status: string; check?: string; jsx?: "react" | "solid"; conditions?: string[]; resolution?: "bundler" };
 }
 
-/** Every example of the catalogs under `root/content/languages` that claims to compile or run. */
-export function collectExamples(root: string): Example[] {
-  const langRoot = path.join(root, "content/languages");
+/**
+ * Every example of the catalogs under `root/content/languages` that claims to compile or run —
+ * or, with `only`, those of the named sheets alone, wherever a catalog has such a file.
+ */
+export function collectExamples(root: string, only?: readonly string[], contentRoot = path.join(root, "content")): Example[] {
+  const langRoot = path.join(contentRoot, "languages");
   const out: Example[] = [];
   for (const dir of fs.readdirSync(langRoot, { withFileTypes: true }).filter((d) => d.isDirectory())) {
     const lang = YAML.parse(fs.readFileSync(path.join(langRoot, dir.name, "language.yaml"), "utf8")) as {
@@ -90,8 +102,9 @@ export function collectExamples(root: string): Example[] {
       if (lang.requireExampleMetadata) throw new Error(`${dir.name}: requireExampleMetadata is set, but scripts/run-examples.mts has no runner for '${lang.codeLanguage}'`);
       continue;
     }
-    for (const sheet of lang.sheets) {
-      const doc = YAML.parse(fs.readFileSync(path.join(langRoot, dir.name, "sheets", `${sheet}.yaml`), "utf8")) as { cards: RawCard[] };
+    const sheetFile = (sheet: string) => path.join(langRoot, dir.name, "sheets", `${sheet}.yaml`);
+    for (const sheet of only ? only.filter((s) => fs.existsSync(sheetFile(s))) : lang.sheets) {
+      const doc = YAML.parse(fs.readFileSync(sheetFile(sheet), "utf8")) as { cards: RawCard[] };
       for (const card of doc.cards) {
         const status = card.validation?.status;
         if (status !== "ran" && status !== "compiled") continue;
@@ -102,6 +115,7 @@ export function collectExamples(root: string): Example[] {
           ...(card.expected === undefined ? {} : { expected: card.expected }),
           ...(card.validation?.jsx ? { jsx: card.validation.jsx } : {}),
           ...(card.validation?.conditions?.length ? { conditions: card.validation.conditions } : {}),
+          ...(card.validation?.resolution ? { resolution: card.validation.resolution } : {}),
         };
         const id = `${dir.name}/${sheet}--${card.id}`;
         if (card.kind === "code" && card.code) out.push({ id, code: card.code, ...base });
@@ -266,17 +280,24 @@ async function runTypescript(examples: Example[], work: string, tsc: string, typ
     types: ["node"],
     typeRoots: [typeRoot],
   };
-  // Two JSX dialects cannot share one compilation: Solid's files get their own project.
-  const projects = [
-    { name: "tsconfig.json", jsx: { jsx: "react-jsx" }, files: files.filter((_, i) => examples[i]!.jsx !== "solid") },
-    { name: "tsconfig.solid.json", jsx: { jsx: "preserve", jsxImportSource: "solid-js" }, files: files.filter((_, i) => examples[i]!.jsx === "solid") },
-  ].filter((p) => p.files.length);
+  // One compilation per combination: two JSX dialects cannot share one, and a library whose
+  // declarations import without extensions (as bundlers allow) needs bundler resolution.
+  const settings = (e: Example) => ({
+    ...(e.jsx === "solid" ? { jsx: "preserve", jsxImportSource: "solid-js" } : { jsx: "react-jsx" }),
+    ...(e.resolution === "bundler" ? { module: "ESNext", moduleResolution: "Bundler" } : {}),
+  });
+  const kinds = [...new Set(examples.map((e) => JSON.stringify(settings(e))))];
+  const projects = kinds.map((kind, n) => ({
+    name: n ? `tsconfig.${n}.json` : "tsconfig.json",
+    settings: JSON.parse(kind) as Record<string, string>,
+    files: files.filter((_, i) => JSON.stringify(settings(examples[i]!)) === kind),
+  }));
   // tsc names each file relative to its cwd, which may differ from `work` by a symlink
   // (macOS /var → /private/var): key the errors by file name, never by the printed path.
   const errors = new Map<string, string[]>();
   let unattributed: string | null = null;
   for (const project of projects) {
-    fs.writeFileSync(path.join(work, project.name), JSON.stringify({ compilerOptions: { ...options, ...project.jsx }, files: project.files.map((f) => path.basename(f)) }, null, 2));
+    fs.writeFileSync(path.join(work, project.name), JSON.stringify({ compilerOptions: { ...options, ...project.settings }, files: project.files.map((f) => path.basename(f)) }, null, 2));
     const check = await exec(process.execPath, [tsc, "-p", path.join(work, project.name)], { cwd: work });
     let blamed = 0;
     for (const line of check.stdout.split("\n")) {
@@ -416,12 +437,12 @@ export interface Report {
 /** Runs the examples of the chosen languages; missing toolchains skip theirs, named. */
 export async function runExamples(
   root: string,
-  opts: { languages?: readonly ExampleLanguage[]; runners?: Partial<Record<ExampleLanguage, Runner>>; log?: (line: string) => void } = {},
+  opts: { languages?: readonly ExampleLanguage[]; sheets?: readonly string[]; content?: string; runners?: Partial<Record<ExampleLanguage, Runner>>; log?: (line: string) => void } = {},
 ): Promise<Report> {
   const log = opts.log ?? console.log;
   const languages = opts.languages ?? EXAMPLE_LANGUAGES;
   const runners: Record<ExampleLanguage, Runner> = { typescript: typescriptRunner(root), kotlin: kotlinRunner(process.env, root), csharp: csharpRunner(process.env, root), ...opts.runners };
-  const all = collectExamples(root);
+  const all = collectExamples(root, opts.sheets, opts.content);
   const report: Report = { toolchains: {}, outcomes: [] };
   const work = fs.mkdtempSync(path.join(os.tmpdir(), "cheatsheet-examples-"));
   try {
@@ -483,7 +504,9 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     console.error(languages.error);
     process.exit(2);
   }
-  const report = await runExamples(root, languages ? { languages } : {});
+  const sheets = flag("--sheets")?.split(",").filter(Boolean);
+  const content = flag("--content");
+  const report = await runExamples(root, { ...(languages ? { languages } : {}), ...(sheets?.length ? { sheets } : {}), ...(content ? { content: path.resolve(content) } : {}) });
   const json = flag("--json");
   if (json) fs.writeFileSync(json, `${JSON.stringify(report, null, 2)}\n`);
   const count = (r: Outcome["result"]) => report.outcomes.filter((o) => o.result === r).length;

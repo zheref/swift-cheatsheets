@@ -1,0 +1,697 @@
+id: ts-mvvm-stores
+concept: ui.mvvm-state
+scope: platform
+title: "MVVM & Lightweight Stores"
+group: "State management"
+subtitle: "A framework-free view model — snapshot, subscribe, intents — bound to React with useSyncExternalStore, the same model in Zustand, and tests with no UI at all."
+applies:
+  platforms: [browser, node]
+  runtime: any ES2022+ engine; the React cards need React 18 or later
+  versions: { typescript: ">=5.5", node: ">=22.18", react: ">=18" }
+sources:
+  - title: useSyncExternalStore — React
+    url: https://react.dev/reference/react/useSyncExternalStore
+  - title: Choosing the state structure — React
+    url: https://react.dev/learn/choosing-the-state-structure
+  - title: Zustand — GitHub
+    url: https://github.com/pmndrs/zustand
+cards:
+  - id: where-state-lives
+    kind: table
+    title: Where should this state live?
+    note: "Pick the smallest home that works, and move state outward only when a second consumer, a test or a lifetime demands it."
+    headers: [Home, Reach for it when, What it costs]
+    rows:
+      - - "**Local** `useState` / `useReducer`"
+        - "one component owns it: an open menu, a draft before submit"
+        - "logic is tested through the component; lost on unmount"
+      - - "**Context**"
+        - "a rarely changing value many components read: theme, locale, the signed-in user"
+        - "every consumer re-renders on every change; not a store"
+      - - "**View model** (a class + `useSyncExternalStore`)"
+        - "a screen with real logic — validation, loading, cancellation — you want to test without React"
+        - "you write `subscribe` / `getSnapshot`; one per screen instance"
+      - - "**Zustand**"
+        - "state shared across screens with little ceremony: a cart, a player, filters"
+        - "conventions are yours; selector discipline (`useShallow`) matters"
+      - - "**Redux Toolkit**"
+        - "a large app: many features reacting to one event log, DevTools time travel, strict conventions"
+        - "the most structure and boilerplate"
+      - - "**Server cache** (RTK Query, TanStack Query)"
+        - "the data lives on a server: lists, details, mutations"
+        - "a dependency; do not mirror it into any of the above"
+      - - "**The URL**"
+        - "shareable or bookmarkable state: search, filters, the selected tab"
+        - "strings only; parse and validate"
+  - id: framework-free-view-model
+    kind: code
+    title: A framework-free view model
+    note: "Like a SwiftUI `@Observable` class: an immutable snapshot, `subscribe` for change, intents as methods — and no import of React or the DOM."
+    prerequisites: &run
+      - Node.js 22.18 or later (it runs `.mts` files directly by stripping the types)
+      - "Save as `main.mts` and run `node main.mts`"
+    code: |-
+      // The part every view model shares: one snapshot, change notification, nothing UI.
+      abstract class ViewModel<S extends object> {
+        #state: S;
+        #listeners = new Set<() => void>();
+
+        constructor(initial: S) {
+          this.#state = initial;
+        }
+
+        readonly getSnapshot = (): S => this.#state;
+
+        readonly subscribe = (listener: () => void) => {
+          this.#listeners.add(listener);
+          return () => { this.#listeners.delete(listener); };
+        };
+
+        protected update(change: Partial<S>): void {
+          this.#state = { ...this.#state, ...change };   // a new object: views compare with ===
+          this.#listeners.forEach((notify) => notify());
+        }
+      }
+
+      type Order = { id: string; shipped: boolean };
+
+      class OrdersViewModel extends ViewModel<{ showShipped: boolean; orders: Order[]; visible: Order[] }> {
+        constructor(orders: Order[]) {
+          super({ showShipped: false, orders, visible: orders.filter((o) => !o.shipped) });
+        }
+
+        // Intents: what the user did. The view calls these and nothing else.
+        showShippedToggled() {
+          this.#show(!this.getSnapshot().showShipped, this.getSnapshot().orders);
+        }
+
+        orderShipped(id: string) {
+          const orders = this.getSnapshot().orders.map((o) => (o.id === id ? { ...o, shipped: true } : o));
+          this.#show(this.getSnapshot().showShipped, orders);
+        }
+
+        #show(showShipped: boolean, orders: Order[]) {
+          this.update({ showShipped, orders, visible: orders.filter((o) => showShipped || !o.shipped) });
+        }
+      }
+
+      const vm = new OrdersViewModel([
+        { id: "1042", shipped: false }, { id: "1050", shipped: true }, { id: "1077", shipped: false },
+      ]);
+
+      vm.subscribe(() => console.log("visible:", vm.getSnapshot().visible.map((o) => o.id).join(", ")));
+      vm.orderShipped("1042");
+      vm.showShippedToggled();
+    expected: |-
+      visible: 1077
+      visible: 1042, 1050, 1077
+    validation: &ran
+      status: ran
+      toolchain: Node 24.16.0, TypeScript 5.9.3
+      date: "2026-11-16"
+  - id: bind-with-use-sync-external-store
+    kind: code
+    title: Binding to React with useSyncExternalStore
+    note: "One hook connects any `subscribe` + `getSnapshot` object to React, tear-free under concurrent rendering, and the view only reads the snapshot and calls intents."
+    prerequisites: &react
+      - "A React app: `npm create vite@latest shop -- --template react-ts`"
+      - "To run this file alone in Node: `npm i react react-dom jsdom @testing-library/react @testing-library/dom @types/react @types/react-dom @types/jsdom`, save as `main.tsx`, and run `npx tsx main.tsx` in a package with `\"type\": \"module\"` (top-level `await`), beside a `tsconfig.json` with `\"jsx\": \"react-jsx\"`"
+    code: |-
+      import { JSDOM } from "jsdom";
+      import { useState, useSyncExternalStore } from "react";
+
+      type Order = { id: string; shipped: boolean };
+
+      class OrdersViewModel extends EventTarget {
+        #state: { showShipped: boolean; visible: Order[] };
+        readonly #all: Order[];
+
+        constructor(all: Order[]) {
+          super();
+          this.#all = all;
+          this.#state = { showShipped: false, visible: all.filter((o) => !o.shipped) };
+        }
+
+        readonly getSnapshot = () => this.#state;
+
+        readonly subscribe = (listener: () => void) => {
+          this.addEventListener("change", listener);
+          return () => this.removeEventListener("change", listener);
+        };
+
+        showShippedToggled() {
+          const showShipped = !this.#state.showShipped;
+          this.#state = { showShipped, visible: this.#all.filter((o) => showShipped || !o.shipped) };
+          this.dispatchEvent(new Event("change"));
+        }
+      }
+
+      function OrdersScreen({ orders }: { orders: Order[] }) {
+        const [vm] = useState(() => new OrdersViewModel(orders));          // one per mounted screen
+        const { showShipped, visible } = useSyncExternalStore(vm.subscribe, vm.getSnapshot);
+        return (
+          <section>
+            <button aria-pressed={showShipped} onClick={() => vm.showShippedToggled()}>Show shipped</button>
+            <ul>{visible.map((o) => <li key={o.id}>#{o.id}</li>)}</ul>
+          </section>
+        );
+      }
+
+      const { window } = new JSDOM("<!doctype html><body></body>");     // jsdom provides the page
+      Object.assign(globalThis, { window, document: window.document });
+      const { render, fireEvent } = await import("@testing-library/react");   // react-dom probes the DOM on load
+
+      const orders = [{ id: "1042", shipped: false }, { id: "1050", shipped: true }];
+      const page = render(<OrdersScreen orders={orders} />);
+      console.log(page.container.innerHTML);
+      fireEvent.click(page.getByRole("button"));
+      console.log(page.container.innerHTML);
+    expected: |-
+      <section><button aria-pressed="false">Show shipped</button><ul><li>#1042</li></ul></section>
+      <section><button aria-pressed="true">Show shipped</button><ul><li>#1042</li><li>#1050</li></ul></section>
+    applies:
+      platforms: [browser, node]
+      runtime: a React app; runs in Node.js with jsdom
+    validation: &ran-react
+      status: ran
+      toolchain: Node 24.16.0, TypeScript 5.9.3
+      date: "2026-11-16"
+      jsx: react
+  - id: form-view-model
+    kind: code
+    title: A form field's view model
+    note: "The field keeps exactly what was typed, judges it only once the user leaves it or submits, and derives the error so it can never disagree with the value."
+    prerequisites: *run
+    code: |-
+      type FieldState = { email: string; touched: boolean; sentTo: string | null };
+
+      // Derived, not stored: an error only once the field was left, and only while the value is wrong.
+      function errorOf({ email, touched }: FieldState): string | null {
+        if (!touched || /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return null;
+        return "Enter an address like ada@example.com";
+      }
+
+      class ReceiptEmailViewModel extends EventTarget {
+        #state: FieldState = { email: "", touched: false, sentTo: null };
+
+        readonly getSnapshot = () => this.#state;
+
+        readonly subscribe = (listener: () => void) => {
+          this.addEventListener("change", listener);
+          return () => this.removeEventListener("change", listener);
+        };
+
+        // Not trimmed while typing: rewriting a controlled value on every keystroke moves the caret.
+        emailChanged = (email: string) => this.#set({ email });
+
+        emailBlurred = () => this.#set({ email: this.#state.email.trim(), touched: true });
+
+        // The form: <form onSubmit={(e) => { e.preventDefault(); vm.submitted(); }}> — no page reload.
+        submitted = () => {
+          this.emailBlurred();
+          if (errorOf(this.#state) !== null) return;
+          this.#set({ sentTo: this.#state.email });      // the app calls its API here
+        };
+
+        #set(change: Partial<FieldState>) {
+          this.#state = { ...this.#state, ...change };
+          this.dispatchEvent(new Event("change"));
+        }
+      }
+
+      const vm = new ReceiptEmailViewModel();
+      const show = (step: string) => {
+        const state = vm.getSnapshot();
+        console.log(`${step.padEnd(6)} "${state.email}" error: ${errorOf(state) ?? "none"}`);
+      };
+
+      vm.emailChanged(" Ada@Example");
+      show("typing");
+      vm.emailBlurred();
+      show("left");
+      vm.emailChanged("ada@example.com");
+      show("fixed");
+      vm.submitted();
+      console.log("sent to:", vm.getSnapshot().sentTo);
+    expected: |-
+      typing " Ada@Example" error: none
+      left   "Ada@Example" error: Enter an address like ada@example.com
+      fixed  "ada@example.com" error: none
+      sent to: ada@example.com
+    applies:
+      platforms: [browser, node]
+      runtime: any ES2022+ engine; runs on Node.js
+      versions: { typescript: ">=5.0", node: ">=22.18" }
+    validation: *ran
+  - id: two-way-form-binding
+    kind: code
+    title: Two-way binding of a form field
+    note: "The input's `value` comes from the view model and every edit and blur goes back through an intent, with the message linked by `aria-describedby` and announced once by `aria-live=\"polite\"` instead of a `role=\"alert\"` on each keystroke."
+    prerequisites:
+      - "A React app: `npm create vite@latest shop -- --template react-ts`"
+      - "To run this file alone in Node: `npm i react react-dom jsdom @testing-library/react @testing-library/dom @types/react @types/react-dom @types/jsdom`, save as `main.tsx`, and run `npx tsx main.tsx` in a package with `\"type\": \"module\"`, beside a `tsconfig.json` with `\"jsx\": \"react-jsx\"`"
+    code: |-
+      import { JSDOM } from "jsdom";
+      import { useState, useSyncExternalStore } from "react";
+
+      type FieldState = { email: string; touched: boolean };
+
+      const errorOf = ({ email, touched }: FieldState) =>
+        touched && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email) ? "Enter an address like ada@example.com" : null;
+
+      class ReceiptEmailViewModel extends EventTarget {
+        #state: FieldState = { email: "", touched: false };
+        readonly getSnapshot = () => this.#state;
+        readonly subscribe = (listener: () => void) => {
+          this.addEventListener("change", listener);
+          return () => this.removeEventListener("change", listener);
+        };
+        emailChanged = (email: string) => this.#set({ email });
+        emailBlurred = () => this.#set({ email: this.#state.email.trim(), touched: true });
+        #set(change: Partial<FieldState>) {
+          this.#state = { ...this.#state, ...change };
+          this.dispatchEvent(new Event("change"));
+        }
+      }
+
+      function ReceiptEmailField() {
+        const [vm] = useState(() => new ReceiptEmailViewModel());
+        const state = useSyncExternalStore(vm.subscribe, vm.getSnapshot);
+        return (
+          <label>
+            Email for receipts
+            <input value={state.email} onChange={(e) => vm.emailChanged(e.target.value)} onBlur={vm.emailBlurred}
+              aria-invalid={errorOf(state) !== null} aria-describedby="email-error" />
+            <span id="email-error" aria-live="polite">{errorOf(state)}</span>
+          </label>
+        );
+      }
+
+      const { window } = new JSDOM("<!doctype html><body></body>");
+      Object.assign(globalThis, { window, document: window.document });
+      const { render, fireEvent } = await import("@testing-library/react");   // react-dom probes the DOM on load
+
+      const input = render(<ReceiptEmailField />).getByLabelText("Email for receipts") as HTMLInputElement;
+      const error = () => window.document.getElementById("email-error")!.textContent || "none";
+
+      fireEvent.change(input, { target: { value: " Ada@Example" } });
+      console.log(`typing: "${input.value}" error: ${error()}`);
+      fireEvent.blur(input);
+      console.log(`left:   "${input.value}" error: ${error()}`);
+    expected: |-
+      typing: " Ada@Example" error: none
+      left:   "Ada@Example" error: Enter an address like ada@example.com
+    applies:
+      platforms: [browser, node]
+      runtime: a React app; runs in Node.js with jsdom
+    validation: *ran-react
+  - id: async-loading-states
+    kind: code
+    title: Async loading as a discriminated union
+    note: "`idle | loading | loaded | failed` in one field rules out `isLoading && error` contradictions, and the compiler makes the view draw every case."
+    prerequisites: *run
+    code: |-
+      type Order = { id: string; customer: string; total: number };
+
+      type Load<T> =
+        | { status: "idle" }
+        | { status: "loading"; id: string }
+        | { status: "loaded"; data: T }
+        | { status: "failed"; id: string; message: string };
+
+      // Each case carries only what exists in it: no `data` while loading, the id that failed for Retry.
+      function describe(state: Load<Order>): string {
+        switch (state.status) {
+          case "idle":
+            return "Pick an order";
+          case "loading":
+            return `Loading #${state.id}…`;
+          case "loaded":
+            return `#${state.data.id} for ${state.data.customer}: ${state.data.total.toFixed(2)}`;
+          case "failed":
+            return `Could not load #${state.id} (${state.message}) [Retry]`;
+        }
+      }
+      // Add a case to Load and describe() stops compiling until it draws it.
+
+      const states: Load<Order>[] = [
+        { status: "idle" },
+        { status: "loading", id: "1042" },
+        { status: "failed", id: "1042", message: "timeout" },
+        { status: "loaded", data: { id: "1042", customer: "Ada", total: 42.5 } },
+      ];
+
+      for (const state of states) console.log(describe(state));
+    expected: |-
+      Pick an order
+      Loading #1042…
+      Could not load #1042 (timeout) [Retry]
+      #1042 for Ada: 42.50
+    applies:
+      platforms: [browser, node]
+      runtime: any ES2022+ engine; runs on Node.js
+      versions: { typescript: ">=5.0", node: ">=22.18" }
+    validation: *ran
+  - id: async-loading-view-model
+    kind: code
+    title: A view model that loads and retries
+    note: "The view model moves through the union's states, keeps the failure's message for the view, remembers what to retry, and exposes `subscribe` and `getSnapshot` for `useSyncExternalStore`."
+    prerequisites: *run
+    code: |-
+      import { mock } from "node:test";
+
+      type Order = { id: string; customer: string };
+      type Load<T> =
+        | { status: "idle" } | { status: "loading"; id: string }
+        | { status: "loaded"; data: T }
+        | { status: "failed"; id: string; message: string };
+      type OrdersRepository = { fetchOrder(id: string): Promise<Order> };
+
+      class OrderDetailsViewModel extends EventTarget {
+        #state: Load<Order> = { status: "idle" };
+        readonly #repo: OrdersRepository;      // injected: the app passes HTTP, tests pass a fake
+
+        constructor(repo: OrdersRepository) {
+          super();
+          this.#repo = repo;
+        }
+
+        readonly getSnapshot = () => this.#state;
+
+        readonly subscribe = (listener: () => void) => {
+          this.addEventListener("change", listener);
+          return () => this.removeEventListener("change", listener);
+        };
+
+        async orderOpened(id: string): Promise<void> {
+          this.#set({ status: "loading", id });
+          await this.#repo.fetchOrder(id).then(
+            (data) => this.#set({ status: "loaded", data }),
+            (error: unknown) => this.#set({ status: "failed", id, message: String(error) }),
+          );
+        }
+
+        async retryTapped(): Promise<void> {
+          if (this.#state.status === "failed") await this.orderOpened(this.#state.id);
+        }
+
+        #set(state: Load<Order>) {
+          this.#state = state;
+          this.dispatchEvent(new Event("change"));
+        }
+      }
+
+      const fetchOrder = mock.fn(async (id: string) => ({ id, customer: "Ada" }));
+      fetchOrder.mock.mockImplementationOnce(async () => Promise.reject(new Error("timeout")));
+
+      const vm = new OrderDetailsViewModel({ fetchOrder });
+      vm.subscribe(() => console.log(JSON.stringify(vm.getSnapshot())));
+      await vm.orderOpened("1042");
+      await vm.retryTapped();
+    expected: |-
+      {"status":"loading","id":"1042"}
+      {"status":"failed","id":"1042","message":"Error: timeout"}
+      {"status":"loading","id":"1042"}
+      {"status":"loaded","data":{"id":"1042","customer":"Ada"}}
+    applies:
+      platforms: [browser, node]
+      runtime: any ES2022+ engine; runs on Node.js
+      versions: { typescript: ">=5.0", node: ">=22.18" }
+    validation: *ran
+  - id: cancel-superseded-loads
+    kind: code
+    title: Cancelling a load the user has moved on from
+    note: "Opening another order aborts the request in flight and drops any late answer, and `dispose()` stops the work when the view unmounts."
+    prerequisites: *run
+    code: |-
+      import { setTimeout as sleep } from "node:timers/promises";
+
+      type Order = { id: string; customer: string };
+      type Load = { status: "idle" | "loading" } | { status: "loaded"; data: Order };
+      type OrdersRepository = { fetchOrder(id: string, signal: AbortSignal): Promise<Order> };
+
+      class OrderDetailsViewModel extends EventTarget {
+        #state: Load = { status: "idle" };
+        #inFlight?: AbortController;
+        readonly #repo: OrdersRepository;
+
+        constructor(repo: OrdersRepository) {
+          super();
+          this.#repo = repo;
+        }
+
+        readonly getSnapshot = () => this.#state;
+
+        async orderOpened(id: string): Promise<void> {
+          this.#inFlight?.abort();                       // the user opened another order
+          const { signal } = (this.#inFlight = new AbortController());
+          this.#set({ status: "loading" });
+          const data = await this.#repo.fetchOrder(id, signal).catch(() => null);
+          if (data && !signal.aborted) this.#set({ status: "loaded", data });   // a late answer is dropped
+        }
+
+        dispose = () => this.#inFlight?.abort();         // the view calls it on unmount
+
+        #set(state: Load) {
+          this.#state = state;
+          this.dispatchEvent(new Event("change"));
+        }
+      }
+
+      // The first order is slow to load, the second fast; the fetch honours the abort signal.
+      const customers: Record<string, string> = { "1042": "Ada", "1077": "Grace" };
+      const slowFirst: OrdersRepository = {
+        fetchOrder: (id, signal) => {
+          const order = { id, customer: customers[id] ?? "?" };
+          return sleep(id === "1042" ? 30 : 5, order, { signal });
+        },
+      };
+
+      const vm = new OrderDetailsViewModel(slowFirst);
+      vm.addEventListener("change", () => console.log(JSON.stringify(vm.getSnapshot())));
+      const first = vm.orderOpened("1042");
+      await vm.orderOpened("1077");
+      await first;
+      vm.dispose();
+    expected: |-
+      {"status":"loading"}
+      {"status":"loading"}
+      {"status":"loaded","data":{"id":"1077","customer":"Grace"}}
+    applies:
+      platforms: [browser, node]
+      runtime: any ES2022+ engine; runs on Node.js
+      versions: { typescript: ">=5.0", node: ">=22.18" }
+    validation: *ran
+  - id: same-model-with-zustand
+    kind: code
+    title: The same model with Zustand
+    note: "When the state is shared across screens, keep state and intents in one store, let components subscribe to the slice they draw, and call intents from anywhere."
+    prerequisites:
+      - "A React app: `npm create vite@latest shop -- --template react-ts`, then `npm i zustand`"
+      - "To run this file alone in Node: also `npm i react-dom jsdom @testing-library/react @testing-library/dom @types/react @types/react-dom @types/jsdom`, save as `main.tsx`, and run `npx tsx main.tsx` in a package with `\"type\": \"module\"`, beside a `tsconfig.json` with `\"jsx\": \"react-jsx\"`"
+    code: |-
+      import { JSDOM } from "jsdom";
+      import { create } from "zustand";
+      import { useShallow } from "zustand/react/shallow";
+
+      type Order = { id: string; shipped: boolean };
+      type OrdersState = {
+        orders: Order[];
+        showShipped: boolean;
+        showShippedToggled(): void;
+        orderShipped(id: string): void;
+      };
+
+      // `set` merges what each intent returns into the state.
+      const useOrdersStore = create<OrdersState>()((set) => ({
+        orders: [{ id: "1042", shipped: false }, { id: "1050", shipped: true }],
+        showShipped: false,
+        showShippedToggled: () => set((s) => ({ showShipped: !s.showShipped })),
+        orderShipped: (id) =>
+          set((s) => ({ orders: s.orders.map((o) => (o.id === id ? { ...o, shipped: true } : o)) })),
+      }));
+
+      function OrdersScreen() {
+        const showShipped = useOrdersStore((s) => s.showShipped);
+        const toggle = useOrdersStore((s) => s.showShippedToggled);
+        // filter() returns a new array each time: useShallow compares the items, not the array.
+        const visible = useOrdersStore(useShallow((s) => s.orders.filter((o) => showShipped || !o.shipped)));
+        return (
+          <section>
+            <button aria-pressed={showShipped} onClick={toggle}>Show shipped</button>
+            <ul>{visible.map((o) => <li key={o.id}>#{o.id}</li>)}</ul>
+          </section>
+        );
+      }
+
+      const { window } = new JSDOM("<!doctype html><body></body>");
+      Object.assign(globalThis, { window, document: window.document });
+      const { act, render, fireEvent } = await import("@testing-library/react");   // after the page exists
+
+      const page = render(<OrdersScreen />);
+      act(() => useOrdersStore.getState().orderShipped("1042"));        // an intent from outside React
+      console.log(page.container.innerHTML);
+      fireEvent.click(page.getByRole("button"));
+      console.log(page.container.innerHTML);
+      page.unmount();
+    expected: |-
+      <section><button aria-pressed="false">Show shipped</button><ul></ul></section>
+      <section><button aria-pressed="true">Show shipped</button><ul><li>#1042</li><li>#1050</li></ul></section>
+    applies:
+      platforms: [browser, node]
+      runtime: a React app; runs in Node.js with jsdom
+      requires: [zustand]
+      versions: { typescript: ">=5.5", node: ">=22.18", react: ">=18", zustand: ">=5.0" }
+    validation: *ran-react
+  - id: test-the-view-model
+    kind: code
+    title: Testing the view model without any UI
+    note: "Record the states a view would draw while driving intents against a fake repository, so loading, loaded and failed are each asserted with no React in sight."
+    prerequisites:
+      - Node.js 22.18 or later (it runs `.mts` files directly by stripping the types)
+      - "Save as `order-details.test.mts` and run `node --test order-details.test.mts` (or `node order-details.test.mts`)"
+    code: |-
+      import assert from "node:assert/strict";
+      import { test } from "node:test";
+
+      // The view model from the loads-and-retries card, without retry: repeated because the runner needs one file.
+      type Order = { id: string; customer: string };
+      type Load =
+        | { status: "idle" | "loading" }
+        | { status: "loaded"; data: Order } | { status: "failed"; message: string };
+      type OrdersRepository = { fetchOrder(id: string): Promise<Order> };
+
+      class OrderDetailsViewModel extends EventTarget {
+        #state: Load = { status: "idle" };
+        readonly #repo: OrdersRepository;
+
+        constructor(repo: OrdersRepository) {
+          super();
+          this.#repo = repo;
+        }
+
+        readonly getSnapshot = () => this.#state;
+
+        async orderOpened(id: string): Promise<void> {
+          this.#set({ status: "loading" });
+          await this.#repo.fetchOrder(id).then(
+            (data) => this.#set({ status: "loaded", data }),
+            (error: unknown) => this.#set({ status: "failed", message: String(error) }),
+          );
+        }
+
+        #set(state: Load) {
+          this.#state = state;
+          this.dispatchEvent(new Event("change"));
+        }
+      }
+
+      test("shows loading, then the order", async () => {
+        const vm = new OrderDetailsViewModel({ fetchOrder: async (id) => ({ id, customer: "Ada" }) });
+        const seen: string[] = [];                         // every state a view would draw, in order
+        vm.addEventListener("change", () => seen.push(vm.getSnapshot().status));
+        await vm.orderOpened("1042");
+        assert.deepEqual(seen, ["loading", "loaded"]);
+      });
+
+      test("a failure becomes a state the view can draw, not an exception", async () => {
+        const vm = new OrderDetailsViewModel({ fetchOrder: async () => Promise.reject(new Error("404")) });
+        await vm.orderOpened("9999");
+        assert.deepEqual(vm.getSnapshot(), { status: "failed", message: "Error: 404" });
+      });
+    expected: "Two passing tests (`ℹ pass 2`, `ℹ fail 0`); the process exits 0."
+    applies:
+      platforms: [node]
+      runtime: Node.js test runner
+      versions: { typescript: ">=5.0", node: ">=22.18" }
+    validation:
+      status: ran
+      toolchain: Node 24.16.0, TypeScript 5.9.3
+      date: "2026-11-16"
+      check: exit-code
+  - id: test-a-superseded-load
+    kind: code
+    title: Testing the race a UI test rarely catches
+    note: "Hold each fake response until the test releases it, answer the newer request first, and assert that the slow old answer arriving last changes nothing."
+    prerequisites:
+      - Node.js 22.18 or later (it runs `.mts` files directly by stripping the types)
+      - "Save as `superseded.test.mts` and run `node --test superseded.test.mts` (or `node superseded.test.mts`)"
+    code: |-
+      import assert from "node:assert/strict";
+      import { test } from "node:test";
+
+      // The view model from the cancelling card, repeated because the runner needs one file.
+      type Order = { id: string; customer: string };
+      type Load = { status: "idle" | "loading" } | { status: "loaded"; data: Order };
+      type OrdersRepository = { fetchOrder(id: string, signal: AbortSignal): Promise<Order> };
+
+      class OrderDetailsViewModel extends EventTarget {
+        #state: Load = { status: "idle" };
+        #inFlight?: AbortController;
+        readonly #repo: OrdersRepository;
+
+        constructor(repo: OrdersRepository) {
+          super();
+          this.#repo = repo;
+        }
+
+        readonly getSnapshot = () => this.#state;
+
+        async orderOpened(id: string): Promise<void> {
+          this.#inFlight?.abort();
+          const { signal } = (this.#inFlight = new AbortController());
+          this.#set({ status: "loading" });
+          const data = await this.#repo.fetchOrder(id, signal).catch(() => null);
+          if (data && !signal.aborted) this.#set({ status: "loaded", data });
+        }
+
+        #set(state: Load) {
+          this.#state = state;
+          this.dispatchEvent(new Event("change"));
+        }
+      }
+
+      // A repository that ignores the signal, like a server that answers anyway; the test decides the order.
+      test("a superseded load never overwrites the newer one", async () => {
+        const respond = new Map<string, (order: Order) => void>();
+        const fetchOrder = (id: string) => new Promise<Order>((resolve) => respond.set(id, resolve));
+        const vm = new OrderDetailsViewModel({ fetchOrder });
+        const slow = vm.orderOpened("1042");
+        const fast = vm.orderOpened("1077");
+        respond.get("1077")!({ id: "1077", customer: "Grace" });
+        await fast;
+        respond.get("1042")!({ id: "1042", customer: "Ada" });     // the old request answers last
+        await slow;
+        assert.deepEqual(vm.getSnapshot(), { status: "loaded", data: { id: "1077", customer: "Grace" } });
+      });
+    expected: "One passing test (`ℹ pass 1`, `ℹ fail 0`); the process exits 0."
+    applies:
+      platforms: [node]
+      runtime: Node.js test runner
+      versions: { typescript: ">=5.0", node: ">=22.18" }
+    validation:
+      status: ran
+      toolchain: Node 24.16.0, TypeScript 5.9.3
+      date: "2026-11-16"
+      check: exit-code
+  - id: mvvm-rules
+    kind: rules
+    title: Rules and pitfalls
+    note: What keeps a view model a view model.
+    items:
+      - tone: good
+        text: "No React, DOM or router imports in a view model: it takes plain data and dependencies in, and exposes a snapshot and intents out."
+      - tone: good
+        text: "Return the **same** snapshot object until something changes: `useSyncExternalStore` compares with `Object.is`, and a fresh object per call fails with an infinite-loop error."
+      - tone: good
+        text: "Make `subscribe` and `getSnapshot` stable (arrow fields or bound once): a new `subscribe` each render makes React resubscribe every render."
+      - tone: good
+        text: "Create a per-screen view model in `useState(() => new …)`, not in the render body, and stop its work on unmount: `useEffect(() => () => vm.dispose(), [vm])`."
+      - tone: good
+        text: "Judge a field when the user leaves it or submits, not on every keystroke; link the message with `aria-describedby` and announce it once with `aria-live=\"polite\"`, not a `role=\"alert\"` per keystroke."
+      - tone: bad
+        text: "Mirroring props or server data into a view model by hand: derive from inputs, and leave server data to a server cache."
+      - tone: bad
+        text: "A Zustand selector returning a new array or object (`filter`, `{ a, b }`) without `useShallow`: Zustand 5 throws \"Maximum update depth exceeded\"."
+      - tone: neutral
+        text: "Rendering on the server: `useSyncExternalStore` needs a third argument, `getServerSnapshot`, which must match what the client renders first."

@@ -135,6 +135,8 @@ and can run (the runner applies the automatic JSX transform, nothing else); a So
 type-checked only, because Solid's JSX needs its own compiler, so it can be `compiled` but
 not `ran`. `conditions: [browser]` lists the Node export conditions a `ran` example needs —
 the example's own setup tells the reader the same flag (`node --conditions=browser main.mts`).
+`resolution: bundler` type-checks the example with bundler module resolution, for a library
+whose type declarations need it (Chakra UI's do).
 
 A `ran` example's `expected` is its printed output and renders as code. Otherwise —
 `check: exit-code`, `compiled`, `excerpt` — `expected` describes the effect in words and

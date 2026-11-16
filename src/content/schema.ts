@@ -75,6 +75,8 @@ export const validation = z
     jsx: z.enum(["react", "solid"]).optional(),
     /** TypeScript only: Node export conditions the run needs, e.g. `browser` for a library's browser build. */
     conditions: z.array(slug).min(1).optional(),
+    /** TypeScript only: type-check with bundler module resolution, for a library whose types need it (Chakra UI). */
+    resolution: z.enum(["bundler"]).optional(),
   })
   .strict()
   .superRefine((v, ctx) => {
@@ -90,6 +92,7 @@ export const validation = z
     if (v.jsx && v.status === "excerpt") fail("jsx", "an excerpt is not compiled: it has no JSX dialect to compile with");
     if (v.jsx === "solid" && v.status === "ran") fail("jsx", "Solid JSX needs Solid's own compiler: the example can be `compiled`, not `ran`");
     if (v.conditions && v.status !== "ran") fail("conditions", "only a 'ran' example has run conditions");
+    if (v.resolution && v.status === "excerpt") fail("resolution", "an excerpt is not compiled: it has no module resolution to compile with");
   });
 
 /** Fields an example (a `code` or `compare` card) may carry to say how to reproduce it. */

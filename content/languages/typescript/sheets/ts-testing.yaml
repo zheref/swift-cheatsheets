@@ -136,6 +136,110 @@ cards:
       });
     expected: "`✔ accepts a port and rejects text`, `pass 1`, exit status 0."
     validation: *ran
+  - id: http-integration
+    kind: code
+    title: Integration test across a real HTTP boundary
+    note: "A real `node:http` server on `127.0.0.1`, port `0`, exercised with `fetch`: the client's URL building, status handling and JSON decoding all run for real, with no network."
+    prerequisites: *run
+    code: |-
+      import assert from "node:assert/strict";
+      import { createServer } from "node:http";
+      import type { AddressInfo } from "node:net";
+      import { after, before, test } from "node:test";
+
+      type Order = { id: string; total: number };
+
+      async function fetchOrder(baseUrl: string, id: string): Promise<Order> {
+        const response = await fetch(new URL(`/orders/${encodeURIComponent(id)}`, baseUrl));
+        if (!response.ok) {
+          await response.body?.cancel();             // release the keep-alive connection instead of waiting for GC
+          throw new Error(response.status === 404 ? `order ${id} not found` : `HTTP ${response.status}`);
+        }
+        return (await response.json()) as Order;
+      }
+
+      const routes: Record<string, [status: number, body: unknown]> = {
+        "/orders/A-1042": [200, { id: "A-1042", total: 19.5 }],
+        "/orders/A-500": [500, { error: "database down" }],
+      };
+      const server = createServer((req, res) => {
+        const [status, body] = routes[req.url ?? ""] ?? [404, { error: "not found" }];
+        res.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(body));
+      });
+      let baseUrl = "";
+
+      before(async () => {
+        // port 0: the OS picks a free port, so parallel runs never collide
+        await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+        baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+      });
+      after(() => server.close());                   // or the open socket keeps the process alive
+
+      test("decodes an order", async () => {
+        assert.deepEqual(await fetchOrder(baseUrl, "A-1042"), { id: "A-1042", total: 19.5 });
+      });
+
+      test("turns 404 and 5xx into distinct errors", async () => {
+        await assert.rejects(fetchOrder(baseUrl, "A-9999"), { message: "order A-9999 not found" });
+        await assert.rejects(fetchOrder(baseUrl, "A-500"), { message: "HTTP 500" });
+      });
+    expected: "`✔ decodes an order`, `✔ turns 404 and 5xx into distinct errors`, `pass 2`, exit status 0 — and the process exits because the server is closed."
+    sources:
+      - title: HTTP — Node.js
+        url: https://nodejs.org/api/http.html
+    validation: &ran-2026-11-16
+      status: ran
+      toolchain: Node 24.16.0, TypeScript 5.9.3
+      date: "2026-11-16"
+      check: exit-code
+  - id: test-doubles
+    kind: code
+    title: "Test doubles: fake, stub, spy — and mock.method"
+    note: "A fake for anything with state, a stub to choose a path, a spy to check a call you care about; Node's `mock.method` swaps one method of a real object and restores it."
+    prerequisites: *run
+    code: |-
+      import assert from "node:assert/strict";
+      import { mock, test } from "node:test";
+
+      type User = { id: string; email: string };
+      interface Users { find(id: string): Promise<User | undefined>; save(user: User): Promise<void> }
+      interface Mailer { send(to: string, subject: string): Promise<void> }
+
+      async function changeEmail(users: Users, mailer: Mailer, id: string, email: string): Promise<void> {
+        const user = await users.find(id);
+        if (!user) throw new Error(`no user ${id}`);
+        await users.save({ ...user, email });
+        await mailer.send(user.email, "Your email was changed");   // tell the OLD address
+      }
+
+      class InMemoryUsers implements Users {        // fake: a working implementation, kept in memory
+        #rows: Map<string, User>;
+        constructor(seed: User[] = []) { this.#rows = new Map(seed.map((u) => [u.id, u])); }
+        async find(id: string) { return this.#rows.get(id); }
+        async save(user: User) { this.#rows.set(user.id, user); }
+      }
+      const ada: User = { id: "u1", email: "ada@old.example" };
+
+      test("fake + spy: the state changes and the old address is told", async () => {
+        const users = new InMemoryUsers([ada]);
+        const send = mock.fn<Mailer["send"]>(async () => {});
+        await changeEmail(users, { send }, "u1", "ada@new.example");
+        assert.equal((await users.find("u1"))?.email, "ada@new.example");   // assert on state, via the fake
+        assert.deepEqual(send.mock.calls.map((c) => c.arguments), [["ada@old.example", "Your email was changed"]]);
+      });
+
+      test("stub + mock.method: a failing save sends no email", async (t) => {
+        const users = new InMemoryUsers([ada]);
+        t.mock.method(users, "save", async () => { throw new Error("disk full"); });   // restored after the test
+        const send = mock.fn<Mailer["send"]>(async () => {});
+        await assert.rejects(changeEmail(users, { send }, "u1", "ada@new.example"), { message: "disk full" });
+        assert.equal(send.mock.callCount(), 0);              // no email for a change that did not happen
+      });
+    expected: "`✔ fake + spy: the state changes and the old address is told`, `✔ stub + mock.method: a failing save sends no email`, `pass 2`, exit status 0."
+    sources:
+      - title: Mocking — Node.js test runner
+        url: https://nodejs.org/api/test.html#mocking
+    validation: *ran-2026-11-16
   - id: testing-principles
     kind: rules
     title: Principles worth stating

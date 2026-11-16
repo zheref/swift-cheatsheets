@@ -135,9 +135,11 @@ export function checkPage(
   const visibleBody = d.body.cloneNode(true) as HTMLElement;
   for (const el of visibleBody.querySelectorAll("script, style")) el.remove();
   const text = visibleBody.textContent ?? "";
-  for (const artefact of ["[object Object]", "{{"]) { // not `undefined`/`NaN`: real TypeScript content says them
-    if (text.includes(artefact)) problems.push(`suspicious artefact in output: ${artefact}`);
-  }
+  // Not `undefined`/`NaN`: real TypeScript content says them.
+  if (text.includes("[object Object]")) problems.push("suspicious artefact in output: [object Object]");
+  // `{{` is an unrendered template in prose, but ordinary code: JSX (`style={{ … }}`), i18n placeholders.
+  for (const el of visibleBody.querySelectorAll("pre, code")) el.remove();
+  if ((visibleBody.textContent ?? "").includes("{{")) problems.push("suspicious artefact in output: {{");
 
   for (const { where, url } of resourceReferences(d)) {
     if (offline) problems.push(`offline file references ${where}: ${url}`);

@@ -1,0 +1,422 @@
+id: ts-rxjs
+concept: reactive.streams-core
+scope: platform
+title: "RxJS — Core"
+group: "Reactive & time"
+subtitle: "Observable → operators → Subscription. Cold until subscribed, push-only, and an error ends the stream."
+applies:
+  platforms: [browser, node]
+  runtime: Node.js or a browser
+  requires: [RxJS]
+  versions: { typescript: ">=5.5", node: ">=22.18", rxjs: ">=7.8" }
+sources:
+  - title: RxJS — Overview
+    url: https://rxjs.dev/guide/overview
+  - title: RxJS — Operators
+    url: https://rxjs.dev/guide/operators
+  - title: RxJS — API reference
+    url: https://rxjs.dev/api
+cards:
+  - id: combine-to-rxjs
+    kind: table
+    title: "Mental model: Combine → RxJS"
+    note: The same Publisher → Operator → Subscriber shape; what differs is typing, lifetime and threads.
+    headers: [Combine, RxJS, What changes]
+    rows:
+      - ["`Publisher<Output, Failure>`", "`Observable<T>`", "errors are typed `any` — narrow them yourself (`err instanceof HttpError`); 0…n `next`, then **either** `error` **or** `complete`"]
+      - ["`sink(receiveCompletion:receiveValue:)`", "`subscribe({ next, error, complete })`", "the `Observer` is a plain object of three callbacks"]
+      - ["`AnyCancellable`, `.store(in:)`", "`Subscription`, `unsubscribe()`", "nothing cancels on deinit: you end it, or an operator like `takeUntil` does"]
+      - ["inert until subscribed", "**cold** until `subscribe`", "each subscriber runs its own producer; `share` makes one execution **hot**"]
+      - ["`Just`, `Fail`, `Empty`", "`of`, `throwError(() => e)`, `EMPTY`", "—"]
+      - ["`Future` / `Deferred { Future }`", "`from(promise)` / `defer(() => promise)`", "a promise is eager in both worlds; `defer` makes it lazy"]
+      - ["`PassthroughSubject`", "`Subject`", "no memory: late subscribers miss earlier values"]
+      - ["`CurrentValueSubject`", "`BehaviorSubject`", "`getValue()` reads it; new subscribers get the current value at once"]
+      - ["—", "`ReplaySubject(n)`", "replays the last `n` values to late subscribers"]
+      - ["`flatMap` / `map` + `switchToLatest`", "`mergeMap` / `switchMap`", "plus `concatMap` (serial) and `exhaustMap` (ignore while busy)"]
+      - ["`removeDuplicates()`", "`distinctUntilChanged()`", "—"]
+      - ["`receive(on:)`, `subscribe(on:)`", "`observeOn`, `subscribeOn`", "rarely needed: there is one thread"]
+      - ["`.values` + `for await`", "`firstValueFrom`, `lastValueFrom`", "no built-in async iterator over an observable"]
+      - ["subscriber demand (backpressure)", "none — push only", "protect a slow consumer with `debounceTime`, `sampleTime`, `bufferTime`"]
+  - id: create-and-bridge
+    kind: code
+    title: Creating observables — and getting values back out
+    note: "`defer` for anything that should run per subscriber; `firstValueFrom` / `lastValueFrom` to hand a result to `async` code."
+    prerequisites: &run
+      - Node.js 22.18 or later (it runs `.mts` files directly by stripping the types)
+      - "`npm i rxjs`"
+      - "Save as `main.mts` and run `node main.mts`"
+    code: |-
+      import { defer, EMPTY, EmptyError, firstValueFrom, from, lastValueFrom, reduce } from "rxjs";
+
+      type Order = { id: number; total: number };
+      let requests = 0;
+      async function fetchOrder(id: number): Promise<Order> {
+        requests++;
+        return { id, total: 40 + id };
+      }
+
+      const eager$ = from(fetchOrder(1));            // the promise has already started: one request for everyone
+      const lazy$ = defer(() => fetchOrder(2));      // a new request per subscriber, only once subscribed
+      console.log("requests before subscribing:", requests);
+      console.log(await firstValueFrom(lazy$), await firstValueFrom(lazy$), "requests:", requests);
+      console.log(await firstValueFrom(eager$), "requests:", requests);
+
+      async function* orderPages() {                 // any async iterable (or array) becomes an observable
+        yield [{ id: 1, total: 10 }, { id: 2, total: 15 }];
+        yield [{ id: 3, total: 5 }];
+      }
+
+      const revenue = await lastValueFrom(
+        from(orderPages()).pipe(reduce((sum, page) => sum + page.reduce((s, o) => s + o.total, 0), 0)),
+      );
+      console.log("revenue:", revenue);
+
+      console.log(await firstValueFrom(EMPTY, { defaultValue: "no orders" }));
+      try {
+        await firstValueFrom(EMPTY);                 // completed without a value
+      } catch (e) {
+        console.log("EmptyError:", e instanceof EmptyError);
+      }
+    expected: |-
+      requests before subscribing: 1
+      { id: 2, total: 42 } { id: 2, total: 42 } requests: 3
+      { id: 1, total: 41 } requests: 3
+      revenue: 30
+      no orders
+      EmptyError: true
+    sources:
+      - title: Conversion to promises — RxJS
+        url: https://rxjs.dev/deprecations/to-promise
+    validation: &ran
+      status: ran
+      toolchain: Node 24.16.0, TypeScript 5.9.3
+      date: "2026-11-16"
+  - id: subjects
+    kind: code
+    title: "Subjects — the imperative bridge"
+    note: Keep the subject private and expose `asObservable()`, so only the owner can push.
+    prerequisites: *run
+    code: |-
+      import { BehaviorSubject, type Observable, ReplaySubject, Subject } from "rxjs";
+
+      type Status = "pending" | "paid" | "shipped";
+
+      class OrderTracker {
+        readonly #status = new BehaviorSubject<Status>("pending");   // always holds a current value
+        readonly #events = new Subject<string>();                    // fire-and-forget, no memory
+        readonly #history = new ReplaySubject<Status>(2);            // the last 2, for late subscribers
+
+        readonly status$: Observable<Status> = this.#status.asObservable();   // read-only to callers
+        readonly events$ = this.#events.asObservable();
+        readonly history$ = this.#history.asObservable();
+
+        get status(): Status {
+          return this.#status.getValue();
+        }
+        advance(next: Status) {
+          this.#status.next(next);
+          this.#events.next(`moved to ${next}`);
+          this.#history.next(next);
+        }
+      }
+
+      const tracker = new OrderTracker();
+      tracker.advance("paid");
+      tracker.status$.subscribe((s) => console.log("status:", s));   // gets "paid" at once
+      tracker.events$.subscribe((e) => console.log("event:", e));    // "moved to paid" is gone
+      tracker.advance("shipped");
+      tracker.history$.subscribe((h) => console.log("late history:", h));
+      console.log("current:", tracker.status);
+    expected: |-
+      status: paid
+      status: shipped
+      event: moved to shipped
+      late history: paid
+      late history: shipped
+      current: shipped
+    sources:
+      - title: Subject — RxJS
+        url: https://rxjs.dev/guide/subject
+    validation: *ran
+  - id: operators-you-need
+    kind: table
+    title: Operators you actually need
+    note: "Everything is imported from `rxjs` itself since 7.2; `rxjs/operators` is the old path."
+    headers: [Need, Operators, "Combine name (if different)"]
+    rows:
+      - ["Transform", "`map` `scan` `reduce` `pairwise` `startWith`", "—"]
+      - ["Filter", "`filter` `distinctUntilChanged` `take` `takeWhile` `skip` `first`", "`removeDuplicates`, `prefix`, `dropFirst`"]
+      - ["Flatten", "`switchMap` `mergeMap` `concatMap` `exhaustMap`", "`switchToLatest`, `flatMap`"]
+      - ["Combine", "`combineLatest` `zip` `merge` `withLatestFrom` `forkJoin` `concat`", "`CombineLatest`, `Zip`, `Merge`, `MergeMany` + `collect`"]
+      - ["Time", "`debounceTime` `throttleTime` `auditTime` `sampleTime` `delay` `timeout` `bufferTime`", "`debounce`, `throttle`, `collect(.byTime)`"]
+      - ["Errors", "`catchError` `retry({ count, delay })` `throwError` `finalize`", "`catch`, `retry`, `handleEvents(receiveCompletion:)`"]
+      - ["Lifetime", "`takeUntil` `take` `first` `finalize`", "`prefix(untilOutputFrom:)`"]
+      - ["Sharing", "`share` `shareReplay`", "`share`, `multicast`"]
+      - ["Side effects", "`tap`", "`handleEvents`, `print`"]
+  - id: flattening-strategies
+    kind: code
+    title: switchMap vs mergeMap vs concatMap vs exhaustMap
+    note: "The most-asked RxJS question: what happens to the inner request when a new outer value arrives."
+    prerequisites: *run
+    code: |-
+      import { concatMap, exhaustMap, map, mergeMap, type OperatorFunction, switchMap, timer } from "rxjs";
+      import { TestScheduler } from "rxjs/testing";
+
+      // "Save" is clicked at 0 ms (a), 10 ms (b) and 40 ms (c); each request takes 25 ms.
+      const saveDraft = (draft: string) => timer(25).pipe(map(() => `saved ${draft}`));
+
+      const strategies: [string, OperatorFunction<string, string>][] = [
+        ["mergeMap  ", mergeMap(saveDraft)],     // all in parallel, in completion order
+        ["switchMap ", switchMap(saveDraft)],    // cancel the previous one: the latest wins
+        ["concatMap ", concatMap(saveDraft)],    // a queue: one at a time, in order
+        ["exhaustMap", exhaustMap(saveDraft)],   // ignore clicks while one is in flight
+      ];
+
+      for (const [name, flatten] of strategies) {
+        const scheduler = new TestScheduler(() => {});   // virtual time, starting at 0; no assertions here
+        const log = scheduler.run(({ hot }) => {
+          const out: string[] = [];
+          hot("a 9ms b 29ms c").pipe(flatten).subscribe((v) => out.push(`${v} @${scheduler.now()}`));
+          return out;                                  // filled when run() flushes the virtual clock
+        });
+        console.log(name, log.join(", "));
+      }
+    expected: |-
+      mergeMap   saved a @25, saved b @35, saved c @65
+      switchMap  saved b @35, saved c @65
+      concatMap  saved a @25, saved b @50, saved c @75
+      exhaustMap saved a @25, saved c @65
+    sources:
+      - title: Marble testing — RxJS
+        url: https://rxjs.dev/guide/testing/marble-testing
+    validation: *ran
+  - id: combining-streams
+    kind: code
+    title: combineLatest vs zip vs merge vs withLatestFrom
+    note: "Which input triggers an emission, whether it waits for the others, and when the result completes."
+    prerequisites: *run
+    code: |-
+      import { combineLatest, map, merge, Subject, withLatestFrom, zip } from "rxjs";
+
+      const cartTotal$ = new Subject<number>();
+      const shippingFee$ = new Subject<number>();
+      const payClicks$ = new Subject<void>();
+
+      // combineLatest: a change of EITHER recomputes, once each has emitted; completes when ALL complete
+      combineLatest([cartTotal$, shippingFee$])
+        .pipe(map(([total, fee]) => total + fee))
+        .subscribe((quote) => console.log("combineLatest  quote", quote));
+
+      // zip: pairs the n-th value of each (1 + 1 -> 1); completes once ANY input completes and is drained
+      zip([cartTotal$, shippingFee$]).subscribe((pair) => console.log("zip            pair", pair));
+
+      // merge: one stream of both, interleaved as they arrive; completes when ALL complete
+      merge(cartTotal$, shippingFee$).subscribe((v) => console.log("merge          value", v));
+
+      // withLatestFrom: only the click triggers, the cart is sampled; completes with the clicks
+      // (forkJoin, for requests: waits for ALL to complete, then emits each one's LAST value once)
+      payClicks$
+        .pipe(withLatestFrom(cartTotal$))
+        .subscribe(([, total]) => console.log("withLatestFrom charge", total));
+
+      cartTotal$.next(30);
+      shippingFee$.next(5);
+      cartTotal$.next(45);
+      payClicks$.next();
+    expected: |-
+      merge          value 30
+      combineLatest  quote 35
+      zip            pair [ 30, 5 ]
+      merge          value 5
+      combineLatest  quote 50
+      merge          value 45
+      withLatestFrom charge 45
+    validation: *ran
+  - id: networking-pipeline
+    kind: code
+    title: A networking pipeline with retry and a fallback
+    note: "`fromFetch` aborts on unsubscribe; retry only what can succeed next time, fall back to a value only for an outage, and let a 4xx reach the caller."
+    prerequisites: *run
+    code: |-
+      import { createServer } from "node:http";
+      import type { AddressInfo } from "node:net";
+      import { catchError, firstValueFrom, of, retry, throwError, timer } from "rxjs";
+      import { fromFetch } from "rxjs/fetch";
+
+      type Order = { id: number; status: "open" | "closed" };
+      class HttpError extends Error {
+        status: number;
+        constructor(status: number) {
+          super(`HTTP ${status}`);
+          this.status = status;
+        }
+      }
+
+      const isRetryable = (e: unknown) => !(e instanceof HttpError && e.status < 500);   // 4xx: no retry
+
+      const orders$ = (url: string) =>
+        fromFetch(url, {
+          selector: async (response) => {                // unsubscribing aborts the request
+            if (!response.ok) throw new HttpError(response.status);
+            return (await response.json()) as Order[];
+          },
+        }).pipe(
+          retry({ count: 3, delay: (e, n) => (isRetryable(e) ? timer(10 * 2 ** n) : throwError(() => e)) }),
+          // Out of retries on an outage: show an empty list. A 401/404 is a real error: let it through.
+          catchError((e) => (isRetryable(e) ? of<Order[]>([]) : throwError(() => e))),
+        );
+
+      let hits = 0;                                      // down for two requests; /admin needs a login
+      const server = createServer((req, res) => {
+        if (req.url === "/admin") res.writeHead(401).end();
+        else if (++hits <= 2) res.writeHead(503).end();
+        else res.writeHead(200, { "content-type": "application/json" }).end('[{"id":7,"status":"open"}]');
+      });
+
+      await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+      const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+      console.log(await firstValueFrom(orders$(`${base}/orders`)), "after", hits, "attempts");
+      await firstValueFrom(orders$(`${base}/admin`)).catch((e: Error) => console.log("admin:", e.message));
+      server.close();
+      server.closeAllConnections();
+    expected: |-
+      [ { id: 7, status: 'open' } ] after 3 attempts
+      admin: HTTP 401
+    sources:
+      - title: fromFetch — RxJS
+        url: https://rxjs.dev/api/fetch/fromFetch
+      - title: retry — RxJS
+        url: https://rxjs.dev/api/operators/retry
+    validation: *ran
+  - id: subscription-lifetime
+    kind: code
+    title: "Subscription lifetime: unsubscribe, teardown, takeUntil"
+    note: "A `new Observable` returns its teardown; `takeUntil(destroy$)`, placed last, ends every stream of a screen at once."
+    prerequisites: *run
+    code: |-
+      import { finalize, Observable, Subject, takeUntil } from "rxjs";
+
+      const socket = new EventTarget();                      // stands in for a WebSocket
+      const push = (channel: string, message: string) =>
+        socket.dispatchEvent(new CustomEvent(channel, { detail: message }));
+
+      function updates$(channel: string): Observable<string> {
+        return new Observable<string>((subscriber) => {
+          console.log(`listen ${channel}`);
+          const onMessage = (e: Event) => subscriber.next((e as CustomEvent<string>).detail);
+          socket.addEventListener(channel, onMessage);
+          return () => {                                     // runs on unsubscribe, error or complete
+            socket.removeEventListener(channel, onMessage);
+            console.log(`stop ${channel}`);
+          };
+        });
+      }
+
+      // Imperative: keep the Subscription and end it yourself.
+      const subscription = updates$("orders").subscribe((m) => console.log("dashboard:", m));
+      push("orders", "order 1 paid");
+      subscription.unsubscribe();
+      push("orders", "order 2 paid");                        // no one is listening any more
+
+      // Declarative: one destroy$ for the screen. takeUntil goes LAST in the pipe.
+      const destroy$ = new Subject<void>();
+      updates$("refunds")
+        .pipe(finalize(() => console.log("refunds finalized")), takeUntil(destroy$))
+        .subscribe((m) => console.log("refund panel:", m));
+      push("refunds", "refund 9 approved");
+      destroy$.next();
+      destroy$.complete();
+      push("refunds", "refund 10 approved");
+    expected: |-
+      listen orders
+      dashboard: order 1 paid
+      stop orders
+      listen refunds
+      refund panel: refund 9 approved
+      stop refunds
+      refunds finalized
+    sources:
+      - title: Observable — RxJS
+        url: https://rxjs.dev/guide/observable
+    validation: *ran
+  - id: sharing
+    kind: code
+    title: "Sharing one execution: share vs shareReplay"
+    note: "Cold means one request per subscriber, `share` multicasts while someone listens, and `shareReplay` also replays to late subscribers — with `refCount` deciding what happens when everyone leaves before completion."
+    prerequisites: *run
+    code: |-
+      import { defer, lastValueFrom, map, type MonoTypeOperatorFunction, type Observable } from "rxjs";
+      import { share, shareReplay, timer } from "rxjs";
+
+      type Profile = { name: string };
+      let requests = 0;
+      const profile$ = defer(() => {                         // cold: each subscription starts a request
+        requests++;
+        return timer(10).pipe(map((): Profile => ({ name: "Ada" })));   // the response comes after 10 ms
+      });
+
+      async function stayUntilDone(source$: Observable<Profile>) {
+        await Promise.all([lastValueFrom(source$), lastValueFrom(source$)]);   // header + sidebar, at once
+        await lastValueFrom(source$);                                          // settings screen, later
+      }
+
+      async function leaveEarly(source$: Observable<Profile>) {
+        const header = source$.subscribe();
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        header.unsubscribe();                  // the user leaves before the response arrives…
+        await lastValueFrom(source$);          // …for a screen that needs the profile too
+      }
+
+      const variants: [string, MonoTypeOperatorFunction<Profile>][] = [
+        ["cold          ", (source$) => source$],   // stay 3: one request per subscriber
+        ["share()       ", share()],                // 2 and 2: no replay; leaving early cancels the request
+        ["shareReplay(1)", shareReplay(1)],         // 1 and 1: replays, and keeps running with no one left
+        ["refCount: true", shareReplay({ bufferSize: 1, refCount: true })],
+        // refCount: true keeps the replay once the source has completed (stay: 1) but resets when every
+        // subscriber leaves BEFORE completion (leave-early: 2) — exactly right for an endless source.
+      ];
+      console.log("requests:      stay leave-early");
+      for (const [name, operator] of variants) {
+        const counts: number[] = [];
+        for (const scenario of [stayUntilDone, leaveEarly]) {
+          requests = 0;
+          await scenario(profile$.pipe(operator));    // a fresh shared observable per scenario
+          counts.push(requests);
+        }
+        console.log(name, counts.join("    "));
+      }
+    expected: |-
+      requests:      stay leave-early
+      cold           3    2
+      share()        2    2
+      shareReplay(1) 1    1
+      refCount: true 1    2
+    sources:
+      - title: shareReplay — RxJS
+        url: https://rxjs.dev/api/operators/shareReplay
+      - title: share — RxJS
+        url: https://rxjs.dev/api/operators/share
+    validation: *ran
+  - id: rxjs-gotchas
+    kind: rules
+    title: RxJS gotchas
+    note: What reviewers flag first.
+    items:
+      - tone: bad
+        text: "An error **inside** the outer pipe ends it for good. Put `catchError` on the inner observable — inside `switchMap(q => search(q).pipe(catchError(...)))` — so the search box keeps working after one failed request."
+      - tone: bad
+        text: "Nested `subscribe` calls: a subscribe inside a subscribe leaks and races. Flatten with `switchMap`/`mergeMap`/`concatMap` instead."
+      - tone: bad
+        text: "`takeUntil` before a `switchMap` or `shareReplay` does not stop what comes after it. Keep `takeUntil` the **last** operator."
+      - tone: bad
+        text: "`from(promise)` is eager — the work started when the promise was created. Use `defer(() => load())` for per-subscriber, retryable work: `retry` re-subscribes, and only `defer` re-runs the request."
+      - tone: bad
+        text: "`toPromise()` is deprecated: `firstValueFrom` for the first value, `lastValueFrom` for the last one; both reject with `EmptyError` on an empty stream unless given `{ defaultValue }`."
+      - tone: bad
+        text: "`shareReplay(1)` on an endless source keeps it running after everyone leaves; pass `{ bufferSize: 1, refCount: true }` — it still replays a request that has completed, and resets only when everyone leaves before completion."
+      - tone: good
+        text: "Expose `Observable<T>` (via `asObservable()`) from a service, never the `Subject` — callers should not be able to `next` your state."
+      - tone: good
+        text: "Pass `combineLatest` an array — `combineLatest([a$, b$])`; the rest-parameter form is deprecated and goes in v8."
+      - tone: neutral
+        text: "Plain `async`/`await` is simpler for one request and one response. Reach for RxJS when values arrive over time and you need to cancel, combine or rate-limit them."

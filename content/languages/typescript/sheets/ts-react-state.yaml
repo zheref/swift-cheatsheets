@@ -1,0 +1,582 @@
+id: ts-react-state
+concept: ui.state-and-data-flow
+scope: platform
+title: "React — State & Data Flow"
+group: "UI"
+subtitle: Pick the right hook, lift state to the closest common owner, inject with context, reset with keys, and tie async work to the component's lifetime.
+applies:
+  platforms: [browser]
+  runtime: a browser page with React (the examples run in Node with `react-dom/server` or jsdom)
+  requires: [React]
+  versions: { typescript: ">=5.5", react: ">=19.0", react-dom: ">=19.0", node: ">=22.18" }
+sources:
+  - title: Managing state — react.dev
+    url: https://react.dev/learn/managing-state
+  - title: Built-in React hooks — react.dev
+    url: https://react.dev/reference/react/hooks
+cards:
+  - id: hook-decision-table
+    kind: table
+    title: Hook decision table
+    note: Reach for the first row that fits; most bugs come from storing in state what should be derived.
+    headers: [Hook, Re-renders on change?, Use when]
+    rows:
+      - ["a plain `const` in render", "—", "anything computable from props and state (a filtered list, a total, `isDirty`): **never** mirror it into state"]
+      - ["`useState`", "yes", "a value this component owns: a draft, a toggle, the selected id"]
+      - ["`useReducer`", "yes", "several fields that change together under named actions (an edit form, a wizard); the reducer is pure and testable"]
+      - ["`useRef`", "no", "a value that must survive renders but not be shown: a DOM node, a timer id, an `AbortController`"]
+      - ["`useMemo` / `useCallback`", "—", "an expensive derivation, or a stable identity for a `memo` child or an effect dependency; never for correctness"]
+      - ["`useContext` / `use(Context)`", "yes, when the provided value changes identity", "what many levels need: session, theme, feature flags"]
+      - ["`useEffect`", "—", "synchronise with something outside React (subscriptions, requests, browser APIs) and return its cleanup"]
+      - ["`useSyncExternalStore`", "yes, when the snapshot changes (`Object.is`)", "read a store React does not own (a cache, a websocket client, `matchMedia`) without tearing"]
+      - ["`use(promise)` + `<Suspense>`", "suspends, then renders", "read async data during render; the nearest `<Suspense>` shows the fallback meanwhile"]
+      - ["`useActionState`", "yes, when the action returns", "a form or button submission: the action's result (saved value, errors) and its `isPending` flag"]
+      - ["`useOptimistic`", "yes, until the action settles", "show the expected result at once; it falls back to the real state when the action ends"]
+      - ["`useFormStatus` (react-dom)", "yes, while the form submits", "a submit button that knows its `<form>` is pending, with no props passed down"]
+      - ["`useTransition` / `useDeferredValue`", "yes, at lower priority", "keep typing responsive while an expensive re-render catches up"]
+      - ["`useEffectEvent`", "—", "read the latest props inside an effect without making them dependencies (React 19.2+)"]
+  - id: lift-state-controlled-input
+    kind: code
+    title: Lifting state and controlled inputs
+    note: Move state up to the closest component that every reader needs; pass the value down and a callback up.
+    prerequisites: &jsdom
+      - "A React project (`npm create vite@latest app -- --template react-ts`), or standalone as shown here"
+      - "`npm i react react-dom jsdom @testing-library/dom` and `npm i -D esbuild @types/react @types/react-dom @types/jsdom`"
+      - "The `JSDOM` lines give Node a DOM before `react-dom` loads (hence the dynamic `import`); a browser page needs none of them"
+      - "Save as `main.tsx`, then `npx esbuild main.tsx --jsx=automatic --format=esm --outfile=main.mjs && node main.mjs`"
+    code: |-
+      import { act, useState } from "react";
+      import { JSDOM } from "jsdom";
+
+      const { window } = new JSDOM(`<main></main>`);
+      Object.assign(globalThis, { window, document: window.document, IS_REACT_ACT_ENVIRONMENT: true });
+      const { createRoot } = await import("react-dom/client");
+      const { fireEvent } = await import("@testing-library/dom");
+
+      type Person = { id: string; name: string; team: string };
+
+      const people: Person[] = [
+        { id: "p1", name: "Ada Lovelace", team: "Platform" },
+        { id: "p2", name: "Grace Hopper", team: "Compilers" },
+        { id: "p3", name: "Alan Turing", team: "Platform" },
+      ];
+
+      // Controlled: the parent owns the value; the input only reports what the user typed.
+      function SearchBox({ value, onChange }: { value: string; onChange: (next: string) => void }) {
+        return (
+          <div>
+            <input aria-label="Search people" value={value} onChange={(e) => onChange(e.target.value)} />
+            <button disabled={value === ""} onClick={() => onChange("")}>Clear</button>
+          </div>
+        );
+      }
+
+      function Directory() {
+        const [query, setQuery] = useState("");          // lifted: the box and the list both need it
+        const shown = people.filter((p) => `${p.name} ${p.team}`.toLowerCase().includes(query.toLowerCase()));
+        return (
+          <>
+            <SearchBox value={query} onChange={setQuery} />
+            <ul>{shown.map((p) => <li key={p.id}>{p.name}</li>)}</ul>
+          </>
+        );
+      }
+
+      const root = createRoot(document.querySelector("main")!);
+      const names = () => [...document.querySelectorAll("li")].map((li) => li.textContent).join(", ");
+      await act(() => root.render(<Directory />));
+
+      const input = document.querySelector("input")!;
+      await act(() => fireEvent.change(input, { target: { value: "platform" } }));
+      console.log(`typed [${input.value}]: ${names()}`);
+
+      await act(() => document.querySelector("button")!.click());
+      console.log(`cleared [${input.value}]: ${names()}`);
+    expected: |-
+      typed [platform]: Ada Lovelace, Alan Turing
+      cleared []: Ada Lovelace, Grace Hopper, Alan Turing
+    sources:
+      - title: Sharing state between components — react.dev
+        url: https://react.dev/learn/sharing-state-between-components
+    validation: &ran
+      status: ran
+      toolchain: Node 24.16.0, TypeScript 5.9.3
+      date: "2026-11-16"
+      jsx: react
+  - id: use-reducer-for-a-form
+    kind: code
+    title: useReducer for state that changes together
+    note: Name the events and keep every transition — saving and a failed save included — in one pure function; the component is type-checked, and the output replays a failed save through the reducer alone, with no rendering.
+    prerequisites: &static
+      - "A React project (`npm create vite@latest app -- --template react-ts`), or standalone as shown here"
+      - "`npm i react react-dom` and `npm i -D esbuild @types/react @types/react-dom`"
+      - "Save as `main.tsx`, then `npx esbuild main.tsx --jsx=automatic --format=esm --outfile=main.mjs && node main.mjs`"
+    code: |-
+      import { useReducer, type ChangeEvent, type FormEvent } from "react";
+
+      type EditState = { saved: string; draft: string; saving: boolean; error: string | null };
+
+      type EditAction =
+        | { type: "edit"; value: string }
+        | { type: "save-started" }
+        | { type: "saved"; value: string }
+        | { type: "save-failed"; error: string };
+
+      function editReducer(state: EditState, action: EditAction): EditState {
+        switch (action.type) {
+          case "edit": return { ...state, draft: action.value };
+          case "save-started": return { ...state, saving: true, error: null };
+          case "saved": return { ...state, saved: action.value, saving: false };
+          case "save-failed": return { ...state, saving: false, error: action.error };   // the draft survives
+        }
+      }
+
+      export function NameEditor({ name, onSave }: { name: string; onSave: (n: string) => Promise<string> }) {
+        const [state, dispatch] = useReducer(editReducer, { saved: name, draft: name, saving: false, error: null });
+        const edit = (e: ChangeEvent<HTMLInputElement>) => dispatch({ type: "edit", value: e.target.value });
+
+        const save = (e: FormEvent) => {
+          e.preventDefault();
+          if (state.saving) return;                         // already saving: a second Enter sends nothing
+          dispatch({ type: "save-started" });
+          onSave(state.draft).then(
+            (saved) => dispatch({ type: "saved", value: saved }),
+            (err: unknown) => dispatch({ type: "save-failed", error: String(err) }),
+          );
+        };
+
+        return (
+          <form onSubmit={save}>
+            <label>Display name <input value={state.draft} onChange={edit} /></label>
+            <button disabled={state.saving}>{state.saving ? "Saving…" : "Save"}</button>
+            {state.error && <p role="alert">{state.error}</p>}
+          </form>
+        );
+      }
+
+      let state: EditState = { saved: "Ada", draft: "Ada", saving: false, error: null };
+      state = editReducer(state, { type: "edit", value: "Ada Lovelace" });
+      state = editReducer(state, { type: "save-started" });
+      state = editReducer(state, { type: "save-failed", error: "Network error" });
+      console.log(state);
+    expected: |-
+      {
+        saved: 'Ada',
+        draft: 'Ada Lovelace',
+        saving: false,
+        error: 'Network error'
+      }
+    sources:
+      - title: useReducer — react.dev
+        url: https://react.dev/reference/react/useReducer
+    validation: *ran
+  - id: form-actions
+    kind: code
+    title: Submit with an action — useActionState and useFormStatus
+    note: Give the form an action; React tracks its pending state, keeps what it returned and resets the form afterwards — so echo a rejected value back.
+    prerequisites: &jsdom-form
+      - "A React 19 project (`npm create vite@latest app -- --template react-ts`), or standalone as shown here"
+      - "`npm i react react-dom jsdom` and `npm i -D esbuild @types/react @types/react-dom @types/jsdom`"
+      - "The `JSDOM` lines give Node a DOM (and its `FormData`) before `react-dom` loads; a browser page needs none of them"
+      - "Save as `main.tsx`, then `npx esbuild main.tsx --jsx=automatic --format=esm --outfile=main.mjs && node main.mjs`"
+    code: |-
+      import { act, useActionState } from "react";
+      import { useFormStatus } from "react-dom";
+      import { JSDOM } from "jsdom";
+
+      const { window } = new JSDOM(`<main></main>`);
+      const { document, FormData } = window;                  // Node's own FormData cannot read a jsdom <form>
+      Object.assign(globalThis, { window, document, FormData, IS_REACT_ACT_ENVIRONMENT: true });
+      const { createRoot } = await import("react-dom/client");
+
+      let reply: (error: string | null) => void = () => {};   // the demo answers for the server
+      const saveEmail = (_email: string) => new Promise<string | null>((resolve) => { reply = resolve; });
+
+      function SaveButton() {
+        const { pending } = useFormStatus();                   // the enclosing <form>'s submission
+        return <button disabled={pending}>{pending ? "Saving…" : "Save"}</button>;
+      }
+
+      type SaveState = { saved: string; value: string; error: string | null };
+
+      function EmailForm({ current }: { current: string }) {
+        const [state, saveAction] = useActionState<SaveState, FormData>(async (prev, form) => {
+          const email = String(form.get("email"));
+          const error = await saveEmail(email);
+          return error ? { ...prev, value: email, error } : { saved: email, value: email, error: null };
+        }, { saved: current, value: current, error: null });
+
+        return (
+          <form action={saveAction}>
+            <label>Email <input name="email" type="email" defaultValue={state.value} /></label>
+            <SaveButton />
+            {state.error && <p role="alert">{state.error}</p>}
+          </form>
+        );
+      }
+
+      await act(() => createRoot(document.querySelector("main")!).render(<EmailForm current="ada@example.com" />));
+      const show = (step: string) => console.log(`${step}: [${document.querySelector("button")!.textContent}]`,
+        document.querySelector("input")!.value, document.querySelector("[role=alert]")?.textContent ?? "");
+
+      // The browser's own validation runs first: this address passes `type="email"`, then the server rejects it.
+      document.querySelector("input")!.value = "ada@gmail.com";
+      await act(() => document.querySelector("form")!.requestSubmit());
+      show("submitting");
+
+      await act(async () => reply("Use your @example.com address"));
+      show("rejected");
+    expected: |-
+      submitting: [Saving…] ada@gmail.com
+      rejected: [Save] ada@gmail.com Use your @example.com address
+    sources:
+      - title: useActionState — react.dev
+        url: https://react.dev/reference/react/useActionState
+      - title: useFormStatus — react.dev
+        url: https://react.dev/reference/react-dom/hooks/useFormStatus
+    validation: *ran
+  - id: optimistic-updates
+    kind: code
+    title: Optimistic updates — useOptimistic
+    note: Show the row the user just added while the request runs; when the action ends React drops the optimistic copy for the real state, so a failure undoes itself.
+    prerequisites: *jsdom-form
+    code: |-
+      import { act, useActionState, useOptimistic } from "react";
+      import { JSDOM } from "jsdom";
+
+      const { window } = new JSDOM(`<main></main>`);
+      const { document, FormData } = window;                  // Node's own FormData cannot read a jsdom <form>
+      Object.assign(globalThis, { window, document, FormData, IS_REACT_ACT_ENVIRONMENT: true });
+      const { createRoot } = await import("react-dom/client");
+
+      type Invite = { email: string; sending?: boolean };
+
+      let settle: (accepted: boolean) => void = () => {};     // the demo answers for the server
+      const sendInvite = (_email: string) => new Promise<boolean>((resolve) => { settle = resolve; });
+
+      function InviteForm() {
+        // a real form would also return an error to show, as in the previous card
+        const [invites, inviteAction, isPending] = useActionState<Invite[], FormData>(async (prev, form) => {
+          const email = String(form.get("email"));
+          return (await sendInvite(email)) ? [...prev, { email }] : prev;
+        }, []);
+        const [shown, addOptimistic] = useOptimistic(invites, (list, added: Invite) => [...list, added]);
+
+        const submit = (form: FormData) => {
+          addOptimistic({ email: String(form.get("email")), sending: true });   // visible until the action ends
+          inviteAction(form);
+        };
+
+        return (
+          <form action={submit}>
+            <label>Email <input name="email" type="email" /></label>
+            <button disabled={isPending}>Invite</button>
+            <ul>{shown.map((i) => <li key={i.email}>{i.email}{i.sending ? " (sending…)" : ""}</li>)}</ul>
+          </form>
+        );
+      }
+
+      await act(() => createRoot(document.querySelector("main")!).render(<InviteForm />));
+      const text = (sel: string) => [...document.querySelectorAll(sel)].map((el) => el.textContent).join(", ");
+
+      async function invite(email: string, accepted: boolean) {
+        document.querySelector("input")!.value = email;
+        await act(() => document.querySelector("form")!.requestSubmit());
+        console.log(`sending: ${text("li")}`);
+        await act(async () => settle(accepted));
+        console.log(`${accepted ? "accepted" : "rejected"}: ${text("li")}`);
+      }
+
+      await invite("grace@example.com", true);
+      await invite("alan@example.com", false);
+    expected: |-
+      sending: grace@example.com (sending…)
+      accepted: grace@example.com
+      sending: grace@example.com, alan@example.com (sending…)
+      rejected: grace@example.com
+    sources:
+      - title: useOptimistic — react.dev
+        url: https://react.dev/reference/react/useOptimistic
+    validation: *ran
+  - id: context-injection
+    kind: code
+    title: Inject with context
+    note: Provide once near the root, read through a custom hook that fails loudly when the provider is missing.
+    prerequisites: *static
+    code: |-
+      import { createContext, use, type ReactNode } from "react";
+      import { renderToStaticMarkup } from "react-dom/server";
+
+      type Permission = "invite" | "billing";
+      type Session = { userId: string; displayName: string; can: (permission: Permission) => boolean };
+
+      const SessionContext = createContext<Session | null>(null);   // null: a missing provider is detectable
+
+      function useSession(): Session {
+        const session = use(SessionContext);
+        if (!session) throw new Error("useSession() needs a <SessionContext> above it");
+        return session;
+      }
+
+      function Greeting() {
+        const { displayName } = useSession();
+        return <p>Signed in as {displayName}</p>;
+      }
+
+      function InviteButton() {
+        return useSession().can("invite") ? <button>Invite teammate</button> : null;
+      }
+
+      // React 19: the context object is its own provider (`<SessionContext.Provider>` still works)
+      function AppShell({ session, children }: { session: Session; children: ReactNode }) {
+        return <SessionContext value={session}>{children}</SessionContext>;
+      }
+
+      const admin: Session = { userId: "u1", displayName: "Ada", can: () => true };
+      const viewer: Session = { userId: "u2", displayName: "Grace", can: (p) => p !== "invite" };
+      for (const session of [admin, viewer]) {
+        console.log(renderToStaticMarkup(<AppShell session={session}><Greeting /><InviteButton /></AppShell>));
+      }
+    expected: |-
+      <p>Signed in as Ada</p><button>Invite teammate</button>
+      <p>Signed in as Grace</p>
+    sources:
+      - title: Passing data deeply with context — react.dev
+        url: https://react.dev/learn/passing-data-deeply-with-context
+    validation: *ran
+  - id: keys-reset-state
+    kind: code
+    title: Identity — a key resets state
+    note: State belongs to a position in the tree; the same component at the same position keeps its state across new props unless its `key` changes.
+    prerequisites: *jsdom
+    code: |-
+      import { act, useState } from "react";
+      import { JSDOM } from "jsdom";
+
+      const { window } = new JSDOM(`<main></main>`);
+      Object.assign(globalThis, { window, document: window.document, IS_REACT_ACT_ENVIRONMENT: true });
+      const { createRoot } = await import("react-dom/client");
+      const { fireEvent } = await import("@testing-library/dom");
+
+      type Person = { id: string; name: string; note: string };
+      const ada: Person = { id: "p1", name: "Ada", note: "" };
+      const grace: Person = { id: "p2", name: "Grace", note: "Prefers email" };
+
+      function NoteEditor({ person }: { person: Person }) {
+        const [draft, setDraft] = useState(person.note);   // read on mount only, not on every new prop
+        const label = `Note for ${person.name}`;
+
+        return <textarea aria-label={label} value={draft} onChange={(e) => setDraft(e.target.value)} />;
+      }
+
+      function Inspector({ selected, keyed }: { selected: Person; keyed: boolean }) {
+        return keyed ? <NoteEditor key={selected.id} person={selected} /> : <NoteEditor person={selected} />;
+      }
+
+      for (const keyed of [false, true]) {
+        const root = createRoot(document.querySelector("main")!);
+        await act(() => root.render(<Inspector selected={ada} keyed={keyed} />));
+        const note = document.querySelector("textarea")!;
+        await act(() => fireEvent.change(note, { target: { value: "Call Ada back" } }));
+        await act(() => root.render(<Inspector selected={grace} keyed={keyed} />));   // then picks Grace
+        const editor = document.querySelector("textarea")!;
+        console.log(`${keyed ? "key={id}" : "no key  "} → ${editor.ariaLabel}: "${editor.value}"`);
+        await act(() => root.unmount());
+      }
+    expected: |-
+      no key   → Note for Grace: "Call Ada back"
+      key={id} → Note for Grace: "Prefers email"
+    sources:
+      - title: Preserving and resetting state — react.dev
+        url: https://react.dev/learn/preserving-and-resetting-state
+    validation: *ran
+  - id: external-store
+    kind: code
+    title: Subscribe to a browser API with useSyncExternalStore
+    note: "For a value React does not own — here `navigator.onLine` — the hook gives every render one consistent value (no tearing) and re-renders only when the snapshot changes; binding a view model this way is on the MVVM sheet."
+    prerequisites: *jsdom
+    code: |-
+      import { act, useSyncExternalStore } from "react";
+      import { JSDOM } from "jsdom";
+
+      const { window } = new JSDOM(`<main></main>`);
+      Object.assign(globalThis, { window, document: window.document, IS_REACT_ACT_ENVIRONMENT: true });
+      const { createRoot } = await import("react-dom/client");
+
+      let online = true;                                       // jsdom cannot go offline: stub the flag
+      Object.defineProperty(window.navigator, "onLine", { get: () => online });
+
+      // Module-level, so their identity is stable: a new `subscribe` each render would resubscribe each time.
+      function subscribe(onChange: () => void) {
+        window.addEventListener("online", onChange);
+        window.addEventListener("offline", onChange);
+        return () => {
+          window.removeEventListener("online", onChange);
+          window.removeEventListener("offline", onChange);
+        };
+      }
+
+      const getSnapshot = () => window.navigator.onLine;     // a boolean: equal by value, nothing to cache
+      const getServerSnapshot = () => true;                    // what a server render assumes
+
+      let renders = 0;
+
+      function SaveButton() {
+        const isOnline = useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot);
+        renders++;
+        return <button disabled={!isOnline}>{isOnline ? "Save" : "Offline — reconnecting…"}</button>;
+      }
+
+      await act(() => createRoot(document.querySelector("main")!).render(<SaveButton />));
+      const show = (step: string) =>
+        console.log(`${step}: ${document.querySelector("button")!.textContent} (renders: ${renders})`);
+
+      async function network(event: "online" | "offline", isUp: boolean) {
+        online = isUp;
+        await act(() => window.dispatchEvent(new window.Event(event)));
+      }
+
+      show("mounted");
+      await network("offline", false);
+      show("offline");
+      await network("offline", false);                         // event fired, snapshot unchanged
+      show("repeat event");
+      await network("online", true);
+      show("online");
+    expected: |-
+      mounted: Save (renders: 1)
+      offline: Offline — reconnecting… (renders: 2)
+      repeat event: Offline — reconnecting… (renders: 2)
+      online: Save (renders: 3)
+    sources:
+      - title: useSyncExternalStore — react.dev
+        url: https://react.dev/reference/react/useSyncExternalStore
+    validation: *ran
+  - id: async-work-with-abort
+    kind: code
+    title: Async work tied to the component — abort on change
+    note: The effect starts the request for the current id and its cleanup aborts it, so a slow reply for an old id can never overwrite the new one.
+    prerequisites: *jsdom
+    code: |-
+      import { act, useEffect, useState } from "react";
+      import { JSDOM } from "jsdom";
+
+      const { window } = new JSDOM(`<main></main>`);
+      Object.assign(globalThis, { window, document: window.document, IS_REACT_ACT_ENVIRONMENT: true });
+      const { createRoot } = await import("react-dom/client");
+
+      type Person = { id: string; name: string };
+      type Phase =
+        | { status: "loading" }
+        | { status: "loaded"; person: Person }
+        | { status: "failed"; message: string };
+      type Loader = (id: string, signal: AbortSignal) => Promise<Person>;
+
+      function PersonCard({ personId, load }: { personId: string; load: Loader }) {
+        const [result, setResult] = useState<{ id: string; phase: Phase } | null>(null);
+
+        useEffect(() => {
+          const controller = new AbortController();
+          load(personId, controller.signal)
+            .then((person): Phase => ({ status: "loaded", person }))
+            .catch((e: unknown): Phase => ({ status: "failed", message: String(e) }))
+            .then((phase) => { if (!controller.signal.aborted) setResult({ id: personId, phase }); });
+          return () => controller.abort();               // new id or unmount: the old request is moot
+        }, [personId, load]);
+
+        // a result for another id is stale: show loading, not the wrong person
+        const phase: Phase = result?.id === personId ? result.phase : { status: "loading" };
+        if (phase.status === "loading") return <p>Loading…</p>;
+        return phase.status === "failed" ? <p role="alert">{phase.message}</p> : <h2>{phase.person.name}</h2>;
+      }
+
+      // A fake transport the test resolves by hand; in the app this is `fetch(url, { signal })`.
+      const calls: { id: string; signal: AbortSignal; reply: (p: Person) => void }[] = [];
+      const load: Loader = (id, signal) => new Promise((reply) => calls.push({ id, signal, reply }));
+
+      const root = createRoot(document.querySelector("main")!);
+      const screen = () => document.querySelector("main")!.textContent;
+      await act(() => root.render(<PersonCard personId="p1" load={load} />));
+      await act(() => root.render(<PersonCard personId="p2" load={load} />));   // the user moved on
+      console.log(calls.map((c) => `${c.id}:${c.signal.aborted ? "aborted" : "live"}`).join(" "));
+
+      await act(async () => calls[0]!.reply({ id: "p1", name: "Ada Lovelace" }));  // the stale reply lands late
+      console.log("after stale reply:", screen());
+
+      await act(async () => calls[1]!.reply({ id: "p2", name: "Grace Hopper" }));
+      console.log("after p2 reply:", screen());
+    expected: |-
+      p1:aborted p2:live
+      after stale reply: Loading…
+      after p2 reply: Grace Hopper
+    sources:
+      - title: Synchronizing with effects — react.dev
+        url: https://react.dev/learn/synchronizing-with-effects
+    validation: *ran
+  - id: use-and-suspense
+    kind: code
+    title: Read a promise with use and Suspense
+    note: Start the request outside render (an event handler, a cache, a router loader, or a parent's state), pass the promise down, and let `<Suspense>` own the loading state.
+    prerequisites: *jsdom
+    code: |-
+      import { act, Suspense, use } from "react";
+      import { JSDOM } from "jsdom";
+
+      const { window } = new JSDOM(`<main></main>`);
+      Object.assign(globalThis, { window, document: window.document, IS_REACT_ACT_ENVIRONMENT: true });
+      const { createRoot } = await import("react-dom/client");
+
+      type Member = { id: string; name: string };
+
+      function TeamMembers({ members }: { members: Promise<Member[]> }) {
+        const list = use(members);                // suspends until settled; a rejection reaches an error boundary
+        return <ul>{list.map((m) => <li key={m.id}>{m.name}</li>)}</ul>;
+      }
+
+      function TeamPage({ members }: { members: Promise<Member[]> }) {
+        return (
+          <section>
+            <h1>Platform team</h1>
+            <Suspense fallback={<p>Loading members…</p>}>
+              <TeamMembers members={members} />
+            </Suspense>
+          </section>
+        );
+      }
+
+      // One promise per request, created outside render: a new promise on every render would suspend forever.
+      const { promise, resolve } = Promise.withResolvers<Member[]>();
+      const root = createRoot(document.querySelector("main")!);
+      await act(() => root.render(<TeamPage members={promise} />));
+      console.log(document.querySelector("section")!.innerHTML);
+
+      await act(async () => resolve([{ id: "p1", name: "Ada" }, { id: "p3", name: "Alan" }]));
+      console.log(document.querySelector("section")!.innerHTML);
+    expected: |-
+      <h1>Platform team</h1><p>Loading members…</p>
+      <h1>Platform team</h1><ul><li>Ada</li><li>Alan</li></ul>
+    sources:
+      - title: use — react.dev
+        url: https://react.dev/reference/react/use
+    validation: *ran
+  - id: identity-lifetime-rules
+    kind: rules
+    title: Identity and lifetime rules
+    note: Where most React state bugs come from.
+    items:
+      - tone: bad
+        text: "Copying props into state (`useState(props.x)`) and \"syncing\" it in an effect: the copy goes stale, and every change renders twice. Derive in render, or reset with a `key`."
+      - tone: bad
+        text: "An object or array literal as a context `value` re-renders every consumer on each parent render; memoise it (`useMemo`) or split the context."
+      - tone: bad
+        text: "Reading `state` right after `setState`: you get the old value. Updates are queued; use the functional form `setX((x) => x + 1)` when the next value depends on the last."
+      - tone: good
+        text: "State lives at a **position** in the tree: changing the component type or the `key` at that position destroys it; the same type at the same position keeps it."
+      - tone: good
+        text: "Every effect that subscribes, starts a timer or a request returns the cleanup that undoes it; `<StrictMode>` runs effects twice in development to prove the cleanup works."
+      - tone: good
+        text: "List every reactive value an effect reads in its dependencies; to read the latest value without re-running, use `useEffectEvent` — not a stale-closure workaround."
+      - tone: neutral
+        text: "Mutating state in place (`items.push(x)`) does nothing visible: React compares by reference. Replace it (`[...items, x]`) — or use Immer when updates are deep."
+      - tone: neutral
+        text: "Server data (caching, refetching, deduping) is better owned by a data library (TanStack Query, SWR, a router loader) than by hand-rolled effects."

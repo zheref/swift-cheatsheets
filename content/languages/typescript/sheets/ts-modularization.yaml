@@ -1,0 +1,399 @@
+id: ts-modularization
+concept: architecture.modularization
+scope: shared
+title: "Modularization Approaches"
+group: "Design & practice"
+subtitle: "ES modules, package `exports` as the boundary, workspaces and project references, interface modules, lazy `import()` — most module graphs built in a temporary folder and run for real."
+applies:
+  platforms: [node, browser]
+  runtime: Node.js ES modules; bundlers (Vite, esbuild, webpack) follow the same rules in the browser
+  versions: { typescript: ">=5.5", node: ">=22.18" }
+sources:
+  - title: Modules — TypeScript Handbook
+    url: https://www.typescriptlang.org/docs/handbook/2/modules.html
+  - title: Modules — Node.js packages
+    url: https://nodejs.org/api/packages.html
+  - title: Project References — TypeScript
+    url: https://www.typescriptlang.org/docs/handbook/project-references.html
+cards:
+  - id: why-modularize
+    kind: rules
+    title: Why modularize, and the unit of modularity
+    note: Have concrete reasons ready; "cleanliness" is not one.
+    items:
+      - tone: good
+        text: "**Enforced boundaries** — a package's `exports` map blocks deep imports **by package name** (`@shop/checkout/src/…`) in Node and in `tsc` under `node16`, `nodenext` or `bundler` resolution. A relative path into the package folder or a tsconfig `paths` alias walks straight past it, so pair it with a lint rule (`import/no-relative-packages`, `no-restricted-imports`) in CI."
+      - tone: good
+        text: "**Faster feedback** — type-check, test and lint only the packages a change affects (project references, `--filter` in pnpm, Nx or Turborepo affected runs)."
+      - tone: good
+        text: "**Smaller bundles** — a feature behind `import()` is a separate chunk the user downloads only when needed."
+      - tone: good
+        text: "**Ownership and reuse** — a web app, a server and a CLI share one `@shop/domain` package; `CODEOWNERS` routes reviews per folder."
+      - tone: neutral
+        text: "Units, smallest first: a **file** (an ES module), a **folder** with an `index.ts` surface, a **package** (`package.json` with `exports`), a **workspace** of packages, a **TypeScript project** (`composite` + `references`)."
+      - tone: bad
+        text: "Cost: more `package.json` files, build wiring, version and dependency hygiene, and a dependency-injection seam wherever two packages meet."
+  - id: barrels-cost
+    kind: code
+    title: "What a barrel costs"
+    note: "Importing one name through an `index` that re-exports everything evaluates everything — in Node, in tests and in dev servers; bundlers can drop it only when the package declares `\"sideEffects\": false`."
+    prerequisites: &run
+      - Node.js 22.18 or later (it runs `.mts` files directly by stripping the types)
+      - "Save as `main.mts` and run `node main.mts` — it writes the small module graph to a temporary folder, imports it, and deletes it"
+      - "Optional type-check: `npm i -D typescript @types/node`, then `npx tsc --noEmit --strict --target esnext --module nodenext main.mts`"
+    code: |-
+      import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+      import { tmpdir } from "node:os";
+      import { dirname, join } from "node:path";
+      import { pathToFileURL } from "node:url";
+
+      const root = mkdtempSync(join(tmpdir(), "barrels-"));
+      const write = (file: string, source: string) => {
+        mkdirSync(dirname(join(root, file)), { recursive: true });
+        writeFileSync(join(root, file), source);
+      };
+
+      // Two copies of one small catalog library, so each import starts cold.
+      for (const copy of ["a", "b"]) {
+        write(`${copy}/price.mjs`, `console.log("  evaluated price");
+        export const formatPrice = (c) => (c / 100).toFixed(2);`);
+        write(`${copy}/search.mjs`, `console.log("  evaluated search, and its 300 kB index");
+        export const search = () => [];`);
+        write(`${copy}/index.mjs`, `export * from "./price.mjs"; export * from "./search.mjs";`);
+      }
+
+      write("direct.mjs", `import { formatPrice } from "./a/price.mjs"; console.log("  " + formatPrice(4250));`);
+      write("via-barrel.mjs", `import { formatPrice } from "./b/index.mjs";
+      console.log("  " + formatPrice(4250));`);
+
+      console.log("direct import:");
+      await import(pathToFileURL(join(root, "direct.mjs")).href);
+      console.log("through the barrel:");
+      await import(pathToFileURL(join(root, "via-barrel.mjs")).href);
+      rmSync(root, { recursive: true });
+    expected: |-
+      direct import:
+        evaluated price
+        42.50
+      through the barrel:
+        evaluated price
+        evaluated search, and its 300 kB index
+        42.50
+    validation: &ran
+      status: ran
+      toolchain: Node 24.16.0, TypeScript 5.9.3
+      date: "2026-11-16"
+  - id: circular-imports
+    kind: code
+    title: Circular imports fail by entry order
+    note: "A cycle works or throws depending on which module is loaded first, so break it with a leaf module that imports nothing."
+    prerequisites: *run
+    code: |-
+      import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+      import { tmpdir } from "node:os";
+      import { dirname, join } from "node:path";
+      import { pathToFileURL } from "node:url";
+
+      const root = mkdtempSync(join(tmpdir(), "cycles-"));
+      const write = (file: string, source: string) => {
+        mkdirSync(dirname(join(root, file)), { recursive: true });
+        writeFileSync(join(root, file), source);
+      };
+
+      const load = (file: string) => import(pathToFileURL(join(root, file)).href);
+
+      // money ⇄ config, written twice so each entry point starts cold. It throws below only because
+      // `format` is a `const`: `function` declarations are initialised early, so a cycle can hide
+      // until someone changes one into a `const`.
+      for (const copy of ["a", "b"]) {
+        write(`${copy}/money.mjs`, `import { CURRENCY } from "./config.mjs";
+      export const format = (cents) => (cents / 100).toFixed(2) + " " + CURRENCY;`);
+        write(`${copy}/config.mjs`, `import { format } from "./money.mjs";
+      export const CURRENCY = "EUR";
+      export const FREE_SHIPPING = "Free over " + format(5000);`);
+      }
+
+      console.log("enter at config:", (await load("a/config.mjs")).FREE_SHIPPING);
+      await load("b/money.mjs").catch((error: unknown) => console.log("enter at money: ", String(error)));
+
+      // The fix: the shared constant moves to a leaf module, and the graph becomes a tree.
+      write("fixed/currency.mjs", `export const CURRENCY = "EUR";`);
+      write("fixed/money.mjs", `import { CURRENCY } from "./currency.mjs";
+      export const format = (cents) => (cents / 100).toFixed(2) + " " + CURRENCY;`);
+      write("fixed/shipping.mjs", `import { format } from "./money.mjs";
+      export const FREE_SHIPPING = "Free over " + format(5000);`);
+      const { format } = await load("fixed/money.mjs");
+      console.log("fixed:", format(5000), "|", (await load("fixed/shipping.mjs")).FREE_SHIPPING);
+      rmSync(root, { recursive: true });
+    expected: |-
+      enter at config: Free over 50.00 EUR
+      enter at money:  ReferenceError: Cannot access 'format' before initialization
+      fixed: 50.00 EUR | Free over 50.00 EUR
+    validation: *ran
+  - id: package-exports
+    kind: code
+    title: "package.json `exports` is the enforcement mechanism"
+    note: "Only the subpaths listed in `exports` can be imported by package name — in Node, and in `tsc` with `moduleResolution` `node16`, `nodenext` or `bundler`; a relative path bypasses it, which is why a lint rule (`import/no-relative-packages`) closes the gap."
+    prerequisites: *run
+    code: |-
+      import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+      import { tmpdir } from "node:os";
+      import { dirname, join } from "node:path";
+      import { pathToFileURL } from "node:url";
+
+      const root = mkdtempSync(join(tmpdir(), "exports-"));
+      const write = (file: string, source: string) => {
+        mkdirSync(dirname(join(root, file)), { recursive: true });
+        writeFileSync(join(root, file), source);
+      };
+
+      const pkg = "node_modules/@shop/checkout";
+      write(`${pkg}/package.json`, JSON.stringify({
+        name: "@shop/checkout",
+        type: "module",
+        // A TypeScript package puts a "types" condition first:
+        // { "types": "./dist/index.d.ts", "default": "./dist/index.js" }
+        exports: { ".": "./src/index.mjs", "./testing": "./src/testing.mjs" },
+      }));
+
+      write(`${pkg}/src/index.mjs`, `export { startCheckout } from "./flow.mjs";`);
+      write(`${pkg}/src/flow.mjs`, `export const startCheckout = (cartId) => "checkout for " + cartId;
+      export const retryPolicy = { attempts: 3 };   // internal: not in the public surface`);
+      write(`${pkg}/src/testing.mjs`, `export const fakeCheckout = () => "fake checkout";`);
+
+      write("app.mjs", `import { startCheckout } from "@shop/checkout";
+      import { fakeCheckout } from "@shop/checkout/testing";
+      console.log(startCheckout("cart_1"), "|", fakeCheckout());
+      try {
+        await import("@shop/checkout/src/flow.mjs");
+      } catch (error) {
+        console.log(error.code);
+      }
+      const bypass = await import("./node_modules/@shop/checkout/src/flow.mjs");   // a relative path is not checked
+      console.log("relative path bypass:", bypass.retryPolicy);`);
+
+      await import(pathToFileURL(join(root, "app.mjs")).href);
+      rmSync(root, { recursive: true });
+    expected: |-
+      checkout for cart_1 | fake checkout
+      ERR_PACKAGE_PATH_NOT_EXPORTED
+      relative path bypass: { attempts: 3 }
+    validation: *ran
+  - id: workspaces-and-references
+    kind: code
+    title: "Workspaces: packages linked by name"
+    note: "A workspace is packages linked by name into `node_modules` — npm and Yarn hoist the links to the root; pnpm links each package into its dependents' own `node_modules`, so an undeclared dependency fails to resolve."
+    prerequisites:
+      - Node.js 22.18 or later (it runs `.mts` files directly by stripping the types)
+      - "Save as `main.mts` and run `node main.mts` — it lays out a two-package workspace in a temporary folder and creates the link `npm install` would"
+      - "In a real repository, `npm install` creates the links; with pnpm, declare the dependency as `\"@shop/catalog\": \"workspace:*\"` and list the packages in `pnpm-workspace.yaml`"
+    code: |-
+      import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+      import { tmpdir } from "node:os";
+      import { dirname, join } from "node:path";
+      import { pathToFileURL } from "node:url";
+
+      const root = mkdtempSync(join(tmpdir(), "workspace-"));
+      const write = (file: string, content: string | object) => {
+        mkdirSync(dirname(join(root, file)), { recursive: true });
+        writeFileSync(join(root, file), typeof content === "string" ? content : JSON.stringify(content, null, 2));
+      };
+
+      write("package.json", { name: "shop", private: true, workspaces: ["packages/*"] });
+      write("packages/catalog/package.json", { name: "@shop/catalog", type: "module", exports: "./index.mjs" });
+      write("packages/catalog/index.mjs", `export const featured = () => ["mug", "lamp"];`);
+      write("packages/web/package.json", {
+        name: "@shop/web", type: "module", dependencies: { "@shop/catalog": "*" },
+      });
+
+      write("packages/web/main.mjs", `import { featured } from "@shop/catalog";
+      console.log("web shows", featured());`);
+
+      // The link `npm install` (or Yarn) creates in the ROOT node_modules. pnpm instead links it into
+      // packages/web/node_modules — so an undeclared dependency fails there instead of resolving by accident.
+      mkdirSync(join(root, "node_modules/@shop"), { recursive: true });
+      symlinkSync(join(root, "packages/catalog"), join(root, "node_modules/@shop/catalog"), "dir");
+
+      await import(pathToFileURL(join(root, "packages/web/main.mjs")).href);
+      rmSync(root, { recursive: true });
+    expected: |-
+      web shows [ 'mug', 'lamp' ]
+    sources:
+      - title: workspaces — npm Docs
+        url: https://docs.npmjs.com/cli/using-npm/workspaces
+      - title: Workspaces — pnpm
+        url: https://pnpm.io/workspaces
+    validation: *ran
+  - id: project-references
+    kind: code
+    title: "Project references: `tsc -b` in dependency order"
+    note: "Each package is a `composite` project that references what it imports; `tsc -b` builds them in order, writes `.d.ts` for the dependents, and rebuilds only the projects whose inputs changed."
+    prerequisites:
+      - Node.js 22.18 or later (it runs `.mts` files directly by stripping the types)
+      - "`npm i -D typescript` — the snippet runs that package's `tsc -b` on a two-package workspace it writes to a temporary folder"
+      - "Save as `main.mts` and run `node main.mts`; in a real repository the same build is `npx tsc -b`"
+    code: |-
+      import { execFileSync } from "node:child_process";
+      import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+      import { createRequire } from "node:module";
+      import { tmpdir } from "node:os";
+      import { dirname, join } from "node:path";
+
+      const root = mkdtempSync(join(tmpdir(), "references-"));
+      const write = (file: string, content: string | object) => {
+        mkdirSync(dirname(join(root, file)), { recursive: true });
+        writeFileSync(join(root, file), typeof content === "string" ? content : JSON.stringify(content, null, 2));
+      };
+
+      const compilerOptions = { composite: true, module: "nodenext", rootDir: "src", outDir: "dist" };
+      write("packages/catalog/tsconfig.json", { compilerOptions, include: ["src"] });
+      write("packages/catalog/package.json", {
+        name: "@shop/catalog",
+        type: "module",
+        exports: { ".": { types: "./dist/index.d.ts", default: "./dist/index.js" } },
+      });
+
+      write("packages/catalog/src/index.ts", `export const featured = (): string[] => ["mug", "lamp"];`);
+      write("packages/web/tsconfig.json",
+        { compilerOptions, include: ["src"], references: [{ path: "../catalog" }] });
+      write("packages/web/package.json", { name: "@shop/web", type: "module" });
+      const writeMain = (verb: string) => write("packages/web/src/main.ts",
+        `import { featured } from "@shop/catalog";\nconsole.log("web ${verb}", featured());`);
+      writeMain("shows");
+      mkdirSync(join(root, "node_modules/@shop"), { recursive: true });   // the link a workspace install makes
+      symlinkSync(join(root, "packages/catalog"), join(root, "node_modules/@shop/catalog"), "dir");
+
+      const tsc = createRequire(import.meta.url).resolve("typescript/lib/tsc.js");
+      const run = (...args: string[]) => execFileSync(process.execPath, args, { cwd: root, encoding: "utf8" });
+      const STATUS = /Project 'packages\/(\w+)\/tsconfig\.json' is (up to date|out of date)/g;
+      const build = () =>
+        [...run(tsc, "-b", "packages/web", "--verbose").matchAll(STATUS)].map(([, p, s]) => `${p}: ${s}`);
+
+      console.log("first build:", build());                 // catalog first: web references it
+      console.log("no change:  ", build());
+      writeMain("lists");
+      console.log("web edited: ", build());
+      console.log(run("packages/web/dist/main.js").trim());
+      rmSync(root, { recursive: true });
+    expected: |-
+      first build: [ 'catalog: out of date', 'web: out of date' ]
+      no change:   [ 'catalog: up to date', 'web: up to date' ]
+      web edited:  [ 'catalog: up to date', 'web: out of date' ]
+      web lists [ 'mug', 'lamp' ]
+    sources:
+      - title: Project References — TypeScript
+        url: https://www.typescriptlang.org/docs/handbook/project-references.html
+    validation: *ran
+  - id: interface-module-composition-root
+    kind: code
+    title: Interface modules and the composition root
+    note: "Features depend on a types-only package, never on each other or on an implementation; the app's entry point is the one module that imports both sides."
+    prerequisites: *run
+    code: |-
+      // ── packages/catalog-api: the interface module — types only, no dependencies ──
+      type Product = { sku: string; name: string; priceCents: number };
+      type CatalogService = { related(sku: string): Promise<Product[]> };
+
+      // ── packages/checkout: `import type { CatalogService } from "@shop/catalog-api"` ──
+      // A type-only import is erased, so it adds no runtime edge (and no runtime cycle).
+      function createSuggestions(catalog: CatalogService) {
+        return async (cartSkus: string[]) => {
+          const candidates = await Promise.all(cartSkus.map((sku) => catalog.related(sku)));
+          return [...new Set(candidates.flat().map((p) => p.name))];
+        };
+      }
+
+      // ── packages/catalog-live: the heavy implementation (HTTP client, cache, retries) ──
+      function createLiveCatalog(getJson: (path: string) => Promise<Product[]>): CatalogService {
+        return { related: (sku) => getJson(`/products/${encodeURIComponent(sku)}/related`) };
+      }
+
+      // ── apps/web/main.ts: the composition root ──
+      const fakeHttp = async (path: string): Promise<Product[]> =>
+        path.includes("mug") ? [{ sku: "coaster", name: "Cork coaster", priceCents: 400 }] : [];
+      const suggestions = createSuggestions(createLiveCatalog(fakeHttp));
+      console.log(await suggestions(["mug-white", "lamp"]));
+
+      // ── a test or a Storybook story wires an in-memory catalog instead ──
+      const inMemory: CatalogService = {
+        related: async () => [{ sku: "tray", name: "Oak tray", priceCents: 2500 }],
+      };
+
+      console.log(await createSuggestions(inMemory)(["anything"]));
+    expected: |-
+      [ 'Cork coaster' ]
+      [ 'Oak tray' ]
+    validation: *ran
+  - id: lazy-loading
+    kind: code
+    title: Lazy loading with dynamic import()
+    note: "`import()` loads and evaluates a module the first time it is needed, and only once; bundlers turn each one into a separate chunk (`React.lazy(() => import(\"./Checkout\"))`)."
+    prerequisites: *run
+    code: |-
+      import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+      import { tmpdir } from "node:os";
+      import { join } from "node:path";
+      import { pathToFileURL } from "node:url";
+
+      const root = mkdtempSync(join(tmpdir(), "lazy-"));
+      writeFileSync(join(root, "pdf-export.mjs"), `console.log("loading the PDF exporter and its fonts");
+      export function exportPdf(orderId) { return "invoice-" + orderId + ".pdf"; }`);
+
+      type PdfExporter = { exportPdf(orderId: string): string };
+
+      // With a literal path, `await import("./pdf-export.js")` is typed for you; this path is built at run time.
+      const loadExporter = () => import(pathToFileURL(join(root, "pdf-export.mjs")).href) as Promise<PdfExporter>;
+
+      async function onDownloadInvoice(orderId: string): Promise<void> {
+        const { exportPdf } = await loadExporter();
+        console.log("downloaded", exportPdf(orderId));
+      }
+
+      console.log("app started");              // nothing PDF-related has been evaluated yet
+      await onDownloadInvoice("A-1");
+      await onDownloadInvoice("A-2");         // the module registry returns the same instance
+      rmSync(root, { recursive: true });
+    expected: |-
+      app started
+      loading the PDF exporter and its fonts
+      downloaded invoice-A-1.pdf
+      downloaded invoice-A-2.pdf
+    sources:
+      - title: import() — MDN
+        url: https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Operators/import
+    validation: *ran
+  - id: choosing-a-strategy
+    kind: table
+    title: Choosing a strategy
+    note: Start at the top and move down only when a concrete cost forces you to.
+    headers: [Strategy, Looks like, Use when]
+    rows:
+      - ["Folders in one package", "`src/features/*`, each with an `index.ts` surface, boundaries enforced by lint", "one app, one team — start here"]
+      - ["Workspace packages", "`packages/*` with `exports`, linked by npm, pnpm or Yarn workspaces", "a web app, a server or a CLI share code, and the boundary must hold"]
+      - ["Project references", "`composite` tsconfigs, `references`, `tsc -b`", "type-checking the whole repository has become slow"]
+      - ["Monorepo task runner", "Nx or Turborepo over the workspace", "many packages: cached, affected-only builds and tests"]
+      - ["Published packages", "semver releases to a registry, one package per concern", "reuse across repositories or organisations; adds release overhead"]
+      - ["Micro-frontends", "independently deployed bundles, module federation", "teams that must deploy independently — and can pay the runtime and consistency cost"]
+  - id: pitfalls
+    kind: rules
+    title: Pitfalls
+    note: Most module problems are graph problems; look at the graph before the code.
+    items:
+      - tone: bad
+        text: "**Barrels everywhere** — every import of `@/components` evaluates the whole folder: slow tests, slow dev server, and cycles hidden behind one `index.ts`."
+      - tone: bad
+        text: "**Cycles** — they fail by entry order, so they pass locally and break in a test; find them with `madge --circular` or the `import/no-cycle` lint rule."
+      - tone: bad
+        text: "**A `shared`/`utils` package everything depends on** — it becomes the new monolith and invalidates every cache when it changes."
+      - tone: bad
+        text: "**Feature imports feature** — features are siblings; they meet in the app or through an interface package."
+      - tone: bad
+        text: "**Two copies of a dependency** (two Reacts, two zod schemas) — declare frameworks as `peerDependencies` and check `npm ls react`."
+      - tone: bad
+        text: "**The dual package hazard** — shipping CommonJS and ESM builds lets both load at once, with two copies of module state; prefer ESM-only packages."
+      - tone: good
+        text: "**Named exports over `export default`** — one name everywhere, reliable auto-import and rename, and a typo is a compile error instead of a silently different local name."
+      - tone: good
+        text: "Use `import type` (enforced by `verbatimModuleSyntax`) so type-only dependencies never become runtime edges."
+      - tone: good
+        text: "Give each package its own tests and an `exports` map from day one; enforce the dependency graph in CI — documentation alone never holds."

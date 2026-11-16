@@ -1,0 +1,538 @@
+id: ts-timers
+concept: reactive.timers-and-async
+scope: platform
+title: "Timers & Async Patterns"
+group: "Reactive & time"
+subtitle: "Delays, tickers, polling, deadlines, debounce and throttle, concurrency limits — with AbortSignal for cancellation and an injected clock for tests."
+applies:
+  platforms: [browser, node]
+  runtime: Node.js or a browser
+  versions: { typescript: ">=5.5", node: ">=22.18" }
+sources:
+  - title: setTimeout — MDN
+    url: https://developer.mozilla.org/en-US/docs/Web/API/Window/setTimeout
+  - title: AbortSignal — MDN
+    url: https://developer.mozilla.org/en-US/docs/Web/API/AbortSignal
+  - title: Timers — Node.js
+    url: https://nodejs.org/api/timers.html
+  - title: The Node.js event loop — Node.js
+    url: https://nodejs.org/en/learn/asynchronous-work/event-loop-timers-and-nexttick
+cards:
+  - id: schedulers
+    kind: table
+    title: "Which scheduler runs when: browser vs Node"
+    note: "Pick by **when** the callback must run relative to rendering and I/O, not by habit."
+    headers: [API, Where, Runs, Reach for it to…]
+    rows:
+      - ["`queueMicrotask(fn)`, `await`, `.then`", "both", "right after the current task, before rendering, timers or I/O", "finish a state change consistently — never in a loop: it starves the page"]
+      - ["`process.nextTick(fn)`", "Node", "inside a callback or CommonJS: before the promise microtasks; at the top level of an ES module, **after** them", "library internals; prefer `queueMicrotask`"]
+      - ["`setTimeout(fn, ms)`", "both", "a task after **at least** `ms`; browsers clamp deeply nested ones to 4 ms and hidden tabs to about 1 s", "delays, debounce, deadlines"]
+      - ["`setInterval(fn, ms)`", "both", "repeating; never catches up after the loop was blocked", "a UI clock; use a deadline loop for anything that must not drift"]
+      - ["`requestAnimationFrame(fn)`", "browser", "just before the next paint (60–120 Hz); paused in hidden tabs", "animation, reading layout once per frame"]
+      - ["`requestIdleCallback(fn, { timeout })`", "browser, not Baseline", "when the frame has spare time, or by `timeout`", "analytics, prefetching, low-priority cleanup — feature-detect it"]
+      - ["`scheduler.postTask(fn, { priority, signal })`", "browser, not Baseline", "a task at `user-blocking`, `user-visible` or `background` priority; cancellable", "splitting long work by importance — feature-detect `globalThis.scheduler`"]
+      - ["`setImmediate(fn)`", "Node", "the check phase, after pending I/O callbacks", "yielding to I/O inside a long loop"]
+      - ["`node:timers/promises`", "Node", "`setTimeout`, `setInterval` (async iterator), `scheduler.wait` (experimental) — all accept `{ signal }`", "awaitable, cancellable timers without hand-written promises"]
+      - ["`timer.unref()`", "Node", "the timer no longer keeps the process alive", "background refreshes in a CLI or a server that must be able to exit"]
+  - id: one-shot-delay
+    kind: code
+    title: A one-shot delay as a promise, with AbortSignal
+    note: "Every `await` on a delay is a cancellation point, and the abort listener must go when the timer wins, or each delay leaks one."
+    prerequisites: &run
+      - Node.js 22.18 or later (it runs `.mts` files directly by stripping the types)
+      - "Save as `main.mts` and run `node main.mts`"
+      - "Optional type-check: `npm i -D typescript @types/node`, then `npx tsc --noEmit --strict --target esnext --module nodenext main.mts`"
+    code: |-
+      import { setTimeout as sleep } from "node:timers/promises";
+
+      // Browser and Node: a cancellable delay, written once.
+      function delay(ms: number, signal?: AbortSignal): Promise<void> {
+        return new Promise((resolve, reject) => {
+          signal?.throwIfAborted();
+          const onAbort = () => {
+            clearTimeout(timer);
+            reject(signal!.reason);
+          };
+
+          const timer = setTimeout(() => {
+            signal?.removeEventListener("abort", onAbort);
+            resolve();
+          }, ms);
+          signal?.addEventListener("abort", onAbort, { once: true });
+        });
+      }
+
+      async function showToast(message: string, signal: AbortSignal) {
+        console.log("show:", message);
+        try {
+          await delay(30, signal);
+          console.log("hide:", message);
+        } catch (e) {
+          console.log(`dropped "${message}":`, (e as DOMException).name);   // the screen went away first
+        }
+      }
+
+      const screen = new AbortController();               // one per screen; abort it on navigation
+      await showToast("Order placed", screen.signal);
+      const pending = showToast("Courier assigned", screen.signal);
+      screen.abort();
+      await pending;
+
+      // Node's built-in: the same cancellation, but it rejects with AbortError and the reason in `cause`.
+      await sleep(50, undefined, { signal: AbortSignal.timeout(5) }).catch((e: Error) =>
+        console.log("node:timers/promises:", e.name, "caused by", (e.cause as DOMException).name));
+    expected: |-
+      show: Order placed
+      hide: Order placed
+      show: Courier assigned
+      dropped "Courier assigned": AbortError
+      node:timers/promises: AbortError caused by TimeoutError
+    sources:
+      - title: Timers Promises API — Node.js
+        url: https://nodejs.org/api/timers.html#timers-promises-api
+    validation: &ran
+      status: ran
+      toolchain: Node 24.16.0, TypeScript 5.9.3
+      date: "2026-11-16"
+  - id: repeating-without-drift
+    kind: code
+    title: A repeating timer without drift
+    note: "Sleeping for the interval adds every tick's work to the period, so sleep until an absolute deadline, skip the slots you missed, and end quietly when aborted mid-sleep."
+    prerequisites: *run
+    code: |-
+      import { setTimeout as sleep } from "node:timers/promises";
+
+      type Clock = { now(): number; sleep(ms: number, signal?: AbortSignal): Promise<unknown> };
+      type Tick = (at: number) => Promise<void>;
+      const realClock: Clock = { now: () => performance.now(), sleep: (ms, signal) => sleep(ms, null, { signal }) };
+
+      async function naiveTicker(clock: Clock, intervalMs: number, tick: Tick, signal: AbortSignal) {
+        while (!signal.aborted) {
+          await clock.sleep(intervalMs, signal).catch(() => {});   // WRONG: interval + however long tick() took
+          if (!signal.aborted) await tick(clock.now());
+        }
+      }
+
+      async function ticker(clock: Clock, intervalMs: number, tick: Tick, signal: AbortSignal) {
+        let next = clock.now();
+        while (!signal.aborted) {
+          next += intervalMs;
+          const now = clock.now();
+          if (now > next) next += Math.ceil((now - next) / intervalMs) * intervalMs;   // fell behind: skip slots
+          await clock.sleep(next - now, signal).catch(() => {});   // stopped mid-sleep: end quietly, no AbortError
+          if (!signal.aborted) await tick(clock.now());
+        }
+      }
+
+      for (const [name, run] of [["naive   ", naiveTicker], ["deadline", ticker]] as const) {
+        let t = 0;                                               // a virtual clock: sleeping only moves a number
+        const clock: Clock = {
+          now: () => t,
+          sleep: async (ms) => {
+            t += ms;
+          },
+        };
+        const stop = new AbortController();
+        const ticks: number[] = [];
+        await run(clock, 1000, async (at) => {
+          ticks.push(at);
+          t += ticks.length === 2 ? 1500 : 40;                   // each refresh takes 40 ms; one takes 1.5 s
+          if (ticks.length === 5) stop.abort();
+        }, stop.signal);
+        console.log(name, ticks.join(", "));
+      }
+
+      // In the app: the real clock, stopped from outside while it sleeps.
+      await ticker(realClock, 20, async () => {}, AbortSignal.timeout(50));
+      console.log("real clock: stopped mid-sleep, resolved without an error");
+    expected: |-
+      naive    1000, 2040, 4540, 5580, 6620
+      deadline 1000, 2000, 4000, 5000, 6000
+      real clock: stopped mid-sleep, resolved without an error
+    validation: *ran
+  - id: polling-and-countdown
+    kind: code
+    title: Polling until a condition, and a countdown
+    note: "Back off while nothing changes and bound the whole poll with one deadline signal (in a browser, use the `delay` above instead of `node:timers/promises`)."
+    prerequisites: *run
+    code: |-
+      import { setInterval as every, setTimeout as sleep } from "node:timers/promises";
+
+      type Delivery = { status: "preparing" | "on the way" | "delivered" };
+
+      async function pollUntil<T>(
+        load: (signal: AbortSignal) => Promise<T>,
+        isDone: (value: T) => boolean,
+        { intervalMs, maxIntervalMs, signal }: { intervalMs: number; maxIntervalMs: number; signal: AbortSignal },
+      ): Promise<T> {
+        for (let wait = intervalMs; ; wait = Math.min(wait * 2, maxIntervalMs)) {   // back off: 5, 10, 20, 20…
+          const value = await load(signal);
+          if (isDone(value)) return value;
+          await sleep(wait, undefined, { signal });          // rejects at once when the signal aborts
+        }
+      }
+
+      const statuses: Delivery["status"][] = ["preparing", "preparing", "on the way", "delivered"];
+      const fetchDelivery = async (_signal: AbortSignal): Promise<Delivery> => {
+        const status = statuses.shift() ?? "delivered";      // stand-in for fetch(url, { signal })
+        console.log("poll:", status);
+        return { status };
+      };
+
+      const delivery = await pollUntil(fetchDelivery, (d) => d.status === "delivered", {
+        intervalMs: 5,
+        maxIntervalMs: 20,
+        signal: AbortSignal.timeout(2_000),                  // give up after 2 s overall
+      });
+
+      console.log("done:", delivery.status);
+
+      const SECOND = 10;                                     // 10 ms so the example is instant; 1_000 in the app
+      let remaining = 3;                                     // "you can still cancel the order for 3 s"
+      for await (const _ of every(SECOND, undefined, { signal: AbortSignal.timeout(10 * SECOND) })) {
+        console.log("cancel window:", remaining, "s");
+        if (--remaining === 0) break;                        // break ends the interval
+      }
+    expected: |-
+      poll: preparing
+      poll: preparing
+      poll: on the way
+      poll: delivered
+      done: delivered
+      cancel window: 3 s
+      cancel window: 2 s
+      cancel window: 1 s
+    applies:
+      platforms: [node]
+    validation: *ran
+  - id: timeout-an-operation
+    kind: code
+    title: A timeout on an operation
+    note: "`AbortSignal.timeout` stops the work itself; `Promise.race` only stops you waiting — the loser runs on."
+    prerequisites: *run
+    code: |-
+      import { createServer } from "node:http";
+      import type { AddressInfo } from "node:net";
+
+      const server = createServer(() => {});                 // accepts requests and never answers
+      await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+      const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/api/eta`;
+
+      try {                                                  // 1. a deadline that also cancels the request
+        await fetch(url, { signal: AbortSignal.timeout(30) });
+      } catch (e) {
+        console.log("deadline:", (e as DOMException).name);
+      }
+
+      const cancelButton = new AbortController();            // 2. the deadline OR the user, whichever is first
+      setTimeout(() => cancelButton.abort(), 10);
+      try {
+        await fetch(url, { signal: AbortSignal.any([cancelButton.signal, AbortSignal.timeout(5_000)]) });
+      } catch (e) {
+        console.log("user or deadline:", (e as DOMException).name);
+      }
+
+      function withTimeout<T>(work: Promise<T>, ms: number): Promise<T> {   // 3. no signal to pass: race it
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const deadline = new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new Error(`timed out after ${ms} ms`)), ms);
+        });
+        return Promise.race([work, deadline]).finally(() => clearTimeout(timer));   // don't leave it armed
+      }
+
+      const legacyGeocode = () => new Promise<string>((resolve) => setTimeout(() => resolve("52.52,13.40"), 100));
+      await withTimeout(legacyGeocode(), 20).catch((e: Error) => console.log("race:", e.message));
+      console.log("fast enough:", await withTimeout(Promise.resolve("cached"), 20));
+
+      server.closeAllConnections();
+      server.close();
+    expected: |-
+      deadline: TimeoutError
+      user or deadline: AbortError
+      race: timed out after 20 ms
+      fast enough: cached
+    sources:
+      - title: AbortSignal.timeout() — MDN
+        url: https://developer.mozilla.org/en-US/docs/Web/API/AbortSignal/timeout_static
+      - title: AbortSignal.any() — MDN
+        url: https://developer.mozilla.org/en-US/docs/Web/API/AbortSignal/any_static
+    validation: *ran
+  - id: debounce-and-throttle
+    kind: code
+    title: Debounce and throttle — tested with mock timers
+    note: "Debounce waits for a pause and keeps the last call, throttle fires at once and then at most once per window with the latest value, and `mock.timers` makes the test instant."
+    prerequisites: *run
+    code: |-
+      import { mock } from "node:test";
+
+      function debounce<A extends unknown[]>(fn: (...args: A) => void, waitMs: number) {
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const debounced = (...args: A) => {
+          clearTimeout(timer);                                  // every call restarts the quiet period
+          timer = setTimeout(() => fn(...args), waitMs);
+        };
+        return Object.assign(debounced, { cancel: () => clearTimeout(timer) });
+      }
+
+      function throttle<A extends unknown[]>(fn: (...args: A) => void, ms: number, now = () => performance.now()) {
+        let last = -Infinity;                                   // `now`: monotonic; the test passes Date.now
+        let trailing: ReturnType<typeof setTimeout> | undefined;
+        const fire = (args: A) => {
+          last = now();
+          fn(...args);
+        };
+        const throttled = (...args: A) => {
+          clearTimeout(trailing);
+          const wait = ms - (now() - last);
+          if (wait <= 0) fire(args);                            // leading edge: at once
+          else trailing = setTimeout(() => fire(args), wait);   // trailing edge: the latest call
+        };
+        return Object.assign(throttled, { cancel: () => clearTimeout(trailing) });
+      }
+
+      mock.timers.enable({ apis: ["setTimeout", "Date"] });     // test clock: time moves only on tick()
+      const advanceTo = (ms: number) => {
+        while (Date.now() < ms) mock.timers.tick(10);
+      };
+
+      const search = debounce((q: string) => console.log(`${Date.now()} ms  search "${q}"`), 300);
+      const saveScroll = throttle((y: number) => console.log(`${Date.now()} ms  save scroll ${y}`), 100, Date.now);
+
+      for (const [at, q] of [[0, "p"], [100, "pi"], [200, "piz"], [700, "pizza"]] as const) {
+        advanceTo(at);
+        search(q);                                              // typing, then a pause
+      }
+
+      for (let y = 0; y <= 250; y += 50) {
+        advanceTo(2000 + y);
+        saveScroll(y);                                          // a scroll event every 50 ms
+      }
+
+      advanceTo(3000);
+      for (const handler of [search, saveScroll]) handler.cancel();   // on unmount: nothing fires late
+    expected: |-
+      500 ms  search "piz"
+      1000 ms  search "pizza"
+      2000 ms  save scroll 0
+      2100 ms  save scroll 50
+      2200 ms  save scroll 150
+      2300 ms  save scroll 250
+    sources:
+      - title: Class MockTimers — Node.js
+        url: https://nodejs.org/api/test.html#class-mocktimers
+    validation: *ran
+  - id: cache-then-network
+    kind: code
+    title: Cache, then network
+    note: "An async generator yields the cached copy at once, then the fresh one; offline, the cached copy is the answer, not an error."
+    prerequisites: *run
+    code: |-
+      type Order = { id: string; status: string };
+
+      async function* cacheThenNetwork(
+        id: string,
+        cache: Map<string, Order>,
+        fetchOrder: (id: string) => Promise<Order>,
+      ): AsyncGenerator<{ order: Order; source: "cache" | "network" }> {
+        const cached = cache.get(id);
+        if (cached) yield { order: cached, source: "cache" };       // paint at once
+        try {
+          const fresh = await fetchOrder(id);
+          cache.set(id, fresh);
+          yield { order: fresh, source: "network" };                // then correct it
+        } catch (error) {
+          if (!cached) throw error;                                 // nothing to show: a real failure
+          console.log("offline: keeping the cached copy");
+        }
+      }
+
+      const cache = new Map([["A-17", { id: "A-17", status: "preparing" }]]);
+      const online = async (id: string) => ({ id, status: "on the way" });
+      const offline = async (): Promise<Order> => {
+        throw new TypeError("fetch failed");
+      };
+
+      for (const fetchOrder of [online, offline]) {
+        for await (const { order, source } of cacheThenNetwork("A-17", cache, fetchOrder)) {
+          console.log(`render ${order.id}: ${order.status} (${source})`);
+        }
+      }
+
+      try {
+        for await (const _ of cacheThenNetwork("B-2", cache, offline));
+      } catch (e) {
+        console.log("B-2 failed:", (e as Error).message);
+      }
+    expected: |-
+      render A-17: preparing (cache)
+      render A-17: on the way (network)
+      render A-17: on the way (cache)
+      offline: keeping the cached copy
+      B-2 failed: fetch failed
+    sources:
+      - title: for await...of — MDN
+        url: https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Statements/for-await...of
+    validation: *ran
+  - id: serial-parallel-limited
+    kind: code
+    title: N jobs — serial, parallel, or with a concurrency limit
+    note: "`for…of` + `await` is serial, `Promise.all` is everything at once; a small worker pool is the usual answer for uploads and API fan-out."
+    prerequisites: *run
+    code: |-
+      import { setTimeout as sleep } from "node:timers/promises";
+
+      let inFlight = 0;
+      let peak = 0;
+      async function uploadPhoto(name: string): Promise<string> {
+        peak = Math.max(peak, ++inFlight);
+        await sleep(name.length * 3);                         // stand-in for the upload
+        inFlight--;
+        return name;
+      }
+
+      // A pool of `limit` workers pulling from one queue; results keep the input order. If one item rejects,
+      // the call rejects — but the other workers keep taking items: pass a signal to stop them too.
+      async function mapWithLimit<T, R>(
+        items: readonly T[], limit: number, work: (item: T) => Promise<R>, signal?: AbortSignal,
+      ): Promise<R[]> {
+        const results = new Array<R>(items.length);
+        let next = 0;
+        const worker = async () => {
+          while (next < items.length && !signal?.aborted) {
+            const index = next++;                             // claimed synchronously: no two workers take one
+            results[index] = await work(items[index]!);
+          }
+        };
+        await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+        signal?.throwIfAborted();                             // stopped early: reject, never a sparse array
+        return results;
+      }
+
+      const photos = ["front", "label", "doorstep", "signature", "box"];
+      const runs: [string, () => Promise<string[]>][] = [
+        ["serial  ", () => mapWithLimit(photos, 1, uploadPhoto)],      // = for…of with await
+        ["parallel", () => Promise.all(photos.map(uploadPhoto))],
+        ["limit 2 ", () => mapWithLimit(photos, 2, uploadPhoto)],
+      ];
+      for (const [name, run] of runs) {
+        peak = 0;
+        const results = await run();
+        console.log(name, "peak in flight:", peak, "|", results.join(" "));
+      }
+
+      const stop = AbortSignal.timeout(5);                    // e.g. the user cancels the upload sheet
+      await mapWithLimit(photos, 2, uploadPhoto, stop).catch((e: Error) => console.log("cancelled run:", e.name));
+    expected: |-
+      serial   peak in flight: 1 | front label doorstep signature box
+      parallel peak in flight: 5 | front label doorstep signature box
+      limit 2  peak in flight: 2 | front label doorstep signature box
+      cancelled run: TimeoutError
+    validation: *ran
+  - id: work-that-outlives-the-page
+    kind: compare
+    title: Recurring work that outlives the page
+    note: "A page's timers die with the tab, so hand recurring work to the service worker in the browser and let the OS scheduler start a short-lived job in Node."
+    prerequisites:
+      - "Browser: an installed web app (PWA) with a registered service worker, served over HTTPS. Periodic Background Sync and Background Sync are both Chromium-only (Chrome grants periodic sync only to an installed app, and spaces it by site engagement); elsewhere refresh on load and on `visibilitychange`"
+      - "The browser column is `page.ts` and `sw.ts` in one listing: type-check `page.ts` with `lib: [\"ESNext\", \"DOM\"]` and `sw.ts` with `lib: [\"ESNext\", \"WebWorker\"]`; both pass with the declared types, as they do here together under DOM"
+      - "Node: a host with cron (or a systemd timer, or a Kubernetes CronJob); save the job as `jobs/refresh-eta.mts`"
+    columns:
+      - label: Browser — service worker
+        tone: modern
+        code: |-
+          // Neither API is in TypeScript's lib.dom or lib.webworker yet: declare the parts used.
+          type PeriodicSync = { register(tag: string, options: { minInterval: number }): Promise<void> };
+          type OneOffSync = { register(tag: string): Promise<void> };
+          type SyncEvent = Event & { readonly tag: string; waitUntil(work: Promise<unknown>): void };
+
+          // page.ts (lib DOM) — feature-detect first: browsers that lack the API also reject the permission name.
+          const registration = await navigator.serviceWorker.ready;
+          let periodicSync: PeriodicSync | undefined;              // usable only when present AND granted
+          if ("periodicSync" in registration) {                    // Chromium only, and granted to installed apps
+            const { state } = await navigator.permissions.query({ name: "periodic-background-sync" as PermissionName });
+            if (state === "granted") periodicSync = registration.periodicSync as PeriodicSync;
+          }
+
+          if (periodicSync) {
+            await periodicSync.register("refresh-deliveries", { minInterval: 12 * 3_600_000 });
+          } else if ("sync" in registration) {                     // a Chromium tab without it: once, when back online
+            await (registration.sync as OneOffSync).register("refresh-deliveries");
+          } else {                                                 // Firefox, Safari: refresh whenever the page shows
+            document.addEventListener("visibilitychange", () => {
+              if (document.visibilityState === "visible") void fetch("/api/deliveries/active");
+            });
+          }
+
+          // sw.ts (lib WebWorker) — runs with no page open
+          for (const type of ["periodicsync", "sync"]) {
+            self.addEventListener(type, (event) => {
+              const sync = event as SyncEvent;
+              if (sync.tag === "refresh-deliveries") sync.waitUntil(refreshDeliveries());
+            });
+          }
+
+          async function refreshDeliveries() {
+            const response = await fetch("/api/deliveries/active");
+            if (!response.ok) return;                              // never cache an error page over good data
+            const cache = await caches.open("deliveries");
+            await cache.put("/api/deliveries/active", response);   // the next page load paints from it
+          }
+      - label: Node — a job the OS schedules
+        tone: good
+        code: |-
+          // crontab -e — every 15 minutes the job starts, works, and exits:
+          // */15 * * * * cd /srv/delivery && node jobs/refresh-eta.mts >> logs/refresh-eta.log 2>&1
+
+          // jobs/refresh-eta.mts
+          const deadline = AbortSignal.timeout(5 * 60_000);    // never overlap the next run
+          try {
+            const response = await fetch("http://127.0.0.1:8080/internal/refresh-eta", {
+              method: "POST",
+              signal: deadline,
+            });
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            console.log(new Date().toISOString(), "refreshed");
+          } catch (error) {
+            console.error(new Date().toISOString(), "refresh failed:", error);
+            process.exitCode = 1;                              // cron and systemd see the failure
+          }
+
+          // Inside a server that already runs all day, an in-process timer is enough —
+          // but it stops with the process and runs once per replica:
+          // setInterval(refreshEta, 15 * 60_000).unref();
+    expected: "In Chromium the browser wakes the service worker roughly at the registered interval (or when connectivity returns) and refreshes the cache with no page open — an error response is skipped, never cached; cron starts the Node job every 15 minutes and logs one line per run."
+    sources:
+      - title: Web Periodic Background Synchronization API — MDN
+        url: https://developer.mozilla.org/en-US/docs/Web/API/Web_Periodic_Background_Synchronization_API
+      - title: Background Synchronization API — MDN
+        url: https://developer.mozilla.org/en-US/docs/Web/API/Background_Synchronization_API
+    validation:
+      status: compiled
+      toolchain: TypeScript 5.9.3 (lib DOM)
+      date: "2026-11-16"
+      host: "a service worker of an installed web app in a Chromium browser; a Node.js host with cron"
+  - id: which-do-i-reach-for
+    kind: rules
+    title: Which do I reach for — and what bites
+    note: ""
+    items:
+      - tone: modern
+        text: "**One delay**: `await delay(ms, signal)` (or `node:timers/promises`). **A deadline**: `AbortSignal.timeout(ms)`, combined with the user's cancel through `AbortSignal.any`."
+      - tone: modern
+        text: "**Something periodic that must keep time**: a deadline loop. A UI clock that may skip a second: `setInterval`. Anything visual: `requestAnimationFrame`."
+      - tone: modern
+        text: "**User input**: debounce for search-as-you-type, throttle for scroll and resize. Already in an RxJS pipeline? Use its `debounceTime` / `throttleTime`."
+      - tone: modern
+        text: "**N jobs**: `Promise.all` for a handful, a worker pool with a limit for dozens, `for…of` when order or rate limits demand serial."
+      - tone: good
+        text: "Inject the clock (or use `mock.timers`) — a test that really sleeps is slow and flaky in CI."
+      - tone: good
+        text: "Store every timer id or `AbortController` you start, and clear or abort it when the screen, request or process ends."
+      - tone: bad
+        text: "`setTimeout` is a minimum, not a promise: hidden tabs run timers at most about once a second — and in Chromium, chained timers in a tab hidden for more than 5 minutes (and silent for 30 s) only once a minute. Never count ticks to measure time — read `performance.now()`."
+      - tone: bad
+        text: "`Date.now()` differences are wall-clock: they jump with NTP and user edits. Use `performance.now()` for durations."
+      - tone: bad
+        text: "`Promise.race` with a timer leaves the timer armed (keeping Node alive) unless you `clearTimeout` it, and leaves the losing work running."
+      - tone: bad
+        text: "A floating `setInterval` in a component or module is a leak per mount: return its `clearInterval` from the effect, or tie it to an `AbortSignal`."

@@ -1,0 +1,563 @@
+id: ts-accessibility
+concept: accessibility.practices
+scope: platform
+title: "Accessibility on the Web"
+group: "Quality & reach"
+subtitle: "Semantic HTML first, ARIA second — names, roles and states, keyboard and focus, announcements, forms, contrast and motion, and how to test them."
+applies:
+  platforms: [browser]
+  runtime: a browser page (the DOM); the runnable examples use jsdom in Node
+  versions: { typescript: ">=5.5", node: ">=22.18", jsdom: ">=26", "@testing-library/dom": ">=10" }
+sources:
+  - title: ARIA Authoring Practices Guide — W3C WAI
+    url: https://www.w3.org/WAI/ARIA/apg/
+  - title: Web Content Accessibility Guidelines (WCAG) 2.2
+    url: https://www.w3.org/TR/WCAG22/
+  - title: Accessibility — MDN
+    url: https://developer.mozilla.org/en-US/docs/Web/Accessibility
+  - title: ByRole — Testing Library
+    url: https://testing-library.com/docs/queries/byrole/
+cards:
+  - id: semantics-first
+    kind: table
+    title: Role, name, state — from HTML first
+    note: "A native element brings its role, name, keyboard behaviour and states for free; ARIA only changes what is announced, never what happens."
+    headers: [You need, Use, Role, Name from, State]
+    rows:
+      - ["an action", "`<button type=\"button\">`", "button", "its text; `aria-label` if icon-only", "`disabled`, `aria-pressed`, `aria-expanded`"]
+      - ["to go somewhere", "`<a href>`", "link", "its text", "`aria-current=\"page\"`"]
+      - ["an image", "`<img alt=\"…\">`; `<figure>` + `<figcaption>` for a visible caption", "img; none when `alt=\"\"`", "`alt`: what the image tells, not what it shows; `alt=\"\"` when decorative", "—"]
+      - ["text input", "`<input>` + `<label for>`", "textbox, searchbox", "the label", "`required`, `aria-invalid`; hint via `aria-describedby`"]
+      - ["on/off", "`<input type=\"checkbox\">`", "checkbox", "the label", "`checked`, `indeterminate`"]
+      - ["one of several", "`<fieldset>` + `<legend>` + radios, or `<select>`", "group of radio (add `role=\"radiogroup\"` to announce it as one); combobox, or listbox with `multiple` or `size` > 1", "the legend or label", "`checked`, `selected`"]
+      - ["a value in a range", "`<input type=\"range\">`", "slider", "the label", "value; `aria-valuetext` for units, kept in sync"]
+      - ["page structure", "`<header> <nav> <main> <footer>`, `<h1>`–`<h6>`", "banner, navigation, main, contentinfo, heading", "`aria-label` when two navs", "heading level"]
+      - ["a modal", "`<dialog>` + `showModal()`", "dialog", "`aria-labelledby` its heading", "open; the rest of the page inert"]
+      - ["tabs, grids, app-style command menus", "no element exists: ARIA `tablist`/`tab`/`tabpanel`, `grid`, `menu` from the APG — `menu` only for application commands; site navigation is a list of links or a disclosure", "as declared", "`aria-label` or `aria-labelledby`", "`aria-selected` (tabs, grid cells), `aria-checked` (menu items); keyboard is **yours** to build"]
+  - id: accessible-names
+    kind: code
+    title: Accessible names and text alternatives
+    note: "If a query by role and name cannot find the control, a screen reader user cannot either — the icon-only `div` below is invisible to both."
+    prerequisites: &jsdom
+      - Node.js 22.18 or later (it runs `.mts` files directly by stripping the types)
+      - "`npm i jsdom @testing-library/dom`"
+      - "Save as `main.mts` and run `node main.mts` — in a browser the same markup and script run on the page"
+    code: |-
+      import { JSDOM } from "jsdom";
+      import { queryAllByRole, queryByRole, type ByRoleOptions } from "@testing-library/dom";
+
+      const { window } = new JSDOM(`<!doctype html><section class="player">
+        <img src="kind-of-blue.jpg" alt="Album cover: Kind of Blue"> <img src="divider.svg" alt="">
+        <button type="button" aria-label="Play"><svg aria-hidden="true" viewBox="0 0 24 24"></svg></button>
+        <div class="icon-button" onclick="pause()">⏸</div>
+        <label for="volume">Volume</label>
+        <input id="volume" type="range" min="0" max="100" value="30" aria-valuetext="30 percent">
+        <h2 id="queue-title">Up next</h2> <ul aria-labelledby="queue-title"><li>Blue in Green</li></ul>
+      </section>`);
+      const body = window.document.body;
+
+      const checks: [string, ByRoleOptions][] = [
+        ["img", { name: "Album cover: Kind of Blue" }], // alt says what the image tells the reader
+        ["button", { name: "Play" }],                   // the name comes from aria-label; the svg is hidden
+        ["button", { name: "⏸" }],                      // a div with onclick: no role, no focus, no keyboard
+        ["slider", { name: "Volume" }],                 // <label for> names the input
+        ["list", { name: "Up next" }],                  // aria-labelledby reuses visible text
+      ];
+      for (const [role, options] of checks) {
+        const found = queryByRole(body, role, options);
+        console.log(`${role} "${options.name}": ${found ? `<${found.tagName.toLowerCase()}>` : "not found"}`);
+      }
+      console.log("images exposed:", queryAllByRole(body, "img").length);   // alt="" removes the divider
+
+      // aria-valuetext must follow the value, or the slider keeps announcing "30 percent"
+      const volume = queryByRole(body, "slider", { name: "Volume" }) as HTMLInputElement;
+      volume.addEventListener("input", () => volume.setAttribute("aria-valuetext", `${volume.value} percent`));
+      volume.value = "55";
+      volume.dispatchEvent(new window.Event("input", { bubbles: true }));
+      console.log("valuetext:", JSON.stringify(volume.getAttribute("aria-valuetext")));
+    expected: |-
+      img "Album cover: Kind of Blue": <img>
+      button "Play": <button>
+      button "⏸": not found
+      slider "Volume": <input>
+      list "Up next": <ul>
+      images exposed: 1
+      valuetext: "55 percent"
+    sources:
+      - title: Accessible Name and Description Computation — W3C
+        url: https://www.w3.org/TR/accname-1.2/
+      - title: Images tutorial — W3C WAI
+        url: https://www.w3.org/WAI/tutorials/images/
+    validation: &ran
+      status: ran
+      toolchain: Node 24.16.0, TypeScript 5.9.3
+      date: "2026-11-16"
+  - id: disclosure
+    kind: code
+    title: A disclosure built correctly
+    note: "A real `<button>` is focusable and answers Enter and Space, you add `aria-expanded` and the hiding, and a panel that overlays content must also close on Escape and when focus leaves it."
+    prerequisites: *jsdom
+    code: |-
+      import { JSDOM } from "jsdom";
+      import { getByRole, queryByRole } from "@testing-library/dom";
+
+      const { document, KeyboardEvent } = new JSDOM(`<!doctype html><div class="filter-menu">
+          <button type="button" aria-expanded="false" aria-controls="filters">Filters</button>
+          <div id="filters" class="popover" hidden><label><input type="checkbox"> In stock only</label></div>
+        </div><a href="#results">Skip to results</a>`).window;
+
+      // without script: <button popovertarget="filters"> and <div id="filters" popover> give light dismiss,
+      // Escape and the expanded state natively; this is the scripted equivalent
+      function overlayDisclosure(button: HTMLButtonElement): void {
+        const panel = document.getElementById(button.getAttribute("aria-controls")!)!;
+        const menu = button.parentElement!;            // the button and its panel
+        const setOpen = (open: boolean) => {
+          button.setAttribute("aria-expanded", String(open));
+          panel.hidden = !open;                        // hidden: out of the tab order and the accessibility tree
+        };
+        button.addEventListener("click", () => setOpen(button.getAttribute("aria-expanded") !== "true"));
+        // it covers the results, so it must get out of the way: on Escape, and when focus leaves it
+        menu.addEventListener("keydown", (event) => {
+          if (event.key !== "Escape" || panel.hidden) return;
+          setOpen(false);
+          button.focus();                              // never leave focus on an element that just disappeared
+        });
+        menu.addEventListener("focusout", (event) => {   // Tab past the panel, or a click elsewhere
+          if (!menu.contains(event.relatedTarget as Node | null)) setOpen(false);
+        });
+      }
+
+      const button = getByRole(document.body, "button", { name: "Filters" }) as HTMLButtonElement;
+      overlayDisclosure(button);
+      const checkbox = () => queryByRole(document.body, "checkbox", { name: "In stock only" });   // null if hidden
+      const state = () => `${button.getAttribute("aria-expanded")}, focus: ${document.activeElement?.textContent}`;
+      console.log("closed, checkbox reachable:", checkbox() !== null);
+      button.click();
+      checkbox()!.focus();
+      checkbox()!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+      console.log("after Escape: expanded", state());
+      button.click();
+      checkbox()!.focus();
+      getByRole(document.body, "link", { name: "Skip to results" }).focus();
+      console.log("after focus left: expanded", state());
+    expected: |-
+      closed, checkbox reachable: false
+      after Escape: expanded false, focus: Filters
+      after focus left: expanded false, focus: Skip to results
+    sources:
+      - title: Disclosure (Show/Hide) pattern — ARIA APG
+        url: https://www.w3.org/WAI/ARIA/apg/patterns/disclosure/
+      - title: Using the Popover API — MDN
+        url: https://developer.mozilla.org/en-US/docs/Web/API/Popover_API/Using
+    validation: *ran
+  - id: modal-dialog
+    kind: code
+    title: A modal dialog with focus in and focus back
+    note: "`showModal()` gives you the focus trap, the inert background and Escape; you choose the initial focus and, when the opener is gone, where focus goes next."
+    prerequisites:
+      - "A page with `<h2 id=\"cart-heading\" tabindex=\"-1\">Cart</h2>`, a `<ul id=\"cart-items\">` whose items each hold a `<button data-remove>Remove</button>`, and `<dialog id=\"remove-dialog\" aria-labelledby=\"remove-title\"><h2 id=\"remove-title\">Remove this item?</h2><form method=\"dialog\"><button value=\"keep\" autofocus>Keep it</button> <button value=\"remove\">Remove</button></form></dialog>`"
+      - "Compile with `tsc` (`lib` including `DOM`) or a bundler, and load the output with `<script type=\"module\">`"
+    code: |-
+      const dialog = document.querySelector<HTMLDialogElement>("#remove-dialog")!;
+      const list = document.querySelector<HTMLUListElement>("#cart-items")!;
+      let pending: HTMLLIElement | null = null;
+
+      list.addEventListener("click", (event) => {
+        const remove = (event.target as Element).closest<HTMLButtonElement>("button[data-remove]");
+        if (!remove) return;
+        pending = remove.closest("li");
+        dialog.returnValue = "";
+        // modal: focus moves to [autofocus] ("Keep it", the safe choice), the page behind becomes inert,
+        // and Escape closes it as a cancel
+        dialog.showModal();
+      });
+
+      // a <form method="dialog"> button closes the dialog with its value as returnValue
+      dialog.addEventListener("close", () => {
+        const item = pending;
+        pending = null;
+        if (!item || dialog.returnValue !== "remove") return;   // kept: the browser returns focus to the opener
+        const neighbour = item.nextElementSibling ?? item.previousElementSibling;
+        item.remove();
+        // the opener was inside the removed item, so focus would fall to <body>: put it somewhere useful
+        const target = neighbour?.querySelector<HTMLElement>("button[data-remove]")
+          ?? document.querySelector<HTMLElement>("#cart-heading");
+        target?.focus();
+      });
+    expected: "Remove opens the dialog with focus on **Keep it** and the cart behind it unreachable; Escape or **Keep it** returns focus to that Remove button; **Remove** deletes the item and focuses the next item's Remove button, or the Cart heading when none is left."
+    sources:
+      - title: "<dialog>: The Dialog element — MDN"
+        url: https://developer.mozilla.org/en-US/docs/Web/HTML/Element/dialog
+      - title: Dialog (Modal) pattern — ARIA APG
+        url: https://www.w3.org/WAI/ARIA/apg/patterns/dialog-modal/
+    validation: &compiled
+      status: compiled
+      toolchain: TypeScript 5.9.3 (lib DOM)
+      date: "2026-11-16"
+      host: a browser page with the elements named in the setup
+  - id: roving-tabindex
+    kind: code
+    title: Keyboard operation with a roving tabindex
+    note: "A toolbar, tab list or grid is one Tab stop inside which arrow keys move focus, and exactly one item has `tabindex=\"0\"` — the last one used, however it got focus."
+    prerequisites: *jsdom
+    code: |-
+      import { JSDOM } from "jsdom";
+      import { getByRole } from "@testing-library/dom";
+
+      const { window } = new JSDOM(`<!doctype html>
+        <div role="toolbar" aria-label="Formatting">
+          <button type="button">Bold</button> <button type="button">Italic</button>
+          <button type="button">Link</button>
+        </div>`);
+      const { document } = window;
+
+      function rovingFocus(container: HTMLElement): void {
+        const items = Array.from(container.querySelectorAll<HTMLElement>("button"));
+        const activate = (index: number) => items.forEach((item, i) => (item.tabIndex = i === index ? 0 : -1));
+        activate(0);
+        // a click or a script can focus an item too: Tab must come back to that one, not a stale one
+        container.addEventListener("focusin", (event) => {
+          const index = items.indexOf(event.target as HTMLElement);
+          if (index !== -1) activate(index);
+        });
+        container.addEventListener("keydown", (event) => {
+          const current = items.indexOf(document.activeElement as HTMLElement);
+          const to: Record<string, number> = { ArrowRight: current + 1, ArrowLeft: current - 1, Home: 0, End: -1 };
+          const target = to[event.key];
+          if (target === undefined || current === -1) return;
+          event.preventDefault();                  // keep arrows from scrolling the page
+          items.at(target % items.length)!.focus();   // wraps both ways; focusin moves the tabindex
+        });
+      }
+
+      const toolbar = getByRole(document.body, "toolbar", { name: "Formatting" });
+      rovingFocus(toolbar);
+      getByRole(toolbar, "button", { name: "Italic" }).focus();   // e.g. the user clicked it
+      for (const key of ["ArrowRight", "ArrowRight", "ArrowLeft", "Home"]) {
+        document.activeElement!.dispatchEvent(new window.KeyboardEvent("keydown", { key, bubbles: true }));
+        const stops = Array.from(toolbar.querySelectorAll("button"), (b) => `${b.textContent}:${b.tabIndex}`);
+        console.log(key.padEnd(10), "→", document.activeElement?.textContent?.padEnd(6), stops.join(" "));
+      }
+    expected: |-
+      ArrowRight → Link   Bold:-1 Italic:-1 Link:0
+      ArrowRight → Bold   Bold:0 Italic:-1 Link:-1
+      ArrowLeft  → Link   Bold:-1 Italic:-1 Link:0
+      Home       → Bold   Bold:0 Italic:-1 Link:-1
+    sources:
+      - title: Developing a keyboard interface — ARIA APG
+        url: https://www.w3.org/WAI/ARIA/apg/practices/keyboard-interface/
+    validation: *ran
+  - id: live-regions
+    kind: code
+    title: Announce changes with a live region
+    note: "When content changes away from the focus — a result count, a saved toast — put one short sentence in a `status` region that was in the page from the start."
+    prerequisites: *jsdom
+    code: |-
+      import { JSDOM } from "jsdom";
+      import { getByRole } from "@testing-library/dom";
+
+      // the regions exist (empty) before anything changes: a region inserted with its text is often not read.
+      // .visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden;
+      //                    clip-path: inset(50%); white-space: nowrap; }   — read aloud, not shown
+      const { window } = new JSDOM(`<!doctype html>
+        <label for="filter">Filter orders</label> <input id="filter" type="search">
+        <ul id="orders"><li>A-1042 coffee</li><li>A-1043 tea</li><li>A-1044 coffee beans</li></ul>
+        <p role="status" class="visually-hidden"></p>
+        <p role="alert"></p>`);
+      const body = window.document.body;
+
+      const status = getByRole(body, "status");    // polite: waits until the reader finishes speaking
+      const alert = getByRole(body, "alert");      // assertive: interrupts — errors only
+      const rows = Array.from(body.querySelectorAll<HTMLLIElement>("#orders li"));
+
+      function filterOrders(query: string): void {
+        const shown = rows.filter((row) => {
+          row.hidden = !row.textContent!.includes(query);
+          return !row.hidden;
+        }).length;
+        // when filtering as the user types, debounce this write (~500 ms): one count, not one per key
+        status.textContent = shown ? `${shown} of ${rows.length} orders shown` : `No orders match "${query}"`;
+      }
+
+      const input = getByRole(body, "searchbox", { name: "Filter orders" }) as HTMLInputElement;
+      input.addEventListener("input", () => filterOrders(input.value));
+      for (const typed of ["coffee", "cocoa"]) {
+        input.value = typed;
+        input.dispatchEvent(new window.Event("input", { bubbles: true }));
+        console.log(`status: ${JSON.stringify(status.textContent)}`);
+      }
+      alert.textContent = "Could not refresh orders. Check your connection.";
+      console.log(`alert: ${JSON.stringify(alert.textContent)}`);
+    expected: |-
+      status: "2 of 3 orders shown"
+      status: "No orders match \"cocoa\""
+      alert: "Could not refresh orders. Check your connection."
+    sources:
+      - title: ARIA live regions — MDN
+        url: https://developer.mozilla.org/en-US/docs/Web/Accessibility/ARIA/Guides/Live_regions
+    validation: *ran
+  - id: accessible-forms
+    kind: code
+    title: "Forms: labels, errors, aria-describedby"
+    note: "On a failed submit: set `aria-invalid=\"true\"`, link the error text with `aria-describedby`, and move focus to the first invalid field."
+    prerequisites: *jsdom
+    code: |-
+      import { JSDOM } from "jsdom";
+      import { getByRole, queryByRole } from "@testing-library/dom";
+
+      const { document } = new JSDOM(`<!doctype html>
+        <form novalidate>
+          <label for="email">Email</label>
+          <input id="email" type="email" required aria-describedby="email-hint">
+          <p id="email-hint">We send the receipt here.</p>
+          <p id="email-error" hidden></p>
+          <button>Place order</button>
+        </form>`).window;
+
+      const form = document.querySelector("form")!;
+      form.addEventListener("submit", (event) => {
+        event.preventDefault();
+        const field = form.querySelector<HTMLInputElement>("#email")!;
+        const error = form.querySelector<HTMLElement>("#email-error")!;
+        const { valueMissing, typeMismatch } = field.validity;
+        const message =
+          valueMissing ? "Enter your email." : typeMismatch ? "Enter an email like ada@example.com." : "";
+        error.textContent = message;
+        error.hidden = !message;
+        // the error joins the hint in the description; colour alone would tell a screen reader nothing
+        field.setAttribute("aria-describedby", message ? "email-hint email-error" : "email-hint");
+        // aria-invalid="" means false: write "true", and remove the attribute once the field is valid
+        if (message) field.setAttribute("aria-invalid", "true");
+        else field.removeAttribute("aria-invalid");
+        if (message) field.focus();
+      });
+
+      const body = document.body;
+      const email = getByRole(body, "textbox", { name: "Email" }) as HTMLInputElement;
+      for (const typed of ["ada@", "ada@example.com"]) {
+        email.value = typed;
+        getByRole(body, "button", { name: "Place order" }).click();
+        // the description a screen reader reads after the name: the hint, plus the error when there is one
+        const errorRead = queryByRole(body, "textbox", { name: "Email", description: /Enter an email/ }) !== null;
+        const invalid = JSON.stringify(email.getAttribute("aria-invalid"));   // quoted: "" would be a bug
+        console.log(typed.padEnd(15), `aria-invalid=${invalid} focused=${email === document.activeElement}`,
+          `error-in-description=${errorRead}`);
+      }
+    expected: |-
+      ada@            aria-invalid="true" focused=true error-in-description=true
+      ada@example.com aria-invalid=null focused=true error-in-description=false
+    sources:
+      - title: Forms tutorial — W3C WAI
+        url: https://www.w3.org/WAI/tutorials/forms/
+      - title: aria-invalid — MDN
+        url: https://developer.mozilla.org/en-US/docs/Web/Accessibility/ARIA/Reference/Attributes/aria-invalid
+    validation: *ran
+  - id: contrast-check
+    kind: code
+    title: Check contrast in code
+    note: "Put the WCAG contrast check in the design-token tests, so a colour change that fails AA fails the build."
+    prerequisites:
+      - Node.js 22.18 or later (it runs `.mts` files directly by stripping the types)
+      - "Save as `main.mts` and run `node main.mts`"
+    code: |-
+      // WCAG 2 relative luminance of an sRGB colour such as "#1f2937"
+      function luminance(hex: string): number {
+        const [r = 0, g = 0, b = 0] = [1, 3, 5].map((i) => {
+          const channel = parseInt(hex.slice(i, i + 2), 16) / 255;
+          return channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4;
+        });
+        return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+      }
+
+      function contrast(foreground: string, background: string): number {
+        const [lighter = 0, darker = 0] = [luminance(foreground), luminance(background)].sort((a, b) => b - a);
+        return (lighter + 0.05) / (darker + 0.05);
+      }
+
+      const tokens: Record<string, [text: string, background: string]> = {
+        body: ["#1f2937", "#ffffff"],
+        muted: ["#767676", "#ffffff"],
+        placeholder: ["#999999", "#ffffff"],
+        "button-on-brand": ["#ffffff", "#f97316"],
+      };
+      for (const [name, [text, background]] of Object.entries(tokens)) {
+        const ratio = contrast(text, background);
+        const verdict = ratio >= 4.5 ? "AA" : ratio >= 3 ? "AA large text only" : "fails";
+        console.log(`${name.padEnd(16)} ${ratio.toFixed(2).padStart(5)}:1  ${verdict}`);
+      }
+    expected: |-
+      body             14.68:1  AA
+      muted             4.54:1  AA
+      placeholder       2.85:1  fails
+      button-on-brand   2.80:1  fails
+    sources:
+      - title: "Understanding SC 1.4.3: Contrast (Minimum) — W3C WAI"
+        url: https://www.w3.org/WAI/WCAG22/Understanding/contrast-minimum.html
+    validation: *ran
+  - id: scaling-and-motion
+    kind: code
+    title: Text scaling, forced colours and reduced motion
+    note: "Size in `rem` so text and targets grow with the reader's font setting; keep borders visible in forced-colours mode; skip motion when they ask for less."
+    prerequisites:
+      - "A page with an `.order-total`, icon buttons, a `#open-cart` button and a `#cart` panel"
+      - "Compile with `tsc` (`lib` including `DOM`) or a bundler, and load the output with `<script type=\"module\">`"
+    code: |-
+      const sheet = new CSSStyleSheet();
+      sheet.replaceSync(`
+        html { font-size: 100%; }                  /* never a px root: it overrides the reader's setting */
+        .order-total { font-size: 1.25rem; }
+        .icon-button { min-inline-size: 2.75rem; min-block-size: 2.75rem; }   /* 44 px at the default size */
+        @media (forced-colors: active) {           /* Windows High Contrast: backgrounds and shadows vanish */
+          .icon-button { border: 1px solid ButtonText; }
+        }
+        @media (prefers-reduced-motion: reduce) {
+          *, ::before, ::after {
+            animation-duration: 0.01ms !important;
+            transition-duration: 0.01ms !important;
+            scroll-behavior: auto !important;
+          }
+        }
+      `);
+      document.adoptedStyleSheets = [...document.adoptedStyleSheets, sheet];
+
+      // motion started from script is not covered by the CSS above: ask the same question
+      const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)");
+
+      function openCart(panel: HTMLElement): void {
+        panel.hidden = false;
+        // everyone gets the scroll; only the smoothness and the slide depend on the preference
+        panel.scrollIntoView({ behavior: reducedMotion.matches ? "auto" : "smooth", block: "nearest" });
+        if (reducedMotion.matches) return;          // appear in place
+        const slideIn = [{ transform: "translateX(100%)" }, { transform: "none" }];
+        panel.animate(slideIn, { duration: 250, easing: "ease-out" });
+      }
+
+      const cart = document.querySelector<HTMLElement>("#cart")!;
+      document.querySelector<HTMLButtonElement>("#open-cart")?.addEventListener("click", () => openCart(cart));
+    expected: "With the OS setting \"reduce motion\" on, the cart appears without sliding; in Windows forced-colours mode icon buttons keep a visible border; at a 200% browser font size the totals and icon buttons grow with the text."
+    sources:
+      - title: prefers-reduced-motion — MDN
+        url: https://developer.mozilla.org/en-US/docs/Web/CSS/Reference/At-rules/@media/prefers-reduced-motion
+      - title: forced-colors — MDN
+        url: https://developer.mozilla.org/en-US/docs/Web/CSS/@media/forced-colors
+      - title: "Understanding SC 1.4.4: Resize Text — W3C WAI"
+        url: https://www.w3.org/WAI/WCAG22/Understanding/resize-text.html
+    validation: *compiled
+  - id: react-specifics
+    kind: code
+    title: "React: htmlFor, fragments, useId, focus on route change"
+    note: "`useId` gives each field instance its own ids; fragments keep labels, lists and tables free of wrapper `div`s; after a client-side navigation — not on first load — move focus to the new page's heading."
+    prerequisites:
+      - "A React project: `npm create vite@latest app -- --template react-ts`"
+      - "To run it in Node as here: `npm i react react-dom jsdom @testing-library/react @testing-library/dom`, and `npm i -D tsx`"
+      - "Put a `tsconfig.json` with `\"compilerOptions\": { \"jsx\": \"react-jsx\" }` next to the file (tsx takes JSX settings only from tsconfig; without it, `React is not defined`), save as `main.tsx`, and run `npx tsx main.tsx`"
+    code: |-
+      import { StrictMode, useEffect, useId, useRef } from "react";
+      import { JSDOM } from "jsdom";
+
+      const { window } = new JSDOM("<!doctype html><body></body>");
+      Object.assign(globalThis, { window, document: window.document, IS_REACT_ACT_ENVIRONMENT: true });
+      const { render, screen } = await import("@testing-library/react");
+
+      function EmailField({ error }: { error?: string }) {
+        const id = useId();                        // unique per instance, identical on server and client
+        return (
+          <>
+            <label htmlFor={`${id}-input`}>Email</label>
+            <input id={`${id}-input`} type="email" aria-invalid={error ? true : undefined}
+              aria-describedby={error ? `${id}-error` : undefined} />
+            {error && <p id={`${id}-error`}>{error}</p>}
+          </>
+        );
+      }
+
+      function Page({ title }: { title: string }) {
+        const heading = useRef<HTMLHeadingElement>(null);
+        const shownTitle = useRef(title);
+        useEffect(() => {
+          if (shownTitle.current === title) return;   // first load, even StrictMode's re-run: focus stays put
+          shownTitle.current = title;
+          heading.current?.focus();                   // client-side navigation: announce the new page
+        }, [title]);
+        const error = title === "Checkout" ? "Enter your email." : undefined;
+        return <main><h1 ref={heading} tabIndex={-1}>{title}</h1><EmailField error={error} /></main>;
+      }
+
+      const app = (title: string) => <StrictMode><Page title={title} /></StrictMode>;   // as Vite's main.tsx
+      const { rerender } = render(app("Cart"));
+      const invalid = () => screen.getByRole("textbox", { name: "Email" }).getAttribute("aria-invalid");
+      console.log("focus:", document.activeElement?.tagName, "invalid:", invalid());
+      rerender(app("Checkout"));                       // what a router does on navigation
+      screen.getByRole("textbox", { name: "Email", description: "Enter your email." });   // throws if not linked
+      console.log("focus:", document.activeElement?.textContent, "invalid:", invalid());
+    expected: |-
+      focus: BODY invalid: null
+      focus: Checkout invalid: true
+    sources:
+      - title: useId — React
+        url: https://react.dev/reference/react/useId
+    validation:
+      status: ran
+      toolchain: Node 24.16.0, TypeScript 5.9.3
+      date: "2026-11-16"
+      jsx: react
+  - id: automated-audit
+    kind: code
+    title: Automated audit with axe in Playwright
+    note: "Scan every key page — and each state a page can be in, such as an open drawer — in CI; fail on any WCAG A or AA violation."
+    prerequisites:
+      - "A Playwright project (`npm init playwright@latest`) with the app served at `baseURL`"
+      - "`npm i -D @axe-core/playwright`; save under `tests/` as `a11y.spec.ts` and run `npx playwright test`"
+    code: |-
+      import { test, expect } from "@playwright/test";
+      import AxeBuilder from "@axe-core/playwright";
+
+      const wcagAA = ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa"];
+
+      for (const path of ["/", "/cart", "/checkout"]) {
+        test(`${path} has no WCAG A/AA violations`, async ({ page }) => {
+          await page.goto(path);
+          await expect(page.getByRole("main")).toBeVisible();
+          const results = await new AxeBuilder({ page })
+            .withTags(wcagAA)
+            .exclude("#support-chat")              // a third-party widget, audited by its vendor
+            .analyze();
+          // ids and counts make the failure message readable: "color-contrast: 3"
+          expect(results.violations.map((v) => `${v.id}: ${v.nodes.length}`)).toEqual([]);
+        });
+      }
+
+      test("the open cart drawer has no violations", async ({ page }) => {
+        await page.goto("/");
+        await page.getByRole("button", { name: "Open cart" }).click();
+        const results = await new AxeBuilder({ page }).include("#cart").withTags(wcagAA).analyze();
+        expect(results.violations).toEqual([]);
+      });
+    expected: "Each page and the open drawer are scanned; a violation fails the test with its rule id and how many elements break it."
+    sources:
+      - title: Accessibility testing — Playwright
+        url: https://playwright.dev/docs/accessibility-testing
+      - title: axe-core rule tags — Deque
+        url: https://github.com/dequelabs/axe-core/blob/develop/doc/API.md
+    validation:
+      status: excerpt
+      host: a Playwright project with `@axe-core/playwright` (not among this catalog's example libraries) and browsers installed
+  - id: accessibility-rules
+    kind: rules
+    title: Test it, and the pitfalls
+    note: Automated checks find the mechanical failures; only a keyboard and a screen reader find the rest.
+    items:
+      - tone: good
+        text: "Use a real screen reader on each platform you ship: **VoiceOver** (macOS, iOS), **NVDA** or JAWS (Windows), **TalkBack** (Android), Narrator; Orca on Linux. Then do every flow with the keyboard alone."
+      - tone: good
+        text: "Run **axe** in CI (the audit card above) and fail on new violations. It catches many issues, never all: names that make no sense, focus order and announcements need a person."
+      - tone: good
+        text: "Query by role and accessible name in tests (`getByRole(\"button\", { name: \"Play\" })`): a test that needs a test id is a hint the control has no name."
+      - tone: good
+        text: "Target WCAG 2.2 AA: 4.5:1 text contrast (3:1 for large text and UI parts), targets at least 24×24 px, a visible focus indicator, content usable at 200% text and 400% zoom."
+      - tone: bad
+        text: "`<div onclick>` and `<span role=\"button\">` without `tabindex` and key handlers; a positive `tabindex`; `outline: none` with no replacement focus style."
+      - tone: bad
+        text: "Images without `alt`, `aria-hidden=\"true\"` on something focusable, a placeholder as the only label, colour as the only signal of an error."
+      - tone: neutral
+        text: "No ARIA is better than bad ARIA: a wrong `role` overrides the native one and breaks what the element did by itself."

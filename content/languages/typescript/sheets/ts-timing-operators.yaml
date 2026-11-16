@@ -1,0 +1,700 @@
+id: ts-timing-operators
+concept: reactive.timing-operators
+scope: platform
+title: "Timing Operators — RxJS vs Plain Async"
+group: "Reactive & time"
+subtitle: "debounce, throttle, audit, sample, delay, timeout, buffer: what each one drops, how to write it by hand, and how to test it without waiting."
+applies:
+  platforms: [browser, node]
+  runtime: Node.js or a browser
+  requires: [RxJS]
+  versions: { typescript: ">=5.5", node: ">=22.18", rxjs: ">=7.8" }
+sources:
+  - title: RxJS — Operators
+    url: https://rxjs.dev/guide/operators
+  - title: RxJS — Schedulers
+    url: https://rxjs.dev/guide/scheduler
+  - title: Class MockTimers — Node.js
+    url: https://nodejs.org/api/test.html#class-mocktimers
+cards:
+  - id: operator-meaning-equivalent
+    kind: table
+    title: "Operator → meaning → hand-written equivalent"
+    note: "Every card below runs both columns on the same virtual clock, so the two print the same lines."
+    headers: [RxJS, Meaning, Drops values?, By hand]
+    rows:
+      - ["`debounceTime(ms)`", "emit after `ms` of silence; the **last** of a burst wins", "yes, most of a burst", "`clearTimeout` + `setTimeout` on every call"]
+      - ["`throttleTime(ms)`", "at most one per window — the **first** (`leading`), optionally also the last (`trailing: true`)", "yes", "a last-fired timestamp, plus a trailing timer"]
+      - ["`auditTime(ms)`", "the first value opens a window; its end emits the **latest**; silent when idle", "yes", "a trailing-only throttle"]
+      - ["`sampleTime(ms)`", "on a fixed clock, the latest value — if a new one arrived", "yes", "`setInterval` reading a `latest` variable"]
+      - ["`delay(ms)`", "every value, shifted later", "no", "`setTimeout` per value"]
+      - ["`timeout({ first, each, with })`", "nothing in time → `TimeoutError`, or switch to `with`", "ends the stream", "`AbortSignal.timeout(ms)`, or `Promise.race` against a timer"]
+      - ["`bufferTime(ms, null, max)`", "batches by time **or** size; also emits empty windows", "no (batches)", "an array + a timer, flushed when full"]
+      - ["`interval(ms)` + `exhaustMap`", "work on a fixed schedule, skipping ticks while busy", "ticks", "await the work, then sleep until the next absolute deadline"]
+      - ["`retry({ count, delay })`", "resubscribe after a back-off", "no", "a loop with `await delay(backoff)`"]
+      - ["`asyncScheduler` (default)", "`setTimeout` / `setInterval`", "—", "the timers themselves"]
+      - ["`asapScheduler`, `queueScheduler`", "a microtask; synchronous and trampolined", "—", "`queueMicrotask`; a plain loop"]
+      - ["`animationFrameScheduler`", "just before the next paint", "—", "`requestAnimationFrame`"]
+  - id: debounce
+    kind: compare
+    title: "debounceTime — search when they stop typing"
+    note: "Cancel and restart, so the last value of a burst wins — and with `distinctUntilChanged`, the same query twice is one search."
+    prerequisites: &run
+      - Node.js 22.18 or later (it runs `.mts` files directly by stripping the types)
+      - "`npm i rxjs` (the hand-written column needs nothing)"
+      - "Save as `main.mts` and run `node main.mts`. The two `node:` imports and everything down to `advanceTo` are a test clock (`node:test`'s mock timers), so the virtual milliseconds pass instantly; drop them in an app"
+    columns:
+      - label: RxJS
+        tone: neutral
+        code: |-
+          import { mock } from "node:test";                              // the test clock: these two
+          import { setImmediate as flush } from "node:timers/promises";  // imports and all down to advanceTo
+          import { debounceTime, distinctUntilChanged, map, Subject } from "rxjs";
+
+          mock.timers.enable({ apis: ["setTimeout", "setInterval", "Date"] });
+          const log = (message: string) => console.log(`${Date.now()} ms`.padEnd(8), message);
+          const advanceTo = async (ms: number) => {
+            while (Date.now() < ms) {
+              mock.timers.tick(10);
+              await flush();                                             // let promise callbacks run
+            }
+          };
+
+          const query$ = new Subject<string>();
+          const subscription = query$
+            .pipe(
+              map((q) => q.trim()),
+              debounceTime(300),               // the last value after 300 ms of silence
+              distinctUntilChanged(),          // "lofi" again is not a new search
+            )
+            .subscribe((q) => log(`search "${q}"`));
+
+          for (const [at, text] of [[0, "lo"], [100, "lofi"], [600, "lofi "], [1000, "jazz"]] as const) {
+            await advanceTo(at);
+            query$.next(text);
+          }
+
+          await advanceTo(2000);
+          subscription.unsubscribe();          // a pending emission is cancelled with it
+          mock.timers.reset();
+      - label: By hand
+        tone: neutral
+        code: |-
+          import { mock } from "node:test";                              // the test clock: these two
+          import { setImmediate as flush } from "node:timers/promises";  // imports and all down to advanceTo
+
+          mock.timers.enable({ apis: ["setTimeout", "setInterval", "Date"] });
+          const log = (message: string) => console.log(`${Date.now()} ms`.padEnd(8), message);
+          const advanceTo = async (ms: number) => {
+            while (Date.now() < ms) {
+              mock.timers.tick(10);
+              await flush();                                             // let promise callbacks run
+            }
+          };
+
+          function debouncedSearch(search: (q: string) => void, waitMs: number) {
+            let timer: ReturnType<typeof setTimeout> | undefined;
+            let lastSearched: string | undefined;
+            return {
+              input(text: string) {
+                clearTimeout(timer);                       // every keystroke restarts the wait
+                timer = setTimeout(() => {
+                  const q = text.trim();
+                  if (q === lastSearched) return;          // the distinctUntilChanged part
+                  lastSearched = q;
+                  search(q);
+                }, waitMs);
+              },
+              cancel: () => clearTimeout(timer),           // the unsubscribe part
+            };
+          }
+
+          const box = debouncedSearch((q) => log(`search "${q}"`), 300);
+          for (const [at, text] of [[0, "lo"], [100, "lofi"], [600, "lofi "], [1000, "jazz"]] as const) {
+            await advanceTo(at);
+            box.input(text);
+          }
+
+          await advanceTo(2000);
+          box.cancel();
+          mock.timers.reset();
+    expected: |-
+      400 ms   search "lofi"
+      1300 ms  search "jazz"
+    validation: &ran
+      status: ran
+      toolchain: Node 24.16.0, TypeScript 5.9.3
+      date: "2026-11-16"
+  - id: throttle
+    kind: compare
+    title: "throttleTime — at most once per window, leading and trailing"
+    note: "Leading only drops the final position of a drag; add the trailing edge when the last value must land (seek previews, resize)."
+    prerequisites: *run
+    columns:
+      - label: RxJS
+        tone: neutral
+        code: |-
+          import { mock } from "node:test";                              // the test clock: these two
+          import { setImmediate as flush } from "node:timers/promises";  // imports and all down to advanceTo
+          import { asyncScheduler, Subject, throttleTime } from "rxjs";
+
+          mock.timers.enable({ apis: ["setTimeout", "setInterval", "Date"] });
+          const log = (message: string) => console.log(`${Date.now()} ms`.padEnd(8), message);
+          const advanceTo = async (ms: number) => {
+            while (Date.now() < ms) {
+              mock.timers.tick(10);
+              await flush();                                             // let promise callbacks run
+            }
+          };
+
+          const seek$ = new Subject<number>();
+          const subscription = seek$
+            .pipe(throttleTime(100, asyncScheduler, { leading: true, trailing: true }))   // default is leading only
+            .subscribe((position) => log(`load preview at ${position}s`));
+
+          for (let at = 0; at <= 250; at += 50) {          // the user drags the seek bar: an event every 50 ms
+            await advanceTo(at);
+            seek$.next(at / 10);
+          }
+
+          await advanceTo(1000);
+          subscription.unsubscribe();
+          mock.timers.reset();
+      - label: By hand
+        tone: neutral
+        code: |-
+          import { mock } from "node:test";                              // the test clock: these two
+          import { setImmediate as flush } from "node:timers/promises";  // imports and all down to advanceTo
+
+          mock.timers.enable({ apis: ["setTimeout", "setInterval", "Date"] });
+          const log = (message: string) => console.log(`${Date.now()} ms`.padEnd(8), message);
+          const advanceTo = async (ms: number) => {
+            while (Date.now() < ms) {
+              mock.timers.tick(10);
+              await flush();                                             // let promise callbacks run
+            }
+          };
+
+          function throttle<A extends unknown[]>(fn: (...args: A) => void, intervalMs: number) {
+            let last = -Infinity;
+            let trailing: ReturnType<typeof setTimeout> | undefined;
+            const fire = (args: A) => {
+              last = Date.now();
+              fn(...args);
+            };
+            const throttled = (...args: A) => {
+              clearTimeout(trailing);                      // only the latest call waits for the trailing edge
+              const wait = intervalMs - (Date.now() - last);
+              if (wait <= 0) fire(args);                   // leading edge
+              else trailing = setTimeout(() => fire(args), wait);   // trailing edge (drop this line for leading only)
+            };
+            return Object.assign(throttled, { cancel: () => clearTimeout(trailing) });
+          }
+
+          const onSeek = throttle((position: number) => log(`load preview at ${position}s`), 100);
+          for (let at = 0; at <= 250; at += 50) {          // the user drags the seek bar: an event every 50 ms
+            await advanceTo(at);
+            onSeek(at / 10);
+          }
+
+          await advanceTo(1000);
+          onSeek.cancel();
+          mock.timers.reset();
+    expected: |-
+      0 ms     load preview at 0s
+      100 ms   load preview at 5s
+      200 ms   load preview at 15s
+      300 ms   load preview at 25s
+    validation: *ran
+  - id: delay-and-timeout
+    kind: compare
+    title: delay and timeout
+    note: "One shifts every value, the other gives up — here into a fallback rather than an error."
+    prerequisites: *run
+    columns:
+      - label: RxJS
+        tone: neutral
+        code: |-
+          import { mock } from "node:test";                              // the test clock: these two
+          import { setImmediate as flush } from "node:timers/promises";  // imports and all down to advanceTo
+          import { delay, map, of, Subject, timeout, timer } from "rxjs";
+
+          mock.timers.enable({ apis: ["setTimeout", "setInterval", "Date"] });
+          const log = (message: string) => console.log(`${Date.now()} ms`.padEnd(8), message);
+          const advanceTo = async (ms: number) => {
+            while (Date.now() < ms) {
+              mock.timers.tick(10);
+              await flush();                                             // let promise callbacks run
+            }
+          };
+
+          const loadSegment = (n: number, ms: number) => timer(ms).pipe(map(() => `segment ${n}`));   // a fetch
+          const lowBitrate = (n: number) => of(`segment ${n} (low bitrate)`);
+
+          // timeout: nothing within 200 ms -> switch to the fallback (without `with`, it errors with TimeoutError)
+          loadSegment(1, 120).pipe(timeout({ first: 200, with: () => lowBitrate(1) })).subscribe(log);
+          loadSegment(2, 500).pipe(timeout({ first: 200, with: () => lowBitrate(2) })).subscribe(log);
+
+          // delay: every value, later; nothing is dropped
+          const episodeEnded$ = new Subject<string>();
+          episodeEnded$.pipe(delay(300)).subscribe((next) => log(`show "Up next: ${next}"`));
+          episodeEnded$.next("Episode 2");
+
+          await advanceTo(1000);
+          mock.timers.reset();
+      - label: By hand
+        tone: neutral
+        code: |-
+          import { mock } from "node:test";                              // the test clock: these two
+          import { setImmediate as flush } from "node:timers/promises";  // imports and all down to advanceTo
+
+          mock.timers.enable({ apis: ["setTimeout", "setInterval", "Date"] });
+          const log = (message: string) => console.log(`${Date.now()} ms`.padEnd(8), message);
+          const advanceTo = async (ms: number) => {
+            while (Date.now() < ms) {
+              mock.timers.tick(10);
+              await flush();                                             // let promise callbacks run
+            }
+          };
+
+          const loadSegment = (n: number, ms: number) =>
+            new Promise<string>((resolve) => setTimeout(() => resolve(`segment ${n}`), ms));   // a fetch taking `ms`
+          const lowBitrate = (n: number) => `segment ${n} (low bitrate)`;
+
+          // timeout: race the work against a timer, and always disarm the timer.
+          // With fetch, pass AbortSignal.timeout(200) instead, so the slow request is cancelled too.
+          async function withFallback<T>(work: Promise<T>, ms: number, fallback: () => T): Promise<T> {
+            let timer: ReturnType<typeof setTimeout> | undefined;
+            const deadline = new Promise<T>((resolve) => {
+              timer = setTimeout(() => resolve(fallback()), ms);
+            });
+            try {
+              return await Promise.race([work, deadline]);
+            } finally {
+              clearTimeout(timer);
+            }
+          }
+
+          void withFallback(loadSegment(1, 120), 200, () => lowBitrate(1)).then(log);
+          void withFallback(loadSegment(2, 500), 200, () => lowBitrate(2)).then(log);
+
+          // delay: a timer per value
+          const onEpisodeEnded = (next: string) => setTimeout(() => log(`show "Up next: ${next}"`), 300);
+          onEpisodeEnded("Episode 2");
+
+          await advanceTo(1000);
+          mock.timers.reset();
+    expected: |-
+      120 ms   segment 1
+      200 ms   segment 2 (low bitrate)
+      300 ms   show "Up next: Episode 2"
+    validation: *ran
+  - id: buffer-by-time
+    kind: compare
+    title: "bufferTime — batching by time or size"
+    note: "Analytics and logs: one request per window, or sooner when the batch is full, and flush what is left on close."
+    prerequisites: *run
+    columns:
+      - label: RxJS
+        tone: neutral
+        code: |-
+          import { mock } from "node:test";                              // the test clock: these two
+          import { setImmediate as flush } from "node:timers/promises";  // imports and all down to advanceTo
+          import { bufferTime, filter, Subject } from "rxjs";
+
+          mock.timers.enable({ apis: ["setTimeout", "setInterval", "Date"] });
+          const log = (message: string) => console.log(`${Date.now()} ms`.padEnd(8), message);
+          const advanceTo = async (ms: number) => {
+            while (Date.now() < ms) {
+              mock.timers.tick(10);
+              await flush();                                             // let promise callbacks run
+            }
+          };
+
+          const analytics$ = new Subject<string>();
+          analytics$
+            .pipe(
+              bufferTime(1000, null, 3),                   // every 1 s, or as soon as 3 are waiting
+              filter((batch) => batch.length > 0),         // bufferTime also emits empty windows
+            )
+            .subscribe((batch) => log(`upload [${batch.join(", ")}]`));
+
+          const playerEvents: [number, string][] = [
+            [100, "play"], [200, "seek"], [300, "seek"], [900, "pause"], [2600, "stop"],
+          ];
+          for (const [at, event] of playerEvents) {
+            await advanceTo(at);
+            analytics$.next(event);
+          }
+
+          analytics$.complete();                           // flushes what is left
+          mock.timers.reset();
+      - label: By hand
+        tone: neutral
+        code: |-
+          import { mock } from "node:test";                              // the test clock: these two
+          import { setImmediate as flush } from "node:timers/promises";  // imports and all down to advanceTo
+
+          mock.timers.enable({ apis: ["setTimeout", "setInterval", "Date"] });
+          const log = (message: string) => console.log(`${Date.now()} ms`.padEnd(8), message);
+          const advanceTo = async (ms: number) => {
+            while (Date.now() < ms) {
+              mock.timers.tick(10);
+              await flush();                                             // let promise callbacks run
+            }
+          };
+
+          function batcher<T>(upload: (batch: T[]) => void, windowMs: number, maxSize: number) {
+            let items: T[] = [];
+            let timer = setTimeout(flush, windowMs);       // windows run back to back, as bufferTime's do
+            function flush(reopen = true) {
+              clearTimeout(timer);
+              if (items.length > 0) upload(items);
+              items = [];
+              if (reopen) timer = setTimeout(flush, windowMs);
+            }
+            return {
+              add(item: T) {
+                items.push(item);
+                if (items.length >= maxSize) flush();     // full: send now, start a new window
+              },
+              close: () => flush(false),                  // send what is left, no new window
+            };
+          }
+
+          const analytics = batcher<string>((batch) => log(`upload [${batch.join(", ")}]`), 1000, 3);
+          const playerEvents: [number, string][] = [
+            [100, "play"], [200, "seek"], [300, "seek"], [900, "pause"], [2600, "stop"],
+          ];
+          for (const [at, event] of playerEvents) {
+            await advanceTo(at);
+            analytics.add(event);
+          }
+
+          analytics.close();
+          mock.timers.reset();
+    expected: |-
+      300 ms   upload [play, seek, seek]
+      1300 ms  upload [pause]
+      2600 ms  upload [stop]
+    validation: *ran
+  - id: sample-and-audit
+    kind: code
+    title: sampleTime vs auditTime
+    note: "Both emit the latest value; `sampleTime` on a fixed clock, `auditTime` once per burst — silent, and waking nothing, while the player is idle."
+    prerequisites: *run
+    code: |-
+      import { mock } from "node:test";                              // the test clock: these two
+      import { setImmediate as flush } from "node:timers/promises";  // imports and all down to advanceTo
+      import { auditTime, sampleTime, Subject } from "rxjs";
+
+      mock.timers.enable({ apis: ["setTimeout", "setInterval", "Date"] });
+      const log = (message: string) => console.log(`${Date.now()} ms`.padEnd(8), message);
+      const advanceTo = async (ms: number) => {
+        while (Date.now() < ms) {
+          mock.timers.tick(10);
+          await flush();                                             // let promise callbacks run
+        }
+      };
+
+      const position$ = new Subject<number>();       // the player reports its position often and irregularly
+
+      // sampleTime: on a fixed 250 ms clock, the latest value — if a new one arrived since the last tick
+      position$.pipe(sampleTime(250)).subscribe((s) => log(`sample  progress bar -> ${s}s`));
+
+      // auditTime: the first value opens a 250 ms window; its end emits the latest. Silent while idle.
+      position$.pipe(auditTime(250)).subscribe((s) => log(`audit   save resume point ${s}s`));
+
+      for (const at of [0, 40, 80, 120, 160, 200, 240, 280, 320, 700, 740]) {
+        await advanceTo(at);
+        position$.next(at / 100);
+      }
+
+      await advanceTo(1500);
+      position$.complete();
+      mock.timers.reset();
+    expected: |-
+      250 ms   sample  progress bar -> 2.4s
+      250 ms   audit   save resume point 2.4s
+      500 ms   sample  progress bar -> 3.2s
+      530 ms   audit   save resume point 3.2s
+      750 ms   sample  progress bar -> 7.4s
+      950 ms   audit   save resume point 7.4s
+    validation: *ran
+  - id: repeating-on-a-schedule
+    kind: compare
+    title: Repeating work on a schedule, without drift or overlap
+    note: "`interval(ms)` keeps a fixed schedule, `exhaustMap` drops ticks that arrive while a refresh still runs, and `catchError` inside it keeps one failed refresh from ending the schedule; by hand, the same with `try`/`catch` and an absolute deadline."
+    prerequisites: *run
+    columns:
+      - label: RxJS
+        tone: neutral
+        code: |-
+          import { mock } from "node:test";                              // the test clock: these two
+          import { setImmediate as flush } from "node:timers/promises";  // imports and all down to advanceTo
+          import { catchError, defer, EMPTY, exhaustMap, interval } from "rxjs";
+
+          mock.timers.enable({ apis: ["setTimeout", "setInterval", "Date"] });
+          const log = (message: string) => console.log(`${Date.now()} ms`.padEnd(8), message);
+          const advanceTo = async (ms: number) => {
+            while (Date.now() < ms) {
+              mock.timers.tick(10);
+              await flush();                                             // let promise callbacks run
+            }
+          };
+
+          let calls = 0;
+          async function refreshNowPlaying() {
+            const call = ++calls;
+            log(`refresh #${call}`);
+            await new Promise((resolve) => setTimeout(resolve, call === 3 ? 1500 : 40));   // one slow response
+            if (call === 2) throw new Error("HTTP 503");                                   // one failed response
+          }
+
+          const subscription = interval(1000)                 // a fixed schedule: 1000, 2000, 3000…
+            .pipe(exhaustMap(() =>                           // a tick while one is running is dropped
+              defer(refreshNowPlaying).pipe(catchError((error: Error) => {
+                log(`refresh failed: ${error.message}`);     // caught INSIDE: the schedule goes on
+                return EMPTY;
+              }))))
+            .subscribe();
+
+          await advanceTo(5500);
+          subscription.unsubscribe();
+          mock.timers.reset();
+      - label: By hand
+        tone: neutral
+        code: |-
+          import { mock } from "node:test";                              // the test clock: these two
+          import { setImmediate as flush } from "node:timers/promises";  // imports and all down to advanceTo
+
+          mock.timers.enable({ apis: ["setTimeout", "setInterval", "Date"] });
+          const log = (message: string) => console.log(`${Date.now()} ms`.padEnd(8), message);
+          const advanceTo = async (ms: number) => {
+            while (Date.now() < ms) {
+              mock.timers.tick(10);
+              await flush();                                             // let promise callbacks run
+            }
+          };
+
+          let calls = 0;
+          async function refreshNowPlaying() {
+            const call = ++calls;
+            log(`refresh #${call}`);
+            await new Promise((resolve) => setTimeout(resolve, call === 3 ? 1500 : 40));   // one slow response
+            if (call === 2) throw new Error("HTTP 503");                                   // one failed response
+          }
+
+          function every(intervalMs: number, work: () => Promise<void>): () => void {
+            let next = Date.now() + intervalMs;              // an absolute schedule: no drift
+            let timer = setTimeout(run, intervalMs);
+            let stopped = false;
+            async function run() {
+              // Awaited, so never two at once (like exhaustMap); caught, so one failure never ends the schedule.
+              await work().catch((error: Error) => log(`refresh failed: ${error.message}`));
+              if (stopped) return;                           // stopped while the work was running
+              next += intervalMs;
+              const late = Date.now() - next;
+              if (late > 0) next += Math.ceil(late / intervalMs) * intervalMs;   // missed slots are skipped
+              timer = setTimeout(run, next - Date.now());
+            }
+            return () => {
+              stopped = true;
+              clearTimeout(timer);
+            };
+          }
+
+          const stop = every(1000, refreshNowPlaying);
+          await advanceTo(5500);
+          stop();
+          mock.timers.reset();
+    expected: |-
+      1000 ms  refresh #1
+      2000 ms  refresh #2
+      2040 ms  refresh failed: HTTP 503
+      3000 ms  refresh #3
+      5000 ms  refresh #4
+    validation: *ran
+  - id: injectable-time
+    kind: code
+    title: Make time injectable — and the tests instant
+    note: "Inside `TestScheduler.run` every RxJS scheduler is virtual and marbles describe time; `t.mock.timers` does the same for plain `setTimeout`."
+    prerequisites:
+      - Node.js 22.18 or later (it runs `.mts` files directly by stripping the types)
+      - "`npm i rxjs`"
+      - "Save as `search.test.mts` and run `node --test` (or `node search.test.mts`)"
+    code: |-
+      import assert from "node:assert/strict";
+      import { test } from "node:test";
+      import { debounceTime, distinctUntilChanged, type Observable, type SchedulerLike } from "rxjs";
+      import { TestScheduler } from "rxjs/testing";
+
+      // Production code takes the scheduler as a parameter... or, inside TestScheduler.run, not at all:
+      const searchTerms = (keys$: Observable<string>, scheduler?: SchedulerLike) =>
+        keys$.pipe(debounceTime(300, scheduler), distinctUntilChanged());
+
+      test("searchTerms keeps the last key of each burst (marbles)", () => {
+        const scheduler = new TestScheduler((actual, expected) => assert.deepEqual(actual, expected));
+        scheduler.run(({ cold, expectObservable }) => {
+          // a at 0, b at 100, c at 200, c again at 700; complete at 701
+          const keys$ = cold("a 99ms b 99ms c 499ms c|");
+          expectObservable(searchTerms(keys$)).toBe("500ms c 200ms |");   // run() makes every scheduler virtual
+        });
+      });
+
+      function debounce<A extends unknown[]>(fn: (...args: A) => void, waitMs: number) {
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        return (...args: A) => {
+          clearTimeout(timer);
+          timer = setTimeout(() => fn(...args), waitMs);
+        };
+      }
+
+      test("debounce calls once, with the last arguments (mock timers)", (t) => {
+        t.mock.timers.enable({ apis: ["setTimeout"] });    // undone automatically when the test ends
+        const search = t.mock.fn((_query: string) => {});
+        const onInput = debounce(search, 300);
+
+        onInput("a");
+        t.mock.timers.tick(100);
+        onInput("ab");
+        t.mock.timers.tick(299);
+        assert.equal(search.mock.callCount(), 0);          // still inside the quiet period
+        t.mock.timers.tick(1);
+        assert.deepEqual(search.mock.calls.map((call) => call.arguments), [["ab"]]);
+      });
+    expected: "Both tests pass — `✔ searchTerms keeps the last key of each burst (marbles)`, `✔ debounce calls once, with the last arguments (mock timers)`, `tests 2`, `pass 2` — in milliseconds, and the process exits 0 (the timings vary)."
+    sources:
+      - title: Marble testing — RxJS
+        url: https://rxjs.dev/guide/testing/marble-testing
+    validation:
+      status: ran
+      toolchain: Node 24.16.0, TypeScript 5.9.3
+      date: "2026-11-16"
+      check: exit-code
+  - id: owning-the-timer
+    kind: compare
+    title: Owning the timer safely
+    note: "Most timing bugs are lifetime bugs: one stored handle, cancelled before every restart, tied to the screen so a forgotten `stop()` cannot leak — and nothing started on a screen that is already gone (without that check, the late `start()` below would tick for ever)."
+    prerequisites: *run
+    columns:
+      - label: RxJS — one Subscription
+        tone: neutral
+        code: |-
+          import { mock } from "node:test";                              // the test clock: these two
+          import { setImmediate as flush } from "node:timers/promises";  // imports and all down to advanceTo
+          import { interval, type Subscription, takeUntil, fromEvent } from "rxjs";
+
+          mock.timers.enable({ apis: ["setTimeout", "setInterval", "Date"] });
+          const log = (message: string) => console.log(`${Date.now()} ms`.padEnd(8), message);
+          const advanceTo = async (ms: number) => {
+            while (Date.now() < ms) {
+              mock.timers.tick(10);
+              await flush();                                             // let promise callbacks run
+            }
+          };
+
+          class ResumePointSaver {
+            #subscription: Subscription | undefined;       // the one handle this object owns
+
+            start(position: () => number, screen: AbortSignal) {
+              this.#subscription?.unsubscribe();           // idempotent: a second start never adds a timer
+              if (screen.aborted) return;                  // fromEvent(screen, "abort") would never fire now
+              this.#subscription = interval(1000)
+                .pipe(takeUntil(fromEvent(screen, "abort")))   // ends with the screen, even if stop() is forgotten
+                .subscribe(() => log(`save resume point ${position()}s`));
+            }
+            stop() {
+              this.#subscription?.unsubscribe();
+              this.#subscription = undefined;
+            }
+          }
+
+          const screen = new AbortController();
+          const saver = new ResumePointSaver();
+          let position = 0;
+          saver.start(() => (position += 1), screen.signal);
+          saver.start(() => (position += 1), screen.signal);   // e.g. play pressed twice
+          await advanceTo(2500);
+          screen.abort();                                  // the user left the player…
+          saver.start(() => (position += 1), screen.signal);   // …and a late `await` calls start() afterwards
+          await advanceTo(5000);
+          log(`saves: ${position}`);
+          mock.timers.reset();
+      - label: By hand — one AbortController
+        tone: neutral
+        code: |-
+          import { mock } from "node:test";                              // the test clock: these two
+          import { setImmediate as flush } from "node:timers/promises";  // imports and all down to advanceTo
+
+          mock.timers.enable({ apis: ["setTimeout", "setInterval", "Date"] });
+          const log = (message: string) => console.log(`${Date.now()} ms`.padEnd(8), message);
+          const advanceTo = async (ms: number) => {
+            while (Date.now() < ms) {
+              mock.timers.tick(10);
+              await flush();                                             // let promise callbacks run
+            }
+          };
+
+          class ResumePointSaver {
+            #stop: AbortController | undefined;            // the one handle this object owns
+
+            start(position: () => number, screen: AbortSignal) {
+              this.#stop?.abort();                         // idempotent: a second start never adds a timer
+              if (screen.aborted) return;                  // an "abort" listener added now would never run
+              this.#stop = new AbortController();
+              const lifetime = AbortSignal.any([this.#stop.signal, screen]);   // ends with the screen, too
+              const timer = setInterval(() => log(`save resume point ${position()}s`), 1000);
+              lifetime.addEventListener("abort", () => clearInterval(timer), { once: true });
+            }
+            stop() {
+              this.#stop?.abort();
+              this.#stop = undefined;
+            }
+          }
+
+          const screen = new AbortController();
+          const saver = new ResumePointSaver();
+          let position = 0;
+          saver.start(() => (position += 1), screen.signal);
+          saver.start(() => (position += 1), screen.signal);   // e.g. play pressed twice
+          await advanceTo(2500);
+          screen.abort();                                  // the user left the player…
+          saver.start(() => (position += 1), screen.signal);   // …and a late `await` calls start() afterwards
+          await advanceTo(5000);
+          log(`saves: ${position}`);
+          mock.timers.reset();
+    expected: |-
+      1000 ms  save resume point 1s
+      2000 ms  save resume point 2s
+      5000 ms  saves: 2
+    validation: *ran
+  - id: safety-checklist
+    kind: rules
+    title: Safety checklist for timing code
+    note: ""
+    items:
+      - tone: good
+        text: "Store every `Subscription`, timer id or `AbortController` you start, and end it in `stop()`, an effect cleanup, or on the screen's `AbortSignal`."
+      - tone: good
+        text: "Cancel before restarting (`this.#subscription?.unsubscribe()`, `this.#stop?.abort()`), or a second `start()` doubles the timers."
+      - tone: good
+        text: "Periodic work: an absolute schedule (`timer(0, ms)`, or a deadline loop) and **no overlap** (`exhaustMap`, or await the work before scheduling the next)."
+      - tone: good
+        text: "Inject time. `TestScheduler.run` for RxJS, `t.mock.timers.enable({ apis: [\"setTimeout\", \"Date\"] })` for plain code — a test that really sleeps flakes in CI."
+      - tone: good
+        text: "Know what each operator drops: `debounceTime` and `auditTime` keep the last, `throttleTime` the first unless `trailing: true`, `sampleTime` the latest per tick."
+      - tone: bad
+        text: "An `abort` listener added **after** the abort never runs, and `fromEvent(signal, \"abort\")` never fires: check `signal.aborted` before starting anything."
+      - tone: bad
+        text: "An error inside `exhaustMap`/`switchMap` on a timer ends the whole schedule; catch it inside, per tick (`defer(work).pipe(catchError(...))`), or in a `try` around the awaited work."
+      - tone: bad
+        text: "`bufferTime` emits empty arrays every window — `filter((b) => b.length > 0)` before uploading — and keeps a timer running even when idle."
+      - tone: bad
+        text: "`timeout(ms)` without `with` errors with `TimeoutError` and ends the stream; inside a `switchMap`, catch it there."
+      - tone: bad
+        text: "`Promise.race` with a timer neither cancels the loser nor disarms the timer by itself: `clearTimeout` in `finally`, and prefer `AbortSignal.timeout` wherever a signal can be passed."
+      - tone: bad
+        text: "Don't measure elapsed time with `Date.now()` differences in production — the wall clock jumps; use `performance.now()` (or the scheduler's `now()`)."
+      - tone: neutral
+        text: "Mock timers replace `setTimeout`, `setInterval` and `Date`, but not `AbortSignal.timeout` or named imports from `node:timers/promises` — code that must be tested on a virtual clock should take its timers or scheduler as a parameter."

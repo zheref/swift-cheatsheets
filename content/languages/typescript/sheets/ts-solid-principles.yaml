@@ -1,0 +1,488 @@
+id: ts-solid-principles
+concept: principles.solid
+scope: shared
+title: "SOLID in TypeScript"
+group: "Design & practice"
+subtitle: "Five principles in TypeScript's own idiom — small structural types, functions and factories instead of class hierarchies — each before/after proved to print the same."
+applies:
+  platforms: [node, browser]
+  runtime: any ES2023 engine; the examples run on Node.js
+  versions: { typescript: ">=5.5", node: ">=22.18" }
+sources:
+  - title: Object Types — TypeScript Handbook
+    url: https://www.typescriptlang.org/docs/handbook/2/objects.html
+  - title: Type Compatibility — TypeScript Handbook
+    url: https://www.typescriptlang.org/docs/handbook/type-compatibility.html
+cards:
+  - id: one-line-versions
+    kind: rules
+    title: The one-line versions
+    note: Say the name, then the smell it prevents.
+    items:
+      - tone: modern
+        text: "**S**ingle Responsibility — a module has one reason to change. Smell: one class that fetches, parses, caches and formats."
+      - tone: modern
+        text: "**O**pen/Closed — add behaviour by adding code, not by editing a shipped `switch`. Smell: every feature touches the same function."
+      - tone: modern
+        text: "**L**iskov Substitution — anything typed as `T` must keep `T`'s promises. Smell: `instanceof` checks in the caller, or an override that throws."
+      - tone: modern
+        text: "**I**nterface Segregation — accept the narrowest type you use. Smell: test fakes full of `throw new Error(\"not implemented\")`."
+      - tone: modern
+        text: "**D**ependency Inversion — depend on a type you declare, and let the caller pass the implementation. Smell: imported singletons and `Date.now()` inside logic."
+      - tone: modern
+        text: "**Liskov, TypeScript edition** — a member written in method syntax (`refund(cents: number): T`) is checked bivariantly, so `tsc` accepts an implementation that demands a narrower parameter; declare it as a property (`refund: (cents: number) => T`) and `strictFunctionTypes` catches it in any implementation of that type. An `override` in a subclass is always checked bivariantly, so for a class hierarchy only tests and review catch it."
+      - tone: neutral
+        text: "Structural typing does much of the work: any object with the right shape satisfies a type, so small `type`s, functions and factories replace most interfaces and hierarchies."
+  - id: s-single-responsibility
+    kind: compare
+    title: S — Single Responsibility
+    note: Split by reason to change — transport, parsing, caching, presentation — and compose the pieces in one thin function.
+    prerequisites: &run
+      - Node.js 22.18 or later (it runs `.mts` files directly by stripping the types)
+      - "Save as `main.mts` and run `node main.mts` (top-level `await` needs a module: the `.mts` extension makes it one)"
+      - "Optional type-check: `npm i -D typescript @types/node`, then `npx tsc --noEmit --strict --target esnext --module nodenext main.mts`"
+    columns:
+      - label: Violates
+        tone: bad
+        code: |-
+          type User = { id: string; firstName: string; lastName: string };
+          const fakeApi: Record<string, string> = { u1: '{"id":"u1","first_name":"Ada","last_name":"Lovelace"}' };
+
+          class UserManager {
+            #cache = new Map<string, User>();
+            readonly events: string[] = [];
+
+            async displayName(id: string): Promise<string> {
+              let user = this.#cache.get(id);
+              if (!user) {
+                const body = fakeApi[id];                                    // transport
+                if (body === undefined) throw new Error(`no user ${id}`);
+                const raw = JSON.parse(body) as { id: string; first_name: string; last_name: string };
+                user = { id: raw.id, firstName: raw.first_name, lastName: raw.last_name };   // parsing
+                this.#cache.set(id, user);                                   // caching
+                this.events.push("user_fetched");                            // analytics
+              }
+              return `${user.firstName} ${user.lastName.charAt(0)}.`;        // presentation
+            }
+          }
+
+          const users = new UserManager();
+          console.log(await users.displayName("u1"));
+          console.log(await users.displayName("u1"));
+          console.log(users.events);
+      - label: Respects
+        tone: good
+        code: |-
+          type User = { id: string; firstName: string; lastName: string };
+          type Transport = (id: string) => Promise<string>;
+          const fakeApi: Record<string, string> = { u1: '{"id":"u1","first_name":"Ada","last_name":"Lovelace"}' };
+
+          const transport: Transport = async (id) => {
+            const body = fakeApi[id];
+            if (body === undefined) throw new Error(`no user ${id}`);
+            return body;
+          };
+
+          function parseUser(body: string): User {
+            const raw = JSON.parse(body) as { id: string; first_name: string; last_name: string };
+            return { id: raw.id, firstName: raw.first_name, lastName: raw.last_name };
+          }
+
+          const displayName = (user: User) => `${user.firstName} ${user.lastName.charAt(0)}.`;
+
+          function createUserRepository(fetchUser: Transport, track: (event: string) => void) {
+            const cache = new Map<string, User>();
+            return {
+              async user(id: string): Promise<User> {
+                const hit = cache.get(id);
+                if (hit) return hit;
+                const user = parseUser(await fetchUser(id));
+                cache.set(id, user);
+                track("user_fetched");
+                return user;
+              },
+            };
+          }
+
+          const events: string[] = [];
+          const users = createUserRepository(transport, (event) => events.push(event));
+          console.log(displayName(await users.user("u1")));
+          console.log(displayName(await users.user("u1")));
+          console.log(events);
+    expected: |-
+      Ada L.
+      Ada L.
+      [ 'user_fetched' ]
+    validation: &ran
+      status: ran
+      toolchain: Node 24.16.0, TypeScript 5.9.3
+      date: "2026-11-16"
+  - id: o-open-closed
+    kind: compare
+    title: O — Open/Closed
+    note: "Both columns add a Black Friday promotion: one edits the shipped `switch`, the other adds a rule value beside code that never changes."
+    prerequisites: *run
+    columns:
+      - label: Violates
+        tone: bad
+        code: |-
+          type Cart = { subtotalCents: number; customer: { isStudent: boolean; ageYears: number }; coupon?: string };
+
+          function discountCents(cart: Cart, kind: string): number {
+            switch (kind) {
+              case "student": return cart.customer.isStudent ? Math.round(cart.subtotalCents * 0.1) : 0;
+              case "senior": return cart.customer.ageYears >= 65 ? Math.round(cart.subtotalCents * 0.15) : 0;
+              case "welcome": return cart.coupon === "WELCOME5" ? 500 : 0;
+              case "black-friday": return cart.subtotalCents >= 5000 ? 1000 : 0;   // edited shipped code
+              default: return 0;
+            }
+          }
+
+          const totalDiscountCents = (cart: Cart, kinds: string[]) =>
+            kinds.reduce((sum, kind) => sum + discountCents(cart, kind), 0);
+
+          const cart: Cart = { subtotalCents: 8000, customer: { isStudent: true, ageYears: 20 }, coupon: "WELCOME5" };
+          const standard = ["student", "senior", "welcome"];
+          console.log("standard:", totalDiscountCents(cart, standard));
+
+          // The new promotion meant editing discountCents — and retesting every case in it.
+          console.log("black friday:", totalDiscountCents(cart, [...standard, "black-friday"]));
+      - label: Respects
+        tone: good
+        code: |-
+          type Cart = { subtotalCents: number; customer: { isStudent: boolean; ageYears: number }; coupon?: string };
+          type DiscountRule = { name: string; discountCents: (cart: Cart) => number };
+
+          const standardRules: readonly DiscountRule[] = [
+            { name: "student",
+              discountCents: (cart) => (cart.customer.isStudent ? Math.round(cart.subtotalCents * 0.1) : 0) },
+            { name: "senior",
+              discountCents: (cart) => (cart.customer.ageYears >= 65 ? Math.round(cart.subtotalCents * 0.15) : 0) },
+            { name: "welcome", discountCents: (cart) => (cart.coupon === "WELCOME5" ? 500 : 0) },
+          ];
+
+          function totalDiscountCents(cart: Cart, rules: readonly DiscountRule[]): number {
+            return rules.reduce((sum, rule) => sum + rule.discountCents(cart), 0);
+          }
+
+          // Added later, in its own module: nothing above was edited or needs retesting.
+          const blackFriday: DiscountRule = {
+            name: "black-friday",
+            discountCents: (cart) => (cart.subtotalCents >= 5000 ? 1000 : 0),
+          };
+
+          const cart: Cart = { subtotalCents: 8000, customer: { isStudent: true, ageYears: 20 }, coupon: "WELCOME5" };
+          console.log("standard:", totalDiscountCents(cart, standardRules));
+          console.log("black friday:", totalDiscountCents(cart, [...standardRules, blackFriday]));
+
+          // When the set is genuinely closed (order states), a union with an exhaustive switch is the better tool.
+    expected: |-
+      standard: 1300
+      black friday: 2300
+    validation: *ran
+  - id: l-liskov-substitution
+    kind: compare
+    title: L — Liskov Substitution
+    note: "If the caller must ask which subclass it got, substitution is broken; the fix keeps the classes and widens the contract so every outcome is a return value."
+    prerequisites: *run
+    columns:
+      - label: Violates
+        tone: bad
+        code: |-
+          class PaymentMethod {
+            refund(cents: number): string {
+              return `refunded ${cents} to the original method`;
+            }
+          }
+
+          class Card extends PaymentMethod {
+            readonly last4: string;
+            constructor(last4: string) {
+              super();
+              this.last4 = last4;
+            }
+            override refund(cents: number): string {
+              return `refunded ${cents} to card ••${this.last4}`;
+            }
+          }
+
+          class GiftCard extends PaymentMethod {
+            override refund(_cents: number): string {
+              throw new Error("gift cards cannot be refunded");   // breaks the parent's promise
+            }
+          }
+
+          function refundOrder(method: PaymentMethod, cents: number): string {
+            // The smell: the caller has to know which subtype it was handed.
+            if (method instanceof GiftCard) return `issued ${cents} as store credit`;
+            return method.refund(cents);
+          }
+
+          console.log(refundOrder(new Card("4242"), 4250));
+          console.log(refundOrder(new GiftCard(), 4250));
+      - label: Respects
+        tone: good
+        code: |-
+          type RefundOutcome =
+            | { kind: "returned"; description: string }
+            | { kind: "store-credit"; cents: number };
+
+          // The fix is the contract, not the classes: every outcome is in the return type, and no override throws.
+          class PaymentMethod {
+            refund(cents: number): RefundOutcome {
+              return { kind: "returned", description: `refunded ${cents} to the original method` };
+            }
+          }
+
+          class Card extends PaymentMethod {
+            readonly last4: string;
+            constructor(last4: string) {
+              super();
+              this.last4 = last4;
+            }
+            override refund(cents: number): RefundOutcome {
+              return { kind: "returned", description: `refunded ${cents} to card ••${this.last4}` };
+            }
+          }
+
+          class GiftCard extends PaymentMethod {
+            override refund(cents: number): RefundOutcome {
+              return { kind: "store-credit", cents };   // a different outcome, inside the same promise
+            }
+          }
+
+          function refundOrder(method: PaymentMethod, cents: number): string {
+            const outcome = method.refund(cents);       // no instanceof: any PaymentMethod will do
+            return outcome.kind === "store-credit" ? `issued ${outcome.cents} as store credit` : outcome.description;
+          }
+
+          console.log(refundOrder(new Card("4242"), 4250));
+          console.log(refundOrder(new GiftCard(), 4250));
+    expected: |-
+      refunded 4250 to card ••4242
+      issued 4250 as store credit
+    validation: *ran
+  - id: i-interface-segregation
+    kind: compare
+    title: I — Interface Segregation
+    note: "Declare the parameter as the slice you use; structural typing lets the full repository — or a one-method fake — satisfy it."
+    prerequisites: *run
+    columns:
+      - label: Violates
+        tone: bad
+        code: |-
+          type Order = { id: string; totalCents: number; placedOnDay: number };
+
+          interface OrderRepository {
+            listSince(day: number): Order[];
+            save(order: Order): void;
+            delete(id: string): void;
+            exportCsv(): string;
+          }
+
+          function weeklyRevenueCents(repository: OrderRepository, today: number): number {
+            return repository.listSince(today - 7).reduce((sum, order) => sum + order.totalCents, 0);
+          }
+
+          const fixture: Order[] = [
+            { id: "A-1", totalCents: 9900, placedOnDay: 90 },
+            { id: "A-2", totalCents: 4250, placedOnDay: 95 },
+            { id: "A-3", totalCents: 1500, placedOnDay: 99 },
+          ];
+
+          // To exercise one method, the fake has to stub four.
+          const fakeRepository: OrderRepository = {
+            listSince: (day) => fixture.filter((order) => order.placedOnDay >= day),
+            save: () => { throw new Error("not implemented"); },
+            delete: () => { throw new Error("not implemented"); },
+            exportCsv: () => { throw new Error("not implemented"); },
+          };
+
+          console.log(weeklyRevenueCents(fakeRepository, 100));
+      - label: Respects
+        tone: good
+        code: |-
+          type Order = { id: string; totalCents: number; placedOnDay: number };
+
+          type OrderLister = { listSince: (day: number) => Order[] };
+          type OrderWriter = { save: (order: Order) => void; delete: (id: string) => void };
+          type OrderExporter = { exportCsv: () => string };
+          export type OrderRepository = OrderLister & OrderWriter & OrderExporter;   // the adapter implements all
+
+          function weeklyRevenueCents(orders: OrderLister, today: number): number {
+            return orders.listSince(today - 7).reduce((sum, order) => sum + order.totalCents, 0);
+          }
+
+          const fixture: Order[] = [
+            { id: "A-1", totalCents: 9900, placedOnDay: 90 },
+            { id: "A-2", totalCents: 4250, placedOnDay: 95 },
+            { id: "A-3", totalCents: 1500, placedOnDay: 99 },
+          ];
+
+          const fakeOrders: OrderLister = {
+            listSince: (day) => fixture.filter((order) => order.placedOnDay >= day),
+          };
+
+          console.log(weeklyRevenueCents(fakeOrders, 100));
+    expected: |-
+      5750
+    validation: *ran
+  - id: d-dependency-inversion
+    kind: compare
+    title: D — Dependency Inversion
+    note: "The business code declares the type it needs; a composition root passes the real client in production and a fake in tests."
+    prerequisites: *run
+    columns:
+      - label: Violates
+        tone: bad
+        code: |-
+          type Order = { id: string; totalCents: number };
+
+          // Module-level singletons: the only implementations checkout can ever use.
+          const stripeClient = { charge: async (cents: number) => `ch_${cents}` };
+          const paymentsTable = new Map<string, string>();
+
+          async function checkout(order: Order): Promise<string> {
+            const chargeId = await stripeClient.charge(order.totalCents);
+            paymentsTable.set(order.id, chargeId);
+            return `${order.id} paid with ${chargeId}`;
+          }
+
+          // A test of checkout now charges "Stripe" and writes the real table.
+          console.log(await checkout({ id: "ord_1", totalCents: 4250 }));
+          console.log([...paymentsTable]);
+      - label: Respects
+        tone: good
+        code: |-
+          type Order = { id: string; totalCents: number };
+
+          // Declared by the code that needs it, in the business code's own words.
+          type CheckoutDeps = {
+            charge: (cents: number) => Promise<string>;
+            recordPayment: (orderId: string, chargeId: string) => void;
+          };
+
+          function createCheckout({ charge, recordPayment }: CheckoutDeps) {
+            return async function checkout(order: Order): Promise<string> {
+              const chargeId = await charge(order.totalCents);
+              recordPayment(order.id, chargeId);
+              return `${order.id} paid with ${chargeId}`;
+            };
+          }
+
+          // Composition root. Production passes the Stripe client and the database;
+          // a test passes these in-memory fakes and asserts on `payments`.
+          const payments = new Map<string, string>();
+          const checkout = createCheckout({
+            charge: async (cents) => `ch_${cents}`,
+            recordPayment: (orderId, chargeId) => payments.set(orderId, chargeId),
+          });
+
+          console.log(await checkout({ id: "ord_1", totalCents: 4250 }));
+          console.log([...payments]);
+    expected: |-
+      ord_1 paid with ch_4250
+      [ [ 'ord_1', 'ch_4250' ] ]
+    validation: *ran
+  - id: composition-over-inheritance
+    kind: compare
+    title: Composition over inheritance
+    note: "Wrap a function in functions of the same type, and every combination — and order — of behaviours is one expression."
+    prerequisites: *run
+    columns:
+      - label: Inheritance
+        tone: bad
+        code: |-
+          type Product = { id: string; name: string };
+
+          class ProductApi {
+            calls = 0;
+            async product(id: string): Promise<Product> {
+              this.calls++;
+              return { id, name: `Product ${id}` };
+            }
+          }
+
+          class CachedProductApi extends ProductApi {
+            #cache = new Map<string, Product>();
+            override async product(id: string): Promise<Product> {
+              const hit = this.#cache.get(id);
+              if (hit) return hit;
+              const product = await super.product(id);
+              this.#cache.set(id, product);
+              return product;
+            }
+          }
+
+          // Logged but not cached? Cached and retried? One subclass per combination.
+          class LoggedCachedProductApi extends CachedProductApi {
+            readonly log: string[] = [];
+            override async product(id: string): Promise<Product> {
+              this.log.push(`get ${id}`);
+              return super.product(id);
+            }
+          }
+
+          const api = new LoggedCachedProductApi();
+          await api.product("p1");
+          await api.product("p1");
+          console.log(api.log, "network calls:", api.calls);
+      - label: Composition
+        tone: good
+        code: |-
+          type Product = { id: string; name: string };
+          type ProductSource = (id: string) => Promise<Product>;
+
+          function withCache(source: ProductSource): ProductSource {
+            const cache = new Map<string, Product>();
+            return async (id) => {
+              const hit = cache.get(id);
+              if (hit) return hit;
+              const product = await source(id);
+              cache.set(id, product);
+              return product;
+            };
+          }
+
+          function withLog(source: ProductSource, log: string[]): ProductSource {
+            return (id) => {
+              log.push(`get ${id}`);
+              return source(id);
+            };
+          }
+
+          let calls = 0;
+          const fromNetwork: ProductSource = async (id) => {
+            calls++;
+            return { id, name: `Product ${id}` };
+          };
+
+          const log: string[] = [];
+          const product = withLog(withCache(fromNetwork), log);   // any combination, any order
+          await product("p1");
+          await product("p1");
+          console.log(log, "network calls:", calls);
+    expected: |-
+      [ 'get p1', 'get p1' ] network calls: 1
+    validation: *ran
+  - id: related-principles
+    kind: rules
+    title: Related principles an interviewer may also ask
+    note: Each one is a trade-off; say when you would break it.
+    items:
+      - tone: neutral
+        text: "**DRY** — one source of truth for each piece of knowledge; but prefer duplication over the wrong abstraction, and wait for the third copy."
+      - tone: neutral
+        text: "**KISS** — the plain function beats the generic framework; a `switch` over a closed union beats a plugin system nobody plugs into."
+      - tone: neutral
+        text: "**YAGNI** — do not add a type parameter or an interface until a second caller needs it."
+      - tone: neutral
+        text: "**Composition over inheritance** — wrap functions, spread objects, pass collaborators in; keep `extends` for framework base classes you do not own."
+      - tone: neutral
+        text: "**Law of Demeter** — `order.customer.address.country.code` couples you to four shapes; ask for `shippingCountry(order)` or take the value as a parameter."
+      - tone: neutral
+        text: "**Tell, don't ask** — call `cart.applyCoupon(code)` rather than reading its fields and deciding outside."
+      - tone: bad
+        text: "**SOLID as ceremony** — an `IUserService` interface with exactly one class behind it is not Dependency Inversion; a function parameter is."
+      - tone: good
+        text: "In React or Redux terms: a reducer per slice is SRP, a hook that takes its dependencies is DIP, and composing components is composition over inheritance."

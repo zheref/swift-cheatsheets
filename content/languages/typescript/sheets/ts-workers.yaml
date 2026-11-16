@@ -1,0 +1,616 @@
+id: ts-workers
+concept: concurrency.models-compared
+scope: platform
+title: "Concurrency Models — Event Loop, Workers & Atomics"
+group: "Reactive & time"
+subtitle: "One thread per event loop; parallelism means another loop (a Worker) and messages, or — rarely — shared memory with Atomics."
+applies:
+  platforms: [browser, node]
+  runtime: Node.js or a browser
+  versions: { typescript: ">=5.5", node: ">=22.18" }
+sources:
+  - title: Worker threads — Node.js
+    url: https://nodejs.org/api/worker_threads.html
+  - title: Using Web Workers — MDN
+    url: https://developer.mozilla.org/en-US/docs/Web/API/Web_Workers_API/Using_web_workers
+  - title: The Node.js event loop — Node.js
+    url: https://nodejs.org/en/learn/asynchronous-work/event-loop-timers-and-nexttick
+cards:
+  - id: concept-translation
+    kind: table
+    title: "GCD, actors and tasks → JavaScript"
+    note: "The page, or a Node process, is one big `@MainActor`: nothing runs in parallel unless you start a worker."
+    headers: [Need, Swift, JavaScript, What changes]
+    rows:
+      - ["Main-thread work", "`@MainActor`, `DispatchQueue.main`", "everything, by default", "no data races on ordinary objects — and no parallelism either"]
+      - ["Background CPU work", "`Task.detached`, `DispatchQueue.global().async`", "`new Worker(...)` (browser), `worker_threads` (Node)", "a separate heap: data crosses as messages, never as shared objects"]
+      - ["Fan-out + join", "`TaskGroup`, `DispatchGroup`", "`Promise.all(jobs.map(runInWorker))`", "no automatic cancellation of siblings"]
+      - ["Bounded parallelism", "the cooperative pool (cores)", "a worker pool sized by `navigator.hardwareConcurrency` / `os.availableParallelism()`", "a worker costs a thread, a V8 isolate and several MB: reuse them"]
+      - ["Serialise access to state", "`actor`, serial queue", "one owner — the event loop already runs one callback at a time", "the risk is interleaving across `await` (see the race card): a promise mutex or single-flight"]
+      - ["`Sendable` values", "copied or immutable", "structured clone", "`Map`, `Date`, typed arrays cross; functions and class identity do not"]
+      - ["Move a buffer", "`consuming` / `sending`", "a transfer list: `postMessage(msg, [buffer])`", "zero-copy; the sender's buffer is detached"]
+      - ["Lock, atomic counter", "`Mutex`, `Atomic<Int>`", "`SharedArrayBuffer` + `Atomics`", "browsers need cross-origin isolation (COOP + COEP headers)"]
+      - ["Cancellation", "`Task.cancel()` (cooperative)", "`AbortSignal` for async work; a shared flag or `worker.terminate()` for a busy worker", "a busy worker cannot read its message queue"]
+      - ["Priority", "`TaskPriority`, QoS", "`scheduler.postTask({ priority })` (browser, not in Safari)", "no priority between workers: the OS schedules threads"]
+  - id: event-loop-order
+    kind: code
+    title: "The event loop: microtasks before tasks"
+    note: "Inside a callback (and in CommonJS) it is sync, `nextTick`, promise microtasks, then the next phase, while at the top level of an ES module promise jobs run before `nextTick`."
+    prerequisites: &run
+      - Node.js 22.18 or later (it runs `.mts` files directly by stripping the types)
+      - "Save as `main.mts` and run `node main.mts`"
+      - "Optional type-check: `npm i -D typescript @types/node`, then `npx tsc --noEmit --strict --target esnext --module nodenext main.mts`"
+    code: |-
+      import { readFile } from "node:fs";
+
+      // Inside an I/O callback the order below is fixed. (In CommonJS main-module code nextTick also
+      // runs before promises, but setTimeout(0) vs setImmediate has no fixed order there.)
+      readFile(new URL(import.meta.url), () => {
+        setTimeout(() => console.log("6. setTimeout 0      — timers phase, next turn of the loop"), 0);
+        setImmediate(() => console.log("5. setImmediate      — check phase, right after I/O"));
+        Promise.resolve().then(() => {
+          console.log("3. promise .then      — microtask");
+          queueMicrotask(() => console.log("4. nested microtask  — still before any task"));
+        });
+        process.nextTick(() => console.log("2. process.nextTick  — before promise microtasks"));
+        console.log("1. synchronous code — always runs to completion first");
+      });
+
+      // At the top level of an ES module (this file) evaluation is itself a promise job, so promise
+      // callbacks run BEFORE nextTick here, and setTimeout(0) vs setImmediate has no fixed order.
+      process.nextTick(() => console.log("d. top-level nextTick — after every promise job, in an ES module"));
+      Promise.resolve().then(() => console.log("b. top-level promise — before nextTick, in an ES module"));
+
+      async function saveDraft() {
+        console.log("a. before await — synchronous, in the caller's task");
+        await null;
+        console.log("c. after await  — a microtask, queued behind the promise above");
+      }
+
+      void saveDraft();
+      // A browser has no nextTick or setImmediate: sync → microtasks → (maybe a render) → the next task.
+    expected: |-
+      a. before await — synchronous, in the caller's task
+      b. top-level promise — before nextTick, in an ES module
+      c. after await  — a microtask, queued behind the promise above
+      d. top-level nextTick — after every promise job, in an ES module
+      1. synchronous code — always runs to completion first
+      2. process.nextTick  — before promise microtasks
+      3. promise .then      — microtask
+      4. nested microtask  — still before any task
+      5. setImmediate      — check phase, right after I/O
+      6. setTimeout 0      — timers phase, next turn of the loop
+    applies:
+      platforms: [node]
+    validation: &ran
+      status: ran
+      toolchain: Node 24.16.0, TypeScript 5.9.3
+      date: "2026-11-16"
+  - id: race-across-await
+    kind: code
+    title: "The race JavaScript does have: state changing across an await"
+    note: "Between two `await`s nothing else runs, but a read–modify–write that spans an `await` interleaves with another one, so serialise it with a promise mutex or share the request in flight."
+    prerequisites: *run
+    code: |-
+      import { setTimeout as sleep } from "node:timers/promises";
+
+      type Cart = { items: string[] };
+      let stored: Cart = { items: [] };                              // stands in for a server or IndexedDB
+
+      async function addToCart(sku: string) {                       // read, modify, write — across an await
+        const cart = structuredClone(stored);                       // read
+        await sleep(5);                                             // e.g. check stock with the server
+        cart.items.push(sku);
+        stored = cart;                                              // write: whatever happened meanwhile is lost
+      }
+
+      await Promise.all([addToCart("mug"), addToCart("teapot")]);   // two taps, close together
+      console.log("unguarded:", stored.items);                     // both read the empty cart: one is lost
+
+      class Mutex {                                                  // fix 1: one section at a time
+        #tail: Promise<unknown> = Promise.resolve();
+
+        run<T>(section: () => Promise<T>): Promise<T> {
+          const result = this.#tail.then(() => section());         // starts when the previous one settles
+          this.#tail = result.catch(() => {});
+          return result;
+        }
+      }
+
+      const cartLock = new Mutex();
+      stored = { items: [] };
+      await Promise.all(["mug", "teapot"].map((sku) => cartLock.run(() => addToCart(sku))));
+      console.log("with a mutex:", stored.items);
+
+      let refreshes = 0;                                            // fix 2, single-flight: callers share
+      let inFlight: Promise<string> | undefined;                    // the one request already in flight
+
+      function refreshToken(): Promise<string> {
+        inFlight ??= sleep(5)
+          .then(() => `token-${++refreshes}`)
+          .finally(() => {
+            inFlight = undefined;                                   // the next 401 after this starts afresh
+          });
+        return inFlight;
+      }
+
+      const tokens = await Promise.all([refreshToken(), refreshToken(), refreshToken()]);   // three 401s at once
+      console.log("single-flight:", tokens, "refreshes:", refreshes);
+    expected: |-
+      unguarded: [ 'teapot' ]
+      with a mutex: [ 'mug', 'teapot' ]
+      single-flight: [ 'token-1', 'token-1', 'token-1' ] refreshes: 1
+    sources:
+      - title: Using promises — MDN
+        url: https://developer.mozilla.org/en-US/docs/Web/JavaScript/Guide/Using_promises
+    validation: *ran
+  - id: web-worker
+    kind: compare
+    title: "Off the main thread in the browser: a Web Worker"
+    note: "A worker keeps the page responsive while a large upload is parsed, and a `MessageChannel` per request makes sure one file's reply can never settle another file's promise."
+    prerequisites:
+      - "A page with `<input type=\"file\" id=\"csv-file\">` and `<output id=\"report\"></output>`, built with Vite or another bundler that understands `new Worker(new URL(...), { type: \"module\" })`"
+      - "Save the columns as `page.ts` and `report-worker.ts` side by side"
+    columns:
+      - label: page.ts — the main thread
+        tone: neutral
+        code: |-
+          type ReportRequest = { csv: ArrayBuffer; reply: MessagePort };
+          type ReportResult = { rows: number; revenueByRegion: Record<string, number> };
+          type ReportReply = { ok: true; report: ReportResult } | { ok: false; error: string };
+
+          // Bundlers recognise this exact shape and emit the worker as its own file.
+          const worker = new Worker(new URL("./report-worker.ts", import.meta.url), { type: "module" });
+          const picker = document.querySelector<HTMLInputElement>("#csv-file")!;
+          const output = document.querySelector<HTMLOutputElement>("#report")!;
+
+          // One MessageChannel per request: its reply can only ever settle its own promise.
+          function buildReport(csv: ArrayBuffer): Promise<ReportResult> {
+            const { port1, port2 } = new MessageChannel();
+            const settled = new AbortController();
+            return new Promise<ReportResult>((resolve, reject) => {
+              port1.onmessage = ({ data }: MessageEvent<ReportReply>) =>
+                data.ok ? resolve(data.report) : reject(new Error(data.error));
+              // The script failed to load, or threw outside a request: no reply will ever come.
+              const onError = (e: ErrorEvent) => reject(new Error(`report worker failed: ${e.message}`));
+              worker.addEventListener("error", onError, { signal: settled.signal });
+              worker.postMessage({ csv, reply: port2 } satisfies ReportRequest, [csv, port2]);   // both transferred
+            }).finally(() => {
+              port1.close();
+              settled.abort();                                     // removes this request's error listener
+            });
+          }
+
+          let latestPick = 0;
+          picker.addEventListener("change", async () => {
+            const file = picker.files?.[0];
+            if (!file) return;
+            const pick = ++latestPick;
+            output.textContent = "Building report…";             // still scrollable, still clickable
+            try {
+              const { rows, revenueByRegion } = await buildReport(await file.arrayBuffer());
+              if (pick !== latestPick) return;                   // a newer file was picked meanwhile
+              const totals = Object.entries(revenueByRegion).map(([region, c]) => `${region} $${(c / 100).toFixed(2)}`);
+              output.textContent = `${rows} orders · ${totals.join(" · ")}`;
+            } catch (error) {
+              if (pick === latestPick) output.textContent = `Could not read ${file.name}: ${(error as Error).message}`;
+            }
+          });
+      - label: report-worker.ts — its own thread
+        tone: neutral
+        code: |-
+          // A dedicated worker: no DOM, its own event loop and heap.
+          // In a real project, type-check worker files with "lib": ["ESNext", "WebWorker"].
+          type ReportRequest = { csv: ArrayBuffer; reply: MessagePort };
+          type ReportResult = { rows: number; revenueByRegion: Record<string, number> };
+          type ReportReply = { ok: true; report: ReportResult } | { ok: false; error: string };
+
+          function buildReport(csv: ArrayBuffer): ReportResult {   // CPU-bound: fine here, fatal on the main thread
+            const lines = new TextDecoder().decode(csv).trimEnd().split("\n");
+            if (lines[0] !== "region,cents") throw new Error("not an orders export");
+            const revenueByRegion: Record<string, number> = {};
+            for (const line of lines.slice(1)) {
+              const [region = "unknown", cents = "0"] = line.split(",");
+              revenueByRegion[region] = (revenueByRegion[region] ?? 0) + Number(cents);
+            }
+            return { rows: lines.length - 1, revenueByRegion };
+          }
+
+          self.onmessage = ({ data: { csv, reply } }: MessageEvent<ReportRequest>) => {
+            let message: ReportReply;
+            try {
+              message = { ok: true, report: buildReport(csv) };
+            } catch (error) {
+              message = { ok: false, error: (error as Error).message };   // a bad file fails its own request only
+            }
+            reply.postMessage(message);                            // answered on the caller's own channel
+            reply.close();
+          };
+    expected: "Choosing a CSV export shows **Building report…** while the page keeps scrolling, then a line such as `400000 orders · north $2498000.00 · south $2499000.00 · …`."
+    applies:
+      platforms: [browser]
+      runtime: a browser page built with a bundler
+      versions: { typescript: ">=5.5", browsers: "Baseline 2023 (module workers)" }
+    validation:
+      status: compiled
+      toolchain: TypeScript 5.9.3 (lib DOM)
+      date: "2026-11-16"
+      host: a browser page served by a bundler, with the elements named in the setup
+  - id: node-worker-threads
+    kind: code
+    title: "Off the main thread in Node: worker_threads"
+    note: "A file can start itself as a worker — `new Worker(new URL(import.meta.url))` with an `isMainThread` branch — so the worker code stays typed and in one place."
+    prerequisites: *run
+    code: |-
+      import { once } from "node:events";
+      import { isMainThread, parentPort, Worker, workerData } from "node:worker_threads";
+
+      type Report = { rows: number; revenueByRegion: Record<string, number> };
+
+      function buildReport(csv: string): Report {                // CPU-bound: it blocks whichever thread runs it
+        const revenueByRegion: Record<string, number> = {};
+        const lines = csv.split("\n");
+        for (let i = 1; i < lines.length; i++) {
+          const [region = "", cents = "0"] = lines[i]!.split(",");
+          revenueByRegion[region] = (revenueByRegion[region] ?? 0) + Number(cents);
+        }
+        return { rows: lines.length - 1, revenueByRegion };
+      }
+
+      function exportCsv(rows: number): string {                 // stand-in for a large export
+        const regions = ["north", "south", "east", "west"];
+        const lines = ["region,cents"];
+        for (let i = 0; i < rows; i++) lines.push(`${regions[i % 4]},${(i * 37) % 5000}`);
+        return lines.join("\n");
+      }
+
+      if (isMainThread) {
+        // Meanwhile this thread keeps serving HTTP requests, timers and I/O.
+        const worker = new Worker(new URL(import.meta.url), { workerData: exportCsv(400_000) });
+        const [{ rows, revenueByRegion }] = (await once(worker, "message")) as [Report];
+        const totals = Object.entries(revenueByRegion).map(([region, cents]) => `${region} $${cents / 100}`);
+        console.log(`${rows} orders:`, totals.join(", "));
+      } else {
+        parentPort!.postMessage(buildReport(workerData as string));   // then the worker has nothing left and exits
+      }
+    expected: |-
+      400000 orders: north $2498000, south $2499000, east $2500000, west $2501000
+    applies:
+      platforms: [node]
+    validation: *ran
+  - id: wait-for-n-jobs
+    kind: code
+    title: Waiting for N parallel jobs
+    note: "One worker per job and `Promise.all` — fail-fast — or `Promise.allSettled` when one bad month must not sink the others."
+    prerequisites: *run
+    code: |-
+      import { once } from "node:events";
+      import { isMainThread, parentPort, Worker, workerData } from "node:worker_threads";
+
+      type Job = { month: string; rows: number };
+      type Result = { month: string; cents: number };
+
+      function monthlyRevenue({ month, rows }: Job): Result {      // stand-in for parsing that month's export
+        if (rows < 0) throw new RangeError(`${month}: corrupt export`);
+        let cents = 0;
+        for (let i = 0; i < rows; i++) cents += (i * 37) % 5000;
+        return { month, cents };
+      }
+
+      async function inWorker(job: Job): Promise<Result> {
+        const worker = new Worker(new URL(import.meta.url), { workerData: job });
+        const [result] = (await once(worker, "message")) as [Result];   // rejects if the worker throws
+        return result;
+      }
+
+      if (isMainThread) {
+        const months: Job[] = [
+          { month: "Jan", rows: 3_000_000 }, { month: "Feb", rows: 2_800_000 }, { month: "Mar", rows: 3_100_000 },
+        ];
+
+        const all = await Promise.all(months.map(inWorker));    // in parallel, a core each; the first failure wins
+        console.log(all.map((r) => `${r.month} $${r.cents / 100}`).join(", "));
+
+        const settled = await Promise.allSettled([...months, { month: "Apr", rows: -1 }].map(inWorker));
+        for (const outcome of settled) {
+          if (outcome.status === "fulfilled") console.log(`${outcome.value.month} ok`);
+          else console.log(`failed: ${(outcome.reason as Error).message}`);
+        }
+      } else {
+        parentPort!.postMessage(monthlyRevenue(workerData as Job));
+      }
+    expected: |-
+      Jan $74985000, Feb $69986000, Mar $77484500
+      Jan ok
+      Feb ok
+      Mar ok
+      failed: Apr: corrupt export
+    applies:
+      platforms: [node]
+    validation: *ran
+  - id: worker-pool
+    kind: code
+    title: A worker pool
+    note: "A fixed number of lanes reuse one worker each and pull from a shared queue, and a job whose worker crashes or exits without replying fails only itself while the lane replaces the worker."
+    prerequisites: *run
+    code: |-
+      import { once } from "node:events";
+      import { isMainThread, parentPort, Worker } from "node:worker_threads";
+
+      type Job = { month: string; rows: number };
+
+      function noReply([code]: unknown[]): never {
+        throw new Error(`worker exited (code ${code}) without replying`);
+      }
+
+      async function runOnPool(jobs: Job[], size: number, script: URL): Promise<PromiseSettledResult<number>[]> {
+        const outcomes: PromiseSettledResult<number>[] = [];
+        let next = 0;
+
+        const lane = async () => {                                 // one per thread (long-lived pools: Piscina)
+          let worker = new Worker(script);                         // reused for job after job…
+          let exited = once(worker, "exit");                       // …with one "exit" listener for its whole life
+          while (next < jobs.length) {
+            const index = next++;                                  // claimed synchronously: one lane per job
+            try {
+              worker.postMessage(jobs[index]);
+              const [cents] = await Promise.race([once(worker, "message"), exited.then(noReply)]);   // or "error"
+              outcomes[index] = { status: "fulfilled", value: cents as number };
+            } catch (reason) {
+              outcomes[index] = { status: "rejected", reason };    // fail this job only, and go on
+              worker = new Worker(script);                         // it crashed or exited: replace it
+              exited = once(worker, "exit");
+            }
+          }
+
+          await worker.terminate();                                // reached whatever the jobs did
+        };
+
+        await Promise.all(Array.from({ length: size }, lane));
+        return outcomes;
+      }
+
+      if (isMainThread) {
+        const jobs: Job[] = Object.entries({ Feb: -1, Mar: 0, Apr: 4e5 }).map(([month, rows]) => ({ month, rows }));
+        (await runOnPool(jobs, 2, new URL(import.meta.url))).forEach((o, i) =>   // 3 jobs on 2 threads
+          console.log(jobs[i]!.month, o.status === "fulfilled" ? `$${o.value / 100}` : `${o.reason}`));
+      } else {
+        parentPort!.on("message", ({ month, rows }: Job) => {      // long-lived: one message per job
+          if (rows < 0) throw new RangeError(`${month}: corrupt export`);   // uncaught: this worker dies
+          if (rows === 0) process.exit(0);                         // e.g. a library that exits: no reply at all
+          parentPort!.postMessage(rows * 2_500);                   // stand-in: that month's revenue in cents
+        });
+      }
+    expected: |-
+      Feb RangeError: Feb: corrupt export
+      Mar Error: worker exited (code 0) without replying
+      Apr $10000000
+    applies:
+      platforms: [node]
+    sources:
+      - title: Worker pool — Node.js docs (AsyncResource example)
+        url: https://nodejs.org/api/async_context.html#using-asyncresource-for-a-worker-thread-pool
+    validation: *ran
+  - id: transfer-vs-copy
+    kind: code
+    title: Transferring vs copying
+    note: "`postMessage` copies with the structured-clone algorithm unless a buffer is in the transfer list, in which case it moves and the sender's copy is detached."
+    prerequisites: *run
+    code: |-
+      import { once } from "node:events";
+      import { MessageChannel } from "node:worker_threads";
+
+      const { port1, port2 } = new MessageChannel();          // the channel a Worker uses underneath
+      const csv = new TextEncoder().encode("region,cents\nnorth,1200\nsouth,800\n").buffer;
+
+      // Copy (the default): Maps, Dates and typed arrays survive; both sides own their own copy.
+      port1.postMessage({ exportedAt: new Date(0), regions: new Map([["north", 1]]), csv });
+      const [copied] = await once(port2, "message");
+      console.log("copy:", copied.exportedAt instanceof Date, copied.regions.get("north"));
+      console.log("  sender still has", csv.byteLength, "bytes");
+
+      // Transfer: list the buffer and it moves. Zero-copy, and the sender's view is detached.
+      port1.postMessage({ csv }, [csv]);
+      const [moved] = await once(port2, "message");
+      console.log("transfer: receiver has", (moved.csv as ArrayBuffer).byteLength, "bytes");
+      console.log("  sender has", csv.byteLength, "bytes");
+
+      // structuredClone() is the same algorithm in one thread — and takes a transfer list too.
+      const draft = { totals: new Map([["east", 990]]), rows: new Uint8Array(16) };
+      const snapshot = structuredClone(draft, { transfer: [draft.rows.buffer] });
+      console.log("structuredClone:", snapshot.totals.get("east"), snapshot.rows.length);
+      console.log("  original rows:", draft.rows.length);
+      port1.close();
+    expected: |-
+      copy: true 1
+        sender still has 34 bytes
+      transfer: receiver has 34 bytes
+        sender has 0 bytes
+      structuredClone: 990 16
+        original rows: 0
+    sources:
+      - title: The structured clone algorithm — MDN
+        url: https://developer.mozilla.org/en-US/docs/Web/API/Web_Workers_API/Structured_clone_algorithm
+      - title: Transferable objects — MDN
+        url: https://developer.mozilla.org/en-US/docs/Web/API/Web_Workers_API/Transferable_objects
+    validation: *ran
+  - id: what-cannot-be-cloned
+    kind: code
+    title: What structured clone will not carry
+    note: "Functions and symbols throw `DataCloneError`, while errors and class instances arrive stripped of their own class, `name` and fields, so send plain data and rebuild them on the other side."
+    prerequisites: *run
+    code: |-
+      // What structured clone (postMessage, workerData, structuredClone) does not carry across.
+      class HttpError extends Error {
+        status: number;
+        constructor(message: string, status: number) {
+          super(message);
+          this.name = "HttpError";
+          this.status = status;
+        }
+      }
+
+      const tryClone = (label: string, value: unknown) => {
+        try {
+          structuredClone(value);
+          console.log(label, "→ cloned");
+        } catch (e) {
+          console.log(label, "→", (e as DOMException).name);
+        }
+      };
+
+      tryClone("a function", { format: (cents: number) => `$${cents / 100}` });
+      tryClone("a Symbol", { id: Symbol("order") });
+
+      // An error clones as one of the seven standard types, picked by its `name` (else plain Error), with
+      // message, stack and cause; its own name, class and fields are lost. (Any class instance arrives as
+      // a plain object for the same reason.)
+      const lost = structuredClone(new HttpError("orders API down", 503)) as Partial<HttpError>;
+      console.log("HttpError arrives as", lost.constructor?.name, "| name:", lost.name, "| status:", lost.status);
+
+      const parse = structuredClone(new TypeError("parse failed", { cause: new Error("bad row 7") }));
+      console.log(parse.name, "keeps its cause:", (parse.cause as Error).message);
+
+      const batch = structuredClone(new AggregateError([new Error("Feb")], "1 month failed"));
+      const { errors } = batch as Partial<AggregateError>;
+      console.log("AggregateError arrives as", batch.constructor.name, "| errors:", errors);
+
+      // The fix: send plain data, and rebuild the error on the other side.
+      const wire = structuredClone({ name: "HttpError", message: "orders API down", status: 503 });
+      const rebuilt = new HttpError(wire.message, wire.status);
+      console.log("rebuilt:", rebuilt instanceof HttpError, rebuilt.name, rebuilt.status);
+    expected: |-
+      a function → DataCloneError
+      a Symbol → DataCloneError
+      HttpError arrives as Error | name: Error | status: undefined
+      TypeError keeps its cause: bad row 7
+      AggregateError arrives as Error | errors: undefined
+      rebuilt: true HttpError 503
+    sources:
+      - title: The structured clone algorithm — MDN
+        url: https://developer.mozilla.org/en-US/docs/Web/API/Web_Workers_API/Structured_clone_algorithm
+    validation: *ran
+  - id: shared-memory-atomics
+    kind: code
+    title: SharedArrayBuffer + Atomics for shared state
+    note: "Shared memory is the one place real data races exist in JavaScript, so use `Atomics` for every read-modify-write and `waitAsync`/`notify` to signal without polling."
+    prerequisites: *run
+    code: |-
+      import { once } from "node:events";
+      import { isMainThread, Worker, workerData } from "node:worker_threads";
+
+      type Chunk = { shared: SharedArrayBuffer; rows: number };
+      const ROWS_DONE = 0;                                      // slot indexes in the shared Int32Array
+      const WORKERS_DONE = 1;
+
+      if (isMainThread) {
+        const shared = new SharedArrayBuffer(2 * Int32Array.BYTES_PER_ELEMENT);   // shared, not copied
+        const progress = new Int32Array(shared);
+        const workers = Array.from({ length: 4 }, () =>
+          new Worker(new URL(import.meta.url), { workerData: { shared, rows: 250_000 } satisfies Chunk }));
+        const exited = workers.map((w) => once(w, "exit"));    // listen now: a fast worker may exit before we look
+
+        let finished = 0;
+        while (finished < 4) {                                // wait without blocking the main thread
+          const { async, value } = Atomics.waitAsync(progress, WORKERS_DONE, finished);
+          if (async) await value;
+          finished = Atomics.load(progress, WORKERS_DONE);
+        }
+        console.log("rows parsed:", Atomics.load(progress, ROWS_DONE));   // exact; `+=` would lose updates
+        await Promise.all(exited);
+      } else {
+        const { shared, rows } = workerData as Chunk;
+        const progress = new Int32Array(shared);
+        for (let row = 1; row <= rows; row++) {
+          // …parse the row…
+          if (row % 10_000 === 0) Atomics.add(progress, ROWS_DONE, 10_000);   // progress, as an atomic add
+        }
+        Atomics.add(progress, WORKERS_DONE, 1);
+        Atomics.notify(progress, WORKERS_DONE);               // wake whoever waits on that slot
+      }
+    expected: |-
+      rows parsed: 1000000
+    applies:
+      platforms: [node]
+    sources:
+      - title: Atomics — MDN
+        url: https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Atomics
+      - title: SharedArrayBuffer — MDN
+        url: https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/SharedArrayBuffer
+    validation: *ran
+  - id: cancel-in-flight
+    kind: code
+    title: Cancelling in-flight work
+    note: "A busy worker never reads its messages, so check a shared flag in the loop, refuse an already-aborted signal up front, and keep `terminate()` for code that cannot cooperate."
+    prerequisites: *run
+    code: |-
+      import { once } from "node:events";
+      import { isMainThread, parentPort, Worker, workerData } from "node:worker_threads";
+
+      type Outcome = { status: "done" | "cancelled"; rowsParsed: number };
+      const TOTAL_ROWS = 200_000_000;
+
+      async function runReport(signal: AbortSignal): Promise<Outcome> {   // an ordinary AbortSignal API
+        signal.throwIfAborted();                              // already cancelled: start nothing
+        const cancelFlag = new Int32Array(new SharedArrayBuffer(4));
+        const worker = new Worker(new URL(import.meta.url), { workerData: cancelFlag });
+        const cancel = () => Atomics.store(cancelFlag, 0, 1);  // seen at once; a "cancel" message would wait
+        signal.addEventListener("abort", cancel, { once: true });
+        try {
+          const [outcome] = await once(worker, "message");
+          return outcome as Outcome;
+        } finally {
+          signal.removeEventListener("abort", cancel);        // the report is over: no listener left behind
+        }
+      }
+
+      if (isMainThread) {
+        const dialog = new AbortController();
+        const report = runReport(dialog.signal);
+        setTimeout(() => dialog.abort(), 20);                 // the user closes the report dialog
+        const { status, rowsParsed } = await report;
+        console.log(status, "| stopped early:", rowsParsed < TOTAL_ROWS);
+        await runReport(dialog.signal).catch((e: Error) => console.log("closed dialog, new report:", e.name));
+
+        const runaway = new Worker("for (;;) {}", { eval: true });   // inline code that never checks a flag
+        await runaway.terminate();                            // the hard stop: no finally, no cleanup in it
+        console.log("runaway worker terminated");
+      } else {
+        const cancelFlag = workerData as Int32Array;
+        let row = 0;
+        for (; row < TOTAL_ROWS; row++) {
+          if (row % 100_000 === 0 && Atomics.load(cancelFlag, 0) === 1) break;   // a cheap, regular check
+          // …parse the row…
+        }
+        parentPort!.postMessage({ status: row < TOTAL_ROWS ? "cancelled" : "done", rowsParsed: row });
+      }
+    expected: |-
+      cancelled | stopped early: true
+      closed dialog, new report: AbortError
+      runaway worker terminated
+    applies:
+      platforms: [node]
+    validation: *ran
+  - id: talking-points
+    kind: rules
+    title: Talking points
+    note: Short answers that show depth.
+    items:
+      - tone: neutral
+        text: "JavaScript is single-threaded **per event loop**, not per process: every `Worker` is another loop with its own heap, and they talk by messages."
+      - tone: neutral
+        text: "`async`/`await` is concurrency, not parallelism — it interleaves waiting. CPU-bound work still blocks the loop it runs on; only a worker runs it in parallel."
+      - tone: neutral
+        text: "Microtasks (promise callbacks, `queueMicrotask`) all run before the next task or render. A microtask that schedules another forever freezes the page as surely as a `while (true)`."
+      - tone: neutral
+        text: "No `await` means no interleaving: between two `await`s your code is atomic. Races in JavaScript are about state changing **across** an `await`, which is why a single owner works like an actor."
+      - tone: good
+        text: "Transfer large `ArrayBuffer`s, `ImageBitmap`s and `MessagePort`s instead of copying them; copy small messages — and measure before optimising the rest."
+      - tone: good
+        text: "Size pools from `os.availableParallelism()` (Node) or `navigator.hardwareConcurrency` (browser) minus one, and reuse workers: in Node, libraries such as Piscina do this for you."
+      - tone: bad
+        text: "`SharedArrayBuffer` in a browser needs cross-origin isolation (`Cross-Origin-Opener-Policy: same-origin`, `Cross-Origin-Embedder-Policy: require-corp` or `credentialless`); without it the constructor is not even defined. `Atomics.waitAsync` is in every engine since Firefox 145."
+      - tone: bad
+        text: "`Atomics.wait` blocks the thread: never on the browser's main thread (it throws there) — use `Atomics.waitAsync`."
+      - tone: neutral
+        text: "Node's libuv thread pool already runs `fs`, `crypto.pbkdf2`, `zlib` and DNS lookups off the main thread: reach for `worker_threads` only for **your own** CPU-bound JavaScript."

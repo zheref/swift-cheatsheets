@@ -1,0 +1,481 @@
+id: ts-tailwind
+concept: ui.utility-css
+scope: platform
+title: "Styling — Tailwind CSS"
+group: "UI"
+subtitle: "Tailwind 4: tokens declared in CSS with @theme, utilities composed in components, dark mode and variants without writing selectors."
+applies:
+  platforms: [browser]
+  runtime: a browser page whose CSS is built by Tailwind CSS 4 (the Vite plugin or the PostCSS plugin)
+  versions: { tailwindcss: ">=4.0 <5", typescript: ">=5.5", react: ">=18" }
+sources:
+  - title: Theme variables — Tailwind CSS
+    url: https://tailwindcss.com/docs/theme
+  - title: Styling with utility classes — Tailwind CSS
+    url: https://tailwindcss.com/docs/styling-with-utility-classes
+  - title: Upgrade guide (v3 to v4) — Tailwind CSS
+    url: https://tailwindcss.com/docs/upgrade-guide
+cards:
+  - id: v4-configuration-model
+    kind: table
+    title: Tailwind 4's model, against Tailwind 3
+    note: "Tailwind 4 configures in CSS; most answers online still show Tailwind 3's `tailwind.config.js`, so know which one you are reading."
+    headers: [Concern, Tailwind 4 (current), Tailwind 3]
+    rows:
+      - - Entry point
+        - "`@import \"tailwindcss\";` in your CSS"
+        - "`@tailwind base; @tailwind components; @tailwind utilities;`"
+      - - Design tokens
+        - "`@theme { --color-brand-700: #1d4ed8; }` in CSS"
+        - "`theme.extend.colors` in `tailwind.config.js`"
+      - - Build
+        - "`@tailwindcss/vite`, or `@tailwindcss/postcss`; prefixing built in"
+        - "the `tailwindcss` PostCSS plugin plus `autoprefixer`"
+      - - Which files are scanned
+        - "automatic (skips `.gitignore`d files and `node_modules`); `@source` adds a path"
+        - "`content: [\"./src/**/*.tsx\"]`"
+      - - Class-based dark mode
+        - "`@custom-variant dark (&:where(.dark, .dark *));`"
+        - "`darkMode: \"class\"`"
+      - - Your own utility
+        - "`@utility content-auto { content-visibility: auto; }` — works with every variant"
+        - "`@layer utilities { … }` or a plugin"
+      - - Tokens at run time
+        - "theme values become CSS variables once used; `@theme static { … }` emits them all"
+        - "`theme()` inside CSS only"
+      - - Breakpoints
+        - "`--breakpoint-*` in rem (`md` is 48rem); `max-md:` and `@container` / `@md:` built in"
+        - "`screens` in px; container queries via a plugin"
+      - - Renamed scales
+        - "`shadow-xs` is 3's `shadow-sm`, `shadow-sm` is 3's `shadow` (same for `rounded-*`, `blur-*`)"
+        - "`shadow-sm`, `shadow`"
+      - - "`hover:`"
+        - "only where the device can hover: `@media (hover: hover)`"
+        - "on every device, so taps left sticky hovers"
+  - id: theme-tokens
+    kind: code
+    title: Tokens in @theme
+    note: "Each variable in a namespace (`--color-*`, `--radius-*`, `--breakpoint-*`) creates its utilities, and is emitted as a CSS variable once something uses it."
+    prerequisites:
+      - "A Vite + React app: `npm create vite@latest shop -- --template react-ts`, then `npm i tailwindcss @tailwindcss/vite`"
+      - "`vite.config.ts`: `import tailwindcss from \"@tailwindcss/vite\"` and add `tailwindcss()` to `plugins`"
+      - "Save as `src/app.css` and import it once from `src/main.tsx`"
+    code: |-
+      @import "tailwindcss";
+
+      @theme {
+        /* bg-brand-700, text-brand-100, ring-brand-700, from-brand-700 … */
+        --color-brand-100: #dbeafe;
+        --color-brand-700: #1d4ed8;
+        --color-brand-800: #1e40af;
+
+        /* font-sans now means Inter; font-mono is untouched */
+        --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+
+        /* rounded-control, rounded-card */
+        --radius-control: 0.375rem;
+        --radius-card: 0.75rem;
+
+        /* a 3xl: variant above the built-in 2xl (96rem) */
+        --breakpoint-3xl: 120rem;
+      }
+
+      /* Only variables something uses reach the output; a var() in your own CSS counts as a use. */
+      .receipt-print-header {
+        border-bottom: 2px solid var(--color-brand-700);
+      }
+
+      /* Read only from JavaScript (a canvas chart's colours)? Emit them always with static. */
+      @theme static {
+        --color-chart-revenue: #1d4ed8;
+        --color-chart-refunds: #b91c1c;
+      }
+
+      /* p-4 is calc(var(--spacing) * 4): the whole spacing scale is one value (0.25rem). */
+    expected: "`bg-brand-700`, `rounded-card`, `font-sans` and `3xl:grid-cols-4` work in any component, the default palette (`bg-gray-100`…) is still available, and `getComputedStyle(document.documentElement).getPropertyValue(\"--color-chart-revenue\")` returns `#1d4ed8` even though no class uses it; to drop a whole default namespace, start a block with `--color-*: initial;`."
+    validation: &excerpt
+      status: excerpt
+      host: a Vite (or PostCSS) build with Tailwind CSS 4
+  - id: dark-mode-roles
+    kind: code
+    title: Dark mode with semantic roles
+    note: "Name roles once (`bg-surface`) and switch their values per scheme, instead of pairing `bg-white dark:bg-gray-900` on every element."
+    prerequisites:
+      - "The app from the card above; add this to `src/app.css`, after its `@import` and `@theme` block"
+      - "Something sets the `dark` class on `<html>` before first paint — the scheme script in the Design Tokens sheet does"
+    code: |-
+      /* src/app.css, after @import "tailwindcss" and the @theme block */
+
+      /* dark: follows a .dark ancestor instead of the OS setting (the default) */
+      @custom-variant dark (&:where(.dark, .dark *));
+
+      :root {
+        --surface: #ffffff;
+        --subtle: #f3f4f6;
+        --fg: #111827;
+        --muted: #4b5563;
+        --border: #e5e7eb;
+        --danger: #b91c1c;
+        color-scheme: light;
+      }
+      .dark {
+        --surface: #111827;
+        --subtle: #1f2937;
+        --fg: #f3f4f6;
+        --muted: #9ca3af;
+        --border: #374151;
+        --danger: #f87171;
+        color-scheme: dark;
+      }
+
+      /* inline: the utility uses var(--surface) itself, so it follows the scheme at run time */
+      @theme inline {
+        --color-surface: var(--surface);
+        --color-subtle: var(--subtle);
+        --color-fg: var(--fg);
+        --color-muted: var(--muted);
+        --color-border: var(--border);
+        --color-danger: var(--danger);
+      }
+
+      /* Components now write  bg-surface text-fg ring-border  and never need dark:.
+         Keep dark: for genuine exceptions:  shadow-sm dark:shadow-none  */
+    expected: "Toggling `dark` on `<html>` swaps every `bg-surface`, `text-muted` and `ring-border` at once, and native form controls follow through `color-scheme`."
+    sources:
+      - title: Dark mode — Tailwind CSS
+        url: https://tailwindcss.com/docs/dark-mode
+    validation: *excerpt
+  - id: utility-first-component
+    kind: code
+    title: Utility-first, in a real component
+    note: "The component is the unit of reuse: its classes are written once, here, and every order on the page is a loop over it."
+    prerequisites: &react
+      - "A React app with Tailwind 4 and the tokens from the cards above; to run this file alone, `npm i react react-dom @types/react @types/react-dom`"
+      - "Save as `main.tsx`; run it with a TSX-aware runner such as `npx tsx main.tsx` (beside a `tsconfig.json` with `\"jsx\": \"react-jsx\"`)"
+    code: |-
+      import { renderToStaticMarkup } from "react-dom/server";
+
+      type Order = { id: string; customer: string; items: number; total: string };
+
+      // Mobile first: unprefixed classes apply everywhere, md: from 48rem up.
+      function OrderSummary({ order }: { order: Order }) {
+        return (
+          <article className="rounded-card bg-surface p-4 shadow-sm ring-1 ring-border md:p-6">
+            <header className="flex items-baseline justify-between gap-3">
+              <h2 className="text-lg font-semibold text-fg">Order #{order.id}</h2>
+              <span className="text-sm text-muted">{order.items} items</span>
+            </header>
+            <p className="mt-1 text-sm text-muted">{order.customer}</p>
+            <p className="mt-4 text-2xl font-bold tabular-nums text-fg">{order.total}</p>
+          </article>
+        );
+      }
+
+      const html = renderToStaticMarkup(
+        <OrderSummary order={{ id: "1042", customer: "Ada Lovelace", items: 3, total: "$42.50" }} />,
+      );
+      console.log(html.replaceAll("><", ">\n<"));   // one element per line, for reading
+    expected: |-
+      <article class="rounded-card bg-surface p-4 shadow-sm ring-1 ring-border md:p-6">
+      <header class="flex items-baseline justify-between gap-3">
+      <h2 class="text-lg font-semibold text-fg">Order #1042</h2>
+      <span class="text-sm text-muted">3 items</span>
+      </header>
+      <p class="mt-1 text-sm text-muted">Ada Lovelace</p>
+      <p class="mt-4 text-2xl font-bold tabular-nums text-fg">$42.50</p>
+      </article>
+    applies:
+      platforms: [browser, node]
+      runtime: a React app built with Tailwind 4; runs in Node.js through react-dom/server
+      versions: { typescript: ">=5.0", node: ">=22.18", react: ">=18", tailwindcss: ">=4.0" }
+    validation: &ran-react
+      status: ran
+      toolchain: Node 24.16.0, TypeScript 5.9.3
+      date: "2026-11-16"
+      jsx: react
+  - id: responsive-and-state-variants
+    kind: code
+    title: Responsive and state variants
+    note: "Prefix a utility with the condition it needs — breakpoint, interaction, a parent's or sibling's state, an attribute — and let the element's real state drive the style."
+    prerequisites:
+      - "The app and tokens from the cards above"
+      - "Save as `src/OrderRow.tsx`"
+    code: |-
+      type Status = "processing" | "shipped" | "late";
+      type Order = { id: string; status: Status };
+
+      // Long class lists split into named strings; every class is still a complete literal.
+      const rowClass =
+        "group/row flex flex-col gap-2 rounded-card p-4 hover:bg-subtle " +
+        "sm:flex-row sm:items-center sm:justify-between";
+      const linkClass =
+        "font-medium text-fg group-hover/row:underline " +
+        "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-700";
+      const statusClass = "text-sm text-muted data-[status=late]:font-semibold data-[status=late]:text-danger";
+      // Shown on hover or keyboard focus of the row; always on touch screens, which cannot hover.
+      const archiveClass =
+        "hidden rounded-control px-3 py-1 text-sm ring-1 ring-border " +
+        "group-hover/row:block group-focus-within/row:block pointer-coarse:block pointer-coarse:py-2";
+
+      export function OrderRow({ order }: { order: Order }) {
+        return (
+          <li className={rowClass}>
+            <a href={`/orders/${order.id}`} className={linkClass}>Order #{order.id}</a>
+            <span data-status={order.status} className={statusClass}>{order.status}</span>
+            <button aria-label={`Archive order ${order.id}`} className={archiveClass}>Archive</button>
+          </li>
+        );
+      }
+
+      const inputClass = "peer rounded-control bg-surface px-3 py-2 ring-1 ring-border user-invalid:ring-danger";
+
+      export function ReceiptEmailField() {
+        return (
+          <label className="grid gap-1">
+            <span className="text-sm font-medium text-fg">Email for receipts</span>
+            <input type="email" required className={inputClass} />
+            <span className="invisible text-sm text-danger peer-user-invalid:visible">
+              Enter an address like ada@example.com
+            </span>
+          </label>
+        );
+      }
+    expected: "Rows stack on phones and line up from `sm`; a late order's status turns bold red; **Archive** appears on hover or focus (always on touch); the email hint shows only after the user leaves an invalid address."
+    sources:
+      - title: Hover, focus, and other states — Tailwind CSS
+        url: https://tailwindcss.com/docs/hover-focus-and-other-states
+      - title: Responsive design — Tailwind CSS
+        url: https://tailwindcss.com/docs/responsive-design
+    applies:
+      versions: { typescript: ">=5.0", react: ">=18", tailwindcss: ">=4.1" }
+    validation:
+      status: compiled
+      toolchain: Node 24.16.0, TypeScript 5.9.3
+      date: "2026-11-16"
+      jsx: react
+      host: a React app built with Tailwind CSS 4.1 or later
+  - id: map-props-to-whole-classes
+    kind: compare
+    title: Variants are maps of whole class names
+    note: "Tailwind scans your source as text: a class assembled at run time prints the same string but never gets any CSS."
+    prerequisites: *react
+    columns:
+      - label: Interpolated — no CSS for red
+        tone: bad
+        code: |-
+          import type { ButtonHTMLAttributes } from "react";
+          import { renderToStaticMarkup } from "react-dom/server";
+
+          type Tone = "blue" | "red";
+          type Props = ButtonHTMLAttributes<HTMLButtonElement> & { tone: Tone };
+
+          function Button({ tone, className = "", ...rest }: Props) {
+            // Built at run time: "bg-red-700" never appears in the source.
+            const colours = `bg-${tone}-700 hover:bg-${tone}-800`;
+            const classes = `rounded-control px-4 py-2 text-white ${colours} ${className}`.trim();
+            return <button className={classes} {...rest} />;
+          }
+
+          console.log(renderToStaticMarkup(<Button tone="blue">Pay</Button>));
+          console.log(renderToStaticMarkup(<Button tone="red">Cancel order</Button>));
+      - label: Mapped — every class is a literal
+        tone: good
+        code: |-
+          import type { ButtonHTMLAttributes } from "react";
+          import { renderToStaticMarkup } from "react-dom/server";
+
+          type Tone = "blue" | "red";
+          type Props = ButtonHTMLAttributes<HTMLButtonElement> & { tone: Tone };
+
+          // `satisfies` fails the build when a new tone has no classes.
+          const toneClasses = {
+            blue: "bg-blue-700 hover:bg-blue-800",
+            red: "bg-red-700 hover:bg-red-800",
+          } satisfies Record<Tone, string>;
+
+          function Button({ tone, className = "", ...rest }: Props) {
+            const classes = `rounded-control px-4 py-2 text-white ${toneClasses[tone]} ${className}`.trim();
+            return <button className={classes} {...rest} />;
+          }
+
+          console.log(renderToStaticMarkup(<Button tone="blue">Pay</Button>));
+          console.log(renderToStaticMarkup(<Button tone="red">Cancel order</Button>));
+    expected: |-
+      <button class="rounded-control px-4 py-2 text-white bg-blue-700 hover:bg-blue-800">Pay</button>
+      <button class="rounded-control px-4 py-2 text-white bg-red-700 hover:bg-red-800">Cancel order</button>
+    sources:
+      - title: Detecting classes in source files — Tailwind CSS
+        url: https://tailwindcss.com/docs/detecting-classes-in-source-files
+    applies:
+      platforms: [browser, node]
+      runtime: a React app built with Tailwind 4; runs in Node.js through react-dom/server
+      versions: { typescript: ">=5.0", node: ">=22.18", react: ">=18", tailwindcss: ">=4.0" }
+    validation: *ran-react
+  - id: conditional-classes
+    kind: code
+    title: Composing conditional classes
+    note: "Attribute-backed state (`aria-pressed`, `disabled`) belongs in variants; props with no attribute (density) are chosen in code with a `clsx`-style helper."
+    prerequisites: *react
+    code: |-
+      import { renderToStaticMarkup } from "react-dom/server";
+
+      // clsx in miniature: keep truthy strings and the keys whose value is true.
+      type ClassValue = string | false | null | undefined | Record<string, boolean | undefined>;
+      function cx(...values: ClassValue[]): string {
+        return values
+          .flatMap((v) => (typeof v === "object" && v !== null ? Object.keys(v).filter((k) => v[k]) : [v]))
+          .filter(Boolean)
+          .join(" ");
+      }
+
+      type ChipProps = { label: string; count: number; active: boolean; compact?: boolean };
+
+      function FilterChip({ label, count, active, compact = false }: ChipProps) {
+        return (
+          <button
+            aria-pressed={active}
+            disabled={count === 0}
+            className={cx(
+              "rounded-full bg-surface text-fg ring-1 ring-border hover:bg-subtle",
+              // Styled from the attributes, so what a screen reader hears and what is drawn agree.
+              "aria-pressed:bg-brand-700 aria-pressed:text-white disabled:opacity-50",
+              { "px-2 py-0.5 text-xs": compact, "px-3 py-1 text-sm": !compact },
+            )}
+          >
+            {label} ({count})
+          </button>
+        );
+      }
+
+      console.log(renderToStaticMarkup(<FilterChip label="Open" count={12} active />));
+      console.log(renderToStaticMarkup(<FilterChip label="Returned" count={0} active={false} compact />));
+    expected: |-
+      <button aria-pressed="true" class="rounded-full bg-surface text-fg ring-1 ring-border hover:bg-subtle aria-pressed:bg-brand-700 aria-pressed:text-white disabled:opacity-50 px-3 py-1 text-sm">Open (12)</button>
+      <button aria-pressed="false" disabled="" class="rounded-full bg-surface text-fg ring-1 ring-border hover:bg-subtle aria-pressed:bg-brand-700 aria-pressed:text-white disabled:opacity-50 px-2 py-0.5 text-xs">Returned (0)</button>
+    sources:
+      - title: clsx — GitHub
+        url: https://github.com/lukeed/clsx
+      - title: tailwind-merge — GitHub
+        url: https://github.com/dcastil/tailwind-merge
+    applies:
+      platforms: [browser, node]
+      runtime: a React app built with Tailwind 4; runs in Node.js through react-dom/server
+      versions: { typescript: ">=5.0", node: ">=22.18", react: ">=18", tailwindcss: ">=4.0" }
+    validation: *ran-react
+  - id: components-over-apply
+    kind: compare
+    title: Extract a component, not an @apply class
+    note: "When markup repeats across files, the reusable unit is a component; `@apply` re-creates the naming problem utilities removed."
+    prerequisites:
+      - "The app and tokens from the cards above"
+      - "Left: in `src/app.css` (a CSS module or a Vue/Svelte `<style>` block would also need `@reference \"../app.css\";`). Right: `src/PrimaryButton.tsx`"
+    columns:
+      - label: A class rebuilt from utilities
+        tone: legacy
+        code: |-
+          @import "tailwindcss";
+
+          @layer components {
+            .btn-primary {
+              @apply rounded-control bg-brand-700 px-4 py-2 font-medium text-white;
+              @apply hover:bg-brand-800 focus-visible:outline-2 disabled:opacity-50;
+            }
+          }
+
+          /* Every caller still writes the markup by hand:
+             <button class="btn-primary" type="submit">Place order</button>
+             and the icon, spinner and aria-busy are copied too. */
+      - label: The component owns markup and styles
+        tone: modern
+        code: |-
+          import type { ButtonHTMLAttributes } from "react";
+
+          type Props = ButtonHTMLAttributes<HTMLButtonElement> & { busy?: boolean };
+
+          const buttonClass =
+            "inline-flex items-center gap-2 rounded-control bg-brand-700 px-4 py-2 font-medium text-white " +
+            "hover:bg-brand-800 focus-visible:outline-2 disabled:opacity-50";
+          // Reduced motion stops the spin but keeps the ring: still a visible busy cue.
+          const spinnerClass =
+            "size-4 animate-spin rounded-full border-2 border-white/40 border-t-white motion-reduce:animate-none";
+
+          export function PrimaryButton({ busy = false, className = "", children, ...rest }: Props) {
+            // A caller's className is added, not dropped (tailwind-merge if it may conflict).
+            return (
+              <button
+                {...rest}
+                aria-busy={busy}
+                disabled={busy || rest.disabled}
+                className={`${buttonClass} ${className}`.trim()}
+              >
+                {busy && <span className={spinnerClass} />}
+                {children}
+              </button>
+            );
+          }
+    expected: "Both draw the same button; only the component also carries the busy state and spinner, so changing them is a one-file edit."
+    sources:
+      - title: Functions and directives — Tailwind CSS
+        url: https://tailwindcss.com/docs/functions-and-directives
+    validation: *excerpt
+  - id: token-ideas-mapped
+    kind: table
+    title: "One token idea, three spellings"
+    note: "The same design decision in plain CSS, Tailwind 4 and Chakra UI 3, for a design system that ships to more than one app (the Design Tokens sheet adds the SwiftUI column)."
+    headers: [Idea, CSS custom properties, Tailwind 4, Chakra UI 3]
+    rows:
+      - - Palette step
+        - "`--blue-700: #1d4ed8`"
+        - "`@theme { --color-brand-700 }` → `bg-brand-700`"
+        - "`tokens.colors.brand.700` → `bg=\"brand.700\"`"
+      - - Role per scheme
+        - "`--surface`, redefined under `.dark`"
+        - "`@theme inline { --color-surface: var(--surface) }` → `bg-surface`"
+        - "`semanticTokens.colors.surface` `{ base, _dark }` → `bg=\"surface\"`"
+      - - Spacing
+        - "`--space-4: 1rem`"
+        - "`--spacing: 0.25rem` → `p-4` is 1rem"
+        - "`tokens.spacing` → `p=\"4\"`"
+      - - Radius
+        - "`--radius-card: 12px`"
+        - "`--radius-card` → `rounded-card`"
+        - "`tokens.radii.card` → `rounded=\"card\"`"
+      - - Type size
+        - "`--text-lg: 1.125rem`"
+        - "`--text-lg` (and `--text-lg--line-height`) → `text-lg`"
+        - "`tokens.fontSizes` or `textStyles` → `textStyle=\"lg\"`"
+      - - Breakpoint
+        - "`@media (width >= 48rem)`"
+        - "`--breakpoint-md` → `md:`"
+        - "`theme.breakpoints.md` → `{ md: … }`"
+      - - Dark mode
+        - "`[data-theme=\"dark\"]` or `.dark`"
+        - "`@custom-variant dark (…)` → `dark:`"
+        - "the `.dark` class → `_dark`"
+      - - Reusable look
+        - "a class"
+        - "a component with a variant map (or `cva`)"
+        - "`defineRecipe` variants"
+      - - One-off value
+        - "inline `style`"
+        - "`p-[13px]`, or `bg-(--brand-from-api)`"
+        - "a style prop or the `css` prop"
+  - id: tailwind-rules
+    kind: rules
+    title: Rules and pitfalls
+    note: What reviewers flag in Tailwind code.
+    items:
+      - tone: good
+        text: "Complete class names only, chosen from maps; for values that really come from data, set a custom property inline and use `bg-(--brand-colour)`."
+      - tone: good
+        text: "Style state from the element's attributes (`aria-pressed:`, `disabled:`, `data-[status=late]:`, `peer-user-invalid:`) so accessibility and appearance cannot drift apart."
+      - tone: good
+        text: "Semantic roles in `@theme inline`, so components rarely need `dark:` at all."
+      - tone: bad
+        text: "Two utilities for one property on one element (`px-4 px-6`): the one **later in the stylesheet** wins, not the one later in the attribute. Merge with `tailwind-merge` when callers may override."
+      - tone: bad
+        text: "`@apply` everywhere: it rebuilds the hand-named class layer utilities were meant to remove. A genuinely new single-purpose class is an `@utility`, so every variant works with it."
+      - tone: bad
+        text: "Copying a Tailwind 3 answer: `tailwind.config.js`, `darkMode: \"class\"` and `@tailwind base` are not how 4 is configured (`@config` can still load an old file while migrating)."
+      - tone: neutral
+        text: "Anything revealed on `hover:` needs a second path in Tailwind 4, where hover styles never apply on touch screens: `group-focus-within:`, `pointer-coarse:`, or a control that is always visible."
