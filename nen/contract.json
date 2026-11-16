@@ -1,17 +1,17 @@
 {
   "$schema": "nen.contract/v0.1",
-  "$comment": "Hand-written at adoption on 2026-11-10 because `nen shu detect` answered `no lane detected`; re-declared on 2026-11-11 when issue #1 moved the site from a Python generator to Gatsby + TypeScript + Chakra UI (zheref/swift-cheatsheets#1). The `dependency` block is copied from Hatsu's own contract at its pinned build and moves only at a repin. The `project` block declares exactly what package.json runs; every verb the repository does not have is an explicit seat with its reason, never an omission.",
+  "$comment": "Hand-written at adoption on 2026-11-10 because `nen shu detect` answered `no lane detected`; re-declared on 2026-11-11 when issue #1 moved the site from a Python generator to Gatsby + TypeScript + Chakra UI (zheref/swift-cheatsheets#1). The `dependency` block is copied from Hatsu's own contract at its pinned build and moves only at a repin; repinned on 2026-11-16 from v0.21.0 to v0.30.0 (Hatsu's pin), because nen 0.30's compatibility floor refuses any minimum under 0.30. The `project` block declares exactly what package.json runs; every verb the repository does not have is an explicit seat with its reason, never an omission.",
   "dependency": {
     "name": "nen",
     "source": "zheref/nen",
     "repository": "https://github.com/zheref/nen",
-    "minimum": "0.21",
-    "pinned_ref": "v0.21.0",
+    "minimum": "0.30",
+    "pinned_ref": "v0.30.0",
     "version_probe": ["nen", "--version"],
     "bootstrap": {
       "vendored": false,
       "script_path_in_source": "bootstrap/nen.sh",
-      "url": "https://raw.githubusercontent.com/zheref/nen/v0.21.0/bootstrap/nen.sh",
+      "url": "https://raw.githubusercontent.com/zheref/nen/v0.30.0/bootstrap/nen.sh",
       "manifest_asset": "SHA256SUMS"
     }
   },
@@ -22,6 +22,26 @@
       "site": {
         "stack": "gatsby",
         "cwd": "."
+      },
+      "site-ui": {
+        "stack": "gatsby",
+        "cwd": ".",
+        "$comment": "Focused lane for the Bankai primitives and the page built on them: a change under src/bankai/** or src/ui/**. Its test row runs the five test files that import those modules (bankai, accessibility, catalogs, languages, render). Kokusen's focused checkpoint for that behaviour, never the regression suite: the whole suite and its coverage stay the `site` lane's, run at mukai."
+      },
+      "site-content": {
+        "stack": "gatsby",
+        "cwd": ".",
+        "$comment": "Focused lane for the content model: a change under src/content/** or content/** (the catalogs, the loader, search, highlighting). Its test row runs content, parity and catalogs, the files that assert the loader, the search and highlighter parity, and the catalogs' rendering. Not the regression suite: `site` runs every file at mukai."
+      },
+      "site-adapters": {
+        "stack": "gatsby",
+        "cwd": ".",
+        "$comment": "Focused lane for the two adapters and the Gatsby entry points: a change under src/adapters/**, src/pages/** or gatsby-*.ts[x]. Its test row runs adapters (both adapters, the 404 page, the offline file) and languages (the offline paths the selector links to). Not the regression suite: `site` runs every file at mukai."
+      },
+      "site-scripts": {
+        "stack": "gatsby",
+        "cwd": ".",
+        "$comment": "Focused lane for the Node scripts: a change under scripts/**. Its test row runs scripts (serve and verify) and examples (run-examples). Not the regression suite: `site` runs every file at mukai."
       }
     },
     "defaultLane": "site",
@@ -90,6 +110,34 @@
         },
         "release": {
           "unsupported": "No publication destination has been chosen; nothing here publishes a release."
+        }
+      },
+      "site-ui": {
+        "test": {
+          "exe": "npx",
+          "argv": ["vitest", "run", "test/bankai.test.tsx", "test/accessibility.test.tsx", "test/catalogs.test.tsx", "test/languages.test.tsx", "test/render.test.tsx"],
+          "$comment": "The files that import src/bankai or src/ui. No --coverage: a focused run measures nothing, and writes no capture over the `site` lane's."
+        }
+      },
+      "site-content": {
+        "test": {
+          "exe": "npx",
+          "argv": ["vitest", "run", "test/content.test.ts", "test/parity.test.ts", "test/catalogs.test.tsx"],
+          "$comment": "The files that assert src/content and the catalogs under content/. No --coverage."
+        }
+      },
+      "site-adapters": {
+        "test": {
+          "exe": "npx",
+          "argv": ["vitest", "run", "test/adapters.test.tsx", "test/languages.test.tsx"],
+          "$comment": "The files that import src/adapters, src/pages or the offline paths. No --coverage."
+        }
+      },
+      "site-scripts": {
+        "test": {
+          "exe": "npx",
+          "argv": ["vitest", "run", "test/scripts.test.ts", "test/examples.test.ts"],
+          "$comment": "The files that import scripts/. No --coverage."
         }
       }
     },
