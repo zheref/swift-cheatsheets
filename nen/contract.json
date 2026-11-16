@@ -1,18 +1,31 @@
 {
   "$schema": "nen.contract/v0.1",
-  "$comment": "Hand-written at adoption on 2026-11-10 because `nen shu detect` answered `no lane detected`; re-declared on 2026-11-11 when issue #1 moved the site from a Python generator to Gatsby + TypeScript + Chakra UI (zheref/swift-cheatsheets#1). The `dependency` block is copied from Hatsu's own contract at its pinned build and moves only at a repin. The `project` block declares exactly what package.json runs; every verb the repository does not have is an explicit seat with its reason, never an omission.",
+  "$comment": "Hand-written at adoption on 2026-11-10 because `nen shu detect` answered `no lane detected`; re-declared on 2026-11-11 when issue #1 moved the site from a Python generator to Gatsby + TypeScript + Chakra UI (zheref/swift-cheatsheets#1). The `dependency` block carries the fields of Hatsu's own contract this repository reads, plus the bootstrap script's and the binary's sha256 for any reader that verifies against trusted content (none here yet: zheref/hatsu#247), all at Hatsu's pinned build; it moves only at a repin. Repinned on 2026-11-16 from v0.21.0 to v0.30.0, because nen 0.30's compatibility floor refuses any minimum under 0.30. The `project` block declares exactly what package.json runs. On the `site` lane every verb the repository does not have is an explicit seat with its reason; the focused lanes beside it declare `test` only, as Hatsu's own focused lanes do, and every other verb is `site`'s.",
   "dependency": {
     "name": "nen",
     "source": "zheref/nen",
     "repository": "https://github.com/zheref/nen",
-    "minimum": "0.21",
-    "pinned_ref": "v0.21.0",
+    "minimum": "0.30",
+    "pinned_ref": "v0.30.0",
     "version_probe": ["nen", "--version"],
     "bootstrap": {
       "vendored": false,
       "script_path_in_source": "bootstrap/nen.sh",
-      "url": "https://raw.githubusercontent.com/zheref/nen/v0.21.0/bootstrap/nen.sh",
-      "manifest_asset": "SHA256SUMS"
+      "url": "https://raw.githubusercontent.com/zheref/nen/v0.30.0/bootstrap/nen.sh",
+      "manifest_asset": "SHA256SUMS",
+      "scriptSha256": "abf2bde0ebc207588bd078acbf861377d4755562514aec26d070aafd1267ba70",
+      "scriptSha256Provenance": {
+        "ref": "v0.30.0",
+        "commit": "1e2217a2fa9735e99e9c83096fff57197361556d",
+        "path": "bootstrap/nen.sh",
+        "sha256": "abf2bde0ebc207588bd078acbf861377d4755562514aec26d070aafd1267ba70"
+      },
+      "sha256": {
+        "$comment": "Release digests of the pinned binary, copied from Hatsu's contract and checked on 2026-11-16 against the v0.30.0 release's SHA256SUMS (all three) and the bootstrapped darwin-arm64 binary. They move with the pin.",
+        "darwin-arm64": "2eaa60a24b9cb69a688afd33a4b37254d1a715e4986e7f7968636166859e1c6b",
+        "linux-x64": "91e8bc2b32fa589ba1bb01966a8b2f6c19e9e0a4f0ddbfd3446fc8e04c73da86",
+        "windows-x64": "de8c3c9edd665e39b1dd1f32af236d3e4ff36e60485fd25d1953f4955f655de1"
+      }
     }
   },
   "project": {
@@ -22,6 +35,26 @@
       "site": {
         "stack": "gatsby",
         "cwd": "."
+      },
+      "site-ui": {
+        "stack": "gatsby",
+        "cwd": ".",
+        "$comment": "Focused lane for the Bankai primitives and the page built on them: a change under src/bankai/** or src/ui/**. Its test row runs the seven test files that import src/bankai or src/ui (adapters, accessibility, bankai, catalogs, languages, parity, render); parity holds the only assertion of src/ui/cards' isWide and adapters the only one of src/ui/theme's themeInitScript. Kokusen's focused checkpoint for that behaviour, never the regression suite: the whole suite and its coverage stay the `site` lane's, run at mukai."
+      },
+      "site-content": {
+        "stack": "gatsby",
+        "cwd": ".",
+        "$comment": "Focused lane for the content model: a change under src/content/** or content/** (the catalogs, the loader, search, highlighting, language switching). Every test file imports src/content, eight directly and all ten through test/helpers.ts, and examples reads the real content/languages, so this row runs all ten files — the whole suite without --coverage, because there is no narrower honest set. Not the regression run: that, with its coverage, stays `site`'s at mukai."
+      },
+      "site-adapters": {
+        "stack": "gatsby",
+        "cwd": ".",
+        "$comment": "Focused lane for the two adapters and the Gatsby entry points: a change under src/adapters/**, src/pages/** or gatsby-*.ts[x]. Its test row runs adapters (both adapters, the 404 page, the offline file), accessibility (which reads src/pages' source) and languages (the offline paths the selector links to). Not the regression suite: `site` runs every file at mukai."
+      },
+      "site-scripts": {
+        "stack": "gatsby",
+        "cwd": ".",
+        "$comment": "Focused lane for scripts/serve.mts, scripts/verify.mts and scripts/run-examples.mts: its test row runs scripts (serve and verify) and examples (run-examples). scripts/build-offline.mts, scripts/readiness_ci_verdict.mts and scripts/consumer_trailer_ci.mts have no test file yet, so a change to them has no focused route here and is reported as such, never sent to this lane. Not the regression suite: `site` runs every file at mukai."
       }
     },
     "defaultLane": "site",
@@ -50,6 +83,8 @@
         "test": {
           "exe": "npx",
           "argv": [
+            "--no",
+            "--",
             "vitest",
             "run",
             "--coverage"
@@ -57,7 +92,7 @@
           "artifacts": [
             "coverage/lcov.info"
           ],
-          "$comment": "The whole suite (a few seconds): content and anchor parity with the pre-migration page, highlighter and search parity, loader refusals, static render + hydration, both adapters, the offline file from disk. Writes the lcov capture the coverage row reads."
+          "$comment": "The whole suite (a few seconds): content and anchor parity with the pre-migration page, highlighter and search parity, loader refusals, static render + hydration, both adapters, the offline file from disk. Writes the lcov capture the coverage row reads. `--no --` makes npx refuse to fetch vitest from the registry when node_modules is absent (run `npm ci` first), instead of installing an unpinned one."
         },
         "coverage": {
           "exe": "test",
@@ -90,6 +125,34 @@
         },
         "release": {
           "unsupported": "No publication destination has been chosen; nothing here publishes a release."
+        }
+      },
+      "site-ui": {
+        "test": {
+          "exe": "npx",
+          "argv": ["--no", "--", "vitest", "run", "test/adapters.test.tsx", "test/accessibility.test.tsx", "test/bankai.test.tsx", "test/catalogs.test.tsx", "test/languages.test.tsx", "test/parity.test.ts", "test/render.test.tsx"],
+          "$comment": "The files that import src/bankai or src/ui. No --coverage: a focused run measures nothing, and writes no capture over the `site` lane's. `--no --`: never fetch vitest from the registry."
+        }
+      },
+      "site-content": {
+        "test": {
+          "exe": "npx",
+          "argv": ["--no", "--", "vitest", "run", "test/accessibility.test.tsx", "test/adapters.test.tsx", "test/bankai.test.tsx", "test/catalogs.test.tsx", "test/content.test.ts", "test/examples.test.ts", "test/languages.test.tsx", "test/parity.test.ts", "test/render.test.tsx", "test/scripts.test.ts"],
+          "$comment": "All ten files, named: every one imports src/content (test/helpers.ts). No --coverage. `--no --`: never fetch vitest from the registry."
+        }
+      },
+      "site-adapters": {
+        "test": {
+          "exe": "npx",
+          "argv": ["--no", "--", "vitest", "run", "test/adapters.test.tsx", "test/accessibility.test.tsx", "test/languages.test.tsx"],
+          "$comment": "The files that import src/adapters, read src/pages, or use the offline paths. No --coverage. `--no --`: never fetch vitest from the registry."
+        }
+      },
+      "site-scripts": {
+        "test": {
+          "exe": "npx",
+          "argv": ["--no", "--", "vitest", "run", "test/scripts.test.ts", "test/examples.test.ts"],
+          "$comment": "The files that import scripts/serve.mts, scripts/verify.mts and scripts/run-examples.mts. No --coverage. `--no --`: never fetch vitest from the registry."
         }
       }
     },
