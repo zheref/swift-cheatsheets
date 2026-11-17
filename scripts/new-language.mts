@@ -197,11 +197,17 @@ export function writeScaffold(dir: string, files: Map<string, string>) {
 /** The command line: the exit status, with what happened on `log`. */
 export function main(argv: string[], root: string, log: (line: string) => void = console.log): number {
   const args = [...argv];
-  const flag = (name: string) => (args.includes(name) ? args.splice(args.indexOf(name), 2)[1] : undefined);
+  let valueless = false;
+  const flag = (name: string) => {
+    if (!args.includes(name)) return undefined;
+    const value = args.splice(args.indexOf(name), 2)[1];
+    if (value === undefined || value.startsWith("--")) valueless = true; // a flag with no value must not fall back to the default
+    return value;
+  };
   const prefix = flag("--prefix");
   const out = flag("--out");
   const [id, name] = args;
-  if (!id || !name) {
+  if (!id || !name || valueless) {
     log("usage: node scripts/new-language.mts <id> <Name> [--prefix <sheet-prefix>] [--out <dir>]");
     return 2;
   }

@@ -85,17 +85,22 @@ instead of a sheet, with the reason. "Not written yet" is not a reason.
 
 ## 4. Prove the examples
 
-Set `requireExampleMetadata: true` so the loader refuses an example missing its setup,
-applicability, sources, result or validation status. Then:
+In this order:
+
+1. **Give the language a runner.** `scripts/run-examples.mts` knows TypeScript, Kotlin and
+   C#. Any other language needs its own `Runner` there and an entry in `EXAMPLE_LANGUAGES`.
+2. **Then set `requireExampleMetadata: true`**, so the loader refuses an example missing its
+   setup, applicability, sources, result or validation status. Setting it before step 1
+   breaks the example run for every catalog, CI's included: the runner refuses a catalog
+   that promises validated examples in a language it cannot run.
+3. **Run them:**
 
 ```bash
 npm run examples:install          # the example-only libraries and the Kotlin jars
-npm run examples -- --lang rust   # compile and run them
+npm run examples -- --lang <id>   # compile and run them, once step 1 added <id>
 ```
 
-`scripts/run-examples.mts` knows TypeScript, Kotlin and C#. A new language needs its own
-`Runner` there; until it has one, the runner refuses a catalog that sets
-`requireExampleMetadata` in it. Libraries the examples import are pinned and example-only:
+Libraries the examples import are pinned and example-only:
 
 | Language | Where a library is added |
 | --- | --- |

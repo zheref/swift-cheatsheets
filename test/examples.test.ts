@@ -11,11 +11,14 @@ import { describe, expect, it } from "vitest";
 import {
   collectExamples,
   csharpRunner,
+  nugetLock,
+  pinnedJars,
   type Example,
   exitStatus,
   findExecutable,
   judge,
   kotlinRunner,
+  missingValue,
   normalizeOutput,
   nugetPackages,
   type Runner,
@@ -93,7 +96,12 @@ describe("running only some sheets", () => {
     const draft = { id: "draft", cards: [{ id: "new", kind: "code", code: "b", expected: "x", validation: ran }] };
     fs.writeFileSync(path.join(root, "content/languages/kotlin/sheets/draft.yaml"), JSON.stringify(draft));
     expect(collectExamples(root).map((e) => e.id)).toEqual(["kotlin/s--listed"]);
-    expect(collectExamples(root, ["draft", "no-such-sheet"]).map((e) => e.id)).toEqual(["kotlin/draft--new"]);
+    expect(collectExamples(root, ["draft"]).map((e) => e.id)).toEqual(["kotlin/draft--new"]);
+    // A typo must not run nothing and pass: an id no catalog has a file for is refused.
+    expect(() => collectExamples(root, ["draft", "no-such-sheet", "nor-this"])).toThrow("--sheets: no catalog has a sheet file named no-such-sheet, nor-this");
+    expect(missingValue(["--sheets"], ["--sheets", "--content"])).toBe("--sheets");
+    expect(missingValue(["--lang", "kotlin", "--content", "--require-all"], ["--sheets", "--content"])).toBe("--content");
+    expect(missingValue(["--sheets", "draft", "--content", "dir"], ["--sheets", "--content"])).toBeUndefined();
     const skipped: Runner = { probe: async () => ({ missing: "no kotlinc" }), run: async () => [] };
     const report = await runExamples(root, { languages: ["kotlin"], sheets: ["draft"], runners: { kotlin: skipped }, log: () => {} });
     expect(report.outcomes.map((o) => o.id)).toEqual(["kotlin/draft--new"]);
@@ -321,16 +329,27 @@ describe("running examples", () => {
     stub(bin, "kotlin", `echo ran`);
     const repo = tmp("krepo-");
     fs.mkdirSync(path.join(repo, "examples/kotlin/lib"), { recursive: true });
-    for (const f of ["b.jar", "a.jar", "notes.txt"]) fs.writeFileSync(path.join(repo, "examples/kotlin/lib", f), "");
+    // Only a jar jars.txt pins is used: a stray jar and a jar not fetched yet are both left out.
+    for (const f of ["b-1.0.jar", "a-1.0.jar", "stray.jar", "notes.txt"]) fs.writeFileSync(path.join(repo, "examples/kotlin/lib", f), "");
+    const empty = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"; // sha256 of no bytes
+    fs.writeFileSync(path.join(repo, "examples/kotlin/jars.txt"), `# pins\ng:a:1.0 ${empty}\ng:b:1.0 ${empty}\ng:absent:1.0 ${empty}\n`);
     const plugin = path.join(bin, "plugin.jar");
     fs.writeFileSync(plugin, "");
     const root = contentRoot("kotlin", [{ id: "ok", kind: "code", code: "fun main() = println(1)", expected: "ran", validation: ran }]);
     const runner = kotlinRunner({ PATH: `${bin}:${SYSTEM_PATH}`, KOTLIN_SERIALIZATION_PLUGIN: plugin }, repo);
     const report = await runExamples(root, { languages: ["kotlin"], runners: { kotlin: runner }, log: () => {} });
-    expect(report.toolchains.kotlin).toBe("kotlinc 9.9.9, JVM 17.0.42, a, b");
+    expect(report.toolchains.kotlin).toBe("kotlinc 9.9.9, JVM 17.0.42, a-1.0, b-1.0");
     expect(report.outcomes.map((o) => o.result)).toEqual(["pass"]);
     const lib = path.join(repo, "examples/kotlin/lib");
-    expect(fs.readFileSync(log, "utf8")).toContain(`kotlinc -cp ${lib}/a.jar:${lib}/b.jar -Xplugin=${plugin} -nowarn`);
+    expect(fs.readFileSync(log, "utf8")).toContain(`kotlinc -cp ${lib}/a-1.0.jar:${lib}/b-1.0.jar -Xplugin=${plugin} -nowarn`);
+    // A pinned jar whose bytes are not the pinned ones stops the Kotlin examples; it is never compiled against.
+    fs.writeFileSync(path.join(lib, "b-1.0.jar"), "swapped");
+    expect(pinnedJars(path.join(repo, "examples/kotlin"))).toEqual({ jars: [`${lib}/a-1.0.jar`], tampered: ["b-1.0.jar"] });
+    expect(await kotlinRunner({ PATH: `${bin}:${SYSTEM_PATH}` }, repo).probe()).toEqual({
+      missing: "examples/kotlin/lib/b-1.0.jar is not the jar pinned in jars.txt (run npm run examples:install)",
+    });
+    expect(pinnedJars(tmp("no-jars-"))).toEqual({ jars: [], tampered: [] });
+    fs.writeFileSync(path.join(lib, "b-1.0.jar"), "");
     // A distribution's own plugin is found beside the compiler: lib/ (a zip install) or libexec/lib/ (Homebrew).
     fs.mkdirSync(path.join(path.dirname(bin), "lib"), { recursive: true });
     const shipped = path.join(path.dirname(bin), "lib/kotlinx-serialization-compiler-plugin.jar");
@@ -347,7 +366,7 @@ describe("running examples", () => {
   it("drives dotnet: one console project per example, build failures, run output", async () => {
     const bin = tmp("dbin-");
     const log = path.join(bin, "calls.log");
-    stub(bin, "dotnet", `echo "dotnet $*" >> ${log}\ncase "$1" in\n--version) echo 9.0.100;;\nbuild) if grep -q BROKEN "$2/Program.cs"; then echo "Program.cs(1,1): error CS0103"; exit 1; fi; grep -q "<TargetFramework>net9.0</TargetFramework>" "$2/Example.csproj" || exit 3; grep -q "<clear />" "$2/nuget.config" || exit 4;;\n*.dll) [ "$HOME" = "$TMPDIR" ] || echo "HOME is not the scratch folder"; echo "hello\${SECRET_TOKEN:+ LEAKED}";;\nesac`);
+    stub(bin, "dotnet", `echo "dotnet $*" >> ${log}\ncase "$1" in\n--version) echo 9.0.100;;\nbuild) [ -z "$SECRET_TOKEN" ] || exit 5; [ "$HOME" = "$2" ] || exit 6; if grep -q BROKEN "$2/Program.cs"; then echo "Program.cs(1,1): error CS0103"; exit 1; fi; grep -q "<TargetFramework>net9.0</TargetFramework>" "$2/Example.csproj" || exit 3; grep -q "<clear />" "$2/nuget.config" || exit 4;;\n*.dll) [ "$HOME" = "$TMPDIR" ] || echo "HOME is not the scratch folder"; echo "hello\${SECRET_TOKEN:+ LEAKED}";;\nesac`);
     const root = contentRoot("csharp", [
       { id: "ok", kind: "code", code: 'Console.WriteLine("hello");', expected: "hello", validation: ran },
       { id: "broken", kind: "code", code: "BROKEN", expected: "hello", validation: ran },
@@ -366,6 +385,7 @@ describe("running examples", () => {
     ]);
     expect(report.outcomes[1]!.detail).toBe("dotnet build: Program.cs(1,1): error CS0103");
     const calls = fs.readFileSync(log, "utf8");
+    // A build sees a scratch HOME and none of the caller's variables (the stub exits 5 or 6 otherwise): package code runs inside it.
     // Every build ignores MSBuild files above its folder; the run executes the built assembly, not `dotnet run`.
     expect(calls.match(/^dotnet build .* -p:ImportDirectoryBuildProps=false -p:ImportDirectoryBuildTargets=false -p:ImportDirectoryPackagesProps=false -noAutoResponse$/gm)).toHaveLength(3);
     expect(calls).toMatch(/^dotnet \S+\/out\/Example\.dll$/m);
@@ -377,18 +397,35 @@ describe("running examples", () => {
     const seen = path.join(bin, "seen");
     fs.mkdirSync(seen);
     // Keeps each project's files so the test can read what was generated.
-    stub(bin, "dotnet", `case "$1" in\n--version) echo 9.0.100;;\nbuild) d=$(mktemp -d ${seen}/XXXXXX); cp "$2/Example.csproj" "$2/nuget.config" "$2/Program.cs" "$d/";;\nesac`);
+    const calls = path.join(bin, "calls.log");
+    const assets = JSON.stringify({ libraries: { "System.Reactive/6.1.0": { type: "package", sha512: "RX==" }, "Transitive.Dep/1.2.3": { type: "package", sha512: "DEP==" }, "Example/1.0.0": { type: "project" } } });
+    stub(
+      bin,
+      "dotnet",
+      `echo "dotnet $1 \${NUGET_PACKAGES}\${SECRET_TOKEN:+ LEAKED}" >> ${calls}\ncase "$1" in\n--version) echo 9.0.100;;\nrestore) mkdir -p "$2/obj"; echo '${assets}' > "$2/obj/project.assets.json";;\nbuild) d=$(mktemp -d ${seen}/XXXXXX); cp "$2/Example.csproj" "$2/nuget.config" "$2/Program.cs" "$d/"; echo "$*" > "$d/args";;\nesac`,
+    );
     const repo = tmp("drepo-");
     fs.mkdirSync(path.join(repo, "examples/csharp"), { recursive: true });
     const write = (packages: object[]) => fs.writeFileSync(path.join(repo, "examples/csharp/packages.json"), JSON.stringify({ packages }));
     write([{ id: "System.Reactive", version: "6.1.0", when: "using System\\.Reactive" }]);
+    const lockFile = path.join(repo, "examples/csharp/packages.lock.json");
+    const pin = (packages: Record<string, string>) => fs.writeFileSync(lockFile, JSON.stringify({ packages }));
+    pin({ "system.reactive/6.1.0": "RX==", "transitive.dep/1.2.3": "DEP==" });
     const root = contentRoot("csharp", [
       { id: "rx", kind: "code", code: "using System.Reactive.Linq;", validation: { ...ran, status: "compiled" } },
       { id: "plain", kind: "code", code: "class A {}", validation: { ...ran, status: "compiled" } },
     ]);
-    const report = await runExamples(root, { languages: ["csharp"], runners: { csharp: csharpRunner({ PATH: SYSTEM_PATH, DOTNET: path.join(bin, "dotnet") }, repo) }, log: () => {} });
+    const once = (opts?: { writeLock?: boolean }) =>
+      runExamples(root, { languages: ["csharp"], runners: { csharp: csharpRunner({ PATH: SYSTEM_PATH, DOTNET: path.join(bin, "dotnet"), SECRET_TOKEN: "leak" }, repo, opts) }, log: () => {} });
+    const report = await once();
     expect(report.outcomes.map((o) => o.result)).toEqual(["pass", "pass"]);
+    // Only the package example restores, into the repository's own cache, and neither step sees the caller's variables.
+    const log = fs.readFileSync(calls, "utf8");
+    expect(log.match(/^dotnet restore /gm)).toHaveLength(1);
+    expect(log).toContain(`dotnet restore ${path.join(repo, "examples/csharp/.nuget")}\n`);
+    expect(log).not.toMatch(/^dotnet (?:restore|build) .*LEAKED/m); // the version probe runs the SDK alone and keeps the caller's environment
     const projects = fs.readdirSync(seen).map((d) => ({
+      args: fs.readFileSync(path.join(seen, d, "args"), "utf8"),
       code: fs.readFileSync(path.join(seen, d, "Program.cs"), "utf8"),
       csproj: fs.readFileSync(path.join(seen, d, "Example.csproj"), "utf8"),
       nuget: fs.readFileSync(path.join(seen, d, "nuget.config"), "utf8"),
@@ -399,6 +436,28 @@ describe("running examples", () => {
     expect(rx.nuget).toContain('<clear /><add key="nuget.org" value="https://api.nuget.org/v3/index.json" protocolVersion="3" />');
     expect(plain.csproj).not.toContain("PackageReference");
     expect(plain.nuget).toContain("<packageSources><clear /></packageSources>");
+    expect(rx.args).toContain("--no-restore"); // what was checked is what builds
+    expect(plain.args).not.toContain("--no-restore");
+
+    // A restored package that is not in the lock with that hash fails the example before anything builds.
+    pin({ "system.reactive/6.1.0": "RX==", "transitive.dep/1.2.3": "SOMETHING-ELSE" });
+    fs.rmSync(seen, { recursive: true });
+    fs.mkdirSync(seen);
+    const refused = await once();
+    expect(refused.outcomes.map((o) => o.result)).toEqual(["fail", "pass"]);
+    expect(refused.outcomes[0]!.detail).toBe(
+      "nuget: transitive.dep/1.2.3 is not the content pinned in examples/csharp/packages.lock.json (review it, then npm run examples -- --lang csharp --write-nuget-lock)",
+    );
+    expect(fs.readdirSync(seen)).toHaveLength(1); // only the package-free example was built
+    fs.rmSync(lockFile);
+    expect(nugetLock(repo)).toEqual({});
+    expect((await once()).outcomes.map((o) => o.result)).toEqual(["fail", "pass"]); // no lock pins nothing
+
+    // --write-nuget-lock records what restore resolved instead of checking it, keeping entries it did not see.
+    pin({ "kept.package/9.9.9": "KEPT==" });
+    expect((await once({ writeLock: true })).outcomes.map((o) => o.result)).toEqual(["pass", "pass"]);
+    expect(nugetLock(repo)).toEqual({ "kept.package/9.9.9": "KEPT==", "system.reactive/6.1.0": "RX==", "transitive.dep/1.2.3": "DEP==" });
+    expect((await once()).outcomes.map((o) => o.result)).toEqual(["pass", "pass"]);
 
     expect(nugetPackages(undefined)).toEqual([]);
     expect(nugetPackages(tmp("no-packages-"))).toEqual([]);

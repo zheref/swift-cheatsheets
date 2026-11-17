@@ -6,7 +6,7 @@
  * migration's own converter — and records, per sheet and card, the visible text
  * and every code block and diagram as SHA-256 digests.
  *
- * The catalog grows by APPENDING sheets (content/aspects.yaml asks every catalog for topics
+ * The catalog grows by ADDING sheets among the originals (content/aspects.yaml asks every catalog for topics
  * the legacy page never had). So parity is held on the 29 legacy sheets: each is still
  * there, byte for byte, in the same relative order — and nothing new is checked against
  * an inventory that never contained it.

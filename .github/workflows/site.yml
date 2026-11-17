@@ -46,7 +46,8 @@ jobs:
 
       - name: Install the examples' pinned libraries
         # Example-only (examples/package-lock.json): the site never depends on them. Lifecycle
-        # scripts are off — nothing here needs one, and @playwright/test must not fetch browsers.
+        # scripts are off (examples/.npmrc says so too): no package there has one today, and a
+        # later bump that adds one must not run here.
         run: npm ci --prefix examples --no-audit --no-fund --ignore-scripts
 
       - name: Typecheck

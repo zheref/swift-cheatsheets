@@ -179,6 +179,9 @@ describe("the scaffold for a new language (templates/new-language)", () => {
     expect(main(["rust", "Rust", "--out", out], ROOT, log)).toBe(1); // never over a catalog
     expect(lines.at(-1)).toMatch(/already exists/);
     expect(main(["rust"], ROOT, log)).toBe(2);
+    // A flag with no value is a usage error, never a silent fall-back to the default prefix or folder.
+    expect(main(["rust", "Rust", "--prefix"], ROOT, log)).toBe(2);
+    expect(main(["rust", "Rust", "--out", "--prefix", "rs"], ROOT, log)).toBe(2);
     expect(lines.at(-1)).toMatch(/^usage: /);
     expect(main(["Not A Slug", "x", "--out", path.join(tmp("cli-"), "x")], ROOT, log)).toBe(1);
   });

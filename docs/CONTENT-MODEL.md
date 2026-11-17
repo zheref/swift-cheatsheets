@@ -129,7 +129,7 @@ validation:
 | `compiled` | compiled or type-checked only | `toolchain`, `date`; `host` says what running it needs |
 | `excerpt` | a fragment that needs an application host; neither compiled nor run here | `host` (e.g. `an Android app with Jetpack Compose`); no toolchain or date |
 
-Two more `validation` fields are for the TypeScript runner alone. `jsx: react` or
+Three more `validation` fields are for the TypeScript runner alone. `jsx: react` or
 `jsx: solid` makes the example a `.tsx` file in that dialect: a React one is type-checked
 and can run (the runner applies the automatic JSX transform, nothing else); a Solid one is
 type-checked only, because Solid's JSX needs its own compiler, so it can be `compiled` but
@@ -201,10 +201,11 @@ required part (its committed output is `templates/new-language/`). In short:
 2. Add sheets. Reuse the Swift catalog's `concept` IDs where the topic is genuinely
    equivalent, so a reader switching languages can land on the same concept; give
    language- or platform-specific material its own concept and the right `scope`.
-3. Add the coverage sheet (above), set `requireExampleMetadata: true`, and run
-   `npm run examples` with the language's toolchain installed. The runner knows TypeScript,
-   Kotlin and C#; a new language needs its own `Runner` in `scripts/run-examples.mts`, and
-   until it has one the runner refuses a catalog that sets `requireExampleMetadata` in it.
+3. Add the coverage sheet (above). The runner knows TypeScript, Kotlin and C#; for any
+   other language, first give it a `Runner` in `scripts/run-examples.mts` and add it to
+   `EXAMPLE_LANGUAGES`. Only then set `requireExampleMetadata: true` and run
+   `npm run examples -- --lang <id>` with the toolchain installed: until a language has a
+   runner, the example run refuses every catalog that sets the flag in it, CI's included.
 4. Flip to `status: published` and `npm run build`: `gatsby-node.ts` creates the page at
    its route from the same template, the offline export writes `offline/<id>.html`, and
    every page's selector starts linking to it.

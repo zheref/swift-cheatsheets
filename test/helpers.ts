@@ -17,7 +17,7 @@ export const swiftCatalog = () => (swift ??= loadCatalog(SWIFT_DIR));
 let legacy: ReturnType<typeof loadCatalog> | undefined;
 /**
  * The Swift catalog cut down to the 29 sheets the pre-migration page had. The catalog grows by
- * appending sheets, so anything compared with a legacy fixture is compared on this slice.
+ * adding sheets among them, so anything compared with a legacy fixture is compared on this slice.
  */
 export const legacySwiftCatalog = () => {
   if (legacy) return legacy;

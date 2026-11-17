@@ -4,7 +4,7 @@
  * (zheref/swift-cheatsheets#3, AC-2).
  *
  *   node scripts/run-examples.mts [--lang typescript,kotlin,csharp] [--sheets <id>,<id>] [--content <dir>]
- *                                 [--require-all] [--json <file>]
+ *                                 [--require-all] [--json <file>] [--write-nuget-lock]
  *
  * `--sheets` runs only the named sheets — for iterating on one — read straight from their
  * files, so a sheet still being written need not be listed in its language.yaml yet.
@@ -36,8 +36,12 @@
  *
  * Running this executes every `ran` card as a program on this machine: a content change that
  * adds or edits one is a code change. Snippets get a scratch HOME and TMPDIR and none of the
- * caller's environment beyond PATH and LANG (`snippetEnv`); C# builds ignore MSBuild files above
- * the work folder (`MSBUILD_ISOLATION`).
+ * caller's environment beyond PATH and LANG (`snippetEnv`). A C# build gets the same scrubbed
+ * environment, because a NuGet package runs its own MSBuild targets and source generators inside
+ * the build; it ignores MSBuild files above the work folder (`MSBUILD_ISOLATION`), and every
+ * package it restores, transitive ones included, must be the content pinned in
+ * `examples/csharp/packages.lock.json` (`--write-nuget-lock` records it). A Kotlin jar is used
+ * only when `examples/kotlin/jars.txt` names it and its SHA-256 is the pinned one.
  */
 import { execFile } from "node:child_process";
 import fs from "node:fs";
@@ -46,6 +50,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import YAML from "yaml";
+import { jarFile, parseJars, sha256 } from "./fetch-example-jars.mts";
 
 const run = promisify(execFile);
 
@@ -91,7 +96,11 @@ interface RawCard {
 export function collectExamples(root: string, only?: readonly string[], contentRoot = path.join(root, "content")): Example[] {
   const langRoot = path.join(contentRoot, "languages");
   const out: Example[] = [];
-  for (const dir of fs.readdirSync(langRoot, { withFileTypes: true }).filter((d) => d.isDirectory())) {
+  const dirs = fs.readdirSync(langRoot, { withFileTypes: true }).filter((d) => d.isDirectory());
+  // A sheet id no catalog has a file for is a typo: running nothing for it would read as a pass.
+  const unknown = (only ?? []).filter((s) => !dirs.some((d) => fs.existsSync(path.join(langRoot, d.name, "sheets", `${s}.yaml`))));
+  if (unknown.length) throw new Error(`--sheets: no catalog has a sheet file named ${unknown.join(", ")}`);
+  for (const dir of dirs) {
     const lang = YAML.parse(fs.readFileSync(path.join(langRoot, dir.name, "language.yaml"), "utf8")) as {
       codeLanguage: string;
       sheets: string[];
@@ -328,14 +337,29 @@ async function runTypescript(examples: Example[], work: string, tsc: string, typ
   });
 }
 
+/**
+ * The jars of `<dir>/lib` that `<dir>/jars.txt` pins, in its order. A file the list does not name
+ * is never put on a classpath; a named file whose SHA-256 differs is reported, not used.
+ */
+export function pinnedJars(dir: string): { jars: string[]; tampered: string[] } {
+  const list = path.join(dir, "jars.txt");
+  const out = { jars: [] as string[], tampered: [] as string[] };
+  if (!fs.existsSync(list)) return out;
+  for (const jar of parseJars(fs.readFileSync(list, "utf8"))) {
+    const file = path.join(dir, "lib", jarFile(jar));
+    if (!fs.existsSync(file)) continue; // not fetched yet: an example that imports it fails to compile and says so
+    (sha256(fs.readFileSync(file)) === jar.sha256 ? out.jars : out.tampered).push(sha256(fs.readFileSync(file)) === jar.sha256 ? file : jarFile(jar));
+  }
+  return out;
+}
+
 /** Kotlin/JVM: each example compiled on its own (each has its own `main`), then run with the `kotlin` runner. */
 export function kotlinRunner(env: NodeJS.ProcessEnv = process.env, root?: string): Runner {
   const kotlinc = findExecutable([env.KOTLINC, "kotlinc"], env);
   const kotlin = kotlinc ? path.join(path.dirname(kotlinc), "kotlin") : null;
-  // $KOTLIN_CLASSPATH wins; otherwise the jars `scripts/fetch-example-jars.mts` verified and placed.
-  const jarDir = root ? path.join(examplesDir(root), "kotlin/lib") : null;
-  const fetched = jarDir && fs.existsSync(jarDir) ? fs.readdirSync(jarDir).filter((f) => f.endsWith(".jar")).sort().map((f) => path.join(jarDir, f)) : [];
-  const classpath = env.KOTLIN_CLASSPATH ? env.KOTLIN_CLASSPATH.split(":").filter(Boolean) : fetched;
+  // $KOTLIN_CLASSPATH wins; otherwise the jars `examples/kotlin/jars.txt` pins, each checked again here.
+  const pinned = env.KOTLIN_CLASSPATH || !root ? { jars: [], tampered: [] } : pinnedJars(path.join(examplesDir(root), "kotlin"));
+  const classpath = env.KOTLIN_CLASSPATH ? env.KOTLIN_CLASSPATH.split(":").filter(Boolean) : pinned.jars;
   // `@Serializable` needs the compiler plugin that ships in the distribution's lib/ folder.
   // (a zip install keeps lib/ beside bin/, Homebrew under libexec/), or $KOTLIN_SERIALIZATION_PLUGIN names it.
   const home = kotlinc && fs.existsSync(kotlinc) ? path.dirname(path.dirname(fs.realpathSync(kotlinc))) : null;
@@ -347,6 +371,7 @@ export function kotlinRunner(env: NodeJS.ProcessEnv = process.env, root?: string
   return {
     async probe() {
       if (!kotlinc || !kotlin || !fs.existsSync(kotlin)) return { missing: "kotlinc not found (put it on PATH or set KOTLINC)" };
+      if (pinned.tampered.length) return { missing: `examples/kotlin/lib/${pinned.tampered.join(", ")} is not the jar pinned in jars.txt (run npm run examples:install)` };
       const [k, j] = await Promise.all([exec(kotlinc, ["-version"], { env }), exec("java", ["-version"], { env })]);
       const kv = /kotlinc-jvm ([\w.-]+)/.exec(k.stderr + k.stdout)?.[1] ?? "unknown";
       // The JVM kotlinc itself reports runs the examples ($JAVA_HOME's); `java` on PATH is only a fallback.
@@ -388,9 +413,28 @@ export function nugetPackages(root: string | undefined): NugetPackage[] {
   return packages;
 }
 
-export function csharpRunner(env: NodeJS.ProcessEnv = process.env, root?: string): Runner {
+/** `examples/csharp/packages.lock.json`: the SHA-512 of every package, direct or transitive, a build may restore. */
+export const nugetLockFile = (root: string) => path.join(examplesDir(root), "csharp/packages.lock.json");
+
+export function nugetLock(root: string | undefined): Record<string, string> {
+  const file = root ? nugetLockFile(root) : null;
+  if (!file || !fs.existsSync(file)) return {};
+  return (JSON.parse(fs.readFileSync(file, "utf8")) as { packages: Record<string, string> }).packages;
+}
+
+/** What `dotnet restore` resolved for a project: `id/version` (lower case) to the package's SHA-512. */
+export function restoredPackages(dir: string): Record<string, string> {
+  const assets = JSON.parse(fs.readFileSync(path.join(dir, "obj/project.assets.json"), "utf8")) as { libraries?: Record<string, { type?: string; sha512?: string }> };
+  const out: Record<string, string> = {};
+  for (const [key, lib] of Object.entries(assets.libraries ?? {})) if (lib.type === "package") out[key.toLowerCase()] = lib.sha512 ?? "";
+  return out;
+}
+
+export function csharpRunner(env: NodeJS.ProcessEnv = process.env, root?: string, opts: { writeLock?: boolean } = {}): Runner {
   const dotnet = findExecutable([env.DOTNET, "dotnet", path.join(env.HOME ?? os.homedir(), ".dotnet/dotnet")], env);
   const allowed = nugetPackages(root);
+  const lock = nugetLock(root);
+  const seen: Record<string, string> = {};
   let framework = "net8.0";
   return {
     async probe() {
@@ -400,7 +444,10 @@ export function csharpRunner(env: NodeJS.ProcessEnv = process.env, root?: string
       return { toolchain: `.NET SDK ${v} (${framework})` };
     },
     async run(examples, work) {
-      return pool(examples, 3, async (e, i) => {
+      // One package cache for the run (git-ignored under examples/, else in the work folder): the
+      // build's HOME is a scratch folder, and without this every example would download its packages again.
+      const cache = root ? path.join(examplesDir(root), "csharp/.nuget") : path.join(work, ".nuget");
+      const outcomes = await pool(examples, 3, async (e, i) => {
         const dir = path.join(work, fileName(e.id, i));
         fs.mkdirSync(dir, { recursive: true });
         const packages = allowed.filter((p) => new RegExp(p.when).test(e.code));
@@ -416,15 +463,31 @@ export function csharpRunner(env: NodeJS.ProcessEnv = process.env, root?: string
         // Either way a NuGet.Config above the folder is ignored.
         const sources = packages.length ? `<clear /><add key="nuget.org" value="https://api.nuget.org/v3/index.json" protocolVersion="3" />` : `<clear />`;
         fs.writeFileSync(path.join(dir, "nuget.config"), `<?xml version="1.0" encoding="utf-8"?>\n<configuration><packageSources>${sources}</packageSources></configuration>\n`);
-        const denv = { ...env, DOTNET_CLI_TELEMETRY_OPTOUT: "1", DOTNET_NOLOGO: "1", DOTNET_SKIP_FIRST_TIME_EXPERIENCE: "1" };
+        // Package code (MSBuild targets, source generators) runs inside the build: it gets no more of the caller's environment than a snippet does.
+        const denv = { ...snippetEnv(env, dir, ["DOTNET_ROOT"]), NUGET_PACKAGES: cache, DOTNET_CLI_TELEMETRY_OPTOUT: "1", DOTNET_NOLOGO: "1", DOTNET_SKIP_FIRST_TIME_EXPERIENCE: "1" };
         const out = path.join(dir, "out");
-        const build = await exec(dotnet!, ["build", dir, "-o", out, "-nologo", "-v", "q", "-clp:ErrorsOnly", ...MSBUILD_ISOLATION], { env: denv, timeout: 240_000 });
+        if (packages.length) {
+          // Restore downloads and runs no package code; what it resolved is checked before anything builds.
+          const restore = await exec(dotnet!, ["restore", dir, "-nologo", "-v", "q", ...MSBUILD_ISOLATION], { env: denv, timeout: 240_000 });
+          if (restore.code !== 0) return { id: e.id, status: e.status, result: "fail" as const, detail: `dotnet restore: ${(restore.stdout + restore.stderr).trim().split("\n").slice(0, 4).join(" | ")}` };
+          const restored = restoredPackages(dir);
+          Object.assign(seen, restored);
+          const unpinned = opts.writeLock ? [] : Object.entries(restored).filter(([key, hash]) => lock[key] !== hash).map(([key]) => key);
+          if (unpinned.length) return { id: e.id, status: e.status, result: "fail" as const, detail: `nuget: ${unpinned.join(", ")} is not the content pinned in examples/csharp/packages.lock.json (review it, then npm run examples -- --lang csharp --write-nuget-lock)` };
+        }
+        const build = await exec(dotnet!, ["build", dir, "-o", out, "-nologo", "-v", "q", "-clp:ErrorsOnly", ...(packages.length ? ["--no-restore"] : []), ...MSBUILD_ISOLATION], { env: denv, timeout: 240_000 });
         if (build.code !== 0) return { id: e.id, status: e.status, result: "fail" as const, detail: `dotnet build: ${(build.stdout + build.stderr).trim().split("\n").slice(0, 4).join(" | ")}` };
         if (e.status === "compiled") return { id: e.id, status: e.status, result: "pass" as const };
         // Run the built assembly directly: `dotnet run` would evaluate the project (and its imports) again.
         const run = { ...snippetEnv(env, dir), DOTNET_CLI_TELEMETRY_OPTOUT: "1", DOTNET_NOLOGO: "1" };
         return judge(e, await exec(dotnet!, [path.join(out, "Example.dll")], { env: run, cwd: dir, timeout: 60_000 }));
       });
+      if (opts.writeLock && root) {
+        const packages = Object.fromEntries(Object.entries({ ...lock, ...seen }).sort(([a], [b]) => a.localeCompare(b)));
+        const $comment = "The SHA-512 of every NuGet package a C# example build restores, direct (packages.json) and transitive, as nuget.org served it when this file was written. scripts/run-examples.mts fails an example whose restore resolves a package that is not listed here with this hash. Regenerate with: npm run examples -- --lang csharp --write-nuget-lock (then review the diff).";
+        fs.writeFileSync(nugetLockFile(root), `${JSON.stringify({ $comment, packages }, null, 2)}\n`);
+      }
+      return outcomes;
     },
   };
 }
@@ -492,6 +555,10 @@ export function parseLanguages(value: string | undefined): ExampleLanguage[] | {
   return unknown.length ? { error: `--lang: unknown language ${unknown.join(", ")} (expected typescript, kotlin or csharp)` } : (langs as ExampleLanguage[]);
 }
 
+/** The first of `names` given without a value: last on the line, or followed by another flag. */
+export const missingValue = (args: readonly string[], names: readonly string[]) =>
+  names.find((name) => args.includes(name) && (args[args.indexOf(name) + 1] === undefined || args[args.indexOf(name) + 1]!.startsWith("--")));
+
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
   const args = process.argv.slice(2);
@@ -499,14 +566,21 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     const i = args.indexOf(name);
     return i >= 0 ? args[i + 1] : undefined;
   };
-  const languages = args.includes("--lang") ? parseLanguages(flag("--lang")) : undefined;
-  if (languages && "error" in languages) {
-    console.error(languages.error);
+  const refuse = (message: string): never => {
+    console.error(message);
     process.exit(2);
-  }
+  };
+  const languages = args.includes("--lang") ? parseLanguages(flag("--lang")) : undefined;
+  if (languages && "error" in languages) refuse(languages.error);
+  const missing = missingValue(args, ["--sheets", "--content", "--json"]);
+  if (missing) refuse(`${missing} needs a value`);
   const sheets = flag("--sheets")?.split(",").filter(Boolean);
   const content = flag("--content");
-  const report = await runExamples(root, { ...(languages ? { languages } : {}), ...(sheets?.length ? { sheets } : {}), ...(content ? { content: path.resolve(content) } : {}) });
+  // --write-nuget-lock records what the C# builds restore instead of checking it against the lock.
+  const runners = args.includes("--write-nuget-lock") ? { runners: { csharp: csharpRunner(process.env, root, { writeLock: true }) } } : {};
+  const report = await runExamples(root, { ...(languages && !("error" in languages) ? { languages } : {}), ...(sheets?.length ? { sheets } : {}), ...(content ? { content: path.resolve(content) } : {}), ...runners }).catch(
+    (err: unknown) => refuse(err instanceof Error ? err.message : String(err)),
+  );
   const json = flag("--json");
   if (json) fs.writeFileSync(json, `${JSON.stringify(report, null, 2)}\n`);
   const count = (r: Outcome["result"]) => report.outcomes.filter((o) => o.result === r).length;

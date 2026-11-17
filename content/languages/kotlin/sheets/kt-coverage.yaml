@@ -30,7 +30,7 @@ cards:
       - ["MVVM — View Models, Bindings & Observation", "equivalent", "MVVM — ViewModel, UiState & Events", "a view model exposing one `StateFlow` of UI state, intents as methods, events as state and tests on the JVM"]
       - ["TCA — Core Loop", "equivalent", "MVI — Unidirectional State with a Reducer", "state, action, pure reducer, effects and a small store — the loop TCA shares with MVI"]
       - ["TCA — Composition, Dependencies, Testing", "no counterpart", "—", "a Swift library's API"]
-      - ["TCA + SwiftUI — Navigation & UI", "no counterpart", "—", "a Swift library's API; navigation in Compose is covered on the Compose layout sheet"]
+      - ["TCA + SwiftUI — Navigation & UI", "partial", "Jetpack Compose — Layout, Lists, Navigation & Animation", "type-safe routes and a back stack with Navigation Compose; navigation driven from a store's state, as TCA does it, is not shown"]
       - ["Modern Swift Concurrency — Core", "equivalent", "Coroutines — Core", "suspend functions, structured fan-out, failure propagation, cancellation and callback bridging"]
       - ["Actors, Sendable & Isolation", "partial", "Shared Mutable State — Mutex, Confinement, Actors", "Mutex, confinement and channel-owned state; Kotlin has no compiler-checked isolation or Sendable"]
       - ["Swift 6 Concurrency — Do's & Don'ts", "no counterpart", "—", "about migrating to Swift 6's strict concurrency checking"]

@@ -24,3 +24,4 @@ coverage/
 examples/node_modules/
 examples/.work/
 examples/kotlin/lib/
+examples/csharp/.nuget/
