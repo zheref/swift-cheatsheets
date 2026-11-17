@@ -172,6 +172,8 @@ cards:
     note: "A `T.() -> Unit` parameter makes `this` the builder inside the block, which is how `buildString`, `apply`, Compose modifiers and the Gradle Kotlin DSL read like configuration."
     prerequisites: *run
     code: |-
+      import java.util.Locale
+
       @DslMarker
       annotation class ReceiptDsl                                 // stops nested blocks reaching outer receivers
 
@@ -191,7 +193,7 @@ cards:
           }
       }
 
-      fun formatCents(cents: Long): String = "%d.%02d".format(cents / 100, cents % 100)
+      fun formatCents(cents: Long): String = "%d.%02d".format(Locale.ROOT, cents / 100, cents % 100)
 
       fun receipt(block: ReceiptBuilder.() -> Unit): String = ReceiptBuilder().apply(block).build()
 

@@ -425,6 +425,7 @@ cards:
     prerequisites: *run
     code: |-
       import kotlin.math.abs
+      import java.util.Locale
 
       @JvmInline
       value class OrderId(val value: String) {
@@ -447,7 +448,7 @@ cards:
           operator fun plus(other: Cents) = Cents(amount + other.amount)
           override fun toString(): String {
               val sign = if (amount < 0) "-" else ""
-              return "%s%d.%02d".format(sign, abs(amount) / 100, abs(amount) % 100)
+              return "%s%d.%02d".format(Locale.ROOT, sign, abs(amount) / 100, abs(amount) % 100)
           }
       }
 

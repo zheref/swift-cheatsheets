@@ -213,7 +213,7 @@ real toolchains, and skips (never passes) a language whose toolchain it cannot f
 | Language | Needs | Found through |
 | --- | --- | --- |
 | TypeScript | Node 22.18+, this repository's `typescript`, and the libraries the examples import | `npm ci`, then `npm run examples:install` (the pinned, example-only `examples/package.json`) |
-| Kotlin | `kotlinc` 2.x, a JDK 17+, and the jars the examples import | `PATH` or `KOTLINC`; the jars pinned in `examples/kotlin/jars.txt`, fetched and digest-checked by `npm run examples:install` — or your own in `KOTLIN_CLASSPATH` (colon-separated) |
+| Kotlin | `kotlinc` 2.x, a JDK 21+ to run them all (most cards need only 17; each states its minimum), and the jars the examples import | `PATH` or `KOTLINC`; the jars pinned in `examples/kotlin/jars.txt`, fetched and digest-checked by `npm run examples:install` — or your own in `KOTLIN_CLASSPATH` (colon-separated) |
 | C# | the .NET 9 SDK or later (an example is built for the SDK's own framework; each card states the minimum it needs) | `PATH`, `DOTNET`, or `~/.dotnet/dotnet`; an example naming a package pinned in `examples/csharp/packages.json` restores it from nuget.org, and every package the restore resolves must match its SHA-512 in `examples/csharp/packages.lock.json` (`npm run examples -- --lang csharp --write-nuget-lock` after changing the list) |
 
 The libraries are **example-only**: the site's own `package.json` does not list them, so

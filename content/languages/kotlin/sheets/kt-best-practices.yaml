@@ -55,11 +55,12 @@ cards:
         tone: bad
         code: |-
           import java.util.ArrayList
+          import java.util.Locale
 
           class OrderUtils {
               companion object {
                   fun formatPrice(cents: Long): String =
-                      "EUR " + (cents / 100) + "." + String.format("%02d", cents % 100)
+                      "EUR " + (cents / 100) + "." + String.format(Locale.ROOT, "%02d", cents % 100)
               }
           }
 
@@ -85,6 +86,8 @@ cards:
       - label: Idiomatic Kotlin
         tone: good
         code: |-
+          import java.util.Locale
+
           /**
            * An order being built at the till.
            *
@@ -110,7 +113,7 @@ cards:
            *
            * @return the amount with its currency, for example `EUR 15.50`.
            */
-          fun formatPrice(cents: Long): String = "EUR %d.%02d".format(cents / 100, cents % 100)
+          fun formatPrice(cents: Long): String = "EUR %d.%02d".format(Locale.ROOT, cents / 100, cents % 100)
 
           /** The old `Int` API: callers get a warning, and the IDE offers the replacement as a quick-fix. */
           @Deprecated("Prices are Long cents", ReplaceWith("formatPrice(cents.toLong())"))

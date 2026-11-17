@@ -450,6 +450,7 @@ cards:
       import kotlinx.coroutines.sync.Semaphore
       import kotlinx.coroutines.sync.withPermit
       import kotlinx.coroutines.test.*
+      import java.util.Locale
 
       var running = 0
       var peak = 0
@@ -468,7 +469,8 @@ cards:
               val t0 = currentTime
               val results = upload()
               val elapsed = currentTime - t0
-              println("%-10s %d done in %4d ms, at most %d at once".format(label, results.size, elapsed, peak))
+              val line = "%-10s %d done in %4d ms, at most %d at once"
+              println(line.format(Locale.ROOT, label, results.size, elapsed, peak))
           }
 
           measure("serial") { photos.map { uploadPhoto(it) } }

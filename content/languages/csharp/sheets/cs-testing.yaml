@@ -186,7 +186,7 @@ cards:
     note: "Advance `FakeTimeProvider` in steps smaller than the interval you are testing, because `Advance` jumps the clock first and then fires what is due, which hides a wrong interval."
     prerequisites:
       - .NET 9 SDK or later
-      - "`dotnet new console -o Demo`, `dotnet add package Microsoft.Extensions.TimeProvider.Testing`, replace `Demo/Program.cs` with the example, then `dotnet run --project Demo`"
+      - "`dotnet new console -o Demo`, `dotnet add Demo package Microsoft.Extensions.TimeProvider.Testing`, replace `Demo/Program.cs` with the example, then `dotnet run --project Demo`"
     code: |-
       using Microsoft.Extensions.Time.Testing;
 
@@ -253,7 +253,7 @@ cards:
     title: The same as xUnit v3 tests — an async theory that runs as a program
     note: "An xUnit v3 test project is an executable, so `dotnet run` (or the built `.dll`) runs the tests and its exit code says whether they passed."
     prerequisites:
-      - "`dotnet new console -o Poller.Tests`, then `dotnet add package xunit.v3` and `dotnet add package Microsoft.Extensions.TimeProvider.Testing` (or `dotnet new xunit3` after `dotnet new install xunit.v3.templates`)"
+      - "`dotnet new console -o Poller.Tests`, then `dotnet add Poller.Tests package xunit.v3` and `dotnet add Poller.Tests package Microsoft.Extensions.TimeProvider.Testing` (or `dotnet new xunit3 -o Poller.Tests` after `dotnet new install xunit.v3.templates`)"
       - "Replace `Program.cs` with the example (xUnit v3 generates the entry point), then `dotnet run --project Poller.Tests`"
     code: |-
       using Microsoft.Extensions.Time.Testing;
@@ -383,7 +383,7 @@ cards:
     note: "Host the real pipeline (routing, binding, serialization) on an in-memory `TestServer` and replace only the outermost dependency — in a test project, `WebApplicationFactory<Program>` with `ConfigureTestServices` does the same for your existing app, as in `isolate-network-and-state` on the UI & End-to-End Testing sheet."
     prerequisites:
       - .NET 9 SDK or later
-      - "`dotnet new console -o Demo`, `dotnet add package Microsoft.AspNetCore.TestHost`, replace `Demo/Program.cs` with the example, then `dotnet run --project Demo`"
+      - "`dotnet new console -o Demo`, `dotnet add Demo package Microsoft.AspNetCore.TestHost --version 9.0.23`, replace `Demo/Program.cs` with the example, then `dotnet run --project Demo`"
       - "For an existing app: an xUnit project on the Web SDK with `Microsoft.AspNetCore.Mvc.Testing`, `IClassFixture<WebApplicationFactory<Program>>`, and `public partial class Program { }` at the end of the app's `Program.cs`"
     code: |-
       using System.Net.Http.Json;

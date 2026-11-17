@@ -71,6 +71,8 @@ cards:
       - label: Respects
         tone: good
         code: |-
+          import java.util.Locale
+
           data class Order(val id: String, val quantity: Int, val unitCents: Long) {
               val totalCents: Long get() = quantity * unitCents
           }
@@ -92,7 +94,7 @@ cards:
           }
 
           fun formatReceipt(order: Order): String =                   // changes with the UI copy
-              "Order ${order.id}: %d.%02d".format(order.totalCents / 100, order.totalCents % 100)
+              "Order ${order.id}: %d.%02d".format(Locale.ROOT, order.totalCents / 100, order.totalCents % 100)
 
           class PlaceOrder(private val repository: OrderRepository) {  // a thin coordinator
               fun place(line: String): String {

@@ -366,7 +366,7 @@ describe("running examples", () => {
   it("drives dotnet: one console project per example, build failures, run output", async () => {
     const bin = tmp("dbin-");
     const log = path.join(bin, "calls.log");
-    stub(bin, "dotnet", `echo "dotnet $*" >> ${log}\ncase "$1" in\n--version) echo 9.0.100;;\nbuild) [ -z "$SECRET_TOKEN" ] || exit 5; [ "$HOME" = "$2" ] || exit 6; if grep -q BROKEN "$2/Program.cs"; then echo "Program.cs(1,1): error CS0103"; exit 1; fi; grep -q "<TargetFramework>net9.0</TargetFramework>" "$2/Example.csproj" || exit 3; grep -q "<clear />" "$2/nuget.config" || exit 4;;\n*.dll) [ "$HOME" = "$TMPDIR" ] || echo "HOME is not the scratch folder"; echo "hello\${SECRET_TOKEN:+ LEAKED}";;\nesac`);
+    stub(bin, "dotnet", `echo "dotnet $*" >> ${log}\ncase "$1" in\n--version) echo 9.0.100;;\nbuild) [ -z "$SECRET_TOKEN" ] || exit 5; case "$HOME" in */.build-home) [ "$HOME" = "$TMPDIR" ] || exit 6;; *) exit 6;; esac; if grep -q BROKEN "$2/Program.cs"; then echo "Program.cs(1,1): error CS0103"; exit 1; fi; grep -q "<TargetFramework>net9.0</TargetFramework>" "$2/Example.csproj" || exit 3; grep -q "<clear />" "$2/nuget.config" || exit 4;;\n*.dll) [ "$HOME" = "$TMPDIR" ] || echo "HOME is not the scratch folder"; echo "hello\${SECRET_TOKEN:+ LEAKED}";;\nesac`);
     const root = contentRoot("csharp", [
       { id: "ok", kind: "code", code: 'Console.WriteLine("hello");', expected: "hello", validation: ran },
       { id: "broken", kind: "code", code: "BROKEN", expected: "hello", validation: ran },
@@ -385,11 +385,13 @@ describe("running examples", () => {
     ]);
     expect(report.outcomes[1]!.detail).toBe("dotnet build: Program.cs(1,1): error CS0103");
     const calls = fs.readFileSync(log, "utf8");
-    // A build sees a scratch HOME and none of the caller's variables (the stub exits 5 or 6 otherwise): package code runs inside it.
+    // A build sees the run's scratch HOME and TMPDIR and none of the caller's variables (the stub exits 5 or 6 otherwise):
+    // package code runs inside it. The servers the builds started are shut down once, at the end.
     // Every build ignores MSBuild files above its folder; the run executes the built assembly, not `dotnet run`.
     expect(calls.match(/^dotnet build .* -p:ImportDirectoryBuildProps=false -p:ImportDirectoryBuildTargets=false -p:ImportDirectoryPackagesProps=false -noAutoResponse$/gm)).toHaveLength(3);
     expect(calls).toMatch(/^dotnet \S+\/out\/Example\.dll$/m);
     expect(calls).not.toMatch(/^dotnet run/m);
+    expect(calls.match(/^dotnet build-server shutdown$/gm)).toHaveLength(1);
   });
 
   it("gives an example the pinned NuGet packages its code asks for, and nuget.org only then", async () => {

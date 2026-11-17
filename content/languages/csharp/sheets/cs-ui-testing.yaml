@@ -166,7 +166,7 @@ cards:
     title: An end-to-end journey with Playwright for .NET
     note: "Locate by role and accessible name, the way a user and a screen reader find things, and assert with `Expect(...)`, which retries until the page matches."
     prerequisites:
-      - "`dotnet new nunit -o Shop.E2E`, `dotnet add package Microsoft.Playwright.NUnit`, build, then `pwsh bin/Debug/net9.0/playwright.ps1 install`"
+      - "`dotnet new nunit -o Shop.E2E`, `dotnet add Shop.E2E package Microsoft.Playwright.NUnit`, `dotnet build Shop.E2E`, then `pwsh Shop.E2E/bin/Debug/net9.0/playwright.ps1 install`"
       - "The Blazor app running at the base URL, or started by a `[OneTimeSetUp]` fixture"
     code: |-
       using System.Text.RegularExpressions;

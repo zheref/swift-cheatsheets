@@ -447,6 +447,12 @@ export function csharpRunner(env: NodeJS.ProcessEnv = process.env, root?: string
       // One package cache for the run (git-ignored under examples/, else in the work folder): the
       // build's HOME is a scratch folder, and without this every example would download its packages again.
       const cache = root ? path.join(examplesDir(root), "csharp/.nuget") : path.join(work, ".nuget");
+      // Package code (MSBuild targets, source generators) runs inside a build, so builds get no more of the
+      // caller's environment than a snippet does. They share ONE scratch HOME and TMPDIR: the compiler server
+      // lives in TMPDIR, and a folder per build would start a cold one for every example.
+      const home = path.join(work, ".build-home");
+      fs.mkdirSync(home, { recursive: true });
+      const denv = { ...snippetEnv(env, home, ["DOTNET_ROOT"]), NUGET_PACKAGES: cache, DOTNET_CLI_TELEMETRY_OPTOUT: "1", DOTNET_NOLOGO: "1", DOTNET_SKIP_FIRST_TIME_EXPERIENCE: "1" };
       const outcomes = await pool(examples, 3, async (e, i) => {
         const dir = path.join(work, fileName(e.id, i));
         fs.mkdirSync(dir, { recursive: true });
@@ -463,8 +469,6 @@ export function csharpRunner(env: NodeJS.ProcessEnv = process.env, root?: string
         // Either way a NuGet.Config above the folder is ignored.
         const sources = packages.length ? `<clear /><add key="nuget.org" value="https://api.nuget.org/v3/index.json" protocolVersion="3" />` : `<clear />`;
         fs.writeFileSync(path.join(dir, "nuget.config"), `<?xml version="1.0" encoding="utf-8"?>\n<configuration><packageSources>${sources}</packageSources></configuration>\n`);
-        // Package code (MSBuild targets, source generators) runs inside the build: it gets no more of the caller's environment than a snippet does.
-        const denv = { ...snippetEnv(env, dir, ["DOTNET_ROOT"]), NUGET_PACKAGES: cache, DOTNET_CLI_TELEMETRY_OPTOUT: "1", DOTNET_NOLOGO: "1", DOTNET_SKIP_FIRST_TIME_EXPERIENCE: "1" };
         const out = path.join(dir, "out");
         if (packages.length) {
           // Restore downloads and runs no package code; what it resolved is checked before anything builds.
@@ -482,6 +486,8 @@ export function csharpRunner(env: NodeJS.ProcessEnv = process.env, root?: string
         const run = { ...snippetEnv(env, dir), DOTNET_CLI_TELEMETRY_OPTOUT: "1", DOTNET_NOLOGO: "1" };
         return judge(e, await exec(dotnet!, [path.join(out, "Example.dll")], { env: run, cwd: dir, timeout: 60_000 }));
       });
+      // The compiler and build servers the builds started would otherwise outlive the scratch folder they live in.
+      await exec(dotnet!, ["build-server", "shutdown"], { env: denv, timeout: 60_000 });
       if (opts.writeLock && root) {
         const packages = Object.fromEntries(Object.entries({ ...lock, ...seen }).sort(([a], [b]) => a.localeCompare(b)));
         const $comment = "The SHA-512 of every NuGet package a C# example build restores, direct (packages.json) and transitive, as nuget.org served it when this file was written. scripts/run-examples.mts fails an example whose restore resolves a package that is not listed here with this hash. Regenerate with: npm run examples -- --lang csharp --write-nuget-lock (then review the diff).";

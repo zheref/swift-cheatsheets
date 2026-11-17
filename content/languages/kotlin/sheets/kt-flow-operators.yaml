@@ -101,6 +101,7 @@ cards:
       import kotlinx.coroutines.*
       import kotlinx.coroutines.flow.*
       import kotlinx.coroutines.test.*
+      import java.util.Locale
 
       fun playbackPositionMs(): Flow<Long> = flow {                // the player reports about every frame
           var position = 0L
@@ -111,7 +112,7 @@ cards:
           }
       }
 
-      fun label(ms: Long) = "%d:%02d.%03d".format(ms / 60_000, ms / 1_000 % 60, ms % 1_000)
+      fun label(ms: Long) = "%d:%02d.%03d".format(Locale.ROOT, ms / 60_000, ms / 1_000 % 60, ms % 1_000)
 
       @OptIn(FlowPreview::class, ExperimentalCoroutinesApi::class)
       fun main() = runTest {
@@ -391,6 +392,7 @@ cards:
       import kotlinx.coroutines.*
       import kotlinx.coroutines.flow.*
       import kotlinx.coroutines.test.*
+      import java.util.Locale
 
       // The waveform view: a new frame of levels every 100 ms, and drawing one takes 250 ms
       fun levels(): Flow<Int> = flow {
@@ -411,7 +413,7 @@ cards:
               drawn.clear()
               val t0 = currentTime
               run()
-              println("%-13s drew %-18s in %4d ms".format(name, drawn, currentTime - t0))
+              println("%-13s drew %-18s in %4d ms".format(Locale.ROOT, name, drawn, currentTime - t0))
           }
 
           measure("default") { levels().collect(::draw) }                // the producer waits for the drawer
@@ -446,7 +448,7 @@ cards:
           fun start() {
               if (job?.isActive == true) return                     // idempotent: never a second collector
               job = positionsMs
-                  .map { ms -> "%d:%02d".format(ms / 60_000, ms / 1_000 % 60) }
+                  .map { ms -> "%d:%02d".format(java.util.Locale.ROOT, ms / 60_000, ms / 1_000 % 60) }
                   .distinctUntilChanged()                           // one update a second, not fifty
                   .onEach { text = it }
                   .launchIn(scope)                                  // the Job is the handle: keep it
