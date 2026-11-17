@@ -1,0 +1,603 @@
+id: networking-protocols
+concept: networking.protocols
+scope: platform
+title: "Networking — SOAP, gRPC & GraphQL"
+group: iOS Platform
+subtitle: "Beyond REST: a SOAP envelope and its Fault, GraphQL with errors beside data, gRPC unary and streaming calls, WebSockets — and how to choose."
+applies:
+  platforms:
+    - ios
+    - ipados
+    - macos
+    - tvos
+    - visionos
+  runtime: Swift toolchain
+  requires:
+    - Foundation
+  versions:
+    swift: ">=6.0"
+    ios: ">=16"
+sources:
+  - title: XMLParser — Apple Developer Documentation
+    url: https://developer.apple.com/documentation/foundation/xmlparser
+  - title: URLSessionWebSocketTask — Apple Developer Documentation
+    url: https://developer.apple.com/documentation/foundation/urlsessionwebsockettask
+  - title: GraphQL over HTTP — GraphQL Foundation
+    url: https://http-spec.graphql.org/draft/
+  - title: Serving over HTTP — GraphQL
+    url: https://graphql.org/learn/serving-over-http/
+  - title: Status codes — gRPC
+    url: https://grpc.io/docs/guides/status-codes/
+  - title: SOAP 1.1 — W3C Note
+    url: https://www.w3.org/TR/2000/NOTE-SOAP-20000508/
+  - title: Apollo iOS — Apollo GraphQL Docs
+    url: https://www.apollographql.com/docs/ios/
+  - title: GRPCCore — gRPC Swift 2 documentation
+    url: https://swiftpackageindex.com/grpc/grpc-swift-2/documentation/grpccore
+cards:
+  - id: what-each-one-is-on-the-wire
+    kind: rules
+    title: What each one is on the wire
+    note: "Knowing the wire format answers most interview follow-ups: where errors live, what can be cached, what can stream."
+    items:
+      - tone: neutral
+        text: "**REST** — many URLs, HTTP verbs, status codes carry the outcome. Cacheable by any HTTP layer. Usually JSON."
+      - tone: neutral
+        text: "**SOAP** — one URL, always `POST`, an XML **envelope** in and out. The operation is named by the `SOAPAction` header (1.1) or the `action` parameter of `Content-Type` (1.2). A failure is a `<Fault>` element, with HTTP `500` (or `400` for a 1.2 Sender fault)."
+      - tone: neutral
+        text: "**GraphQL** — one URL, usually `POST` of `{query, variables}` as JSON. The client picks the fields. Errors arrive in an `errors` array **beside** `data`, commonly with HTTP `200`, and `data` can be partial."
+      - tone: neutral
+        text: "**gRPC** — HTTP/2, binary Protocol Buffers, a contract in a `.proto` file and generated stubs. Unary, server-, client- and bidirectional streaming. The status code travels in **trailers**, not the HTTP status. Deadlines propagate to the server."
+      - tone: neutral
+        text: "**WebSocket** — an HTTP upgrade to a long-lived, bidirectional message channel. No request/response pairing, no status codes per message: you design the protocol inside it."
+      - tone: good
+        text: "On iOS, REST, SOAP, GraphQL and WebSockets need only `URLSession`. gRPC needs `grpc-swift`; GraphQL often adds Apollo iOS for codegen and a normalized cache."
+  - id: soap-build-and-send-an-envelope
+    kind: code
+    title: "SOAP: build an envelope and POST it"
+    note: "Escape every value you put into the XML, and set the headers your SOAP version expects, because servers reject a missing SOAPAction."
+    code: |-
+      extension String {
+        /// The five XML entities. Interpolating raw input into XML is injection.
+        var xmlEscaped: String {
+          replacingOccurrences(of: "&", with: "&amp;")        // first, or it re-escapes the others
+            .replacingOccurrences(of: "<", with: "&lt;")
+            .replacingOccurrences(of: ">", with: "&gt;")
+            .replacingOccurrences(of: "\"", with: "&quot;")
+            .replacingOccurrences(of: "'", with: "&apos;")
+        }
+      }
+
+      /// SOAP 1.1 call to a carrier's legacy rate service
+      func shippingRate(fromZip: String, toZip: String, weightGrams: Int,
+                        session: URLSession = .shared) async throws -> Data {
+        let envelope = """
+          <?xml version="1.0" encoding="utf-8"?>
+          <soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"
+                         xmlns:r="urn:example:shipping:rates">
+            <soap:Body>
+              <r:GetRate>
+                <r:FromZip>\(fromZip.xmlEscaped)</r:FromZip>
+                <r:ToZip>\(toZip.xmlEscaped)</r:ToZip>
+                <r:WeightGrams>\(weightGrams)</r:WeightGrams>
+              </r:GetRate>
+            </soap:Body>
+          </soap:Envelope>
+          """
+        var request = URLRequest(url: URL(string: "https://carrier.example.com/RateService.asmx")!)
+        request.httpMethod = "POST"
+        request.setValue("text/xml; charset=utf-8", forHTTPHeaderField: "Content-Type")
+        request.setValue("\"urn:example:shipping:rates/GetRate\"", forHTTPHeaderField: "SOAPAction")  // quoted
+        // SOAP 1.2 instead: Content-Type: application/soap+xml; charset=utf-8; action="urn:…/GetRate"
+        request.httpBody = Data(envelope.utf8)
+
+        let (data, response) = try await session.data(for: request)
+        // A Fault arrives WITH an XML body — HTTP 500 (1.1 and 1.2), or 400 for a 1.2 Sender
+        // fault — so hand those to the parser instead of throwing here.
+        guard let status = (response as? HTTPURLResponse)?.statusCode, [200, 400, 500].contains(status) else {
+          throw URLError(.badServerResponse)
+        }
+        return data
+      }
+  - id: soap-parse-response-and-fault
+    kind: code
+    title: "SOAP: parse the response and a Fault with XMLParser"
+    note: "XMLParser is a streaming parser, so turn on namespace processing and match local names whatever prefixes the server chose."
+    code: |-
+      enum RateResult: Equatable {
+        case rate(cents: Int, transitDays: Int)
+        case fault(code: String, message: String)
+      }
+
+      final class RateResponseParser: NSObject, XMLParserDelegate {
+        private let envelopes: Set = ["http://schemas.xmlsoap.org/soap/envelope/",     // 1.1
+                                      "http://www.w3.org/2003/05/soap-envelope"]       // 1.2
+        private var inFault = false
+        private var text = ""
+        private var values: [String: String] = [:]
+
+        func parse(_ data: Data) throws -> RateResult {
+          let parser = XMLParser(data: data)
+          parser.shouldProcessNamespaces = true          // "soap:Fault", "env:Fault" → "Fault"
+          parser.delegate = self
+          guard parser.parse() else { throw parser.parserError ?? URLError(.cannotParseResponse) }
+
+          if inFault, let code = values["faultcode"] ?? values["Value"] {
+            return .fault(code: code, message: values["faultstring"] ?? values["Text"] ?? "")
+          }
+          guard let cents = values["AmountCents"].flatMap({ Int($0) }),
+                let days = values["TransitDays"].flatMap({ Int($0) }) else { throw URLError(.cannotParseResponse) }
+          return .rate(cents: cents, transitDays: days)
+        }
+
+        func parser(_ parser: XMLParser, didStartElement element: String, namespaceURI: String?,
+                    qualifiedName: String?, attributes: [String: String] = [:]) {
+          if element == "Fault", let namespaceURI, envelopes.contains(namespaceURI) {
+            inFault = true
+            values = [:]                 // a Header's <Value> or <Text> must not stand in for the fault's
+          }
+          text = ""
+        }
+
+        func parser(_ parser: XMLParser, foundCharacters string: String) {
+          text += string
+        }
+
+        func parser(_ parser: XMLParser, didEndElement element: String, namespaceURI: String?,
+                    qualifiedName: String?) {
+          guard values[element] == nil else { return }   // first <Value> wins: the Code, not a Subcode
+          values[element] = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+      }
+  - id: soap-faults-in-both-versions
+    kind: code
+    title: "SOAP: a response, a 1.1 Fault and a 1.2 Fault"
+    note: "Run every document the service can send through the same parser, because the Fault is where the real reason lives."
+    code: |-
+      // A success that happens to contain a <Value>: only a <Fault> in the envelope namespace is one
+      let rate = """
+        <s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"><s:Body>
+          <GetRateResponse xmlns="urn:example:shipping:rates">
+            <Surcharge><Name>Fuel</Name><Value>120</Value></Surcharge>
+            <AmountCents>1250</AmountCents><TransitDays>3</TransitDays>
+          </GetRateResponse>
+        </s:Body></s:Envelope>
+        """
+
+      // SOAP 1.1 (HTTP 500); the Header's <Value> and <Text> must not be read as the fault's
+      let fault11 = """
+        <soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+          <soap:Header><Session><Value>abc123</Value><Text>hi</Text></Session></soap:Header><soap:Body>
+          <soap:Fault><faultcode>soap:Client</faultcode><faultstring>Unknown ZIP 0000</faultstring></soap:Fault>
+        </soap:Body></soap:Envelope>
+        """
+
+      // SOAP 1.2: HTTP 400 for a Sender fault, 500 for a Receiver fault
+      let fault12 = """
+        <env:Envelope xmlns:env="http://www.w3.org/2003/05/soap-envelope">
+          <env:Header><Session><Value>abc123</Value><Text>hi</Text></Session></env:Header><env:Body>
+          <env:Fault>
+            <env:Code><env:Value>env:Sender</env:Value></env:Code>
+            <env:Reason><env:Text xml:lang="en">Weight must be positive</env:Text></env:Reason>
+          </env:Fault>
+        </env:Body></env:Envelope>
+        """
+
+      for document in [rate, fault11, fault12] {
+        print(try RateResponseParser().parse(Data(document.utf8)))   // one parser per document
+      }
+      // → rate(cents: 1250, transitDays: 3)
+      // → fault(code: "soap:Client", message: "Unknown ZIP 0000")
+      // → fault(code: "env:Sender", message: "Weight must be positive")
+  - id: graphql-errors-beside-data
+    kind: code
+    title: "GraphQL: reading `errors` beside `data`"
+    note: "A GraphQL response can carry data and errors at once, so decide per screen whether partial data is good enough to show."
+    code: |-
+      struct GraphQLResponse<Payload: Decodable & Sendable>: Decodable, Sendable {
+        let data: Payload?
+        let errors: [GraphQLError]?
+      }
+
+      struct GraphQLError: Decodable, Sendable, Error {
+        let message: String
+        let path: [PathComponent]?                 // ["order", "trackingURL"], or ["orders", 3, "id"]
+        let extensions: Extensions?
+
+        struct Extensions: Decodable, Sendable {
+          let code: String?                        // server-defined; other keys are ignored
+        }
+
+        enum PathComponent: Decodable, Sendable {
+          case field(String)
+          case index(Int)
+
+          init(from decoder: any Decoder) throws {
+            let value = try decoder.singleValueContainer()
+            if let index = try? value.decode(Int.self) {
+              self = .index(index)
+            } else {
+              self = .field(try value.decode(String.self))
+            }
+          }
+        }
+      }
+
+      struct OrderData: Decodable, Sendable {
+        let order: Order?
+
+        struct Order: Decodable, Sendable {
+          let id: String
+          let status: String
+          let trackingURL: String?
+        }
+      }
+
+      let body = Data("""
+        {"data":{"order":{"id":"A-1042","status":"SHIPPED","trackingURL":null}},
+         "errors":[{"message":"Tracking unavailable","path":["order","trackingURL"],
+                    "extensions":{"code":"UNAVAILABLE"}}]}
+        """.utf8)
+      let response = try JSONDecoder().decode(GraphQLResponse<OrderData>.self, from: body)
+
+      print(response.data?.order?.status ?? "no order")                // → SHIPPED  (partial data)
+      print(response.errors?.first?.extensions?.code ?? "")              // → UNAVAILABLE
+  - id: graphql-query-over-urlsession
+    kind: code
+    title: "GraphQL: a query with variables over URLSession"
+    note: "Send values as variables rather than interpolating them into the query text, which is injection-safe and lets servers cache the parsed document."
+    code: |-
+      enum GraphQLTransportError: Error {
+        case unauthorized
+        case notGraphQL(status: Int)                 // a gateway's 429, 502 or HTML page
+      }
+
+      struct GraphQLClient: Sendable {
+        let endpoint: URL
+        var session: URLSession = .shared
+
+        private struct Body<Variables: Encodable>: Encodable {
+          let query: String
+          let variables: Variables
+        }
+
+        func execute<Payload: Decodable & Sendable>(
+          _ query: String, variables: some Encodable & Sendable, as: Payload.Type
+        ) async throws -> GraphQLResponse<Payload> {
+          var request = URLRequest(url: endpoint)
+          request.httpMethod = "POST"
+          request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+          request.setValue("application/graphql-response+json, application/json", forHTTPHeaderField: "Accept")
+          request.httpBody = try JSONEncoder().encode(Body(query: query, variables: variables))
+
+          let (data, response) = try await session.data(for: request)
+          guard let http = response as? HTTPURLResponse else { throw URLError(.badServerResponse) }
+
+          // A GraphQL body comes with 200, or with 4xx for request errors; nothing else is one.
+          let type = http.value(forHTTPHeaderField: "Content-Type") ?? ""
+          let isJSON = type.hasPrefix("application/graphql-response+json") || type.hasPrefix("application/json")
+          switch http.statusCode {
+          case 401: throw GraphQLTransportError.unauthorized
+          case 200..<500 where isJSON: break
+          case let status: throw GraphQLTransportError.notGraphQL(status: status)
+          }
+          return try JSONDecoder().decode(GraphQLResponse<Payload>.self, from: data)
+        }
+      }
+
+      func order(_ id: String, client: GraphQLClient) async throws -> OrderData.Order? {
+        let response = try await client.execute("""
+          query OrderDetails($id: ID!) { order(id: $id) { id status trackingURL } }
+          """, variables: ["id": id], as: OrderData.self)
+        return response.data?.order                  // and handle errors as in the card above
+      }
+  - id: graphql-mutation-and-user-errors
+    kind: code
+    title: "GraphQL: a mutation, and domain errors in the payload"
+    note: "No payload means the mutation failed with the server's error, a payload beside `errors` means it ran and those errors are partial, and business refusals arrive as `userErrors`."
+    code: |-
+      struct CancelData: Decodable, Sendable {
+        let cancelOrder: Payload?                  // null when the resolver failed: see `errors`
+
+        struct Payload: Decodable, Sendable {
+          let order: OrderData.Order?
+          let userErrors: [UserError]
+        }
+
+        struct UserError: Decodable, Sendable {
+          let field: String?
+          let message: String                      // "Order already shipped"
+        }
+      }
+
+      enum CancelOutcome: Equatable {
+        case cancelled(partialErrors: [String])    // it ran; errors beside the payload are partial
+        case refused([String])
+      }
+
+      func cancel(_ id: String, reason: String?, client: GraphQLClient) async throws -> CancelOutcome {
+        let response = try await client.execute("""
+          mutation CancelOrder($id: ID!, $reason: String) {
+            cancelOrder(id: $id, reason: $reason) { order { id status } userErrors { field message } }
+          }
+          """, variables: ["id": id, "reason": reason], as: CancelData.self)
+        return try outcome(of: response)
+      }
+
+      /// No payload: the server's own message becomes the thrown error.
+      func outcome(of response: GraphQLResponse<CancelData>) throws -> CancelOutcome {
+        guard let payload = response.data?.cancelOrder else {
+          throw response.errors?.first ?? URLError(.cannotParseResponse)   // neither: not a valid reply
+        }
+        guard payload.userErrors.isEmpty else { return .refused(payload.userErrors.map(\.message)) }
+        return .cancelled(partialErrors: response.errors?.map(\.message) ?? [])        // log or show them
+      }
+
+      let locked = Data(#"{"data":{"cancelOrder":null},"errors":[{"message":"Order is locked"}]}"#.utf8)
+      do { _ = try outcome(of: JSONDecoder().decode(GraphQLResponse<CancelData>.self, from: locked)) }
+      catch let error as GraphQLError { print(error.message) }             // → Order is locked
+  - id: graphql-with-apollo-ios
+    kind: code
+    title: "GraphQL with Apollo iOS (2.x), in outline"
+    note: "Apollo iOS 2 (async/await) generates a typed Swift API from your .graphql files and the schema, and adds a normalized cache."
+    applies:
+      requires:
+        - Apollo iOS
+      versions:
+        apollo-ios: ">=2.0"
+        ios: ">=15"
+    sources:
+      - title: Apollo iOS — Apollo GraphQL Docs
+        url: https://www.apollographql.com/docs/ios/
+    code: |-
+      // Operations.graphql — the same documents as the URLSession card; codegen writes
+      // ShopAPI.OrderDetailsQuery and ShopAPI.CancelOrderMutation, with typed variables
+      // and a typed `Data` for exactly the fields selected.
+      import Apollo
+
+      let apollo = ApolloClient(url: URL(string: "https://api.example.com/graphql")!)
+
+      func orderStatus(id: String) async throws -> String? {
+        let response = try await apollo.fetch(query: ShopAPI.OrderDetailsQuery(id: id),
+                                              cachePolicy: .networkFirst)
+        if let errors = response.errors, !errors.isEmpty {
+          print("partial:", errors.map(\.localizedDescription))      // data may still be there
+        }
+        return response.data?.order?.status
+      }
+
+      func cancelOrder(id: String) async throws -> [String] {
+        let response = try await apollo.perform(
+          mutation: ShopAPI.CancelOrderMutation(id: id, reason: "changed mind"))
+        return response.data?.cancelOrder.userErrors.map(\.message) ?? []
+      }
+
+      // Optional arguments are GraphQLNullable: .none (omit), .null, or a value —
+      // a string literal converts to .some. Cache policies: .cacheFirst (default),
+      // .networkFirst, .networkOnly, .cacheOnly; cacheAndNetwork returns a stream.
+  - id: grpc-unary-call-deadline-status
+    kind: code
+    title: "gRPC: a unary call with a deadline and status codes"
+    note: "This is grpc-swift 2.x (GRPCCore, async/await, iOS 18+), not the different 1.x `GRPC` module built on ClientConnection and EventLoopFutures."
+    applies:
+      requires:
+        - grpc-swift 2
+      versions:
+        grpc-swift-2: ">=2.0"
+        grpc-swift-nio-transport: ">=2.0"
+        ios: ">=18"
+    sources:
+      - title: GRPCCore — gRPC Swift 2 documentation
+        url: https://swiftpackageindex.com/grpc/grpc-swift-2/documentation/grpccore
+    code: |-
+      // orders.proto
+      //   service OrderService {
+      //     rpc GetOrder(GetOrderRequest) returns (Order);
+      //     rpc TrackOrder(TrackOrderRequest) returns (stream TrackingEvent);
+      //   }
+      // The GRPCProtobufGenerator build plugin generates Shop_V1_OrderService.Client and the messages.
+      import GRPCCore
+      import GRPCNIOTransportHTTP2
+      import GRPCProtobuf
+
+      /// One long-lived client per server: it owns the HTTP/2 connection.
+      func makeOrdersClient() throws -> GRPCClient<HTTP2ClientTransport.TransportServices> {
+        GRPCClient(transport: try .http2NIOTS(                   // Network.framework on Apple platforms
+          target: .dns(host: "orders.example.com", port: 443),
+          transportSecurity: .tls(.defaults)))
+      }
+      // At launch: Task { try await grpc.runConnections() }   On exit: grpc.beginGracefulShutdown()
+
+      enum OrderLookupError: Error { case notFound, signedOut, unavailable }
+
+      func orderStatus(id: String, token: String,
+                       orders: Shop_V1_OrderService.Client<some ClientTransport>) async throws -> String {
+        var options = CallOptions.defaults
+        options.timeout = .seconds(5)            // the deadline goes to the server, which can stop work too
+        do {
+          let order = try await orders.getOrder(.with { $0.id = id },
+                                                metadata: ["authorization": "Bearer \(token)"],
+                                                options: options)
+          return order.status
+        } catch let error as RPCError {
+          switch error.code {                    // the status from the trailers, not the HTTP status
+          case .notFound: throw OrderLookupError.notFound
+          case .unauthenticated: throw OrderLookupError.signedOut
+          case .deadlineExceeded, .unavailable, .resourceExhausted: throw OrderLookupError.unavailable  // retryable
+          default: throw error
+          }
+        }
+      }
+  - id: grpc-server-stream-as-asyncsequence
+    kind: code
+    title: "gRPC: a server stream as an AsyncSequence"
+    note: "The response stream is only valid inside its closure (returning ends the RPC), so bridge it out through a stream you can cancel."
+    applies:
+      requires:
+        - grpc-swift 2
+      versions:
+        grpc-swift-2: ">=2.0"
+        ios: ">=18"
+    code: |-
+      import GRPCCore
+
+      func trackingUpdates(
+        orderID: String,
+        orders: Shop_V1_OrderService.Client<some ClientTransport>
+      ) -> AsyncThrowingStream<Shop_V1_TrackingEvent, any Error> {
+        AsyncThrowingStream { continuation in
+          let call = Task {
+            do {
+              try await orders.trackOrder(.with { $0.orderID = orderID }) { response in
+                for try await event in response.messages {      // one message per server write
+                  continuation.yield(event)
+                }
+              }
+              continuation.finish()
+            } catch {
+              continuation.finish(throwing: error)               // an RPCError with the final status
+            }
+          }
+          continuation.onTermination = { _ in call.cancel() }     // consumer gone → RPC cancelled
+        }
+      }
+
+      @MainActor @Observable final class TrackingModel {
+        private(set) var status = "—"
+        private(set) var location = ""
+
+        func follow<T: ClientTransport>(_ orderID: String, orders: Shop_V1_OrderService.Client<T>) async {
+          do {
+            for try await event in trackingUpdates(orderID: orderID, orders: orders) {
+              status = event.status
+              location = event.location
+            }
+          } catch {
+            status = "Tracking unavailable"
+          }
+        }
+      }
+      // In SwiftUI: .task { await model.follow(order.id, orders: orders) } — leaving the screen cancels the RPC.
+  - id: websockets-with-urlsession
+    kind: code
+    title: "Bonus: WebSockets with URLSessionWebSocketTask"
+    note: "Live order updates without polling, where the socket gives you messages and reconnects, pings and the message schema are yours to design."
+    code: |-
+      struct OrderUpdate: Codable, Sendable {
+        let orderID: String
+        let status: String
+      }
+
+      func orderUpdates(url: URL, session: URLSession = .shared) -> AsyncThrowingStream<OrderUpdate, any Error> {
+        AsyncThrowingStream { continuation in
+          let socket = session.webSocketTask(with: url)
+          socket.resume()
+
+          let receiving = Task {
+            do {
+              try await socket.send(.string(#"{"subscribe":"orders"}"#))
+              while !Task.isCancelled {
+                let data: Data
+                switch try await socket.receive() {               // one whole message, text or binary
+                case .string(let text): data = Data(text.utf8)
+                case .data(let bytes): data = bytes
+                @unknown default: continue
+                }
+                continuation.yield(try JSONDecoder().decode(OrderUpdate.self, from: data))
+              }
+            } catch {
+              continuation.finish(throwing: error)                // closed or failed: caller reconnects
+            }
+          }
+
+          continuation.onTermination = { _ in
+            receiving.cancel()
+            socket.cancel(with: .goingAway, reason: nil)          // a proper close frame
+          }
+        }
+      }
+
+      // Keep idle connections alive through proxies and NAT, and detect a dead peer:
+      // socket.sendPing { error in if error != nil { /* reconnect with backoff */ } }
+      // socket.maximumMessageSize defaults to 1 MB; receive() fails on bigger messages.
+  - id: protocol-pitfalls
+    kind: rules
+    title: Pitfalls worth saying out loud
+    note: ""
+    items:
+      - tone: bad
+        text: "**SOAP:** building the envelope with unescaped interpolation, or treating HTTP `500` as \"no body\" — the Fault with the real reason is in it."
+      - tone: bad
+        text: "**SOAP:** scraping XML with string searches or regex. Prefixes vary (`soap:`, `s:`, none); use `XMLParser` with `shouldProcessNamespaces`."
+      - tone: bad
+        text: "**GraphQL:** treating HTTP `200` as success and ignoring `errors`, or throwing away partial `data` that was good enough to show."
+      - tone: bad
+        text: "**GraphQL:** interpolating values into the query string instead of `variables` — injection, and no persisted-query or document caching."
+      - tone: bad
+        text: "**gRPC:** no deadline — a stalled call waits forever. Set `CallOptions.timeout` on every call that a person is waiting for."
+      - tone: bad
+        text: "**gRPC:** a new `GRPCClient` per call (a new HTTP/2 connection each time), or using the response stream outside its closure."
+      - tone: bad
+        text: "**WebSocket:** no ping and no reconnect — mobile networks drop idle connections silently, and the app keeps showing stale data."
+      - tone: good
+        text: "Put each protocol behind the same kind of small client protocol your REST code uses, so view models and tests never see the wire format."
+      - tone: good
+        text: "Generate what has a schema (WSDL, `.proto`, GraphQL SDL), but review what was generated: you ship it."
+      - tone: neutral
+        text: "grpc-swift 2 needs iOS 18; for older deployment targets either keep grpc-swift 1.x or put a REST/JSON gateway in front of the service."
+  - id: choosing-rest-soap-grpc-graphql
+    kind: table
+    title: Choosing between REST, SOAP, gRPC and GraphQL
+    note: "Say the constraint first (who owns the server, what the clients need, what must stream), then the protocol follows."
+    headers:
+      - ""
+      - REST
+      - SOAP
+      - gRPC
+      - GraphQL
+    rows:
+      - - Payload
+        - JSON (usually)
+        - XML envelope
+        - Protocol Buffers (binary)
+        - JSON
+      - - Contract
+        - OpenAPI, optional
+        - WSDL + XSD, strict
+        - "`.proto`, strict, generated stubs"
+        - SDL schema, introspectable
+      - - Transport on iOS
+        - "`URLSession`"
+        - "`URLSession` + `XMLParser`"
+        - "grpc-swift over HTTP/2 (iOS 18+ for 2.x)"
+        - "`URLSession`, or Apollo iOS"
+      - - Errors
+        - HTTP status + body
+        - "`<Fault>`, HTTP 500 (400 for a 1.2 Sender fault)"
+        - "status code in trailers (`NOT_FOUND`, `DEADLINE_EXCEEDED`…)"
+        - "`errors` array beside `data`, often HTTP 200"
+      - - HTTP caching
+        - "yes — `ETag`, `Cache-Control`, CDNs"
+        - "no (all `POST`)"
+        - no
+        - "rarely; a client-side normalized cache instead"
+      - - Streaming
+        - "no (SSE or WebSocket beside it)"
+        - no
+        - "**yes** — server, client and bidirectional"
+        - subscriptions, over WebSocket
+      - - Strength
+        - simple, universal, cacheable
+        - enterprise integrations, WS-Security
+        - "small, fast, typed, streaming, polyglot backends"
+        - "client chooses fields; one round trip for a whole screen"
+      - - Weakness
+        - over- and under-fetching, many round trips
+        - verbose, heavyweight tooling
+        - not browser-native, opaque on the wire
+        - "complex server caching, N+1 queries, query cost limits"
+      - - Choose it when
+        - public APIs, CRUD, most apps
+        - the partner only speaks SOAP
+        - "internal services, high volume, real-time streams"
+        - "many clients with different screens over one graph"

@@ -1,0 +1,494 @@
+id: kt-serialization
+concept: serialization.codecs
+scope: shared
+title: "Serialization — kotlinx.serialization, JSON & Friends"
+group: Shared concepts
+subtitle: "@Serializable models and Json configuration, names, missing and null fields, unknown keys, dates and enums, sealed polymorphism, custom serializers and JsonElement, generic envelopes, errors and validation, and how it compares to Moshi, Gson and Jackson."
+applies:
+  platforms: [jvm, android]
+  runtime: Kotlin/JVM with the kotlinx.serialization compiler plugin
+  requires: [kotlinx-serialization-json]
+  versions: { kotlin: ">=2.4", kotlinx-serialization: ">=1.13", jvm: ">=17" }
+sources:
+  - title: Kotlin serialization — Kotlin docs
+    url: https://kotlinlang.org/docs/serialization.html
+  - title: Kotlin Serialization Guide — kotlinx.serialization on GitHub
+    url: https://github.com/Kotlin/kotlinx.serialization/blob/master/docs/serialization-guide.md
+  - title: kotlinx.serialization API reference
+    url: https://kotlinlang.org/api/kotlinx.serialization/
+cards:
+  - id: codable-to-kotlinx
+    kind: table
+    title: Codable → kotlinx.serialization
+    note: The same compile-time codec idea; the configuration lives on one `Json` instance instead of on the encoder each call.
+    headers: [Swift, kotlinx.serialization, Note]
+    rows:
+      - ["`struct Order: Codable`", "`@Serializable data class Order`", "the compiler plugin generates the serializer — no reflection"]
+      - ["`JSONEncoder()` / `JSONDecoder()`", "`Json` / `Json { … }`", "build the configured instance once and reuse it"]
+      - ["`CodingKeys` raw value", "`@SerialName(\"unit_price\")`", "per property, per enum entry, per sealed subclass"]
+      - ["`.convertFromSnakeCase`", "`namingStrategy = JsonNamingStrategy.SnakeCase`", "global, and applied to `@SerialName` values too — use a separate `Json` for an API whose keys break the convention"]
+      - ["optional property / `decodeIfPresent`", "`val bio: String? = null`", "a property is optional only when it has a **default**"]
+      - ["`dateDecodingStrategy`", "`kotlin.time.Instant` (built in) or a `KSerializer` for `java.time.Instant`", "`@Serializable(with = …)` on the property or `@file:UseSerializers`"]
+      - ["`enum Status: String, Codable`", "`@Serializable enum class` + `@SerialName`", "unknown values fail unless coerced to a default"]
+      - ["enum with associated values", "`sealed interface` + `classDiscriminator`", "a `\"type\"` field picks the subclass"]
+      - ["`init(from:)` / `encode(to:)`", "`KSerializer<T>` or `JsonTransformingSerializer`", "for wire shapes that do not match the model"]
+      - ["`DecodingError`", "`SerializationException`", "a subclass of `IllegalArgumentException`"]
+  - id: encode-decode-names
+    kind: code
+    title: Encode, decode and name the keys
+    note: "Use `@SerialName` for one key that differs and a naming strategy for an API that is snake_case throughout — the strategy rewrites `@SerialName` values too."
+    prerequisites: &run
+      - "A Kotlin 2.x compiler (`kotlinc`), JDK 17 or later, `kotlinx-serialization-core-jvm-1.13.0.jar` and `kotlinx-serialization-json-jvm-1.13.0.jar`; the serialization plugin ships with the compiler as `kotlinx-serialization-compiler-plugin.jar`"
+      - "Save as `main.kt`; run `kotlinc -Xplugin=$KOTLIN_HOME/lib/kotlinx-serialization-compiler-plugin.jar -cp kotlinx-serialization-core-jvm-1.13.0.jar:kotlinx-serialization-json-jvm-1.13.0.jar main.kt -d out && kotlin -cp out:kotlinx-serialization-core-jvm-1.13.0.jar:kotlinx-serialization-json-jvm-1.13.0.jar MainKt`"
+      - "Or, in a Gradle project: `plugins { kotlin(\"plugin.serialization\") version \"2.4.21\" }` and `implementation(\"org.jetbrains.kotlinx:kotlinx-serialization-json:1.13.0\")`"
+    code: |-
+      import kotlinx.serialization.*
+      import kotlinx.serialization.json.*
+
+      @Serializable
+      data class LineItem(
+          val sku: String,
+          val quantity: Int,
+          @SerialName("unit_price_cents") val unitPriceCents: Long,
+      )
+
+      @Serializable
+      data class Order(val id: String, val customer: String, val items: List<LineItem>)
+
+      @Serializable
+      data class Shipment(
+          val orderId: String,
+          @SerialName("carrierSCAC") val carrier: String,      // the naming strategy rewrites this one too
+          val trackingNumber: String,
+          val estimatedDays: Int,
+      )
+
+      @OptIn(ExperimentalSerializationApi::class)
+      val snakeCaseApi = Json { namingStrategy = JsonNamingStrategy.SnakeCase }   // build once, reuse
+
+      fun main() {
+          val order = Order("A-1041", "Ada", listOf(LineItem("BOOK-7", 2, 1299)))
+          val text = Json.encodeToString(order)
+          println(text)
+          println(Json.decodeFromString<Order>(text) == order)
+
+          val body = """{"order_id":"A-1041","carrier_scac":"UPSN","tracking_number":"1Z999","estimated_days":3}"""
+          val shipment = snakeCaseApi.decodeFromString<Shipment>(body)
+          println(shipment)
+          println(snakeCaseApi.encodeToString(shipment.copy(estimatedDays = 2)))
+      }
+    expected: |-
+      {"id":"A-1041","customer":"Ada","items":[{"sku":"BOOK-7","quantity":2,"unit_price_cents":1299}]}
+      true
+      Shipment(orderId=A-1041, carrier=UPSN, trackingNumber=1Z999, estimatedDays=3)
+      {"order_id":"A-1041","carrier_scac":"UPSN","tracking_number":"1Z999","estimated_days":2}
+    validation: &ran
+      status: ran
+      toolchain: kotlinc 2.4.21, JVM 21.0.12.1, kotlinx-serialization-json 1.13.0
+      date: "2026-11-16"
+  - id: missing-null-defaults-unknown
+    kind: code
+    title: Missing, null, defaults — and unknown keys
+    note: "Strict is the default: an unknown key or a `null` for a non-null property fails, until you opt into leniency per `Json` instance."
+    prerequisites: *run
+    code: |-
+      import kotlinx.serialization.*
+      import kotlinx.serialization.json.*
+
+      @Serializable
+      data class Profile(
+          val id: String,                      // required: no default
+          val displayName: String = "Guest",   // may be missing
+          val bio: String? = null,             // may be missing or null
+          val newsletter: Boolean = false,
+      )
+
+      val tolerant = Json { ignoreUnknownKeys = true; coerceInputValues = true }
+
+      @OptIn(ExperimentalSerializationApi::class)
+      val compact = Json { encodeDefaults = true; explicitNulls = false }
+
+      fun firstLine(e: Exception) = e.message?.lineSequence()?.first()
+
+      fun main() {
+          println(Json.decodeFromString<Profile>("""{"id":"u1"}"""))
+          try {
+              Json.decodeFromString<Profile>("""{"id":"u2","theme":"dark"}""")
+          } catch (e: SerializationException) {
+              println("strict: ${firstLine(e)}")
+          }
+          // A newer server added "theme" and sends null for a field we default: accept both.
+          println(tolerant.decodeFromString<Profile>("""{"id":"u3","displayName":null,"theme":"dark"}"""))
+
+          val profile = Profile("u4")
+          println(Json.encodeToString(profile))       // defaults are not written
+          println(Json { encodeDefaults = true }.encodeToString(profile))
+          println(compact.encodeToString(profile))    // defaults written, nulls left out
+      }
+    expected: |-
+      Profile(id=u1, displayName=Guest, bio=null, newsletter=false)
+      strict: Unexpected JSON token at offset 12: Encountered an unknown key 'theme' at path: $
+      Profile(id=u3, displayName=Guest, bio=null, newsletter=false)
+      {"id":"u4"}
+      {"id":"u4","displayName":"Guest","bio":null,"newsletter":false}
+      {"id":"u4","displayName":"Guest","newsletter":false}
+    validation: *ran
+  - id: dates-and-enums
+    kind: code
+    title: Dates with a KSerializer
+    note: "Prefer `kotlin.time.Instant`, which is built in; for `java.time`, `BigDecimal` or `UUID` write a `KSerializer` that throws `SerializationException` on bad input."
+    prerequisites: *run
+    code: |-
+      import java.time.Instant
+      import java.time.format.DateTimeParseException
+      import kotlinx.serialization.*
+      import kotlinx.serialization.descriptors.*
+      import kotlinx.serialization.encoding.*
+      import kotlinx.serialization.json.Json
+
+      object InstantIso8601 : KSerializer<Instant> {
+          override val descriptor = PrimitiveSerialDescriptor("java.time.Instant", PrimitiveKind.STRING)
+
+          override fun serialize(encoder: Encoder, value: Instant) = encoder.encodeString(value.toString())
+
+          override fun deserialize(decoder: Decoder): Instant {
+              val text = decoder.decodeString()
+              return try {
+                  Instant.parse(text)
+              } catch (e: DateTimeParseException) {             // a decoding error, not a crash
+                  throw SerializationException("'$text' is not an ISO-8601 instant", e)
+              }
+          }
+      }
+
+      @Serializable
+      data class OrderEvent(val orderId: String, @Serializable(with = InstantIso8601::class) val at: Instant)
+
+      fun main() {
+          val text = Json.encodeToString(OrderEvent("A-1041", Instant.parse("2026-11-18T14:05:00Z")))
+          println(text)
+          println(Json.decodeFromString<OrderEvent>(text).at.epochSecond)
+
+          try {
+              Json.decodeFromString<OrderEvent>("""{"orderId":"A-1041","at":"yesterday"}""")
+          } catch (e: SerializationException) {                 // the caller's one decoding-error branch
+              println("rejected: ${e.message}")
+          }
+      }
+    expected: |-
+      {"orderId":"A-1041","at":"2026-11-18T14:05:00Z"}
+      1795010700
+      rejected: 'yesterday' is not an ISO-8601 instant
+    validation: *ran
+  - id: enums-unknown-values
+    kind: code
+    title: Enums, and values the app does not know yet
+    note: "Name each entry with `@SerialName`, and give the property a default with `coerceInputValues` so a status added on the server next month does not crash today's app."
+    prerequisites: *run
+    code: |-
+      import kotlinx.serialization.*
+      import kotlinx.serialization.json.Json
+
+      @Serializable
+      enum class OrderStatus {
+          @SerialName("pending") PENDING,
+          @SerialName("shipped") SHIPPED,
+          @SerialName("delivered") DELIVERED,
+          UNKNOWN,                                              // never sent; the fallback
+      }
+
+      @Serializable
+      data class OrderUpdate(val orderId: String, val status: OrderStatus = OrderStatus.UNKNOWN)
+
+      val api = Json { coerceInputValues = true }               // an unknown enum value becomes the default
+
+      fun main() {
+          println(api.encodeToString(OrderUpdate("A-1041", OrderStatus.SHIPPED)))
+
+          val newer = """{"orderId":"A-1041","status":"returned"}"""
+          println(api.decodeFromString<OrderUpdate>(newer))
+
+          try {
+              Json.decodeFromString<OrderUpdate>(newer)
+          } catch (e: SerializationException) {
+              println("strict: ${e.message?.lineSequence()?.first()}")
+          }
+      }
+    expected: |-
+      {"orderId":"A-1041","status":"shipped"}
+      OrderUpdate(orderId=A-1041, status=UNKNOWN)
+      strict: OrderStatus does not contain element with name 'returned' at path $.status
+    validation: *ran
+  - id: sealed-polymorphism
+    kind: code
+    title: Sealed polymorphism and the class discriminator
+    note: A sealed hierarchy is closed and needs no registration; the discriminator key names the subclass by its `@SerialName`.
+    prerequisites: *run
+    code: |-
+      import kotlinx.serialization.*
+      import kotlinx.serialization.json.*
+
+      @Serializable
+      sealed interface PaymentEvent { val orderId: String }
+
+      @Serializable @SerialName("authorized")
+      data class Authorized(override val orderId: String, val amountCents: Long) : PaymentEvent
+
+      @Serializable @SerialName("captured")
+      data class Captured(override val orderId: String) : PaymentEvent
+
+      @Serializable @SerialName("refunded")
+      data class Refunded(override val orderId: String, val reason: String) : PaymentEvent
+
+      val payments = Json { classDiscriminator = "kind" }    // the API's name for the type field
+
+      fun describe(event: PaymentEvent): String = when (event) {   // exhaustive: no else branch
+          is Authorized -> "${event.orderId}: authorized ${event.amountCents} cents"
+          is Captured -> "${event.orderId}: captured"
+          is Refunded -> "${event.orderId}: refunded (${event.reason})"
+      }
+
+      fun main() {
+          val events: List<PaymentEvent> = listOf(Authorized("A-1041", 2598), Refunded("A-1041", "damaged"))
+          val text = payments.encodeToString(events)
+          println(text)
+          payments.decodeFromString<List<PaymentEvent>>(text).forEach { println(describe(it)) }
+          try {
+              payments.decodeFromString<PaymentEvent>("""{"kind":"disputed","orderId":"A-1041"}""")
+          } catch (e: SerializationException) {
+              println(e.message?.lineSequence()?.first())
+          }
+      }
+    expected: |-
+      [{"kind":"authorized","orderId":"A-1041","amountCents":2598},{"kind":"refunded","orderId":"A-1041","reason":"damaged"}]
+      A-1041: authorized 2598 cents
+      A-1041: refunded (damaged)
+      Unexpected JSON token at offset 0: Serializer for subclass 'disputed' is not found in the polymorphic scope of 'PaymentEvent' at path: $
+    validation: *ran
+  - id: custom-serializer-json-element
+    kind: code
+    title: A custom serializer, and JsonElement for dynamic shapes
+    note: "Keep a free-form part as `JsonObject` and decode it once you know its shape; use a `KSerializer` when the wire format and the model disagree."
+    prerequisites: *run
+    code: |-
+      import java.math.BigDecimal
+      import kotlinx.serialization.*
+      import kotlinx.serialization.descriptors.*
+      import kotlinx.serialization.encoding.*
+      import kotlinx.serialization.json.*
+
+      /** The API sends money as a decimal string ("25.98"); the app counts cents as a Long. */
+      object DecimalStringCents : KSerializer<Long> {
+          override val descriptor = PrimitiveSerialDescriptor("DecimalStringCents", PrimitiveKind.STRING)
+          override fun serialize(encoder: Encoder, value: Long) =
+              encoder.encodeString(BigDecimal.valueOf(value, 2).toPlainString())
+          override fun deserialize(decoder: Decoder): Long =
+              BigDecimal(decoder.decodeString()).movePointRight(2).longValueExact()   // "25.999" fails
+      }
+
+      @Serializable
+      data class Refund(val orderId: String, @Serializable(with = DecimalStringCents::class) val amountCents: Long)
+
+      @Serializable
+      data class Webhook(val type: String, val data: JsonObject)   // the shape of data depends on type
+
+      val lenient = Json { ignoreUnknownKeys = true }              // built once, not per webhook
+
+      fun main() {
+          val body = """{"type":"refund.created",""" +
+              """"data":{"orderId":"A-1041","amountCents":"25.98","note":"partial"}}"""
+          val hook = Json.decodeFromString<Webhook>(body)
+          when (hook.type) {
+              "refund.created" -> println(lenient.decodeFromJsonElement<Refund>(hook.data))
+              else -> println("ignored ${hook.type}")
+          }
+          println(hook.data["note"]?.jsonPrimitive?.contentOrNull)
+          val reply = buildJsonObject { put("received", true); put("type", hook.type) }
+          println(reply)
+          println(Json.encodeToString(Refund("A-1042", 500)))
+      }
+    expected: |-
+      Refund(orderId=A-1041, amountCents=2598)
+      partial
+      {"received":true,"type":"refund.created"}
+      {"orderId":"A-1042","amountCents":"5.00"}
+    validation: *ran
+  - id: generic-page
+    kind: code
+    title: "Generic wrappers: Page<T>"
+    note: A generic `@Serializable` class takes its type argument's serializer; pass it explicitly where `T` is not reified.
+    prerequisites: *run
+    code: |-
+      import kotlinx.serialization.*
+      import kotlinx.serialization.json.*
+
+      @Serializable
+      data class Page<T>(val items: List<T>, val nextCursor: String? = null)
+
+      @Serializable
+      data class Customer(val id: String, val name: String)
+
+      @Serializable
+      data class Order(val id: String, val totalCents: Long)
+
+      // Reified: the compiler finds Page<T>'s serializer at the call site.
+      inline fun <reified T> decodePage(body: String): Page<T> = Json.decodeFromString(body)
+
+      // Not reified (a converter, a cache keyed by type): build the serializer from its parts.
+      fun <T> decodePage(body: String, item: KSerializer<T>): Page<T> =
+          Json.decodeFromString(Page.serializer(item), body)
+
+      fun main() {
+          val customers = decodePage<Customer>("""{"items":[{"id":"c1","name":"Ada"}],"nextCursor":"c1"}""")
+          println(customers)
+          val orders = decodePage("""{"items":[{"id":"A-1041","totalCents":2598}]}""", Order.serializer())
+          println("${orders.items.single().id}, last page: ${orders.nextCursor == null}")
+          println(Json.encodeToString(Page(listOf(Customer("c2", "Grace")), nextCursor = "c2")))
+      }
+    expected: |-
+      Page(items=[Customer(id=c1, name=Ada)], nextCursor=c1)
+      A-1041, last page: true
+      {"items":[{"id":"c2","name":"Grace"}],"nextCursor":"c2"}
+    validation: *ran
+  - id: errors-and-validation
+    kind: code
+    title: Report a bad payload, and validate after decoding
+    note: Decoding proves the shape; an `init` block with `require` proves the values — and it runs during decoding too.
+    prerequisites: *run
+    code: |-
+      import kotlinx.serialization.*
+      import kotlinx.serialization.json.*
+
+      @Serializable
+      data class SignUp(val email: String, val age: Int, val password: String) {
+          init {
+              require('@' in email) { "email must contain @" }
+              require(age in 13..130) { "age must be between 13 and 130" }
+              require(password.length >= 12) { "password must have at least 12 characters" }
+          }
+          override fun toString() = "SignUp(email=$email, age=$age, password=***)"   // never log it
+      }
+
+      sealed interface Parsed<out T> {
+          data class Valid<T>(val value: T) : Parsed<T>
+          data class Invalid(val reason: String) : Parsed<Nothing>
+      }
+
+      fun parseSignUp(body: String): Parsed<SignUp> =
+          try {
+              Parsed.Valid(Json.decodeFromString<SignUp>(body))
+          } catch (e: SerializationException) {        // before IllegalArgumentException: it is one
+              Parsed.Invalid("malformed: ${e.message?.lineSequence()?.first()}")
+          } catch (e: IllegalArgumentException) {      // a require() in init
+              Parsed.Invalid("invalid: ${e.message}")
+          }
+
+      fun main() {
+          println(parseSignUp("""{"email":"ada@example.com","age":36,"password":"correct-horse-battery"}"""))
+          println(parseSignUp("""{"email":"ada@example.com","password":"correct-horse-battery"}"""))
+          println(parseSignUp("""{"email":"ada@example.com","age":"36y","password":"correct-horse-battery"}"""))
+          println(parseSignUp("""{"email":"ada.example.com","age":36,"password":"correct-horse-battery"}"""))
+      }
+    expected: |-
+      Valid(value=SignUp(email=ada@example.com, age=36, password=***))
+      Invalid(reason=malformed: Field 'age' is required for type with serial name 'SignUp', but it was missing at path: $)
+      Invalid(reason=malformed: Unexpected JSON token at offset 36: Unexpected symbol 'y' in numeric literal at path: $.age)
+      Invalid(reason=invalid: email must contain @)
+    validation: *ran
+  - id: protobuf-binary
+    kind: code
+    title: "A binary format: ProtoBuf with @ProtoNumber"
+    note: "The same `@Serializable` classes encode to compact ProtoBuf, where field numbers — not names — are the contract between versions."
+    applies:
+      platforms: [jvm, android]
+      runtime: Kotlin/JVM with the kotlinx.serialization compiler plugin and kotlinx-serialization-protobuf
+      requires: [kotlinx-serialization-protobuf]
+      versions: { kotlin: ">=2.4", kotlinx-serialization: ">=1.13", jvm: ">=17" }
+    sources:
+      - title: Alternative and custom formats (ProtoBuf) — Kotlin Serialization Guide
+        url: https://github.com/Kotlin/kotlinx.serialization/blob/master/docs/formats.md
+    prerequisites:
+      - "Gradle: the `kotlin(\"plugin.serialization\")` plugin, `kotlinx-serialization-json:1.13.0` and `org.jetbrains.kotlinx:kotlinx-serialization-protobuf:1.13.0`"
+      - "Save as `main.kt` in that project and run it; the ProtoBuf format is marked `@ExperimentalSerializationApi`"
+    code: |-
+      import kotlinx.serialization.*
+      import kotlinx.serialization.json.Json
+      import kotlinx.serialization.protobuf.*
+
+      @OptIn(ExperimentalSerializationApi::class)
+      @Serializable
+      data class OrderMessage(
+          @ProtoNumber(1) val id: String,
+          @ProtoNumber(2) val totalCents: Long,                  // money as integer cents, never a Double
+          @ProtoNumber(3) val skus: List<String> = emptyList(),
+          @ProtoNumber(4) val giftNote: String? = null,          // added in v2: optional, so v1 still decodes
+      )
+
+      @OptIn(ExperimentalSerializationApi::class)
+      @Serializable
+      data class OrderMessageV1(@ProtoNumber(1) val id: String, @ProtoNumber(2) val totalCents: Long)
+
+      @OptIn(ExperimentalSerializationApi::class)
+      fun main() {
+          val order = OrderMessage("A-1041", 2598, listOf("BOOK-7", "PEN-2"), giftNote = "Happy birthday")
+          val bytes = ProtoBuf.encodeToByteArray(order)
+          println("${bytes.size} bytes of protobuf, ${Json.encodeToString(order).length} of JSON")
+          println(ProtoBuf.decodeFromByteArray<OrderMessage>(bytes) == order)
+          println(ProtoBuf.decodeFromByteArray<OrderMessageV1>(bytes))       // an old reader skips fields 3 and 4
+          val v1 = ProtoBuf.encodeToByteArray(OrderMessageV1("A-1042", 500))
+          println(ProtoBuf.decodeFromByteArray<OrderMessage>(v1))            // a new reader fills the defaults
+          val cutAtField = bytes.copyOf(bytes.size - 16)                   // the giftNote field is gone
+          println(ProtoBuf.decodeFromByteArray<OrderMessage>(cutAtField))    // no error: silently a default
+          try {
+              ProtoBuf.decodeFromByteArray<OrderMessage>(bytes.copyOf(bytes.size - 4))
+          } catch (e: RuntimeException) {                     // not always a SerializationException
+              println("cut mid-field: ${e::class.simpleName}")
+          }
+      }
+    expected: "Prints that 42 bytes of ProtoBuf carry what takes 87 characters of JSON, that the round trip is equal, that a v1 reader skips fields 3 and 4 and a v2 reader fills their defaults — and that a payload cut at a field boundary decodes without error, while one cut mid-field throws `IndexOutOfBoundsException`."
+    validation:
+      status: excerpt
+      host: a JVM or Android project with kotlinx-serialization-protobuf 1.13.0 (not on this site's example classpath)
+  - id: libraries-and-formats
+    kind: table
+    title: kotlinx.serialization, Moshi, Gson, Jackson — and binary formats
+    note: Compile-time codecs respect Kotlin's types; reflection-based ones can quietly break them.
+    headers: [Library, How it reads fields, Kotlin defaults and null safety, Reach for it when]
+    rows:
+      - ["**kotlinx.serialization**", "compiler plugin, generated serializers", "defaults honoured; a missing non-null field fails", "new Kotlin and multiplatform code; works with R8 without keep rules for most models"]
+      - ["**Moshi** + `moshi-kotlin-codegen` (KSP)", "generated adapters", "defaults and nullability honoured", "an existing Moshi/Retrofit codebase"]
+      - ["**Moshi** + `KotlinJsonAdapterFactory`", "reflection via `kotlin-reflect`", "honoured, at a startup and size cost", "prototypes; prefer codegen"]
+      - ["**Gson**", "Java reflection on fields", "**ignores defaults; can put `null` in a non-null property**", "legacy code only — in maintenance mode"]
+      - ["**Jackson** + `jackson-module-kotlin`", "reflection with the Kotlin module", "honoured with the module", "server-side JVM, Spring"]
+      - ["`kotlinx-serialization-protobuf` / `-cbor`", "the same `@Serializable` classes, `@ProtoNumber` for field numbers", "as above", "compact binary for your own models; experimental formats"]
+      - ["Wire or `protobuf-kotlin` (protoc)", "code generated from a `.proto` schema", "the schema decides", "**schema-first**: a contract shared with other languages, gRPC"]
+    sources:
+      - title: Moshi — Square on GitHub
+        url: https://github.com/square/moshi
+      - title: Protocol Buffers — Kotlin generated code guide
+        url: https://protobuf.dev/reference/kotlin/kotlin-generated/
+  - id: serialization-pitfalls
+    kind: rules
+    title: Pitfalls worth saying out loud
+    note: Most decoding bugs are configuration, not code.
+    items:
+      - tone: bad
+        text: "Building `Json { … }` inside a function you call per request — it is meant to be built once and shared; keep one instance per API."
+      - tone: bad
+        text: "Turning on `ignoreUnknownKeys`, `coerceInputValues` and `isLenient` everywhere — leniency hides contract drift. Be lenient only for responses from servers that evolve, strict for anything you produce."
+      - tone: bad
+        text: "Encoding a subclass through its own static type: `encodeToString(Authorized(…))` writes **no discriminator**. Encode through the sealed type (`encodeToString<PaymentEvent>(…)`)."
+      - tone: bad
+        text: "Catching `IllegalArgumentException` before `SerializationException` — the second is a subclass of the first, so its branch never runs."
+      - tone: good
+        text: "A property is optional only if it has a **default**; `String?` without `= null` is still required."
+      - tone: bad
+        text: "Assuming strict `Json` checks JSON types: it still decodes `\"36\"` into an `Int`. Validate the values you care about in `init`, or with a custom serializer."
+      - tone: bad
+        text: "Catching only `SerializationException`: a custom serializer, the built-in `kotlin.time.Instant` one, or a truncated ProtoBuf payload can throw other `IllegalArgumentException`s or `IndexOutOfBoundsException` — map them all to one decoding error."
+      - tone: good
+        text: "Keep wire models separate from domain models when the API is ugly: decode into `OrderDto`, validate, then map to `Order`."
+      - tone: good
+        text: "Treat every payload as untrusted: decode, then `require` the ranges, then cap sizes (`body.length`, list counts) before you allocate on them."
+      - tone: neutral
+        text: "R8 keeps generated serializers for plain `@Serializable` classes; check the library's R8 notes when you look serializers up by `KClass` or use `@Polymorphic` registrations."

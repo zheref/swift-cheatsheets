@@ -101,6 +101,342 @@ cards:
     validation:
       status: excerpt
       host: an xUnit test project; its NuGet packages were not available offline on this machine
+  - id: test-doubles
+    kind: table
+    title: Test doubles — which one when
+    note: "Prefer state over interaction — a fake you can read back survives refactoring — and verify calls only when the call itself is the behaviour."
+    headers: [Double, What it is, Reach for it when, In .NET]
+    rows:
+      - ["fake", "a working, simplified implementation", "the default for repositories, clocks, caches, queues", "a class over a `Dictionary`; the `ManualClock` above; `FakeTimeProvider`"]
+      - ["stub", "returns canned answers, records nothing", "forcing a branch: a declined card, a `503`, an empty page", "a lambda, a tiny class, or an `HttpMessageHandler` returning a fixed response"]
+      - ["spy", "a stub that also records how it was called", "an outgoing side effect is the behaviour: one receipt e-mail, one audit entry", "a lambda or a class adding each call to a `List`"]
+      - ["mock", "expectations a framework verifies", "a hand-written double would be large, and the interaction is what matters", "Moq: `mock.Verify(r => r.SendAsync(\"ada@example.com\", \"A-1042\"), Times.Once())`; NSubstitute: `await receipts.Received(1).SendAsync(\"ada@example.com\", \"A-1042\")`"]
+      - ["dummy", "passed to satisfy a signature, never used", "a constructor needs a logger the test ignores", "`NullLogger<T>.Instance`"]
+
+  - id: hand-written-doubles
+    kind: code
+    title: A fake, a stub and a spy — written by hand
+    note: "Put each seam in the constructor, and the doubles are a few lines each, need no framework, and fail with a readable message."
+    prerequisites: &run16
+      - .NET 9 SDK or later
+      - "`dotnet new console -o Demo`, replace `Demo/Program.cs` with the example, then `dotnet run --project Demo` (in a test project, each scenario is a `[Fact]` or an `[InlineData]` row)"
+    code: |-
+      foreach (var (approved, order) in new[]
+      {
+          (true, new Order("A-1042", "ada@example.com", 25.50m)),
+          (false, new Order("A-1043", "grace@example.com", 9.99m)),
+      })
+      {
+          var orders = new InMemoryOrders();                                 // fake: works, but in memory
+
+          Func<string, decimal, Task<bool>> charge = (_, _) => Task.FromResult(approved);   // stub: canned answer
+
+          // spy: records each call so the test can check what went out, and for which order
+          var sent = new List<(string Email, string Order)>();
+          Func<string, string, Task> sendReceipt = (email, number) =>
+          {
+              sent.Add((email, number));
+              return Task.CompletedTask;
+          };
+
+          await new Checkout(orders, charge, sendReceipt).PlaceAsync(order);
+          var saved = orders.ByNumber[order.Number];
+          Console.WriteLine($"{order.Number}: paid={saved.Paid} | sent: [{string.Join(", ", sent)}]");
+      }
+
+      record Order(string Number, string Email, decimal Total, bool Paid = false);
+
+      interface IOrderRepository { Task SaveAsync(Order order); }
+
+      sealed class Checkout(
+          IOrderRepository orders, Func<string, decimal, Task<bool>> charge, Func<string, string, Task> sendReceipt)
+      {
+          public async Task PlaceAsync(Order order)
+          {
+              var paid = await charge(order.Number, order.Total);
+              await orders.SaveAsync(order with { Paid = paid });
+              if (paid) await sendReceipt(order.Email, order.Number);
+          }
+      }
+
+      sealed class InMemoryOrders : IOrderRepository
+      {
+          public Dictionary<string, Order> ByNumber { get; } = new(StringComparer.Ordinal);    // read by the test
+
+          public Task SaveAsync(Order order)
+          {
+              ByNumber[order.Number] = order;
+              return Task.CompletedTask;
+          }
+      }
+    expected: |-
+      A-1042: paid=True | sent: [(ada@example.com, A-1042)]
+      A-1043: paid=False | sent: []
+    sources:
+      - title: Unit testing best practices — .NET (stubs, mocks, fakes)
+        url: https://learn.microsoft.com/en-us/dotnet/core/testing/unit-testing-best-practices
+    validation: &ran16
+      status: ran
+      toolchain: .NET SDK 9.0.304 (net9.0, C# 13)
+      date: "2026-11-16"
+
+  - id: async-controlled-time
+    kind: code
+    title: Async tests and controlled time — FakeTimeProvider
+    note: "Advance `FakeTimeProvider` in steps smaller than the interval you are testing, because `Advance` jumps the clock first and then fires what is due, which hides a wrong interval."
+    prerequisites:
+      - .NET 9 SDK or later
+      - "`dotnet new console -o Demo`, `dotnet add Demo package Microsoft.Extensions.TimeProvider.Testing`, replace `Demo/Program.cs` with the example, then `dotnet run --project Demo`"
+    code: |-
+      using Microsoft.Extensions.Time.Testing;
+
+      var start = new DateTimeOffset(2026, 3, 8, 9, 0, 0, TimeSpan.Zero);
+      foreach (var (settlesOnPoll, timeoutSeconds) in new[] { (3, 30), (int.MaxValue, 12) })
+      {
+          var time = new FakeTimeProvider(start);
+          var polls = new List<string>();
+          var poller = new PaymentPoller(time, _ =>
+          {
+              polls.Add(FormattableString.Invariant($"{(time.GetUtcNow() - start).TotalSeconds}s"));
+              return Task.FromResult(polls.Count >= settlesOnPoll ? "paid" : "pending");
+          });
+
+          var waiting = poller.WaitUntilSettledAsync(
+              every: TimeSpan.FromSeconds(5), timeout: TimeSpan.FromSeconds(timeoutSeconds));
+          Console.Write($"done before time moves: {waiting.IsCompleted}; ");
+
+          // one second at a time, smaller than the 5 s interval: Advance moves the clock first, then fires
+          // what is due, so only a step shorter than the interval shows when each poll really happened.
+          // The poller's continuations run inside Advance here; code using ConfigureAwait(false) under a
+          // test framework's context must reach its next Task.Delay before each step
+          for (var second = 0; second < 60; second++) time.Advance(TimeSpan.FromSeconds(1));
+
+          // a broken poller fails here after 5 real seconds instead of hanging the run
+          var outcome = await waiting.WaitAsync(TimeSpan.FromSeconds(5));
+          Console.WriteLine($"{outcome} after polls at {string.Join(", ", polls)}");
+      }
+
+      sealed class PaymentPoller(TimeProvider time, Func<CancellationToken, Task<string>> getStatus)
+      {
+          public async Task<string> WaitUntilSettledAsync(TimeSpan every, TimeSpan timeout)
+          {
+              // the deadline's timer, like Task.Delay's, comes from the injected clock (.NET 8)
+              using var deadline = new CancellationTokenSource(timeout, time);
+              try
+              {
+                  string status;
+                  while ((status = await getStatus(deadline.Token)) == "pending")
+                      await Task.Delay(every, time, deadline.Token);
+                  return status;
+              }
+              catch (OperationCanceledException) when (deadline.IsCancellationRequested) { return "timed out"; }
+          }
+      }
+    expected: |-
+      done before time moves: False; paid after polls at 0s, 5s, 10s
+      done before time moves: False; timed out after polls at 0s, 5s, 10s
+    applies:
+      requires: [Microsoft.Extensions.TimeProvider.Testing]
+      versions: { csharp: ">=12", dotnet: ">=8", microsoft-extensions-timeprovider-testing: ">=8.0" }
+    sources:
+      - title: What is TimeProvider? — .NET
+        url: https://learn.microsoft.com/en-us/dotnet/standard/datetime/timeprovider-overview
+      - title: FakeTimeProvider class — .NET API
+        url: https://learn.microsoft.com/en-us/dotnet/api/microsoft.extensions.time.testing.faketimeprovider?view=net-9.0-pp
+    validation:
+      status: ran
+      toolchain: .NET SDK 9.0.304 (net9.0, C# 13), Microsoft.Extensions.TimeProvider.Testing 9.10.0
+      date: "2026-11-16"
+
+  - id: xunit-v3-async
+    kind: code
+    title: The same as xUnit v3 tests — an async theory that runs as a program
+    note: "An xUnit v3 test project is an executable, so `dotnet run` (or the built `.dll`) runs the tests and its exit code says whether they passed."
+    prerequisites:
+      - "`dotnet new console -o Poller.Tests`, then `dotnet add Poller.Tests package xunit.v3` and `dotnet add Poller.Tests package Microsoft.Extensions.TimeProvider.Testing` (or `dotnet new xunit3 -o Poller.Tests` after `dotnet new install xunit.v3.templates`)"
+      - "Replace `Program.cs` with the example (xUnit v3 generates the entry point), then `dotnet run --project Poller.Tests`"
+    code: |-
+      using Microsoft.Extensions.Time.Testing;
+      using Xunit;
+
+      public class PaymentPollerTests
+      {
+          [Theory]
+          [InlineData(3, 30, "paid")]
+          [InlineData(int.MaxValue, 12, "timed out")]
+          public async Task Polls_until_settled_or_timed_out(int settlesOnPoll, int timeoutSeconds, string outcome)
+          {
+              var time = new FakeTimeProvider();
+              var polls = new List<TimeSpan>();
+              var poller = new PaymentPoller(time, _ =>
+              {
+                  polls.Add(time.GetUtcNow() - time.Start);
+                  return Task.FromResult(polls.Count >= settlesOnPoll ? "paid" : "pending");
+              });
+
+              var run = poller.WaitUntilSettledAsync(TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(timeoutSeconds));
+              Assert.False(run.IsCompleted);
+              for (var second = 0; second < 60; second++) time.Advance(TimeSpan.FromSeconds(1));   // < the interval
+
+              var actual = await run.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+              Assert.Equal(outcome, actual);
+              Assert.Equal([0.0, 5.0, 10.0], polls.Select(at => at.TotalSeconds));      // every 5 s from the start
+          }
+      }
+
+      // the class under test, as in the card above
+      sealed class PaymentPoller(TimeProvider time, Func<CancellationToken, Task<string>> getStatus)
+      {
+          public async Task<string> WaitUntilSettledAsync(TimeSpan every, TimeSpan timeout)
+          {
+              using var deadline = new CancellationTokenSource(timeout, time);
+              try
+              {
+                  string status;
+                  while ((status = await getStatus(deadline.Token)) == "pending")
+                      await Task.Delay(every, time, deadline.Token);
+                  return status;
+              }
+              catch (OperationCanceledException) when (deadline.IsCancellationRequested) { return "timed out"; }
+          }
+      }
+    expected: "The runner reports `Total: 2, Errors: 0, Failed: 0` and the process exits with code 0. Changing an expected outcome, halving the poll interval (polls at 0, 3, 6 s) or dropping the deadline's token from `Task.Delay` makes it exit with code 1."
+    applies:
+      requires: [xunit.v3, Microsoft.Extensions.TimeProvider.Testing]
+      versions: { csharp: ">=12", dotnet: ">=8", xunit-v3: ">=3.0" }
+    sources:
+      - title: Getting started with xUnit.net v3
+        url: https://xunit.net/docs/getting-started/v3/getting-started
+    validation:
+      status: ran
+      check: exit-code
+      toolchain: .NET SDK 9.0.304 (net9.0, C# 13), xunit.v3 3.2.2, Microsoft.Extensions.TimeProvider.Testing 9.10.0
+      date: "2026-11-16"
+
+  - id: integration-http-loopback
+    kind: code
+    title: An integration test across a real HTTP boundary
+    note: "Start a server on `127.0.0.1` port `0` inside the test, so the real `HttpClient` exercises sockets, status codes, URL escaping and JSON decoding with no network and nothing left running."
+    prerequisites: *run16
+    code: |-
+      using System.Net;
+      using System.Net.Http.Json;
+      using System.Net.Sockets;
+      using System.Text;
+
+      using var listener = new TcpListener(IPAddress.Loopback, 0);      // a real socket; port 0 = any free port
+      listener.Start();
+      var server = ServeAsync(listener, requests: 2).WaitAsync(TimeSpan.FromSeconds(5));   // never hang the run
+
+      using var http = new HttpClient { BaseAddress = new($"http://{listener.LocalEndpoint}/") };
+      http.Timeout = TimeSpan.FromSeconds(5);                                   // nor hang on a silent server
+
+      var order = await FindAsync(http, "A-1042");
+      Console.WriteLine(FormattableString.Invariant($"{order?.Number} {order?.Total}"));
+      Console.WriteLine(await FindAsync(http, "A/9999") is null ? "404 → null" : "unexpected order");
+      Console.WriteLine(string.Join(" | ", await server));     // what crossed the wire: "/" arrives escaped
+
+      static async Task<Order?> FindAsync(HttpClient http, string number)
+      {
+          using var response = await http.GetAsync($"orders/{Uri.EscapeDataString(number)}");
+          if (response.StatusCode == HttpStatusCode.NotFound) return null;
+          response.EnsureSuccessStatusCode();
+          return await response.Content.ReadFromJsonAsync<Order>();
+      }
+
+      static async Task<List<string>> ServeAsync(TcpListener listener, int requests)   // a minimal HTTP/1.1 server
+      {
+          var seen = new List<string>();
+          while (seen.Count < requests)
+          {
+              using var connection = await listener.AcceptTcpClientAsync();
+              using var reader = new StreamReader(connection.GetStream(), Encoding.ASCII);
+              var requestLine = await reader.ReadLineAsync() ?? "";
+              while (!string.IsNullOrEmpty(await reader.ReadLineAsync())) { }        // skip the headers
+              seen.Add(requestLine);
+
+              var found = requestLine.StartsWith("GET /orders/A-1042 ", StringComparison.Ordinal);
+              var body = found ? """{"number":"A-1042","total":25.50}""" : "";
+              var reply = $"HTTP/1.1 {(found ? "200 OK" : "404 Not Found")}\r\nContent-Type: application/json\r\n"
+                  + "Connection: close\r\n"
+                  + FormattableString.Invariant($"Content-Length: {body.Length}\r\n\r\n{body}");   // protocol text
+              await connection.GetStream().WriteAsync(Encoding.ASCII.GetBytes(reply));
+          }
+          return seen;
+      }
+
+      record Order(string Number, decimal Total);
+    expected: |-
+      A-1042 25.50
+      404 → null
+      GET /orders/A-1042 HTTP/1.1 | GET /orders/A%2F9999 HTTP/1.1
+    sources:
+      - title: TcpListener class — .NET API
+        url: https://learn.microsoft.com/en-us/dotnet/api/system.net.sockets.tcplistener?view=net-9.0
+      - title: Make HTTP requests with the HttpClient class — .NET
+        url: https://learn.microsoft.com/en-us/dotnet/fundamentals/networking/http/httpclient
+    validation: *ran16
+
+  - id: aspnetcore-in-memory
+    kind: code
+    title: ASP.NET Core in memory — TestServer, and WebApplicationFactory in a test project
+    note: "Host the real pipeline (routing, binding, serialization) on an in-memory `TestServer` and replace only the outermost dependency — in a test project, `WebApplicationFactory<Program>` with `ConfigureTestServices` does the same for your existing app, as in `isolate-network-and-state` on the UI & End-to-End Testing sheet."
+    prerequisites:
+      - .NET 9 SDK or later
+      - "`dotnet new console -o Demo`, `dotnet add Demo package Microsoft.AspNetCore.TestHost --version 9.0.23`, replace `Demo/Program.cs` with the example, then `dotnet run --project Demo`"
+      - "For an existing app: an xUnit project on the Web SDK with `Microsoft.AspNetCore.Mvc.Testing`, `IClassFixture<WebApplicationFactory<Program>>`, and `public partial class Program { }` at the end of the app's `Program.cs`"
+    code: |-
+      using System.Net.Http.Json;
+      using Microsoft.AspNetCore.Builder;
+      using Microsoft.AspNetCore.Hosting;
+      using Microsoft.AspNetCore.Http;
+      using Microsoft.AspNetCore.TestHost;
+      using Microsoft.Extensions.DependencyInjection;
+      using Microsoft.Extensions.Logging;
+
+      // the app's real pipeline (routing, binding, JSON) hosted in memory: no port, no network
+      var builder = WebApplication.CreateBuilder();
+      builder.WebHost.UseTestServer();
+      builder.Logging.ClearProviders();                         // keep the host's logs off the test output
+      // only the outermost dependency is replaced; WebApplicationFactory<Program> does the same in a test project
+      builder.Services.AddSingleton<IOrderRepository>(new InMemoryOrders([new("A-1042", 25.50m)]));
+
+      await using var app = builder.Build();
+      app.MapGet("/orders/{number}", (string number, IOrderRepository orders) =>
+          orders.Find(number) is { } order ? Results.Ok(order) : Results.NotFound());
+      await app.StartAsync();
+
+      using var client = app.GetTestClient();
+      var order = await client.GetFromJsonAsync<Order>("/orders/A-1042");
+      var missing = await client.GetAsync("/orders/A-9999");
+      Console.WriteLine(FormattableString.Invariant($"{order?.Number} {order?.Total}"));
+      Console.WriteLine($"{(int)missing.StatusCode} {missing.StatusCode}");
+
+      record Order(string Number, decimal Total);
+
+      interface IOrderRepository { Order? Find(string number); }
+
+      sealed class InMemoryOrders(IEnumerable<Order> seed) : IOrderRepository
+      {
+          private readonly Dictionary<string, Order> byNumber =
+              seed.ToDictionary(order => order.Number, StringComparer.Ordinal);
+
+          public Order? Find(string number) => byNumber.GetValueOrDefault(number);
+      }
+    expected: |-
+      A-1042 25.50
+      404 NotFound
+    applies:
+      requires: [ASP.NET Core, Microsoft.AspNetCore.TestHost]
+      versions: { csharp: ">=12", dotnet: ">=9", aspnetcore: ">=9" }
+    sources:
+      - title: Integration tests in ASP.NET Core
+        url: https://learn.microsoft.com/en-us/aspnet/core/test/integration-tests?view=aspnetcore-9.0
+    validation:
+      status: ran
+      toolchain: .NET SDK 9.0.304 (net9.0, C# 13), Microsoft.AspNetCore.TestHost 9.0.23, Microsoft.Extensions.Logging.Console 10.0.15, Microsoft.Extensions.DependencyInjection 10.0.15
+      date: "2026-11-16"
+
   - id: testing-principles
     kind: rules
     title: Principles worth stating

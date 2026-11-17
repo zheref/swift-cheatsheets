@@ -177,6 +177,594 @@ cards:
       console.log(shortestPath(maze, [0, 0], [0, 3]));
     expected: "7"
     validation: *ran
+  - id: hash-map
+    kind: code
+    title: "Hash map: counting, grouping, memory of the past"
+    note: "Two-sum on unsorted input, anagram groups, the first unique character — the default first idea: O(n) hash operations for O(n) memory (anagram keys add a per-word sort)."
+    prerequisites: *run
+    code: |-
+      // Two-sum, unsorted: remember every value already passed, and where.
+      function twoSum(nums: readonly number[], target: number): [number, number] | null {
+        const seen = new Map<number, number>();              // value -> index
+        for (const [i, n] of nums.entries()) {
+          const j = seen.get(target - n);
+          if (j !== undefined) return [j, i];
+          seen.set(n, i);
+        }
+        return null;
+      }
+
+      // Group anagrams: words with the same sorted letters share a key.
+      function groupAnagrams(words: readonly string[]): string[][] {
+        return [...Map.groupBy(words, (w) => [...w].sort().join("")).values()];
+      }
+
+      // First non-repeating character: count in one pass, find in a second.
+      function firstUnique(text: string): string | undefined {
+        const counts = new Map<string, number>();
+        for (const ch of text) counts.set(ch, (counts.get(ch) ?? 0) + 1);
+        return [...text].find((ch) => counts.get(ch) === 1);
+      }
+
+      console.log(twoSum([8, 3, 11, 5], 16));
+      console.log(groupAnagrams(["listen", "google", "silent", "enlist", "elgoog"]));
+      console.log(firstUnique("swiss"));
+    expected: |-
+      [ 2, 3 ]
+      [ [ 'listen', 'silent', 'enlist' ], [ 'google', 'elgoog' ] ]
+      w
+    applies:
+      versions: { ecmascript: "2024 (Map.groupBy)", typescript: ">=5.4", node: ">=22.18" }
+    sources:
+      - title: Map.groupBy — MDN
+        url: https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Map/groupBy
+    validation: &ran16
+      status: ran
+      toolchain: Node 24.16.0, TypeScript 5.9.3
+      date: "2026-11-16"
+  - id: prefix-sums
+    kind: code
+    title: Prefix sums & difference arrays
+    note: "Many range-sum queries, \"how many runs sum to k\", or many range increments — O(n) preparation, then O(1) each."
+    prerequisites: *run
+    code: |-
+      // Daily sales: answer "total from day l to day r" any number of times.
+      const sales = [3, 1, 4, 1, 5, 9, 2, 6];
+      const prefix = [0];                                  // prefix[i] = sum of the first i days
+      for (const s of sales) prefix.push(prefix.at(-1)! + s);
+      const rangeSum = (l: number, r: number) => prefix[r + 1]! - prefix[l]!;
+
+      // How many contiguous runs sum to exactly k? A prefix seen k earlier closes one. O(n)
+      function runsSummingTo(nums: readonly number[], k: number): number {
+        const seen = new Map<number, number>([[0, 1]]);    // prefix value -> how many times
+        let running = 0;
+        let total = 0;
+        for (const n of nums) {
+          running += n;
+          total += seen.get(running - k) ?? 0;
+          seen.set(running, (seen.get(running) ?? 0) + 1);
+        }
+        return total;
+      }
+
+      // Difference array: "add v to every day in [l, r]" costs O(1); one running sum applies them all.
+      function applyRangeAdds(days: number, updates: readonly (readonly [number, number, number])[]): number[] {
+        const diff = new Array<number>(days + 1).fill(0);
+        for (const [l, r, v] of updates) {
+          diff[l] = diff[l]! + v;
+          diff[r + 1] = diff[r + 1]! - v;
+        }
+        const totals: number[] = [];
+        let running = 0;
+        for (const d of diff.slice(0, days)) {
+          running += d;
+          totals.push(running);
+        }
+        return totals;
+      }
+
+      console.log(rangeSum(2, 5), runsSummingTo([1, 2, 3, -3, 3], 3));
+      console.log(applyRangeAdds(6, [[0, 2, 5], [1, 4, 1], [3, 5, 2]]));
+    expected: |-
+      19 5
+      [ 5, 6, 6, 3, 3, 2 ]
+    validation: *ran16
+  - id: sort-then-sweep
+    kind: code
+    title: "Sort then sweep: intervals"
+    note: "Merge a calendar's busy blocks and count the rooms it needs — sorting first turns both into one linear pass, O(n log n) in all."
+    prerequisites: *run
+    code: |-
+      type Meeting = { start: number; end: number };        // hours, 13.5 = 13:30
+
+      function mergeBusy(meetings: readonly Meeting[]): Meeting[] {
+        const merged: Meeting[] = [];
+        for (const m of meetings.toSorted((a, b) => a.start - b.start)) {
+          const last = merged.at(-1);
+          if (last && m.start <= last.end) last.end = Math.max(last.end, m.end);   // overlap: extend
+          else merged.push({ ...m });
+        }
+        return merged;
+      }
+
+      // Rooms needed = the most meetings in progress at once. Sweep: +1 at a start, -1 at an end.
+      function roomsNeeded(meetings: readonly Meeting[]): number {
+        const events = meetings
+          .flatMap((m) => [[m.start, 1], [m.end, -1]] as const)
+          .toSorted((a, b) => a[0] - b[0] || a[1] - b[1]);   // on a tie the end frees the room first
+        let current = 0;
+        let most = 0;
+        for (const [, delta] of events) {
+          current += delta;
+          most = Math.max(most, current);
+        }
+        return most;
+      }
+
+      const day: Meeting[] = [
+        { start: 9, end: 10 }, { start: 13, end: 15 }, { start: 9.5, end: 11 },
+        { start: 11, end: 12 }, { start: 14, end: 16 },
+      ];
+      console.log(mergeBusy(day));
+      console.log(roomsNeeded(day));
+    expected: |-
+      [ { start: 9, end: 12 }, { start: 13, end: 16 } ]
+      2
+    applies:
+      versions: { ecmascript: "2023 (toSorted)", typescript: ">=5.2", node: ">=22.18" }
+    validation: *ran16
+  - id: monotonic-stack
+    kind: code
+    title: Stack & monotonic stack
+    note: "Bracket matching, and \"how many days until a warmer one\" — a stack of still-unanswered indices makes it O(n)."
+    prerequisites: *run
+    code: |-
+      const opener = new Map([[")", "("], ["]", "["], ["}", "{"]]);
+
+      function isBalanced(source: string): boolean {
+        const stack: string[] = [];
+        for (const ch of source) {
+          const open = opener.get(ch);
+          if (open !== undefined) {
+            if (stack.pop() !== open) return false;
+          } else if ("([{".includes(ch)) {
+            stack.push(ch);
+          }
+        }
+        return stack.length === 0;
+      }
+
+      // Each index waits on the stack (temperatures decreasing) until a warmer day pops it.
+      function daysUntilWarmer(temps: readonly number[]): number[] {
+        const wait = new Array<number>(temps.length).fill(0);
+        const stack: number[] = [];
+        for (const [today, t] of temps.entries()) {
+          while (stack.length && temps[stack.at(-1)!]! < t) {
+            const day = stack.pop()!;
+            wait[day] = today - day;                       // today answers that day
+          }
+          stack.push(today);
+        }
+        return wait;                                       // 0: no warmer day ever came
+      }
+
+      console.log(isBalanced("save(order[0], { draft: true })"), isBalanced("(]"));
+      console.log(daysUntilWarmer([73, 74, 75, 71, 69, 72, 76, 73]).join(" "));
+      // Same skeleton: next greater element, stock span, largest rectangle in a histogram.
+    expected: |-
+      true false
+      1 1 4 2 1 1 0 0
+    validation: *ran16
+  - id: fast-slow-pointers
+    kind: code
+    title: Fast & slow pointers (linked lists)
+    note: "Does a playlist's \"next\" chain loop forever, where is its middle — O(n) time, O(1) memory."
+    prerequisites: *run
+    code: |-
+      type Track = { title: string; next: Track | null };
+
+      function playlist(titles: readonly string[]): Track | null {
+        let head: Track | null = null;
+        for (const title of titles.toReversed()) head = { title, next: head };
+        return head;
+      }
+
+      // Floyd: the fast pointer can only meet the slow one again if the chain loops.
+      function loops(head: Track | null): boolean {
+        let slow = head;
+        let fast = head;
+        while (fast?.next) {
+          slow = slow!.next;
+          fast = fast.next.next;
+          if (slow === fast) return true;                 // the same node, not an equal title
+        }
+        return false;
+      }
+
+      // When fast reaches the end, slow has gone half as far.
+      function middle(head: Track | null): string | undefined {
+        let slow = head;
+        let fast = head;
+        while (fast?.next) {
+          slow = slow!.next;
+          fast = fast.next.next;
+        }
+        return slow?.title;
+      }
+
+      const mix = playlist(["Intro", "Verse", "Bridge", "Chorus", "Outro"]);
+      console.log(loops(mix), middle(mix));
+      mix!.next!.next!.next!.next!.next = mix!.next;      // Outro -> Verse: an endless loop
+      console.log(loops(mix));
+    expected: |-
+      false Bridge
+      true
+    applies:
+      versions: { ecmascript: "2023 (toReversed)", typescript: ">=5.2", node: ">=22.18" }
+    validation: *ran16
+  - id: trees-dfs-bfs
+    kind: code
+    title: "Trees: DFS and BFS"
+    note: "Recursion goes deep (in-order lists a search tree sorted); a level-by-level queue goes wide."
+    prerequisites: *run
+    code: |-
+      type TreeNode = { value: number; left?: TreeNode; right?: TreeNode };
+
+      // Recursion depth = tree height; V8 overflows near 10k frames: unbalanced trees need an explicit stack.
+      function inorder(node: TreeNode | undefined, out: number[] = []): number[] {
+        if (!node) return out;
+        inorder(node.left, out);
+        out.push(node.value);
+        inorder(node.right, out);
+        return out;
+      }
+
+      // Level order: the whole current level becomes the next level's parents.
+      function levels(root: TreeNode | undefined): number[][] {
+        const result: number[][] = [];
+        let level = root ? [root] : [];
+        while (level.length) {
+          result.push(level.map((n) => n.value));
+          level = level.flatMap((n) => [n.left, n.right]).filter((c): c is TreeNode => c !== undefined);
+        }
+        return result;
+      }
+
+      // Validate a search tree by passing the allowed range down: a parent check alone misses grandchildren.
+      function isSearchTree(node: TreeNode | undefined, lo = -Infinity, hi = Infinity): boolean {
+        if (!node) return true;
+        return lo < node.value && node.value < hi
+          && isSearchTree(node.left, lo, node.value) && isSearchTree(node.right, node.value, hi);
+      }
+
+      const prices: TreeNode = {
+        value: 8,
+        left: { value: 3, left: { value: 1 }, right: { value: 6 } },
+        right: { value: 10, right: { value: 14 } },
+      };
+      const broken: TreeNode = { value: 8, left: { value: 3, right: { value: 9 } } };   // 9 is left of 8
+      console.log(inorder(prices), levels(prices));
+      console.log(isSearchTree(prices), isSearchTree(broken));
+    expected: |-
+      [ 1, 3, 6, 8, 10, 14 ] [ [ 8 ], [ 3, 10 ], [ 1, 6, 14 ] ]
+      true false
+    validation: *ran16
+  - id: graphs-bfs-dfs
+    kind: code
+    title: "Graphs: BFS and DFS"
+    note: "Fewest flights between two airports (BFS), everywhere reachable from one (DFS) — adjacency list plus a visited set, O(V + E)."
+    prerequisites: *run
+    code: |-
+      const routes = new Map<string, string[]>([
+        ["BOS", ["JFK", "ORD"]], ["JFK", ["LHR", "MIA"]], ["ORD", ["DEN"]],
+        ["DEN", ["SFO"]], ["LHR", ["SFO"]], ["SFO", []], ["MIA", []], ["HNL", ["SFO"]],
+      ]);
+
+      // BFS visits in order of distance, so the first time it reaches `to` is the shortest.
+      function fewestFlights(from: string, to: string): number {
+        const hops = new Map([[from, 0]]);
+        const queue = [from];
+        for (let head = 0; head < queue.length; head++) {     // a head index: shift() is O(n)
+          const here = queue[head]!;
+          if (here === to) return hops.get(here)!;
+          for (const next of routes.get(here) ?? []) {
+            if (hops.has(next)) continue;
+            hops.set(next, hops.get(here)! + 1);
+            queue.push(next);
+          }
+        }
+        return -1;
+      }
+
+      // DFS with an explicit stack: no recursion depth limit on a big graph.
+      function reachable(from: string): Set<string> {
+        const seen = new Set<string>();
+        const stack = [from];
+        while (stack.length) {
+          const here = stack.pop()!;
+          if (seen.has(here)) continue;
+          seen.add(here);
+          for (const next of routes.get(here) ?? []) if (!seen.has(next)) stack.push(next);   // no ...spread: hubs
+        }
+        return seen;
+      }
+
+      console.log(fewestFlights("BOS", "SFO"), fewestFlights("SFO", "BOS"));
+      console.log([...reachable("ORD")], reachable("BOS").has("HNL"));
+    expected: |-
+      3 -1
+      [ 'ORD', 'DEN', 'SFO' ] false
+    validation: *ran16
+  - id: topological-sort
+    kind: code
+    title: "Graphs: topological sort"
+    note: "A build order for packages that depend on each other — Kahn's algorithm, O(V + E), which also detects a dependency cycle."
+    prerequisites: *run
+    code: |-
+      // dependents: package -> the packages that need it built first.
+      function buildOrder(dependents: Map<string, string[]>): string[] | null {
+        const waitingOn = new Map<string, number>();
+        for (const [pkg, users] of dependents) {
+          waitingOn.set(pkg, waitingOn.get(pkg) ?? 0);
+          for (const u of users) waitingOn.set(u, (waitingOn.get(u) ?? 0) + 1);
+        }
+        const order = [...waitingOn.keys()].filter((p) => waitingOn.get(p) === 0);
+        for (let head = 0; head < order.length; head++) {      // the order doubles as the queue
+          for (const u of dependents.get(order[head]!) ?? []) {
+            waitingOn.set(u, waitingOn.get(u)! - 1);
+            if (waitingOn.get(u) === 0) order.push(u);
+          }
+        }
+        return order.length === waitingOn.size ? order : null;   // leftovers are on a cycle or wait on one
+      }
+
+      const monorepo = new Map([
+        ["utils", ["api-client", "ui"]],
+        ["api-client", ["web", "cli"]],
+        ["ui", ["web"]],
+      ]);
+      console.log(buildOrder(monorepo));
+      monorepo.set("web", ["utils"]);                           // utils now needs web: a cycle
+      console.log(buildOrder(monorepo));
+      // Weighted edges? Dijkstra is BFS with a min-heap keyed by distance (see the heap card).
+    expected: |-
+      [ 'utils', 'api-client', 'ui', 'cli', 'web' ]
+      null
+    validation: *ran16
+  - id: backtracking
+    kind: code
+    title: Backtracking
+    note: "Every way to pay an exact amount, every order to visit stops — choose, explore, un-choose and prune early, in exponential time by nature."
+    prerequisites: *run
+    code: |-
+      // Every combination of coin values (each reusable) that pays exactly `total`.
+      function waysToPay(coins: readonly number[], total: number): number[][] {
+        const sorted = coins.filter((c) => c > 0).toSorted((a, b) => a - b);   // a 0 coin would recurse forever
+        const found: number[][] = [];
+        const picked: number[] = [];
+        const explore = (start: number, remaining: number): void => {
+          if (remaining === 0) found.push([...picked]);
+          for (let i = start; i < sorted.length; i++) {
+            const coin = sorted[i]!;
+            if (coin > remaining) break;          // prune: sorted, so every later coin is too big too
+            picked.push(coin);                    // choose
+            explore(i, remaining - coin);         // explore (i, not i + 1: a coin may repeat)
+            picked.pop();                         // un-choose
+          }
+        };
+        explore(0, total);
+        return found;
+      }
+
+      // Every order to visit the stops: n! of them.
+      function routes(stops: readonly string[]): string[][] {
+        const found: string[][] = [];
+        const path: string[] = [];
+        const used = new Set<number>();
+        const explore = (): void => {
+          if (path.length === stops.length) found.push([...path]);
+          for (const [i, stop] of stops.entries()) {
+            if (used.has(i)) continue;
+            used.add(i);                          // choose
+            path.push(stop);
+            explore();
+            path.pop();                           // un-choose
+            used.delete(i);
+          }
+        };
+        explore();
+        return found;
+      }
+
+      console.log(waysToPay([5, 2, 3], 8));
+      console.log(routes(["depot", "cafe", "bank"]).map((r) => r.join(">")).join(" | "));
+    expected: |-
+      [ [ 2, 2, 2, 2 ], [ 2, 3, 3 ], [ 3, 5 ] ]
+      depot>cafe>bank | depot>bank>cafe | cafe>depot>bank | cafe>bank>depot | bank>depot>cafe | bank>cafe>depot
+    applies:
+      versions: { ecmascript: "2023 (toSorted)", typescript: ">=5.2", node: ">=22.18" }
+    validation: *ran16
+  - id: dynamic-programming
+    kind: code
+    title: Dynamic programming
+    note: "Fewest coins for an amount (where greedy is wrong) and edit distance for \"did you mean\" — overlapping subproblems filled in a table."
+    prerequisites: *run
+    code: |-
+      // 1-D: best[a] = fewest coins that make a; build up from 0.
+      function fewestCoins(coins: readonly number[], amount: number): number {
+        const best = new Array<number>(amount + 1).fill(Infinity);
+        best[0] = 0;
+        for (let a = 1; a <= amount; a++) {
+          for (const coin of coins) {
+            if (coin <= a) best[a] = Math.min(best[a]!, best[a - coin]! + 1);
+          }
+        }
+        return Number.isFinite(best[amount]) ? best[amount]! : -1;
+      }
+
+      // 2-D, two rows at a time: prev[j] = edits turning a's first i-1 letters into b's first j.
+      function editDistance(a: string, b: string): number {
+        let prev = Array.from({ length: b.length + 1 }, (_, j) => j);   // from "": insert j letters
+        for (let i = 1; i <= a.length; i++) {
+          const curr = [i];                                              // to "": delete i letters
+          for (let j = 1; j <= b.length; j++) {
+            curr[j] = a[i - 1] === b[j - 1]
+              ? prev[j - 1]!                                             // letters match: free
+              : 1 + Math.min(prev[j]!, curr[j - 1]!, prev[j - 1]!);     // delete, insert, substitute
+          }
+          prev = curr;
+        }
+        return prev[b.length]!;
+      }
+
+      // Greedy takes 4 + 1 + 1; the table finds 3 + 3.
+      console.log(fewestCoins([1, 3, 4], 6), fewestCoins([5, 10], 3));
+      console.log(editDistance("recieve", "receive"), editDistance("kitten", "sitting"));
+      // Recurrence easier to see top-down? Memoize a recursive function in a Map, then flatten it like this.
+    expected: |-
+      2 -1
+      2 3
+    validation: *ran16
+  - id: union-find
+    kind: code
+    title: Union-Find (disjoint set)
+    note: "How many separate networks do these cables make, and which cable is redundant — near O(1) per operation."
+    prerequisites: *run
+    code: |-
+      class UnionFind {
+        private parent: number[];
+        private rank: number[];
+        components: number;
+
+        constructor(size: number) {
+          this.parent = Array.from({ length: size }, (_, i) => i);
+          this.rank = new Array<number>(size).fill(0);
+          this.components = size;
+        }
+
+        find(x: number): number {
+          const p = this.parent[x]!;
+          if (p !== x) this.parent[x] = this.find(p);            // path compression
+          return this.parent[x]!;
+        }
+
+        /** false when a and b were already connected: the edge closes a loop. */
+        union(a: number, b: number): boolean {
+          let ra = this.find(a);
+          let rb = this.find(b);
+          if (ra === rb) return false;
+          if (this.rank[ra]! < this.rank[rb]!) [ra, rb] = [rb, ra];
+          this.parent[rb] = ra;                                  // the shorter tree goes under
+          if (this.rank[ra] === this.rank[rb]) this.rank[ra] = this.rank[ra]! + 1;
+          this.components--;
+          return true;
+        }
+      }
+
+      const servers = new UnionFind(6);
+      const cables = [[0, 1], [1, 2], [3, 4], [2, 0]] as const;
+      const redundant = cables.filter(([a, b]) => !servers.union(a, b));
+      console.log(servers.components, redundant);
+      // Also: Kruskal's minimum spanning tree, merging accounts that share an email.
+    expected: |-
+      3 [ [ 2, 0 ] ]
+    validation: *ran16
+  - id: trie
+    kind: code
+    title: Trie (prefix tree)
+    note: "Autocomplete for a search box — a prefix lookup costs its own length, however many words are stored."
+    prerequisites: *run
+    code: |-
+      class TrieNode {
+        children = new Map<string, TrieNode>();
+        isWord = false;
+      }
+
+      class Trie {
+        private root = new TrieNode();
+
+        insert(word: string): void {
+          let node = this.root;
+          for (const ch of word) {
+            let next = node.children.get(ch);
+            if (!next) {
+              next = new TrieNode();
+              node.children.set(ch, next);
+            }
+            node = next;
+          }
+          node.isWord = true;
+        }
+
+        /** Up to `limit` stored words that start with `prefix`. */
+        complete(prefix: string, limit = 5): string[] {
+          let node: TrieNode | undefined = this.root;
+          for (const ch of prefix) node = node?.children.get(ch);
+          const found: string[] = [];
+          const walk = (n: TrieNode, word: string): void => {
+            if (found.length === limit) return;
+            if (n.isWord) found.push(word);
+            for (const [ch, child] of n.children) walk(child, word + ch);   // Map keeps insertion order
+          };
+          if (node) walk(node, prefix);
+          return found;
+        }
+      }
+
+      const cities = new Trie();
+      for (const c of ["paris", "parma", "porto", "park city", "prague"]) cities.insert(c);
+      console.log(cities.complete("par"), cities.complete("po"), cities.complete("x"));
+    expected: |-
+      [ 'paris', 'parma', 'park city' ] [ 'porto' ] []
+    validation: *ran16
+  - id: bits-cyclic-sort
+    kind: code
+    title: Bit manipulation & cyclic sort
+    note: "The lone unpaired id, permission flags, the smallest missing ticket number — tricks that turn O(n) memory into O(1), on 32-bit operators unless you use bigint."
+    prerequisites: *run
+    code: |-
+      // Bitwise operators truncate numbers to 32-bit signed integers: every trick here needs bigint past that.
+      // The lone unpaired order id: x ^ x = 0, so the pairs cancel.
+      const lone = [4, 1, 2, 1, 2].reduce((acc, id) => acc ^ id, 0);
+      const loneBig = [3_000_000_000n, 7n, 7n].reduce((acc, id) => acc ^ id);   // number ^ gives -1294967296
+
+      // Flags: up to 32 per number (test with !== 0, never > 0: bit 31 is the sign). 1 << 32 wraps to 1.
+      const READ = 1 << 0;
+      const WRITE = 1 << 1;
+      const ADMIN = 1 << 2;
+      let perms = READ | WRITE | ADMIN;
+      perms &= ~ADMIN;                                   // revoke one flag
+      const has = (flag: number) => (perms & flag) !== 0;
+
+      // Popcount. On a `number`, `&` sees only the low 32 bits — hence bigint.
+      function bitCount(x: bigint): number {
+        if (x < 0n) throw new RangeError("popcount of a negative bigint is unbounded");   // two's complement
+        let n = 0;
+        while (x !== 0n) {
+          x &= x - 1n;                                   // clears the lowest set bit
+          n++;
+        }
+        return n;
+      }
+
+      // Cyclic sort: put each value v in 1..n at index v - 1; the first misfit is the gap.
+      function firstMissingTicket(input: readonly number[]): number {
+        const a = [...input];
+        for (let i = 0; i < a.length; ) {
+          const target = a[i]! - 1;
+          if (target >= 0 && target < a.length && a[target] !== a[i]) [a[i], a[target]] = [a[target]!, a[i]!];
+          else i++;
+        }
+        const gap = a.findIndex((v, i) => v !== i + 1);
+        return gap === -1 ? a.length + 1 : gap + 1;
+      }
+
+      console.log(lone, loneBig, has(WRITE), has(ADMIN), bitCount(0b1011_0110n), bitCount(2n ** 40n + 3n));
+      console.log(firstMissingTicket([3, 4, -1, 1]), firstMissingTicket([1, 2, 3]));
+    expected: |-
+      4 3000000000n true false 5 3
+      2 4
+    validation: *ran16
   - id: working-it-out
     kind: rules
     title: Working a problem out loud

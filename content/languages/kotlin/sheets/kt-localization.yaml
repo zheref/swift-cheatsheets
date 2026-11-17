@@ -1,0 +1,528 @@
+id: kt-localization
+concept: localization.practices
+scope: platform
+title: "Localization & Internationalization"
+group: Quality & reach
+subtitle: "Strings in resources looked up with positional arguments, plurals by CLDR category, dates, numbers and money formatted with a pinned Locale and ZoneId, per-app languages, RTL and pseudolocales — and the JVM-only parts proved by running."
+applies:
+  platforms: [android, jvm]
+  runtime: an Android app (resources, Compose, android.icu); the java.text and java.time cards run on any JVM
+  requires: [Jetpack Compose, androidx.appcompat]
+  versions: { kotlin: ">=2.0", compose-bom: ">=2024.09.00", appcompat: ">=1.6", android: "API 24+ (android.icu)", jvm: ">=21" }
+sources:
+  - title: Localize your app — Android Developers
+    url: https://developer.android.com/guide/topics/resources/localization
+  - title: String resources — Android Developers
+    url: https://developer.android.com/guide/topics/resources/string-resource
+  - title: Support different languages and cultures — Android Developers
+    url: https://developer.android.com/training/basics/supporting-devices/languages
+  - title: Per-app language preferences — Android Developers
+    url: https://developer.android.com/guide/topics/resources/app-languages
+  - title: java.text.MessageFormat — Java SE 21 API
+    url: https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/text/MessageFormat.html
+  - title: java.time.format.DateTimeFormatter — Java SE 21 API
+    url: https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/time/format/DateTimeFormatter.html
+cards:
+  - id: toolbox
+    kind: table
+    title: The toolbox
+    note: Android resources for the app, java.text and java.time for formatting, ICU where the JDK stops — and the Kotlin Multiplatform equivalent.
+    headers: [Need, Android, Plain JVM, Kotlin Multiplatform]
+    rows:
+      - ["where strings live", "`res/values/strings.xml`, `values-es/`, `values-b+sr+Latn/`", "`ResourceBundle` `.properties` per locale", "`composeResources/values-es/strings.xml` (Compose Multiplatform resources)"]
+      - ["look one up, with arguments", "`stringResource(R.string.x, a, b)`; `context.getString(R.string.x, a, b)`", "`MessageFormat(bundle.getString(key), locale).format(args)`", "`stringResource(Res.string.x, a)`; `suspend getString(Res.string.x)` outside composition"]
+      - ["plurals", "`<plurals>` + `pluralStringResource(R.plurals.x, n, n)`", "`ChoiceFormat` ranges inside a `MessageFormat`", "`pluralStringResource(Res.plurals.x, n, n)`"]
+      - ["dates and times", "`java.time` (API 26+, or desugaring) + `DateFormat.getBestDateTimePattern`", "`DateTimeFormatter.ofLocalizedDate` / `ofLocalizedPattern` + `ZoneId`", "kotlinx-datetime for the values; format on each platform"]
+      - ["numbers, money, percent", "`NumberFormat`, `android.icu.text.CompactDecimalFormat`", "`NumberFormat.getCurrencyInstance`, `getCompactNumberInstance`", "platform formatters behind an `expect`"]
+      - ["relative time, units, lists", "`android.icu.text.RelativeDateTimeFormatter`, `MeasureFormat`, `ListFormatter`", "lists: `java.text.ListFormat` (JDK 22+); relative time and units: ICU4J", "—"]
+      - ["grammatical gender", "`values-fr-feminine/` (`-masculine/`, `-neuter/`) + `GrammaticalInflectionManager` (API 34)", "ICU4J `MessageFormat` with `{gender, select, female {…} other {…}}`", "—"]
+      - ["sorting for people", "`android.icu.text.Collator`", "`java.text.Collator.getInstance(locale)`", "—"]
+      - ["text direction", "`start`/`end`, `LocalLayoutDirection`, `Icons.AutoMirrored`, `BidiFormatter`", "`java.text.Bidi`", "`LocalLayoutDirection` (Compose Multiplatform)"]
+      - ["the app's own language", "`AppCompatDelegate.setApplicationLocales`; `LocaleManager` on 13+", "pass a `Locale` explicitly everywhere", "—"]
+      - ["test a locale", "pseudolocales `en-XA` / `ar-XB`, `@Preview(locale = \"ar\")`, Robolectric `@Config(qualifiers = \"es\")`", "pin `Locale` and `ZoneId` in the test", "—"]
+  - id: strings-and-qualifiers
+    kind: code
+    title: strings.xml, qualifiers and positional arguments
+    note: "The default `values/` must be complete while other folders override it key by key, and positional `%1$s` arguments let a translator reorder the sentence."
+    prerequisites: &app
+      - "An Android Studio project with the Compose template (Kotlin 2.x and the Compose BOM)"
+      - "Put the XML in the named `res/` folders, call the composable from `setContent { }`, and switch the device language (or the app language) to see each translation"
+    code: |-
+      // res/values/strings.xml — the fallback for every locale
+      // <string name="order_title">Order %1$s</string>
+      // <string name="order_ships">%1$s, your order ships on %2$s.</string>
+      //
+      // res/values-es/strings.xml — Spanish reorders the arguments
+      // <string name="order_ships">El %2$s sale tu pedido, %1$s.</string>
+      //
+      // res/values-b+sr+Latn/strings.xml — BCP 47 folder: Serbian in Latin script
+      // res/values-pt-rBR/strings.xml    — legacy form: Portuguese (Brazil)
+      // <string name="brand" translatable="false">Acme</string>  (lint skips it in values-*)
+
+      @Composable
+      fun OrderHeader(order: Order) {
+          val locale = LocalConfiguration.current.locales[0]
+          val shipDate = remember(order.shipsOn, locale) {
+              DateTimeFormatter.ofLocalizedDate(FormatStyle.LONG).withLocale(locale).format(order.shipsOn)
+          }
+          Column {
+              Text(stringResource(R.string.order_title, order.code), style = MaterialTheme.typography.titleLarge)
+              Text(stringResource(R.string.order_ships, order.customerName, shipDate))
+          }
+      }
+
+      // Outside composition (a notification, a worker) the same lookup goes through a Context:
+      fun shippingNotificationText(context: Context, order: Order, shipDate: String): String =
+          context.getString(R.string.order_ships, order.customerName, shipDate)
+    expected: "English shows \"Ana, your order ships on November 16, 2026.\"; with the device in Spanish the same call shows \"El 16 de noviembre de 2026 sale tu pedido, Ana.\""
+    sources:
+      - title: String resources — Android Developers
+        url: https://developer.android.com/guide/topics/resources/string-resource
+      - title: Support different languages and cultures — Android Developers
+        url: https://developer.android.com/training/basics/supporting-devices/languages
+    validation: &excerpt
+      status: excerpt
+      host: an Android app with Jetpack Compose (needs the Android SDK and the Compose compiler plugin)
+  - id: plurals
+    kind: code
+    title: "Plurals: quantity strings, and why \"one\" is not 1"
+    note: "Ship `one` and `other` in English and let each language add the CLDR categories it needs — Russian `one` matches 1, 21 and 101, so never test `count == 1` yourself."
+    prerequisites: *app
+    code: |-
+      // res/values/strings.xml
+      // <plurals name="cart_items">
+      //     <item quantity="one">%d item in your cart</item>     <!-- keep %d: in other languages "one" ≠ 1 -->
+      //     <item quantity="other">%d items in your cart</item>
+      // </plurals>
+      //
+      // res/values-ru/strings.xml
+      //   one: 1, 21, 101…   few: 2–4, 22–24…   many: 0, 5–20, 25…   other: fractions such as 1.5
+      // <plurals name="cart_items">
+      //     <item quantity="one">%d товар в корзине</item>
+      //     <item quantity="few">%d товара в корзине</item>
+      //     <item quantity="many">%d товаров в корзине</item>
+      //     <item quantity="other">%d товара в корзине</item>
+      // </plurals>
+
+      @Composable
+      fun CartBadge(count: Int) {
+          // The first count picks the category, the second fills %d.
+          Text(pluralStringResource(R.plurals.cart_items, count, count))
+      }
+
+      // Views, notifications, workers:
+      fun cartSummary(resources: Resources, count: Int): String =
+          resources.getQuantityString(R.plurals.cart_items, count, count)
+
+      // The rule itself, when you need it (API 24+): android.icu.text.PluralRules
+      fun pluralCategory(locale: Locale, count: Int): String =
+          PluralRules.forLocale(locale).select(count.toDouble())   // ru: 21 → "one", 22 → "few", 25 → "many"
+    expected: "In English 1 shows \"1 item in your cart\" and 21 \"21 items…\"; in Russian 21 picks `one` (\"21 товар…\"), 22 `few` and 25 `many`."
+    sources:
+      - title: Quantity strings (plurals) — Android Developers
+        url: https://developer.android.com/guide/topics/resources/string-resource#Plurals
+      - title: Resources in Compose — Android Developers
+        url: https://developer.android.com/develop/ui/compose/resources
+    validation: *excerpt
+  - id: grammatical-gender
+    kind: code
+    title: "Grammatical gender: -feminine resources and GrammaticalInflectionManager"
+    note: "On Android 14+ the app stores how the user wants to be addressed and the resource system picks `values-fr-feminine/` or `-masculine/`, falling back to the neutral `values-fr/` text everywhere else."
+    prerequisites:
+      - "An Android project with `compileSdk` 34 or later and Compose; the qualifiers need Android Studio Giraffe or later"
+      - "Put each string in the named `res/` folders, ask the user in a profile screen, then call `saveGrammaticalGender`"
+    code: |-
+      import android.app.GrammaticalInflectionManager
+      import android.content.res.Configuration
+      import android.os.Build
+
+      // res/values-fr/strings.xml — the neutral default, shown when no gender is set
+      // <string name="subscribed">Abonnement à %1$s confirmé</string>
+      //
+      // res/values-fr-feminine/strings.xml (and -masculine, -neuter)
+      // <string name="subscribed">Vous êtes abonnée à %1$s</string>
+      //
+      // res/values-fr-masculine/strings.xml
+      // <string name="subscribed">Vous êtes abonné à %1$s</string>
+
+      // How the user asked to be addressed, mapped to the platform's four values.
+      enum class AddressAs(val platformValue: Int) {
+          FEMININE(Configuration.GRAMMATICAL_GENDER_FEMININE),
+          MASCULINE(Configuration.GRAMMATICAL_GENDER_MASCULINE),
+          NEUTRAL(Configuration.GRAMMATICAL_GENDER_NEUTRAL),
+          NOT_SPECIFIED(Configuration.GRAMMATICAL_GENDER_NOT_SPECIFIED),   // "don't say": back to values-fr/
+      }
+
+      // Called from the profile screen once the user has chosen, or cleared, how to be addressed.
+      fun saveGrammaticalGender(context: Context, choice: AddressAs) {
+          if (Build.VERSION.SDK_INT < Build.VERSION_CODES.UPSIDE_DOWN_CAKE) return     // API 34+
+          // Recreates the activity, unless it declares android:configChanges="grammaticalGender".
+          context.getSystemService(GrammaticalInflectionManager::class.java)
+              .setRequestedApplicationGrammaticalGender(choice.platformValue)
+      }
+
+      @Composable
+      fun SubscriptionConfirmed(newsletter: String) {
+          // Resolves values-fr-feminine/ or -masculine/ when a gender is set, else the neutral values-fr/.
+          Text(stringResource(R.string.subscribed, newsletter))
+      }
+    expected: "On Android 14+ in French, a user who chose the feminine form sees \"Vous êtes abonnée à Nouveautés\"; below API 34, or with no choice made, the neutral \"Abonnement à Nouveautés confirmé\" appears."
+    applies:
+      platforms: [android]
+      runtime: an Android app with Jetpack Compose (Android 14, API 34, for the gender)
+      versions: { kotlin: ">=2.0", compose-bom: ">=2024.09.00", android: "API 34+" }
+    sources:
+      - title: Personalize your app's UI with grammatical gender — Android Developers
+        url: https://developer.android.com/about/versions/14/features/grammatical-inflection
+    validation: *excerpt
+  - id: bundle-and-message-format
+    kind: code
+    title: "The plain-JVM catalog: ResourceBundle + MessageFormat"
+    note: "`ChoiceFormat` ranges (`0#`, `1#`, `1<`) are written per language by the translator — fine for English and Spanish, while Russian or Arabic need CLDR plural categories (ICU, or Android quantity strings, which is also what Android uses instead of this JVM-only demo)."
+    prerequisites: &run
+      - A Kotlin 2.x compiler (`kotlinc`) and JDK 21 or later
+      - "Save as `main.kt`; run `kotlinc main.kt -include-runtime -d main.jar && java -jar main.jar` — it writes its catalogs to a temp directory and deletes them"
+    code: |-
+      import java.net.URLClassLoader
+      import java.nio.file.Files
+      import java.text.MessageFormat
+      import java.util.Locale
+      import java.util.ResourceBundle
+
+      // What the build ships: one UTF-8 .properties file per locale, each holding only what differs.
+      // In a MessageFormat pattern an apostrophe is written '' ("You''ve"); a trailing \ continues the line.
+      val catalogs = mapOf(
+          "Messages.properties" to """
+              greeting=Hello, {0}!
+              cart=You''ve got {1,choice,0#no items|1#one item|1<{1,number,integer} items} in your cart, {0}.
+          """.trimIndent(),
+          "Messages_es.properties" to """
+              greeting=¡Hola, {0}!
+              cart={0}, {1,choice,0#no tienes artículos|1#tienes un artículo|\
+                  1<tienes {1,number,integer} artículos} en el carrito.
+          """.trimIndent(),
+          "Messages_es_MX.properties" to "greeting=¡Qué onda, {0}!",
+      )
+
+      fun main() {
+          val dir = Files.createTempDirectory("i18n")
+          catalogs.forEach { (name, text) -> Files.writeString(dir.resolve(name), text) }
+          // Without this Control a missing locale falls back to the JVM's default locale first: machine-dependent.
+          val control = ResourceBundle.Control.getNoFallbackControl(ResourceBundle.Control.FORMAT_PROPERTIES)
+          URLClassLoader(arrayOf(dir.toUri().toURL())).use { loader ->
+              for (tag in listOf("en-US", "es-ES", "es-MX", "fr-FR")) {
+                  val locale = Locale.forLanguageTag(tag)
+                  val bundle = ResourceBundle.getBundle("Messages", locale, loader, control)
+                  fun text(key: String, vararg args: Any): String =
+                      MessageFormat(bundle.getString(key), locale).format(args)
+                  println("$tag  ${text("greeting", "Ana")}")
+                  // fr-FR falls back to the root (English) text but still groups digits the French way,
+                  // with U+202F NARROW NO-BREAK SPACE on JDK 21; pass bundle.locale to match the text instead.
+                  for (count in listOf(0, 1, 2500)) println("$tag  ${text("cart", "Ana", count)}")
+              }
+          }
+          dir.toFile().deleteRecursively()
+      }
+    expected: |-
+      en-US  Hello, Ana!
+      en-US  You've got no items in your cart, Ana.
+      en-US  You've got one item in your cart, Ana.
+      en-US  You've got 2,500 items in your cart, Ana.
+      es-ES  ¡Hola, Ana!
+      es-ES  Ana, no tienes artículos en el carrito.
+      es-ES  Ana, tienes un artículo en el carrito.
+      es-ES  Ana, tienes 2.500 artículos en el carrito.
+      es-MX  ¡Qué onda, Ana!
+      es-MX  Ana, no tienes artículos en el carrito.
+      es-MX  Ana, tienes un artículo en el carrito.
+      es-MX  Ana, tienes 2,500 artículos en el carrito.
+      fr-FR  Hello, Ana!
+      fr-FR  You've got no items in your cart, Ana.
+      fr-FR  You've got one item in your cart, Ana.
+      fr-FR  You've got 2 500 items in your cart, Ana.
+    applies: &jvm
+      platforms: [jvm]
+      runtime: Kotlin/JVM with java.text and java.time
+      versions: { kotlin: ">=2.0", jvm: ">=21" }
+    sources:
+      - title: java.util.ResourceBundle — Java SE 21 API
+        url: https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/ResourceBundle.html
+      - title: java.text.ChoiceFormat — Java SE 21 API
+        url: https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/text/ChoiceFormat.html
+    validation: &ran
+      status: ran
+      toolchain: kotlinc 2.4.21, JVM 21.0.12.1
+      date: "2026-11-16"
+  - id: dates-and-times
+    kind: code
+    title: Dates and times with a pinned Locale and ZoneId
+    note: "Keep an `Instant` and render it in the user's zone with a localized style or skeleton, never a hard-coded `\"MM/dd/yyyy\"` — on Android, where `ofLocalizedPattern` does not exist, `DateFormat.getBestDateTimePattern(locale, \"yMMMEd\")` plays the skeleton's role."
+    prerequisites: *run
+    code: |-
+      import java.time.Instant
+      import java.time.ZoneId
+      import java.time.format.DateTimeFormatter
+      import java.time.format.FormatStyle
+      import java.util.Locale
+
+      fun main() {
+          val placedAt = Instant.parse("2026-11-16T18:30:00Z")          // store and send instants in UTC
+          val customers = listOf(
+              "en-US" to "America/New_York",
+              "en-GB" to "Europe/London",
+              "de-DE" to "Europe/Berlin",
+              "ja-JP" to "Asia/Tokyo",
+          )
+          for ((tag, zone) in customers) {
+              val locale = Locale.forLanguageTag(tag)
+              val local = placedAt.atZone(ZoneId.of(zone))               // render in the user's zone
+              val date = DateTimeFormatter.ofLocalizedDate(FormatStyle.MEDIUM).withLocale(locale)
+              // A skeleton names the fields; the locale decides their order and punctuation (JDK 19+).
+              val skeleton = DateTimeFormatter.ofLocalizedPattern("yMMMEd").withLocale(locale)
+              val time = DateTimeFormatter.ofLocalizedTime(FormatStyle.SHORT).withLocale(locale)
+              println("$tag  ${local.format(date)} | ${local.format(skeleton)} | ${local.format(time)}")
+          }
+          // Since JDK 20 (CLDR 42) en-US puts U+202F NARROW NO-BREAK SPACE before "PM": never match it with " ".
+          val usTime = placedAt.atZone(ZoneId.of("America/New_York"))
+              .format(DateTimeFormatter.ofLocalizedTime(FormatStyle.SHORT).withLocale(Locale.US))
+          println("narrow no-break space: ${'\u202F' in usTime}")
+      }
+    expected: |-
+      en-US  Nov 16, 2026 | Mon, Nov 16, 2026 | 1:30 PM
+      en-GB  16 Nov 2026 | Mon, 16 Nov 2026 | 18:30
+      de-DE  16.11.2026 | Mo., 16. Nov. 2026 | 19:30
+      ja-JP  2026/11/17 | 2026年11月17日(火) | 3:30
+      narrow no-break space: true
+    applies: *jvm
+    validation: *ran
+  - id: numbers-money-sorting
+    kind: code
+    title: Numbers, money, percentages — and sorting by locale
+    note: "Set the currency from the amount and the format from the reader (the spaces before `€`, `%` and `Mio.` in German are NO-BREAK SPACEs), and on Android, which lacks `getCompactNumberInstance`, use `android.icu.text.CompactDecimalFormat`."
+    prerequisites: *run
+    code: |-
+      import java.text.Collator
+      import java.text.NumberFormat
+      import java.text.ParsePosition
+      import java.util.Currency
+      import java.util.Locale
+
+      fun parseAmount(text: String, locale: Locale): Number? {
+          val position = ParsePosition(0)
+          // Grouping off for typed input: an English-style "12.34" must not become 1234, a factor of 100.
+          val format = NumberFormat.getNumberInstance(locale).apply { isGroupingUsed = false }
+          val number = format.parse(text, position)
+          return number?.takeIf { position.index == text.length }
+      }
+
+      fun main() {
+          val total = 1234567.891
+          val euro = Currency.getInstance("EUR")                         // the currency is data, not the locale's
+          for (tag in listOf("en-US", "de-DE", "ja-JP")) {
+              val locale = Locale.forLanguageTag(tag)
+              val number = NumberFormat.getNumberInstance(locale).apply { maximumFractionDigits = 2 }
+              val money = NumberFormat.getCurrencyInstance(locale).apply {
+                  // Setting the currency does NOT update the fraction digits: ja-JP (yen) would print €1,234,568.
+                  currency = euro
+                  maximumFractionDigits = euro.defaultFractionDigits
+              }
+              val percent = NumberFormat.getPercentInstance(locale).apply { minimumFractionDigits = 1 }
+              val compact = NumberFormat.getCompactNumberInstance(locale, NumberFormat.Style.SHORT)
+              val parts = listOf(
+                  number.format(total),
+                  money.format(total),
+                  percent.format(0.075),
+                  compact.format(1_250_000),
+              )
+              println("$tag  " + parts.joinToString(" | "))
+          }
+          // Parsing is per locale too, and parse() stops at the first character it cannot read: demand it all.
+          println(listOf("12.34", "1.2.3", "12,5", "1.234,5", "1234,5").map { parseAmount(it, Locale.GERMANY) })
+
+          val cities = listOf("Zürich", "Århus", "Oslo", "Ängelholm", "Zagreb")
+          println(cities.sortedWith(Collator.getInstance(Locale.GERMAN)))
+          println(cities.sortedWith(Collator.getInstance(Locale.forLanguageTag("sv-SE"))))
+      }
+    expected: |-
+      en-US  1,234,567.89 | €1,234,567.89 | 7.5% | 1M
+      de-DE  1.234.567,89 | 1.234.567,89 € | 7,5 % | 1 Mio.
+      ja-JP  1,234,567.89 | €1,234,567.89 | 7.5% | 125万
+      [null, null, 12.5, null, 1234.5]
+      [Ängelholm, Århus, Oslo, Zagreb, Zürich]
+      [Oslo, Zagreb, Zürich, Århus, Ängelholm]
+    applies: *jvm
+    sources:
+      - title: java.text.NumberFormat — Java SE 21 API
+        url: https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/text/NumberFormat.html
+      - title: java.text.Collator — Java SE 21 API
+        url: https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/text/Collator.html
+    validation: *ran
+  - id: android-icu
+    kind: code
+    title: "Relative time, units and lists: android.icu.text"
+    note: "The JDK has no relative-time or unit formatter (and `java.text.ListFormat` only from JDK 22), while Android ships ICU's (API 24+, `ListFormatter` 26+) with every locale's grammar."
+    prerequisites:
+      - "An Android project with `minSdk` 26 or later (or guard `ListFormatter` with `Build.VERSION.SDK_INT >= 26`)"
+      - "Call the functions from a composable or a ViewModel with the current locale from `LocalConfiguration.current.locales[0]`"
+    code: |-
+      import android.icu.text.ListFormatter
+      import android.icu.text.MeasureFormat
+      import android.icu.text.RelativeDateTimeFormatter
+      import android.icu.text.RelativeDateTimeFormatter.Direction
+      import android.icu.text.RelativeDateTimeFormatter.RelativeUnit
+      import android.icu.util.Measure
+      import android.icu.util.MeasureUnit
+      import java.util.Locale
+
+      // "in 3 days" / "dans 3 jours" / "через 3 дня" — the plural form comes from the locale
+      fun deliveryEta(daysAway: Int, locale: Locale): String =
+          RelativeDateTimeFormatter.getInstance(locale)
+              .format(daysAway.toDouble(), Direction.NEXT, RelativeUnit.DAYS)
+
+      // "2.5 kg" / "2,5 kg"
+      fun parcelWeight(kilograms: Double, locale: Locale): String =
+          MeasureFormat.getInstance(locale, MeasureFormat.FormatWidth.SHORT)
+              .format(Measure(kilograms, MeasureUnit.KILOGRAM))
+
+      // "Ana, Bo, and Chen" / "Ana, Bo y Chen"
+      fun recipients(names: List<String>, locale: Locale): String =
+          ListFormatter.getInstance(locale).format(names)
+    expected: For `Locale.US` the three calls give "in 3 days", "2.5 kg" and "Ana, Bo, and Chen"; for Spanish, "dentro de 3 días", "2,5 kg" and "Ana, Bo y Chen".
+    applies:
+      platforms: [android]
+      runtime: an Android app (android.icu, API 24+; ListFormatter API 26+)
+      versions: { kotlin: ">=2.0", android: "API 26+" }
+    sources:
+      - title: android.icu.text.RelativeDateTimeFormatter — Android Developers
+        url: https://developer.android.com/reference/android/icu/text/RelativeDateTimeFormatter
+      - title: android.icu.text.ListFormatter — Android Developers
+        url: https://developer.android.com/reference/android/icu/text/ListFormatter
+    validation:
+      status: excerpt
+      host: an Android app or instrumented test (android.icu is part of the Android framework, not the JDK)
+  - id: per-app-language
+    kind: code
+    title: Per-app language preferences
+    note: "`AppCompatDelegate.setApplicationLocales` syncs with the Android 13+ system setting and works back to older versions; let AGP generate the `LocaleConfig`."
+    prerequisites:
+      - "An Android project with `androidx.appcompat:appcompat` 1.6 or later; the activity hosting Compose must extend `AppCompatActivity`"
+      - "In `build.gradle.kts`: `android { androidResources { generateLocaleConfig = true } }` (AGP 8.1+), and `res/resources.properties` with `unqualifiedResLocale=en-US`"
+      - "For Android 12 and lower, declare `<service android:name=\"androidx.appcompat.app.AppLocalesMetadataHolderService\" android:enabled=\"false\" android:exported=\"false\">` with `<meta-data android:name=\"autoStoreLocales\" android:value=\"true\" />` in the manifest"
+    code: |-
+      import androidx.appcompat.app.AppCompatDelegate
+      import androidx.core.os.LocaleListCompat
+
+      @Composable
+      fun LanguagePicker(supported: List<String> = listOf("en", "es", "sr-Latn")) {
+          // null is "follow the system language": an empty locale list.
+          val current = AppCompatDelegate.getApplicationLocales().get(0)?.toLanguageTag()
+          val choices: List<String?> = listOf(null) + supported
+          Column(Modifier.selectableGroup()) {                          // TalkBack announces one radio group
+              choices.forEach { tag ->
+                  val label = if (tag == null) {
+                      stringResource(R.string.use_system_language)
+                  } else {
+                      Locale.forLanguageTag(tag).let { it.getDisplayName(it) }   // each name in its own language
+                  }
+                  ListItem(
+                      headlineContent = { Text(label) },
+                      leadingContent = { RadioButton(selected = tag == current, onClick = null) },
+                      modifier = Modifier.selectable(selected = tag == current, role = Role.RadioButton) {
+                          val locales = tag?.let { LocaleListCompat.forLanguageTags(it) }
+                              ?: LocaleListCompat.getEmptyLocaleList()
+                          // Main thread: recreates the activity and resolves every stringResource again.
+                          AppCompatDelegate.setApplicationLocales(locales)
+                      },
+                  )
+              }
+          }
+      }
+
+      // Android 13+ without AppCompat, e.g. in a settings screen:
+      // context.getSystemService(LocaleManager::class.java).applicationLocales = LocaleList.forLanguageTags("es")
+    expected: TalkBack reads the rows as one radio group; picking "español" recreates the activity in Spanish and shows the same choice under Settings › Apps › Language, and "Use system language" is selected whenever no app language is set.
+    sources:
+      - title: Per-app language preferences — Android Developers
+        url: https://developer.android.com/guide/topics/resources/app-languages
+    validation: *excerpt
+  - id: rtl-and-pseudolocales
+    kind: code
+    title: Right-to-left, pseudolocales and testing a locale
+    note: "Use start/end and auto-mirrored icons, wrap embedded opposite-direction text, then look at `ar-XB` and `en-XA` before any translation exists."
+    prerequisites:
+      - "An Android project with Compose, `androidx.compose.ui:ui-test-junit4` 1.11+ (BOM 2026.04.01) for the `v2` test rule, and `android:supportsRtl=\"true\"` on the `<application>`"
+      - "Enable pseudolocales in debug builds: `android { buildTypes.getByName(\"debug\") { isPseudoLocalesEnabled = true } }`; on the device turn on Developer options and reboot, then pick English (XA) or AR (XB) in Settings › System › Languages"
+    code: |-
+      import androidx.compose.ui.test.junit4.v2.createComposeRule
+
+      @Composable
+      fun OrderTopBar(order: Order, onBack: () -> Unit) {
+          Row(Modifier.padding(start = 4.dp, end = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+              IconButton(onClick = onBack) {
+                  // AutoMirrored flips in RTL; Icons.Filled.ArrowBack is deprecated for that reason.
+                  Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = stringResource(R.string.back))
+              }
+              // An LTR order code inside Arabic or Hebrew text keeps its order once wrapped; pass the
+              // composition's direction, because getInstance() alone reads Locale.getDefault().
+              val rtl = LocalLayoutDirection.current == LayoutDirection.Rtl
+              val code = BidiFormatter.getInstance(rtl).unicodeWrap(order.code)
+              Text(stringResource(R.string.order_title, code), Modifier.weight(1f))
+          }
+      }
+
+      @Preview(name = "Default")
+      @Preview(name = "Arabic", locale = "ar")                       // the mirrored layout, side by side
+      @Composable
+      private fun OrderTopBarPreview() = OrderTopBar(Order(code = "ORD-1042"), onBack = {})
+
+      class OrderTopBarRtlTest {
+          @get:Rule val composeRule = createComposeRule()
+
+          @Test
+          fun backButtonSitsOnTheRightInRtl() {
+              composeRule.setContent {
+                  CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Rtl) {
+                      OrderTopBar(Order(code = "ORD-1042"), onBack = {})
+                  }
+              }
+              val back = composeRule.onNodeWithContentDescription("Back").fetchSemanticsNode().boundsInRoot
+              val title = composeRule.onNodeWithText("ORD-1042", substring = true).fetchSemanticsNode().boundsInRoot
+              assertTrue(back.left > title.left)
+          }
+      }
+    expected: The preview pane shows the bar mirrored for Arabic (on a device, AR (XB) mirrors it the same way and English (XA) shows stretched, bracketed text); the test passes because the back button is laid out to the right of the title in RTL.
+    sources:
+      - title: Test your app with pseudolocales — Android Developers
+        url: https://developer.android.com/guide/topics/resources/pseudolocales
+      - title: Support different languages and cultures — Android Developers
+        url: https://developer.android.com/training/basics/supporting-devices/languages
+    applies:
+      platforms: [android]
+      runtime: an Android app with Jetpack Compose
+      versions: { kotlin: ">=2.0", compose-bom: ">=2026.04.01", android: "API 21+" }
+    validation:
+      status: excerpt
+      host: an Android app with Jetpack Compose; the test runs as an instrumented test or under Robolectric
+  - id: localization-rules
+    kind: rules
+    title: Rules and pitfalls
+    note: The bugs translators and RTL users report first.
+    items:
+      - tone: bad
+        text: "Concatenating `getString(R.string.hello) + \" \" + name`: the translator cannot reorder it and pseudolocales show it as two bracketed pieces. One string, positional `%1$s`."
+      - tone: bad
+        text: "Hard-coded formats (`\"MM/dd/yyyy\"`, `\"$\" + price`, `\"%.2f\"`): wrong order, separator and symbol for most users. Use localized styles, skeletons and `NumberFormat`."
+      - tone: bad
+        text: "`String.format(\"%.2f\", x)` without a `Locale` uses the device's: `1,50` in Germany breaks CSV, URLs and SQL. `Locale.ROOT` for machine text, the user's locale for display."
+      - tone: bad
+        text: "`\"title\".uppercase()` is locale-invariant — wrong for a Turkish heading (`TİTLE`); Java's `String.toUpperCase()` (an error in Kotlin 2.1+, still there in Java code) uses the default locale — wrong for keys on a Turkish device. Choose on purpose."
+      - tone: bad
+        text: "Testing `count == 1` for the singular: Russian, Polish, Arabic and Welsh need more forms. Always go through `<plurals>` or `PluralRules`."
+      - tone: good
+        text: "Pin `Locale` **and** `ZoneId` in every test; a formatter that reads the defaults passes on your laptop and fails on CI."
+      - tone: good
+        text: "Keep the default `values/strings.xml` complete — a key missing there crashes with `Resources.NotFoundException` in a locale nobody tested."
+      - tone: neutral
+        text: "`Locale.getDefault()` is the system language; with per-app languages the app's own is `LocalConfiguration.current.locales[0]` (Compose) or `resources.configuration.locales[0]`."
+      - tone: neutral
+        text: "Give text room: German and Finnish run 30–40% longer, and en-XA shows where a fixed width or `maxLines = 1` will clip."

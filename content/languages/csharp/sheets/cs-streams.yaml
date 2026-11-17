@@ -1,0 +1,945 @@
+id: cs-streams
+concept: algorithms.streaming
+scope: shared
+title: "Streaming & Time-Series Patterns"
+group: Shared concepts
+subtitle: "Unbounded data, bounded memory: windows and watermarks, sketches, rate limits and backpressure — over IAsyncEnumerable, Channel<T> and Rx."
+applies:
+  platforms: [dotnet]
+  runtime: .NET (the base class library)
+  versions: { csharp: ">=12", dotnet: ">=8" }
+sources:
+  - title: Generate and consume async streams — C#
+    url: https://learn.microsoft.com/en-us/dotnet/csharp/asynchronous-programming/generate-consume-asynchronous-stream
+  - title: System.Threading.Channels — .NET
+    url: https://learn.microsoft.com/en-us/dotnet/core/extensions/channels
+  - title: What is TimeProvider? — .NET
+    url: https://learn.microsoft.com/en-us/dotnet/standard/datetime/timeprovider-overview
+cards:
+  - id: constraints
+    kind: rules
+    title: The constraints that define the field
+    note: Every card below answers one of these.
+    items:
+      - tone: modern
+        text: "You see each item **once**, in order, and cannot keep them all — so answers are incremental, approximate, or over a window."
+      - tone: modern
+        text: "**Bounded memory** is the whole game: O(1) or O(window) per stream, never O(stream)."
+      - tone: modern
+        text: "**Time is two things**: *event time* (when it happened) and *processing time* (when you saw it). They diverge; a watermark says how late you still accept data."
+      - tone: neutral
+        text: "**Exact vs approximate**: a sketch trades a percent of accuracy for orders of magnitude of memory. State the error bound out loud."
+      - tone: neutral
+        text: "In .NET a stream is an `IAsyncEnumerable<T>` (pull: the consumer sets the pace), a `Channel<T>` (a bounded queue between producer and consumer), an `IObservable<T>` with System.Reactive (push, no backpressure), or a `PipeReader` for raw bytes."
+      - tone: good
+        text: "**Inject the clock and the randomness**: a `TimeProvider` and a seeded `Random`. `DateTime.UtcNow` inside the algorithm makes it untestable and unreplayable."
+  - id: windows
+    kind: table
+    title: Windowing a stream
+    note: Almost every streaming requirement is one of these windows plus a lateness policy.
+    headers: [Window, Shape, Answers, Group by]
+    rows:
+      - ["Tumbling", "fixed size, no overlap: `[0, 60s)`, `[60s, 120s)`", "orders per minute, a billing period", "`t - t % size`"]
+      - ["Hopping", "fixed size advancing by a smaller hop; an event falls in `size / hop` windows", "a 5-minute error rate refreshed every 10 s", "every hop start in `(t - size, t]`"]
+      - ["Session", "per key, closed by a gap of inactivity", "a user's visit, a burst of typing", "the key, extended while the next event is within the gap"]
+      - ["Count (sliding)", "the last n events", "the average of the last 100 requests", "position: a ring buffer"]
+      - ["Late events", "its window has already closed: window end ≤ watermark (highest event time − allowed lateness)", "what happens to a delayed upload", "drop and count, hold longer, or reopen the window and re-emit"]
+  - id: ring-buffer
+    kind: code
+    title: Ring buffer — a fixed-size sliding window
+    note: "A moving average of the last k request latencies: O(1) per event, O(k) memory — add the new value, subtract the evicted one."
+    prerequisites: &run
+      - .NET 8 SDK or later
+      - "`dotnet new console -o Demo`, replace `Demo/Program.cs` with the example, then `dotnet run --project Demo`"
+    code: |-
+      using static System.FormattableString;
+
+      // A moving average of the last 4 request latencies (ms): O(1) per event.
+      var window = new RingBuffer<double>(capacity: 4);
+      var sum = 0.0;
+      foreach (var latency in new double[] { 120, 80, 100, 300, 90, 110 })
+      {
+          if (window.Append(latency) is double evicted) sum -= evicted;   // subtract what left the window
+          sum += latency;
+          var average = sum / window.Count;
+          Console.WriteLine(Invariant($"+{latency} ms -> avg {average:F1} over [{string.Join(", ", window)}]"));
+      }
+
+      sealed class RingBuffer<T>(int capacity) : IEnumerable<T> where T : struct
+      {
+          private readonly T[] _items = new T[capacity];
+          private int _head;                                   // where the next item goes
+          public int Count { get; private set; }
+
+          /// <summary>Adds an item and returns the one it evicted, if the buffer was full.</summary>
+          public T? Append(T item)
+          {
+              T? evicted = Count == _items.Length ? _items[_head] : null;
+              _items[_head] = item;
+              _head = (_head + 1) % _items.Length;
+              Count = Math.Min(Count + 1, _items.Length);
+              return evicted;
+          }
+
+          public IEnumerator<T> GetEnumerator()
+          {
+              var start = (_head - Count + _items.Length) % _items.Length;   // the oldest item
+              for (var i = 0; i < Count; i++) yield return _items[(start + i) % _items.Length];
+          }
+
+          System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
+      }
+    expected: |-
+      +120 ms -> avg 120.0 over [120]
+      +80 ms -> avg 100.0 over [120, 80]
+      +100 ms -> avg 100.0 over [120, 80, 100]
+      +300 ms -> avg 150.0 over [120, 80, 100, 300]
+      +90 ms -> avg 142.5 over [80, 100, 300, 90]
+      +110 ms -> avg 150.0 over [100, 300, 90, 110]
+    validation: &ran
+      status: ran
+      toolchain: .NET SDK 9.0.304 (net9.0, C# 13)
+      date: "2026-11-16"
+  - id: tumbling-window-watermark
+    kind: code
+    title: Tumbling windows with a watermark
+    note: "Revenue per minute by event time: a window closes once the watermark passes its end, so a delayed order still counts — up to the allowed lateness."
+    prerequisites: *run
+    code: |-
+      // Revenue per minute by event time: 1-minute windows that still accept orders up to 10 s late.
+      var perMinute = new TumblingWindows(TimeSpan.FromMinutes(1), allowedLateness: TimeSpan.FromSeconds(10));
+      (int Second, int Cents)[] arrivals = [(5, 1200), (20, 800), (58, 450), (62, 2000), (50, 300), (75, 990),
+                                            (130, 1500), (55, 700)];
+      foreach (var (second, cents) in arrivals)
+          foreach (var window in perMinute.Add(TimeSpan.FromSeconds(second), cents))
+              Console.WriteLine($"after {second}s: {window}");
+
+      foreach (var window in perMinute.Flush()) Console.WriteLine($"at the end: {window}");
+      Console.WriteLine($"late orders dropped: {perMinute.Late}");
+
+      sealed class TumblingWindows(TimeSpan size, TimeSpan allowedLateness)
+      {
+          private readonly SortedDictionary<TimeSpan, Window> _open = [];   // window start -> totals, oldest first
+          private TimeSpan _watermark = TimeSpan.MinValue;                  // highest event time - allowed lateness
+
+          public int Late { get; private set; }
+
+          public List<Window> Add(TimeSpan at, long cents)
+          {
+              var start = TimeSpan.FromTicks(at.Ticks - at.Ticks % size.Ticks);
+              if (start + size <= _watermark)                  // its window is final: count it, never reopen
+              {
+                  Late++;
+                  return [];
+              }
+              var open = _open.GetValueOrDefault(start) ?? new Window(start, size, 0, 0);
+              _open[start] = open with { Orders = open.Orders + 1, Cents = open.Cents + cents };
+              if (at - allowedLateness > _watermark) _watermark = at - allowedLateness;
+              return Close(end => end <= _watermark);         // the windows the watermark just passed
+          }
+
+          public List<Window> Flush() => Close(_ => true);    // end of stream: everything still open is final
+
+          private List<Window> Close(Func<TimeSpan, bool> isDue)
+          {
+              var closed = _open.Values.Where(w => isDue(w.Start + size)).ToList();
+              foreach (var w in closed) _open.Remove(w.Start);
+              return closed;
+          }
+      }
+
+      record Window(TimeSpan Start, TimeSpan Size, int Orders, long Cents)
+      {
+          public override string ToString() =>
+              $"[{Start.TotalSeconds}s, +{Size.TotalSeconds}s) count {Orders}, ${Cents / 100}.{Cents % 100:D2}";
+      }
+    expected: |-
+      after 75s: [0s, +60s) count 4, $27.50
+      after 130s: [60s, +60s) count 2, $29.90
+      at the end: [120s, +60s) count 1, $15.00
+      late orders dropped: 1
+    validation: *ran
+  - id: running-statistics
+    kind: code
+    title: Running statistics — Welford & EMA
+    note: "Mean, variance and a smoothed level in O(1) memory — enough for latency anomaly alerts without keeping a single sample."
+    prerequisites: *run
+    code: |-
+      using static System.FormattableString;
+
+      // Flag a latency as an anomaly when it is more than 2 standard deviations from the running mean.
+      var stats = new RunningStats();
+      var ema = new Ema(period: 3);
+      foreach (var latency in new double[] { 100, 104, 98, 101, 97, 103, 250, 99 })
+      {
+          var z = stats.ZScore(latency);                       // against what came BEFORE this value
+          var level = ema.Add(latency);
+          var flag = Math.Abs(z) > 2 ? "  ANOMALY" : "";
+          Console.WriteLine(Invariant($"{latency} ms: ema {level:F1}, z {z:F1}{flag}"));
+          stats.Add(latency);
+      }
+
+      // Welford's online mean and variance: numerically stable, O(1) memory.
+      sealed class RunningStats
+      {
+          private double _m2;                                  // sum of squared distances from the mean
+          public long Count { get; private set; }
+          public double Mean { get; private set; }
+
+          public void Add(double x)
+          {
+              Count++;
+              var delta = x - Mean;
+              Mean += delta / Count;
+              _m2 += delta * (x - Mean);                       // uses the UPDATED mean
+          }
+
+          public double Variance => Count > 1 ? _m2 / (Count - 1) : 0;
+          public double StandardDeviation => Math.Sqrt(Variance);
+          public double ZScore(double x) => StandardDeviation > 0 ? (x - Mean) / StandardDeviation : 0;
+      }
+
+      // Exponential moving average: no window and no history, one multiply per event.
+      sealed class Ema(int period)
+      {
+          private readonly double _alpha = 2.0 / (period + 1);
+          private double? _value;
+          public double Add(double x)
+          {
+              _value = _value is double previous ? _alpha * x + (1 - _alpha) * previous : x;
+              return _value.Value;
+          }
+      }
+    expected: |-
+      100 ms: ema 100.0, z 0.0
+      104 ms: ema 102.0, z 0.0
+      98 ms: ema 100.0, z -1.4
+      101 ms: ema 100.5, z 0.1
+      97 ms: ema 98.8, z -1.5
+      103 ms: ema 100.9, z 1.1
+      250 ms: ema 175.4, z 54.6  ANOMALY
+      99 ms: ema 137.2, z -0.4
+    validation: *ran
+  - id: reservoir-sampling
+    kind: code
+    title: Reservoir sampling
+    note: "A uniform sample of k items from a stream of unknown length — which requests to trace, which log lines to upload."
+    prerequisites: *run
+    code: |-
+      using static System.FormattableString;
+
+      // Keep a uniform sample of 5 request ids from a stream of unknown length, to upload for tracing.
+      var sampler = new Reservoir<string>(capacity: 5, new Random(42));   // seeded: a replay picks the same ids
+      for (var i = 1; i <= 10_000; i++) sampler.Add($"req-{i}");
+      Console.WriteLine($"seen {sampler.Seen}, kept {string.Join(" ", sampler.Sample)}");
+
+      // Fairness check: over many runs, every position is kept about k/n of the time.
+      var keptFirst = 0;
+      var rng = new Random(7);
+      for (var run = 0; run < 20_000; run++)
+      {
+          var r = new Reservoir<int>(capacity: 2, rng);
+          for (var x = 0; x < 10; x++) r.Add(x);
+          if (r.Sample.Contains(0)) keptFirst++;
+      }
+      Console.WriteLine(Invariant($"item 0 kept in {keptFirst * 100.0 / 20_000:F1}% of runs (expect 20.0%)"));
+
+      /// <summary>Algorithm R: O(k) memory, one random draw per item.</summary>
+      sealed class Reservoir<T>(int capacity, Random random)
+      {
+          private readonly List<T> _sample = new(capacity);
+          public long Seen { get; private set; }
+          public IReadOnlyList<T> Sample => _sample;
+
+          public void Add(T item)
+          {
+              Seen++;
+              if (_sample.Count < capacity) { _sample.Add(item); return; }
+              var j = random.NextInt64(Seen);                  // keep with probability k / n
+              if (j < capacity) _sample[(int)j] = item;
+          }
+      }
+    expected: |-
+      seen 10000, kept req-5324 req-1491 req-7513 req-4177 req-9576
+      item 0 kept in 19.8% of runs (expect 20.0%)
+    sources:
+      - title: Random class — .NET API
+        url: https://learn.microsoft.com/en-us/dotnet/api/system.random
+    validation: *ran
+  - id: count-min-sketch
+    kind: code
+    title: Count-Min Sketch — approximate frequencies
+    note: "How often did key X appear, for any number of keys, in width × depth counters: never under, and over by more than ε·N only with probability δ."
+    prerequisites: *run
+    code: |-
+      using System.Text;
+
+      // Requests per client across 50,000 requests from ~44,000 clients, in 5 x 2,719 counters.
+      var sketch = new CountMinSketch(width: 2_719, depth: 5);   // width = e / 0.001 (epsilon), depth = ln(1 / 1%)
+      var exact = new Dictionary<string, int>();               // only to measure the error here
+      var random = new Random(1);
+      for (var i = 0; i < 50_000; i++)
+      {
+          var client = i % 10 == 0 ? "client-hot" : $"client-{random.Next(1_000_000)}";
+          sketch.Add(client);
+          exact[client] = exact.GetValueOrDefault(client) + 1;
+      }
+      var errors = exact.Select(kv => sketch.Estimate(kv.Key) - kv.Value).ToList();
+      Console.WriteLine($"{exact.Count} distinct clients, {5 * 2_719} counters");
+      Console.WriteLine($"client-hot: estimate {sketch.Estimate("client-hot")}, exact {exact["client-hot"]}");
+      Console.WriteLine($"under-counts: {errors.Count(d => d < 0)}, max over: {errors.Max()} (bound 50)");
+
+      sealed class CountMinSketch(int width, int depth)
+      {
+          private readonly long[,] _table = new long[depth, width];
+
+          public void Add(string key)
+          {
+              var hash = StableHash(key);                      // hash once; each row derives its own column
+              for (var row = 0; row < depth; row++) _table[row, Column(hash, row)]++;
+          }
+
+          // The smallest row counter: never too low; more than epsilon*N too high with probability at most delta.
+          public long Estimate(string key)
+          {
+              var hash = StableHash(key);
+              return Enumerable.Range(0, depth).Min(row => _table[row, Column(hash, row)]);
+          }
+
+          // Double hashing: h1 + row * h2 gives every row its own hash from one 64-bit value.
+          private int Column(ulong hash, int row) =>
+              (int)(((uint)hash + (ulong)row * ((uint)(hash >> 32) | 1)) % (ulong)width);
+
+          // FNV-1a: string.GetHashCode() is randomized per process, so a saved or merged sketch would be garbage.
+          private static ulong StableHash(string key)
+          {
+              var hash = 14695981039346656037UL;
+              foreach (var b in Encoding.UTF8.GetBytes(key)) hash = (hash ^ b) * 1099511628211UL;
+              return hash;
+          }
+      }
+    expected: |-
+      43963 distinct clients, 13595 counters
+      client-hot: estimate 5015, exact 5000
+      under-counts: 0, max over: 22 (bound 50)
+    sources:
+      - title: String.GetHashCode — .NET API
+        url: https://learn.microsoft.com/en-us/dotnet/api/system.string.gethashcode
+    validation: *ran
+  - id: bloom-filter
+    kind: code
+    title: Bloom filter — approximate membership
+    note: "\"Definitely not seen\" or \"probably seen\" in about 10 bits per key — idempotency checks without keeping every id."
+    prerequisites: *run
+    code: |-
+      using System.Collections;
+      using System.Text;
+      using static System.FormattableString;
+
+      // "Have I already processed this webhook delivery id?" for 10,000 ids, in about 12 KB.
+      var seen = new BloomFilter(expectedCount: 10_000, falsePositiveRate: 0.01);
+      for (var i = 0; i < 10_000; i++) seen.Add($"delivery-{i}");
+
+      var missed = Enumerable.Range(0, 10_000).Count(i => !seen.MightContain($"delivery-{i}"));
+      var falsePositives = Enumerable.Range(10_000, 10_000).Count(i => seen.MightContain($"delivery-{i}"));
+      Console.WriteLine($"{seen.BitCount} bits, {seen.HashCount} hashes");
+      Console.WriteLine(Invariant($"false negatives: {missed}, false positives: {falsePositives / 100.0:F2}%"));
+
+      sealed class BloomFilter
+      {
+          private readonly BitArray _bits;
+          public int BitCount { get; }
+          public int HashCount { get; }
+
+          public BloomFilter(int expectedCount, double falsePositiveRate)
+          {
+              // m = -n ln p / (ln 2)^2 bits, k = (m / n) ln 2 hash functions
+              var ln2 = Math.Log(2);
+              BitCount = (int)Math.Ceiling(-expectedCount * Math.Log(falsePositiveRate) / (ln2 * ln2));
+              HashCount = Math.Max(1, (int)Math.Round((double)BitCount / expectedCount * ln2));
+              _bits = new BitArray(BitCount);
+          }
+
+          public void Add(string key) { foreach (var p in Positions(key)) _bits[p] = true; }
+
+          /// <summary>false: definitely never added. true: probably added.</summary>
+          public bool MightContain(string key) => Positions(key).All(p => _bits[p]);
+
+          private IEnumerable<int> Positions(string key)
+          {
+              var hash = 14695981039346656037UL;               // FNV-1a: stable across processes
+              foreach (var b in Encoding.UTF8.GetBytes(key)) hash = (hash ^ b) * 1099511628211UL;
+              var (h1, h2) = ((uint)hash, (uint)(hash >> 32) | 1);
+              for (var i = 0; i < HashCount; i++) yield return (int)((h1 + (ulong)i * h2) % (ulong)BitCount);
+          }
+      }
+    expected: |-
+      95851 bits, 7 hashes
+      false negatives: 0, false positives: 0.97%
+    validation: *ran
+  - id: heavy-hitters
+    kind: code
+    title: Heavy hitters — Misra–Gries
+    note: "The top endpoints, clients or search terms over a stream, in k counters; every key above n/(k+1) is guaranteed to be kept."
+    prerequisites: *run
+    code: |-
+      // The hottest API endpoints over a stream, tracking at most 3 counters.
+      var hitters = new HeavyHitters<string>(capacity: 3);
+      string[] traffic = ["/search", "/cart", "/search", "/login", "/search", "/cart", "/img/1",
+                          "/search", "/img/2", "/cart", "/search", "/img/3", "/cart", "/search"];
+      foreach (var path in traffic) hitters.Add(path);
+
+      foreach (var (path, count) in hitters.Top()) Console.WriteLine($"{path} >= {count}");
+      // /search is 6 of 14 and /cart 4 of 14: anything above n/(k+1) = 3.5 is guaranteed to survive.
+
+      /// <summary>Misra–Gries: counts are lower bounds; true count - estimate <= n / (k + 1).</summary>
+      sealed class HeavyHitters<TKey>(int capacity) where TKey : notnull
+      {
+          private readonly Dictionary<TKey, long> _counters = new(capacity);
+
+          public void Add(TKey key)
+          {
+              if (_counters.TryGetValue(key, out var count)) _counters[key] = count + 1;
+              else if (_counters.Count < capacity) _counters[key] = 1;
+              else
+              {
+                  // No room: decrement everyone (the newcomer included, implicitly); evict the zeros.
+                  foreach (var k in _counters.Keys.ToList())
+                      if (--_counters[k] == 0) _counters.Remove(k);
+              }
+          }
+
+          public IEnumerable<(TKey Key, long Count)> Top() =>
+              _counters.OrderByDescending(kv => kv.Value).ThenBy(kv => kv.Key).Select(kv => (kv.Key, kv.Value));
+      }
+    expected: |-
+      /search >= 4
+      /cart >= 2
+    validation: *ran
+  - id: streaming-quantiles
+    kind: code
+    title: Streaming quantiles
+    note: "p50/p95/p99 latency from a bounded sample, without storing the stream; in production record a `System.Diagnostics.Metrics` `Histogram<T>` and let the exporter compute percentiles."
+    prerequisites: *run
+    code: |-
+      using static System.FormattableString;
+
+      // p50 / p95 / p99 of 100,000 request latencies from a bounded sample of 2,000.
+      var random = new Random(3);
+      var estimator = new QuantileEstimator(sampleSize: 2_000, new Random(9));
+      var all = new List<double>();                            // kept here only to show the error
+      for (var i = 0; i < 100_000; i++)
+      {
+          var latency = 40 + 2_000 * Math.Pow(random.NextDouble(), 6);   // mostly fast, a long tail
+          estimator.Add(latency);
+          all.Add(latency);
+      }
+      all.Sort();
+      foreach (var q in new[] { 0.50, 0.95, 0.99 })
+      {
+          var (estimate, exact) = (estimator.Quantile(q), QuantileEstimator.Interpolate(all, q));
+          Console.WriteLine(Invariant($"p{q * 100:F0}: estimate {estimate,6:F0} ms, exact {exact,6:F0} ms"));
+      }
+      Console.WriteLine(Invariant($"mean: {all.Average():F0} ms -- the average hides the tail"));
+
+      sealed class QuantileEstimator(int sampleSize, Random random)
+      {
+          private readonly List<double> _sample = new(sampleSize);
+          private long _seen;
+
+          public void Add(double x)                            // reservoir sampling keeps the sample uniform
+          {
+              _seen++;
+              if (_sample.Count < sampleSize) { _sample.Add(x); return; }
+              var j = random.NextInt64(_seen);
+              if (j < sampleSize) _sample[(int)j] = x;
+          }
+
+          public double Quantile(double q) => Interpolate([.. _sample.Order()], q);
+
+          public static double Interpolate(IReadOnlyList<double> sorted, double q)
+          {
+              if (sorted.Count == 0) return double.NaN;        // nothing seen yet
+              var position = q * (sorted.Count - 1);
+              var (lower, upper) = ((int)Math.Floor(position), (int)Math.Ceiling(position));
+              return sorted[lower] + (sorted[upper] - sorted[lower]) * (position - lower);
+          }
+      }
+    expected: |-
+      p50: estimate     71 ms, exact     72 ms
+      p95: estimate   1500 ms, exact   1514 ms
+      p99: estimate   1959 ms, exact   1917 ms
+      mean: 326 ms -- the average hides the tail
+    sources:
+      - title: Metrics — .NET
+        url: https://learn.microsoft.com/en-us/dotnet/core/diagnostics/metrics
+    validation: *ran
+  - id: rate-limiting
+    kind: code
+    title: Rate limiting — token bucket
+    note: "A burst of 3, then a steady 5 per second, in O(1) memory; production code can use `TokenBucketRateLimiter` from `System.Threading.RateLimiting` (`dotnet add package System.Threading.RateLimiting`; in-box in ASP.NET Core apps)."
+    prerequisites: *run
+    code: |-
+      // One client sends a request every 100 ms; the bucket allows a burst of 3, then 5 per second.
+      var clock = new ManualClock();
+      var bucket = new TokenBucket(capacity: 3, refillPerSecond: 5, clock);
+      var outcome = "";
+      for (var i = 0; i < 12; i++)
+      {
+          outcome += bucket.TryAcquire() ? "+" : "-";
+          clock.Advance(TimeSpan.FromMilliseconds(100));
+      }
+      Console.WriteLine($"token bucket {outcome}");
+
+      /// <summary>Bursts up to capacity, then the sustained refill rate; O(1) memory.</summary>
+      sealed class TokenBucket(double capacity, double refillPerSecond, TimeProvider time)
+      {
+          // A copy of capacity: using the parameter in both an initializer and a method triggers warning CS9124.
+          private readonly double _capacity = capacity;
+          private double _tokens = capacity;
+          private long _last = time.GetTimestamp();            // monotonic: a wall-clock jump cannot refill it
+          private readonly object _gate = new();
+
+          public bool TryAcquire()
+          {
+              lock (_gate)
+              {
+                  var now = time.GetTimestamp();
+                  var refill = time.GetElapsedTime(_last, now).TotalSeconds * refillPerSecond;
+                  _tokens = Math.Min(_capacity, _tokens + refill);
+                  _last = now;
+                  if (_tokens < 1) return false;
+                  _tokens -= 1;
+                  return true;
+              }
+          }
+      }
+
+      /// <summary>A test clock: time moves only when the test says so.</summary>
+      sealed class ManualClock : TimeProvider
+      {
+          private long _ticks;
+          public void Advance(TimeSpan by) => _ticks += by.Ticks;
+          public override long TimestampFrequency => TimeSpan.TicksPerSecond;
+          public override long GetTimestamp() => _ticks;
+      }
+    expected: |-
+      token bucket +++++-+-+-+-
+    sources:
+      - title: System.Threading.RateLimiting namespace — .NET API
+        url: https://learn.microsoft.com/en-us/dotnet/api/system.threading.ratelimiting
+      - title: TimeProvider class — .NET API
+        url: https://learn.microsoft.com/en-us/dotnet/api/system.timeprovider
+    validation: *ran
+  - id: sliding-window-log
+    kind: code
+    title: Rate limiting — sliding-window log
+    note: "The same requests against at most 5 in any 1-second window: exact, a hard wall after the burst instead of the bucket's smoothing, and O(limit) memory."
+    prerequisites: *run
+    code: |-
+      // The same client, a request every 100 ms, against at most 5 requests in any 1-second window.
+      var clock = new ManualClock();
+      var limiter = new SlidingWindowLog(limit: 5, TimeSpan.FromSeconds(1), clock);
+      var outcome = "";
+      for (var i = 0; i < 12; i++)
+      {
+          outcome += limiter.TryAcquire() ? "+" : "-";
+          clock.Advance(TimeSpan.FromMilliseconds(100));
+      }
+      Console.WriteLine($"sliding window {outcome}");
+
+      /// <summary>At most limit requests in any window: an exact count, in O(limit) memory.</summary>
+      sealed class SlidingWindowLog(int limit, TimeSpan window, TimeProvider time)
+      {
+          private readonly Queue<long> _accepted = new();
+          private readonly object _gate = new();
+
+          public bool TryAcquire()
+          {
+              lock (_gate)
+              {
+                  var now = time.GetTimestamp();
+                  while (_accepted.TryPeek(out var oldest) && time.GetElapsedTime(oldest, now) >= window)
+                      _accepted.Dequeue();                     // evict what left the window
+                  if (_accepted.Count >= limit) return false;
+                  _accepted.Enqueue(now);
+                  return true;
+              }
+          }
+      }
+
+      /// <summary>A test clock: time moves only when the test says so.</summary>
+      sealed class ManualClock : TimeProvider
+      {
+          private long _ticks;
+          public void Advance(TimeSpan by) => _ticks += by.Ticks;
+          public override long TimestampFrequency => TimeSpan.TicksPerSecond;
+          public override long GetTimestamp() => _ticks;
+      }
+    expected: |-
+      sliding window +++++-----++
+    validation: *ran
+  - id: live-debounce
+    kind: code
+    title: Live debounce and sample, cancellable
+    note: "Search-as-you-type on live input: System.Reactive's `Throttle` (a debounce) and `Sample` run on an injected scheduler's timers, and disposing the subscription cancels what is pending (in depth, and by hand with a `TimeProvider`: see the Timing Operators sheet)."
+    prerequisites:
+      - .NET 8 SDK or later
+      - "`dotnet new console -o Demo`, then `dotnet add Demo package System.Reactive --version 6.1.0`"
+      - "`dotnet add Demo package Microsoft.Reactive.Testing --version 6.1.0`"
+      - "Replace `Demo/Program.cs` with the example, then `dotnet run --project Demo`"
+    code: |-
+      using System.Reactive.Linq;
+      using Microsoft.Reactive.Testing;
+      using static Microsoft.Reactive.Testing.ReactiveTest;
+
+      // Live keystrokes on a virtual clock, and the source never completes — like a search box left open.
+      var scheduler = new TestScheduler();
+      var ms = TimeSpan.TicksPerMillisecond;
+      var keystrokes = scheduler.CreateHotObservable(
+          OnNext(0 * ms, "c"), OnNext(90 * ms, "ca"), OnNext(170 * ms, "cab"),
+          OnNext(600 * ms, "cabl"), OnNext(680 * ms, "cable"), OnNext(1_300 * ms, "cable u"));
+
+      // Rx.NET's Throttle is a DEBOUNCE: a timer fires once the input has been quiet for 300 ms.
+      var searched = new List<string>();
+      var search = keystrokes
+          .Throttle(TimeSpan.FromMilliseconds(300), scheduler)   // in an app: .ObserveOn the UI thread after this
+          .Subscribe(query => searched.Add($"{scheduler.Clock / ms}:{query}"));
+
+      // Sample: the latest value on every 500 ms tick, if one arrived since the last tick (a live chart).
+      var sampled = new List<string>();
+      using var chart = keystrokes
+          .Sample(TimeSpan.FromMilliseconds(500), scheduler)
+          .Subscribe(value => sampled.Add($"{scheduler.Clock / ms}:{value}"));
+
+      scheduler.AdvanceTo(1_400 * ms);
+      search.Dispose();                                    // the page closes: the pending "cable u" never runs
+      scheduler.AdvanceTo(5_000 * ms);
+      Console.WriteLine($"debounce 300 | {string.Join("  ", searched)}");
+      Console.WriteLine($"sample   500 | {string.Join("  ", sampled)}");
+    expected: |-
+      debounce 300 | 470:cab  980:cable
+      sample   500 | 500:cab  1000:cable  1500:cable u
+    applies:
+      platforms: [dotnet]
+      runtime: .NET (System.Reactive, Microsoft.Reactive.Testing)
+      requires: [System.Reactive, Microsoft.Reactive.Testing]
+      versions: { csharp: ">=12", dotnet: ">=8", system-reactive: ">=6.0" }
+    sources:
+      - title: Reactive Extensions for .NET — dotnet/reactive
+        url: https://github.com/dotnet/reactive
+    validation:
+      status: ran
+      toolchain: .NET SDK 9.0.304 (net9.0, C# 13), System.Reactive 6.1.0, Microsoft.Reactive.Testing 6.1.0
+      date: "2026-11-16"
+  - id: debounce-throttle-sample
+    kind: code
+    title: Debounce & throttle over recorded events
+    note: "Over recorded, timestamped events (replayed logs, tests), where each operator decides on event time only as the next event arrives — for live input see the live debounce card."
+    prerequisites: *run
+    code: |-
+      // Recorded keystrokes, event time in ms. Debounce keeps the LAST of a burst, throttle the FIRST.
+      Timed<string>[] typed = [new(0, "c"), new(90, "ca"), new(170, "cab"),
+                               new(600, "cabl"), new(680, "cable"), new(1300, "cable u")];
+      Console.WriteLine($"debounce 300 | {await Show(Debounce(Replay(typed), quietMs: 300))}");
+      Console.WriteLine($"throttle 500 | {await Show(Throttle(Replay(typed), intervalMs: 500))}");
+
+      static async IAsyncEnumerable<Timed<T>> Debounce<T>(IAsyncEnumerable<Timed<T>> source, long quietMs)
+      {
+          Timed<T>? pending = null;
+          await foreach (var e in source)
+          {
+              if (pending is not null && e.AtMs - pending.AtMs >= quietMs) yield return pending;
+              pending = e;
+          }
+          if (pending is not null) yield return pending;       // the recording ended: nothing newer can come
+      }
+
+      static async IAsyncEnumerable<Timed<T>> Throttle<T>(IAsyncEnumerable<Timed<T>> source, long intervalMs)
+      {
+          var openAt = long.MinValue;
+          await foreach (var e in source)
+          {
+              if (e.AtMs < openAt) continue;
+              yield return e;
+              openAt = e.AtMs + intervalMs;
+          }
+      }
+
+      static async IAsyncEnumerable<T> Replay<T>(IEnumerable<T> items)
+      {
+          foreach (var item in items)
+          {
+              await Task.Yield();
+              yield return item;
+          }
+      }
+
+      static async Task<string> Show(IAsyncEnumerable<Timed<string>> events)
+      {
+          var shown = new List<string>();
+          await foreach (var e in events) shown.Add($"{e.AtMs}:{e.Value}");
+          return string.Join("  ", shown);
+      }
+
+      record Timed<T>(long AtMs, T Value);
+    expected: |-
+      debounce 300 | 170:cab  680:cable  1300:cable u
+      throttle 500 | 0:c  600:cabl  1300:cable u
+    validation: *ran
+  - id: backpressure
+    kind: code
+    title: Backpressure & buffering policy
+    note: "When production outruns consumption you choose what to lose: a bounded `Channel<T>` states it with `BoundedChannelFullMode`."
+    prerequisites: *run
+    code: |-
+      using System.Threading.Channels;
+
+      // A sensor produces 10 readings before the uploader reads any: each policy keeps different ones.
+      BoundedChannelFullMode[] lossy = [BoundedChannelFullMode.DropOldest, BoundedChannelFullMode.DropNewest,
+                                        BoundedChannelFullMode.DropWrite];
+      foreach (var mode in lossy)
+      {
+          var dropped = new List<int>();
+          var channel = Channel.CreateBounded<int>(new BoundedChannelOptions(3) { FullMode = mode }, dropped.Add);
+          for (var reading = 1; reading <= 10; reading++) channel.Writer.TryWrite(reading);
+          channel.Writer.Complete();
+          var kept = new List<int>();
+          await foreach (var reading in channel.Reader.ReadAllAsync()) kept.Add(reading);
+          Console.WriteLine($"{mode,-10} kept [{string.Join(",", kept)}] dropped {dropped.Count}");
+      }
+
+      // Wait (the default) is real backpressure: the producer's write does not complete until there is room.
+      var orders = Channel.CreateBounded<string>(new BoundedChannelOptions(1) { SingleReader = true });
+      await orders.Writer.WriteAsync("order-1");
+      var second = orders.Writer.WriteAsync("order-2").AsTask();
+      Console.WriteLine($"second write completed while full: {second.IsCompleted}");
+      Console.WriteLine($"consumer took {await orders.Reader.ReadAsync()}");
+      await second;                                            // now there was room
+      Console.WriteLine($"second write completed after a read: {second.IsCompleted}, queued {orders.Reader.Count}");
+    expected: |-
+      DropOldest kept [8,9,10] dropped 7
+      DropNewest kept [1,2,10] dropped 7
+      DropWrite  kept [1,2,3] dropped 7
+      second write completed while full: False
+      consumer took order-1
+      second write completed after a read: True, queued 1
+    sources:
+      - title: BoundedChannelFullMode — .NET API
+        url: https://learn.microsoft.com/en-us/dotnet/api/system.threading.channels.boundedchannelfullmode
+    validation: *ran
+  - id: batching-coalescing
+    kind: code
+    title: Batching, chunking and coalescing
+    note: "Amortise per-item cost over recorded events; live, System.Reactive's `Buffer(TimeSpan, int)` flushes on a timer, but its windows start at subscription and it emits empty lists, so add `.Where(b => b.Count > 0)`."
+    prerequisites: *run
+    code: |-
+      // Telemetry upload over a recorded stream: a batch at 3 events, or once the oldest pending event is
+      // 1 s old (replay: the age rule is checked when the next event arrives, so a quiet stream waits).
+      Timed<string>[] events = [new(0, "open"), new(100, "scroll"), new(150, "tap"), new(300, "tap"),
+                                new(1_500, "scroll"), new(1_600, "close")];
+      await foreach (var batch in Batch(Replay(events), maxSize: 3, maxAgeMs: 1_000))
+          Console.WriteLine($"upload [{string.Join(", ", batch.Select(e => $"{e.AtMs}:{e.Value}"))}]");
+
+      // Coalescing: only the latest quantity per product needs saving; 5 edits become 2 writes.
+      (string Sku, int Quantity)[] edits = [("mug", 1), ("tee", 2), ("mug", 2), ("mug", 3), ("tee", 1)];
+      var latest = new Dictionary<string, int>();
+      foreach (var (sku, quantity) in edits) latest[sku] = quantity;
+      var saves = latest.OrderBy(kv => kv.Key).Select(kv => $"{kv.Key}={kv.Value}");
+      Console.WriteLine($"save {string.Join(", ", saves)}");
+
+      // In memory, fixed-size batches are built in: orders.Chunk(100).
+
+      static async IAsyncEnumerable<List<Timed<T>>> Batch<T>(
+          IAsyncEnumerable<Timed<T>> source, int maxSize, long maxAgeMs)
+      {
+          var buffer = new List<Timed<T>>(maxSize);
+          await foreach (var e in source)
+          {
+              if (buffer.Count > 0 && e.AtMs - buffer[0].AtMs >= maxAgeMs)   // too old to keep waiting
+              {
+                  yield return buffer;
+                  buffer = new(maxSize);
+              }
+              buffer.Add(e);
+              if (buffer.Count < maxSize) continue;
+              yield return buffer;                             // full
+              buffer = new(maxSize);
+          }
+          if (buffer.Count > 0) yield return buffer;           // flush the tail
+      }
+
+      static async IAsyncEnumerable<T> Replay<T>(IEnumerable<T> items)
+      {
+          foreach (var item in items)
+          {
+              await Task.Yield();
+              yield return item;
+          }
+      }
+
+      record Timed<T>(long AtMs, T Value);
+    expected: |-
+      upload [0:open, 100:scroll, 150:tap]
+      upload [300:tap]
+      upload [1500:scroll, 1600:close]
+      save mug=3, tee=1
+    validation: *ran
+  - id: dedupe-with-ttl
+    kind: code
+    title: Deduplication with a TTL
+    note: "Webhooks and queues deliver at least once, so the consumer forgets ids after a TTL in bounded memory — past `capacity` ids per TTL the oldest are forgotten early and their redeliveries processed again, so size it to peak rate × TTL."
+    prerequisites: *run
+    code: |-
+      // A webhook provider retries deliveries: process each id once within 10 minutes, in bounded memory.
+      var recent = new RecentSet<string>(ttl: TimeSpan.FromMinutes(10), capacity: 10_000);
+      var start = new DateTimeOffset(2026, 11, 16, 9, 0, 0, TimeSpan.Zero);
+      (int Minute, string Id)[] deliveries = [(0, "evt-1"), (1, "evt-2"), (2, "evt-1"),
+                                             (9, "evt-2"), (13, "evt-1"), (14, "evt-2")];
+      foreach (var (minute, id) in deliveries)
+      {
+          var isNew = recent.TryAdd(id, start.AddMinutes(minute));
+          Console.WriteLine($"+{minute,2} min {id}: {(isNew ? "process" : "duplicate, skip")}");
+      }
+
+      // Full at capacity 2: a repeat of the oldest id is still a duplicate; only a new id evicts the oldest.
+      var small = new RecentSet<string>(ttl: TimeSpan.FromMinutes(10), capacity: 2);
+      foreach (var (second, id) in new[] { (0, "a"), (1, "b"), (2, "a"), (3, "c"), (4, "a") })
+      {
+          var isNew = small.TryAdd(id, start.AddSeconds(second));
+          Console.WriteLine($"capacity 2, +{second}s {id}: {(isNew ? "process" : "duplicate, skip")}");
+      }
+
+      /// <summary>Remembers keys for a time-to-live, evicting oldest first; O(1) amortised per key.</summary>
+      sealed class RecentSet<TKey>(TimeSpan ttl, int capacity) where TKey : notnull
+      {
+          private readonly Dictionary<TKey, DateTimeOffset> _seenAt = [];
+          private readonly Queue<(TKey Key, DateTimeOffset At)> _order = new();
+
+          /// <summary>True the first time a key is seen inside the window.</summary>
+          public bool TryAdd(TKey key, DateTimeOffset now)
+          {
+              while (_order.TryPeek(out var oldest) && now - oldest.At >= ttl) Forget();   // expired ids first
+              if (_seenAt.ContainsKey(key)) return false;      // a redelivery inside the window
+              if (_order.Count >= capacity) Forget();          // full: drop the oldest early (size: rate x TTL)
+              _seenAt[key] = now;
+              _order.Enqueue((key, now));
+              return true;
+          }
+
+          private void Forget() => _seenAt.Remove(_order.Dequeue().Key);   // a key is queued once while it is seen
+      }
+    expected: |-
+      + 0 min evt-1: process
+      + 1 min evt-2: process
+      + 2 min evt-1: duplicate, skip
+      + 9 min evt-2: duplicate, skip
+      +13 min evt-1: process
+      +14 min evt-2: process
+      capacity 2, +0s a: process
+      capacity 2, +1s b: process
+      capacity 2, +2s a: duplicate, skip
+      capacity 2, +3s c: process
+      capacity 2, +4s a: process
+    validation: *ran
+  - id: merge-and-change-detection
+    kind: code
+    title: Merging ordered streams & change detection
+    note: "A k-way merge with `PriorityQueue` keeps event-time order across sources (ties by source, so a replay is reproducible); hysteresis turns a noisy signal into clean transitions."
+    prerequisites: *run
+    code: |-
+      // Merge three servers' logs, each already sorted by time, into one ordered stream: O(n log k).
+      (int AtMs, string Line)[][] logs =
+      [
+          [(10, "api: GET /cart"), (40, "api: POST /pay"), (90, "api: GET /done")],
+          [(20, "db: SELECT cart"), (40, "db: INSERT payment")],
+          [(41, "pay: charge ok")],
+      ];
+      foreach (var (at, line) in MergeSorted(logs)) Console.WriteLine($"{at}ms {line}");
+
+      // Change detection with hysteresis: alert above 80% CPU, clear only below 60%, so 79-81 noise cannot flap.
+      var alarm = new Hysteresis(enter: 80, exit: 60);
+      foreach (var cpu in new[] { 50, 79, 81, 79, 82, 70, 59, 61, 85 })
+          if (alarm.Update(cpu) is bool on) Console.WriteLine($"cpu {cpu}% -> alert {(on ? "raised" : "cleared")}");
+
+      // Over live sources: take IEnumerator<T>s and dispose them all in finally (MergeRuns on the Files sheet).
+      static IEnumerable<(int AtMs, string Line)> MergeSorted((int AtMs, string Line)[][] sources)
+      {
+          // Priority (time, source): equal timestamps come out in source order, so a replay is reproducible.
+          var heads = new PriorityQueue<(int Source, int Index), (int AtMs, int Source)>();
+          for (var s = 0; s < sources.Length; s++)
+              if (sources[s].Length > 0) heads.Enqueue((s, 0), (sources[s][0].AtMs, s));
+          while (heads.TryDequeue(out var head, out _))
+          {
+              var source = sources[head.Source];
+              yield return source[head.Index];                 // always the global minimum
+              var next = head.Index + 1;
+              if (next < source.Length) heads.Enqueue((head.Source, next), (source[next].AtMs, head.Source));
+          }
+      }
+
+      sealed class Hysteresis(double enter, double exit)
+      {
+          public bool IsOn { get; private set; }
+
+          /// <summary>The new state on a transition; null when nothing changed.</summary>
+          public bool? Update(double value)
+          {
+              if (!IsOn && value > enter) return IsOn = true;
+              if (IsOn && value < exit) return IsOn = false;
+              return null;
+          }
+      }
+    expected: |-
+      10ms api: GET /cart
+      20ms db: SELECT cart
+      40ms api: POST /pay
+      40ms db: INSERT payment
+      41ms pay: charge ok
+      90ms api: GET /done
+      cpu 81% -> alert raised
+      cpu 59% -> alert cleared
+      cpu 85% -> alert raised
+    sources:
+      - title: PriorityQueue<TElement,TPriority> — .NET API
+        url: https://learn.microsoft.com/en-us/dotnet/api/system.collections.generic.priorityqueue-2
+    validation: *ran
+  - id: sketch-selection
+    kind: table
+    title: Sketch selection
+    note: What to reach for when exact is too expensive.
+    headers: [Question, Structure, Memory, Error, In .NET]
+    rows:
+      - ["How many distinct users?", "HyperLogLog", "~12 KB for billions", "~0.8% standard error (16,384 registers)", "not in the BCL; Redis `PFADD`/`PFCOUNT` server-side"]
+      - ["How often did key X appear?", "Count-Min Sketch", "width × depth counters", "over-counts only", "write it (card above)"]
+      - ["Have I seen X before?", "Bloom filter", "~10 bits per key at 1%", "false positives only", "write it over `BitArray`"]
+      - ["What are the top K keys?", "Misra–Gries / Space-Saving", "O(k)", "may miss keys at or under n/(k+1); counts low by at most n/(k+1)", "write it over `Dictionary`"]
+      - ["What is the p95 latency?", "t-digest / histogram / reservoir", "O(sample) or O(buckets)", "a few % near the tail", "`Histogram<T>` in `System.Diagnostics.Metrics`; the exporter (OpenTelemetry, Prometheus) computes the percentiles"]
+      - ["A uniform sample of k items", "Reservoir sampling", "O(k)", "exact and unbiased", "write it over `Random`"]
+      - ["A rolling average", "Ring buffer or EMA", "O(k) or O(1)", "exact / smoothed", "write it over an array"]
+      - ["Exact counts, bounded keys", "Dictionary", "O(distinct)", "exact", "`Dictionary<TKey, long>`, `CountBy` (.NET 9)"]
+  - id: streaming-pitfalls
+    kind: rules
+    title: Streaming pitfalls
+    note: The mistakes that only show up under production load.
+    items:
+      - tone: bad
+        text: "Unbounded buffers: `Channel.CreateUnbounded`, a `ConcurrentQueue` or Rx's `Buffer` on a hot source grow until the process dies. Bound them and state the full mode."
+      - tone: bad
+        text: "Recomputing the whole window per event (O(n·k) instead of O(n)) — slide it: add the new value, subtract the evicted one."
+      - tone: bad
+        text: "Using processing time when the business asks about event time. Network and device delays reorder everything."
+      - tone: bad
+        text: "Assuming exactly-once delivery. Design for at-least-once and make the consumer idempotent."
+      - tone: bad
+        text: "Summing squares for variance — it loses precision. Use Welford."
+      - tone: bad
+        text: "Hashing with `string.GetHashCode()` for anything saved, shared or merged: it is randomized per process. Use a stable hash (FNV-1a, or `XxHash64` from the `System.IO.Hashing` package)."
+      - tone: bad
+        text: "Blocking the producer to do per-event work. Hand off to a bounded `Channel<T>` and batch on the consumer side."
+      - tone: neutral
+        text: "A seeded `Random` replays the same sequence on one runtime, but the algorithm may change between .NET versions: persist the sample, not the seed."
+      - tone: good
+        text: "Decide the lateness policy explicitly: drop, hold until a watermark, or re-open the window and re-emit."
+      - tone: good
+        text: "Instrument the stream itself: input rate, drop count (the `itemDropped` callback), queue depth (`ChannelReader.Count`), end-to-end lag."

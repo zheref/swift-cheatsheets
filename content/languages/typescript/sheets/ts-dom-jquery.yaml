@@ -1,0 +1,473 @@
+id: ts-dom-jquery
+concept: ui.programmatic
+scope: platform
+title: "The DOM & jQuery — Programmatic UI"
+group: "UI"
+subtitle: The React sheet's task screen built by hand — elements, events, keyed updates, recycled rows and layout in code — with the DOM API and with jQuery 4.
+applies:
+  platforms: [browser]
+  runtime: a browser page (the examples run in Node against jsdom)
+  versions: { typescript: ">=5.5", browsers: "Baseline 2024", jquery: ">=4.0", node: ">=22.18" }
+sources:
+  - title: Document Object Model (DOM) — MDN
+    url: https://developer.mozilla.org/en-US/docs/Web/API/Document_Object_Model
+  - title: jQuery API documentation
+    url: https://api.jquery.com/
+  - title: jQuery 4.0 upgrade guide
+    url: https://jquery.com/upgrade-guide/4.0/
+cards:
+  - id: declarative-to-by-hand
+    kind: table
+    title: What React did for you, done by hand
+    note: The imperative loop — build nodes, insert them, listen, and on every change find the affected nodes and patch them yourself.
+    headers: [React, DOM API, jQuery 4]
+    rows:
+      - ["a component returning JSX", "a function returning an element: `createTaskRow(task)`", "`$(\"<li>\", { class: \"task\", \"data-id\": task.id })`"]
+      - ["props", "function arguments", "function arguments"]
+      - ["`key={task.id}`", "`row.dataset.id` + a `Map<id, Element>` you maintain", "`data-id` + `.find(\"[data-id=…]\")`"]
+      - ["`{title}` (escaped)", "`el.textContent = title`", "`.text(title)`"]
+      - ["`onChange` on each row", "one listener on the list + `event.target.closest(\"li\")`", "`.on(\"change\", \"li input\", fn)`"]
+      - ["re-render on `setState`", "call your own `update()`; patch only what changed", "same — jQuery has no state model"]
+      - ["`{cond && <x/>}`", "`el.hidden = !cond` or `toggleAttribute`", "`.toggle(cond)`"]
+      - ["effect cleanup on unmount", "`AbortController` + `{ signal }`, `observer.disconnect()`", "`.off(\".namespace\")`, `.remove()`"]
+      - ["`style={{…}}` / `className`", "`classList.toggle(c, on)`, `style.setProperty(\"--x\", v)`", "`.toggleClass(c, on)`, `.css(prop, v)`"]
+      - ["(no equivalent: no layout in render)", "`getBoundingClientRect()`, `ResizeObserver`", "`.outerWidth()`, `.offset()`"]
+  - id: build-with-the-dom-api
+    kind: code
+    title: Build the screen with the DOM API
+    note: Create, configure, then insert once; set text with `textContent` and state with properties, and stamp each row with its id.
+    prerequisites: &dom
+      - Node.js 22.18 or later (it runs `.mts` files directly by stripping the types)
+      - "`npm i jsdom` and `npm i -D @types/jsdom`"
+      - "In a browser drop the `JSDOM` line: the page's own `document` is used the same way"
+      - "Save as `main.mts` and run `node main.mts`"
+    code: |-
+      import { JSDOM } from "jsdom";
+
+      const { document } = new JSDOM(`<main id="app"></main>`).window;
+
+      type Task = { id: string; title: string; done: boolean };
+
+      function createTaskRow(task: Task): HTMLLIElement {
+        const row = document.createElement("li");
+        row.dataset.id = task.id;                       // the key later updates look rows up by
+        row.className = task.done ? "task done" : "task";
+
+        const box = document.createElement("input");
+        box.type = "checkbox";
+        box.checked = task.done;                        // a property: live state, not serialised HTML
+
+        const title = document.createElement("span");
+        title.textContent = task.title;                 // text, never markup: a title cannot inject HTML
+
+        const label = document.createElement("label"); // the title names the checkbox for assistive tech
+        label.append(box, " ", title);
+        row.append(label);
+        return row;
+      }
+
+      function createTaskScreen(tasks: readonly Task[]): HTMLElement {
+        const heading = Object.assign(document.createElement("h1"), { textContent: "Tasks" });
+        const count = Object.assign(document.createElement("p"), { className: "count" });
+        count.textContent = `${tasks.filter((t) => !t.done).length} open`;
+
+        const list = document.createElement("ul");
+        list.append(...tasks.map(createTaskRow));      // build detached, insert once: one layout
+
+        const screen = document.createElement("section");
+        screen.append(heading, count, list);
+        return screen;
+      }
+
+      const tasks: Task[] = [
+        { id: "t1", title: "Rotate API keys", done: true },
+        { id: "t2", title: "Review deploy PR", done: false },
+      ];
+      document.querySelector("#app")!.replaceChildren(createTaskScreen(tasks));
+
+      for (const el of document.querySelectorAll("h1, .count, li")) console.log(el.outerHTML);
+      console.log("checked:", [...document.querySelectorAll("input")].map((box) => box.checked).join(","));
+    expected: |-
+      <h1>Tasks</h1>
+      <p class="count">1 open</p>
+      <li data-id="t1" class="task done"><label><input type="checkbox"> <span>Rotate API keys</span></label></li>
+      <li data-id="t2" class="task"><label><input type="checkbox"> <span>Review deploy PR</span></label></li>
+      checked: true,false
+    validation: &ran
+      status: ran
+      toolchain: Node 24.16.0, TypeScript 5.9.3
+      date: "2026-11-16"
+  - id: build-with-jquery
+    kind: code
+    title: The same screen with jQuery 4 — toggle and bulk clear
+    note: Bulk work is where jQuery is still terse, because one call acts on every matched row — the whole screen with a count and an add form is on the jQuery vs React vs SolidJS sheet.
+    prerequisites:
+      - Node.js 22.18 or later (it runs `.mts` files directly by stripping the types)
+      - "`npm i jquery jsdom` and `npm i -D @types/jquery @types/jsdom`"
+      - "In a browser, replace the `jsdom` and `jquery/factory` imports and the `window` and `$` lines with `import $ from \"jquery\"`"
+      - "Save as `main.mts` and run `node main.mts`"
+    code: |-
+      import { JSDOM } from "jsdom";
+      import { jQueryFactory } from "jquery/factory";
+
+      const { window } = new JSDOM(`<main id="app"></main>`);
+      const $ = jQueryFactory(window as unknown as Window);      // jsdom's window type is narrower than lib.dom's
+
+      type Task = { id: string; title: string; done: boolean };
+
+      // The array is the owner: each handler updates it first, then the nodes that show it.
+      let tasks: Task[] = [
+        { id: "t1", title: "Rotate API keys", done: true },
+        { id: "t2", title: "Review deploy PR", done: false },
+        { id: "t3", title: "Rotate TLS certificate", done: false },
+      ];
+
+      function row(t: Task): JQuery<HTMLElement> {
+        const $box = $("<input>", { type: "checkbox" }).prop("checked", t.done);
+        const $label = $("<label>").append($box, " ", $("<span>").text(t.title));
+        return $("<li>", { class: t.done ? "task done" : "task", "data-id": t.id }).append($label);
+      }
+
+      const $app = $("#app").append($("<button>", { type: "button", text: "Clear completed" }), $("<ul>"));
+      $app.find("ul").append(tasks.map(row));
+
+      $app.on("change", "li input", (e) => {                     // delegated: covers every row
+        const $row = $(e.currentTarget).closest("li");
+        const done = $(e.currentTarget).prop("checked") === true;
+        tasks = tasks.map((t) => (t.id === $row.attr("data-id") ? { ...t, done } : t));
+        $row.toggleClass("done", done);
+      });
+
+      $app.on("click", "button", () => {
+        tasks = tasks.filter((t) => !t.done);
+        $app.find("li.done").remove();                            // one call, every matching row
+      });
+
+      const show = (step: string) => {
+        const rows = $app.find("li").map((_, li) => $(li).text().trim() + ($(li).hasClass("done") ? " ✓" : ""));
+        console.log(`${step}: ${rows.get().join(", ")} | data: ${tasks.map((t) => (t.done ? `${t.id}✓` : t.id))}`);
+      };
+
+      $app.find("[data-id=t2] input").prop("checked", true).trigger("change");   // the user ticks t2…
+      show("ticked t2");
+
+      $app.find("button").trigger("click");                       // …and clears completed
+      show("cleared");
+    expected: |-
+      ticked t2: Rotate API keys ✓, Review deploy PR ✓, Rotate TLS certificate | data: t1✓,t2✓,t3
+      cleared: Rotate TLS certificate | data: t3
+    applies:
+      requires: [jQuery]
+    sources:
+      - title: .on() — jQuery API documentation
+        url: https://api.jquery.com/on/
+    validation: *ran
+  - id: event-delegation-and-teardown
+    kind: code
+    title: Events — delegation and teardown
+    note: Enhance server-rendered rows with one listener per container, and remove every listener at once with an `AbortSignal`.
+    prerequisites: *dom
+    code: |-
+      import { JSDOM } from "jsdom";
+
+      const { window } = new JSDOM(`<ul id="tasks">
+        <li data-id="t1"><label><input type=checkbox> Rotate keys</label> <button class=remove>Remove</button></li>
+        <li data-id="t2"><label><input type=checkbox> Review PR</label> <button class=remove>Remove</button></li>
+      </ul>`);
+      const { document, AbortController } = window;     // jsdom accepts only its own AbortSignal
+
+      type TaskEvents = { toggle(id: string, done: boolean): void; remove(id: string): void };
+
+      function enhanceTaskList(list: HTMLElement, on: TaskEvents): () => void {
+        const controller = new AbortController();
+        const options = { signal: controller.signal };
+        const rowOf = (target: EventTarget | null) =>
+          (target as Element | null)?.closest<HTMLElement>("li[data-id]");
+
+        list.addEventListener("change", (event) => {
+          const box = event.target as HTMLInputElement;
+          const row = rowOf(box);
+          if (row && box.matches("input[type=checkbox]")) on.toggle(row.dataset.id!, box.checked);
+        }, options);
+
+        list.addEventListener("click", (event) => {
+          const row = rowOf((event.target as Element).closest("button.remove"));
+          if (!row) return;
+          on.remove(row.dataset.id!);
+          row.remove();
+        }, options);
+
+        return () => controller.abort();                // one call removes every listener added with `options`
+      }
+
+      const list = document.querySelector<HTMLElement>("#tasks")!;
+      const teardown = enhanceTaskList(list, {
+        toggle: (id, done) => console.log(`toggle ${id} → ${done}`),
+        remove: (id) => console.log(`remove ${id}`),
+      });
+
+      list.querySelector<HTMLInputElement>("[data-id=t1] input")!.click();
+      list.querySelector<HTMLButtonElement>("[data-id=t2] button")!.click();
+
+      teardown();
+      list.querySelector<HTMLInputElement>("[data-id=t1] input")!.click();   // no longer handled
+      console.log("rows left:", list.querySelectorAll("li").length);
+    expected: |-
+      toggle t1 → true
+      remove t2
+      rows left: 1
+    sources:
+      - title: EventTarget.addEventListener — MDN
+        url: https://developer.mozilla.org/en-US/docs/Web/API/EventTarget/addEventListener
+    validation: *ran
+  - id: keyed-sync-by-hand
+    kind: code
+    title: Keep the list in sync with the data by hand
+    note: A keyed patch — remove, update in place, insert, move — reuses each row's node, so listeners and in-progress state survive; a row that `insertBefore` moves still loses focus, so put it back.
+    prerequisites: *dom
+    code: |-
+      import { JSDOM } from "jsdom";
+
+      const { document } = new JSDOM(`<ul id="tasks"></ul>`).window;
+
+      type Task = { id: string; title: string; done: boolean };
+      const task = (id: string, title: string, done = false): Task => ({ id, title, done });
+
+      function createRow(task: Task): HTMLLIElement {
+        const label = Object.assign(document.createElement("label"), { textContent: task.title });
+        label.prepend(Object.assign(document.createElement("input"), { type: "checkbox" }));
+        const row = document.createElement("li");                  // <li><label><input>title</label></li>
+        row.append(label);
+        return row;
+      }
+
+      function syncList(list: HTMLElement, tasks: readonly Task[], rows: Map<string, HTMLLIElement>): void {
+        const focused = list.contains(document.activeElement) ? (document.activeElement as HTMLElement) : null;
+        const wanted = new Set(tasks.map((t) => t.id));
+        for (const [id, row] of rows) {
+          if (wanted.has(id)) continue;
+          row.remove();
+          rows.delete(id);
+        }
+        tasks.forEach((task, index) => {
+          const row = rows.get(task.id) ?? createRow(task);       // `rows`: task id → its node, across updates
+          rows.set(task.id, row);
+          const box = row.querySelector("input")!;
+          if (box.checked !== task.done) box.checked = task.done;  // update in place: write only what changed
+          const current = list.children[index] ?? null;
+          if (current !== row) list.insertBefore(row, current);   // insert or move into place
+        });
+        if (focused?.isConnected && document.activeElement !== focused) focused.focus();   // moving blurred it
+      }
+
+      const list = document.querySelector<HTMLElement>("#tasks")!;
+      const rows = new Map<string, HTMLLIElement>();
+      syncList(list, [task("t1", "Rotate keys"), task("t2", "Review PR"), task("t3", "Tag release")], rows);
+
+      // The user is on t2 when an update drops t3, marks t1 done, adds t4 and pins t2 to the top (so t2 moves).
+      const t2 = rows.get("t2")!;
+      t2.querySelector("input")!.focus();
+      syncList(list, [task("t2", "Review PR"), task("t1", "Rotate keys", true), task("t4", "Email QA")], rows);
+
+      const shown = [...list.children]
+        .map((li) => li.textContent + (li.querySelector("input")!.checked ? " ✓" : ""));
+      console.log(shown.join(" | "));
+      console.log("t2 same node:", rows.get("t2") === t2, "| focus on t2:", t2.contains(document.activeElement));
+    expected: |-
+      Review PR | Rotate keys ✓ | Email QA
+      t2 same node: true | focus on t2: true
+    validation: *ran
+  - id: what-goes-wrong-with-innerhtml
+    kind: code
+    title: What goes wrong when you rebuild with innerHTML
+    note: Re-rendering by string is the tempting shortcut — every row becomes a new node, and any user text becomes markup.
+    prerequisites: *dom
+    code: |-
+      import { JSDOM } from "jsdom";
+
+      const { document } = new JSDOM(`<ul id="tasks"></ul>`).window;
+      type Task = { id: string; title: string; done: boolean };
+      const list = document.querySelector<HTMLElement>("#tasks")!;
+
+      function renderWithInnerHTML(tasks: readonly Task[]): void {
+        list.innerHTML = tasks
+          .map((t) => `<li data-id="${t.id}"><input type="checkbox"${t.done ? " checked" : ""}> ${t.title}</li>`)
+          .join("");
+      }
+
+      const tasks: Task[] = [
+        { id: "t1", title: "Rotate keys", done: false },
+        { id: "t2", title: "Review PR", done: false },
+      ];
+      renderWithInnerHTML(tasks);
+      const before = list.querySelector<HTMLInputElement>("[data-id=t2] input")!;
+      before.focus();
+      let clicks = 0;
+      before.addEventListener("click", () => clicks++);            // a per-row listener
+
+      // a user names a task with markup; one more render later…
+      renderWithInnerHTML([...tasks, { id: "t3", title: `<img src="x" onerror="stealCookies()">`, done: false }]);
+      const after = list.querySelector<HTMLInputElement>("[data-id=t2] input")!;
+      after.click();
+
+      console.log("same node:", before === after);
+      console.log("focus on:", document.activeElement?.tagName);
+      console.log("listener calls:", clicks);
+      console.log("injected <img> elements:", list.querySelectorAll("img").length);
+    expected: |-
+      same node: false
+      focus on: BODY
+      listener calls: 0
+      injected <img> elements: 1
+    validation: *ran
+  - id: recycle-rows
+    kind: code
+    title: Recycle rows for a long list
+    note: "For thousands of rows inside a fixed-height `overflow-y: auto` viewport, keep a small pool of nodes and re-fill them as the user scrolls — the DOM's version of a reusable cell."
+    prerequisites: *dom
+    code: |-
+      import { JSDOM } from "jsdom";
+
+      const { window } = new JSDOM(`<div id="log"></div>`, { pretendToBeVisual: true });   // with rAF
+      const { document } = window;
+
+      function createRecycledList(viewport: HTMLElement, items: readonly string[], rowHeight = 32, visible = 6) {
+        const content = document.createElement("div");
+        content.style.cssText = `position: relative; height: ${items.length * rowHeight}px`;   // full scroll height
+        const pool = Array.from({ length: visible + 2 }, () => {     // +2 covers partly visible rows
+          const row = content.appendChild(document.createElement("div"));
+          row.style.cssText = `position: absolute; inset-inline: 0; height: ${rowHeight}px`;
+          return row;
+        });
+        viewport.replaceChildren(content);
+
+        function render(): void {
+          const first = Math.floor(viewport.scrollTop / rowHeight);
+          pool.forEach((row, i) => {
+            const index = first + i;
+            row.hidden = index >= items.length;
+            row.style.transform = `translateY(${index * rowHeight}px)`;
+            row.textContent = items[index] ?? "";                  // the same node, new content
+          });
+        }
+
+        let frame = 0;
+        viewport.addEventListener("scroll", () => {                // at most one render per frame
+          window.cancelAnimationFrame(frame);
+          frame = window.requestAnimationFrame(render);
+        }, { passive: true });
+
+        render();
+        return pool;
+      }
+
+      const entries = Array.from({ length: 10_000 }, (_, i) => `Task #${i + 1} updated`);
+      const viewport = document.querySelector<HTMLElement>("#log")!;
+      const pool = createRecycledList(viewport, entries);
+      const firstRows = () => pool.slice(0, 3).map((row) => row.textContent).join(" / ");
+      console.log(firstRows());
+
+      viewport.scrollTop = 3200;                                   // the user scrolls…
+      viewport.dispatchEvent(new window.Event("scroll"));
+      await new Promise((resolve) => window.requestAnimationFrame(resolve));   // …and the next frame renders
+      console.log(firstRows(), `| ${pool[0]!.parentElement!.children.length} nodes for ${entries.length} rows`);
+    expected: |-
+      Task #1 updated / Task #2 updated / Task #3 updated
+      Task #101 updated / Task #102 updated / Task #103 updated | 8 nodes for 10000 rows
+    sources:
+      - title: Window.requestAnimationFrame — MDN
+        url: https://developer.mozilla.org/en-US/docs/Web/API/Window/requestAnimationFrame
+    validation: *ran
+  - id: layout-and-measurement
+    kind: code
+    title: Layout and measurement in code
+    note: Let CSS lay out; use code to react to a container's size, to position against a measured element, and to batch reads before writes.
+    prerequisites:
+      - "A page containing `<section id=\"tasks-panel\">` with `.task` rows and a `#filter-button`, and a `#filter-menu` styled `position: absolute` placed directly under `<body>` (so page coordinates apply)"
+      - "Compile with `tsc` (`lib` including `DOM`) or a bundler, and load the output with `<script type=\"module\">`"
+    code: |-
+      const panel = document.querySelector<HTMLElement>("#tasks-panel")!;
+
+      // 1. Container-driven layout: the panel's width, not the window's, picks the layout.
+      const resizes = new ResizeObserver(([entry]) => {
+        if (!entry) return;
+        const width = entry.contentBoxSize[0]?.inlineSize ?? entry.contentRect.width;
+        panel.classList.toggle("compact", width < 480);
+        // read in CSS as grid-template-columns: repeat(var(--columns), 1fr)
+        panel.style.setProperty("--columns", String(Math.max(1, Math.floor(width / 240))));
+        equaliseRowHeights([...panel.querySelectorAll<HTMLElement>(".task")]);   // rows re-wrapped
+      });
+      resizes.observe(panel);
+
+      // 2. Position a menu under its trigger: measure once, then write.
+      function placeBelow(menu: HTMLElement, trigger: HTMLElement): void {
+        const rect = trigger.getBoundingClientRect();              // viewport coordinates; forces layout
+        menu.style.top = `${rect.bottom + window.scrollY + 4}px`;
+        menu.style.left = `${rect.left + window.scrollX}px`;
+      }
+      const byId = (id: string) => document.getElementById(id)!;
+      placeBelow(byId("filter-menu"), byId("filter-button"));
+
+      // 3. Batch: clear all, read all, write all — alternating forces one layout per row ("layout thrashing").
+      function equaliseRowHeights(rows: HTMLElement[]): void {
+        requestAnimationFrame(() => {
+          for (const row of rows) row.style.minHeight = "";                // let rows shrink back first
+          const tallest = Math.max(...rows.map((row) => row.getBoundingClientRect().height));
+          for (const row of rows) row.style.minHeight = `${tallest}px`;
+        });
+      }
+
+      // On teardown: resizes.disconnect()
+    expected: The panel switches to its compact layout below 480px wide and its grid gains a column per 240px; the filter menu sits 4px under its button; after every resize each row takes the tallest row's height, growing or shrinking.
+    sources:
+      - title: ResizeObserver — MDN
+        url: https://developer.mozilla.org/en-US/docs/Web/API/ResizeObserver
+      - title: Element.getBoundingClientRect — MDN
+        url: https://developer.mozilla.org/en-US/docs/Web/API/Element/getBoundingClientRect
+    validation:
+      status: compiled
+      toolchain: Node 24.16.0, TypeScript 5.9.3
+      date: "2026-11-16"
+      host: a browser page with the elements named in the setup (jsdom has no layout)
+  - id: jquery-to-modern-dom
+    kind: table
+    title: jQuery → modern DOM
+    note: Everything jQuery smoothed over now has a native equivalent in every supported browser.
+    headers: [jQuery, Modern DOM, Note]
+    rows:
+      - ["`$(selector)`", "`document.querySelectorAll(selector)` / `querySelector`", "a static `NodeList`; spread it for array methods"]
+      - ["`$(fn)`, `$(document).ready(fn)`", "`<script type=\"module\">` (deferred) or `DOMContentLoaded`", ""]
+      - ["`.on(\"click\", \".row\", fn)`", "`addEventListener(\"click\", …)` + `event.target.closest(\".row\")`", "delegation by hand"]
+      - ["`.off(\"click.tasks\")`", "`{ signal }` + `controller.abort()`", "removes a whole group at once"]
+      - ["`.addClass` / `.toggleClass(c, on)`", "`classList.add(c)` / `classList.toggle(c, on)`", "jQuery 4 removed the class-less `.toggleClass(state)` / `.toggleClass()` forms; `.toggleClass(c, on)` remains"]
+      - ["`.attr` / `.prop` / `.data`", "`setAttribute` / the property / `dataset`", "`.data()` also caches and parses JSON; `dataset` is always strings"]
+      - ["`.text(s)` / `.html(s)`", "`textContent` / `innerHTML`", "`innerHTML` with data is an injection hole"]
+      - ["`.append` `.prepend` `.before` `.after` `.remove` `.empty()`", "the same names natively; `replaceChildren()` to empty or swap", ""]
+      - ["`.closest` / `.find` / `.parent()` / `.children()`", "`closest` / `querySelectorAll` / `parentElement` / `children`", "`children` is a live `HTMLCollection`"]
+      - ["`.css({ … })`, `.width()`, `.offset()`", "classes and `style.setProperty`; `getBoundingClientRect()`", ""]
+      - ["`.fadeIn()` / `.animate()`", "CSS transitions, or `element.animate()` (Web Animations)", "runs off the main thread where it can"]
+      - ["`.trigger(\"change\")`", "`el.dispatchEvent(new Event(\"change\", { bubbles: true }))`", "for events with no native method (like `change`) `.trigger` reaches only jQuery handlers; `dispatchEvent` reaches every listener"]
+      - ["`$.ajax` / `$.getJSON`", "`fetch` + `AbortController`", ""]
+      - ["`$.each` / `$.map` / `$.extend`", "`for…of` / `Array.prototype.map` / spread or `structuredClone`", ""]
+      - ["`$.trim` / `$.isArray` / `$.parseJSON` / `$.now`", "`s.trim()` / `Array.isArray` / `JSON.parse` / `Date.now()`", "**removed** in jQuery 4"]
+  - id: dom-and-jquery-rules
+    kind: rules
+    title: When jQuery still earns its place — and what bites by hand
+    note: Programmatic UI is fine for small, stable screens; past that, the bookkeeping is the bug source.
+    items:
+      - tone: good
+        text: "jQuery earns its place in an **existing** jQuery codebase and its plugins (DataTables, Select2, a CMS theme): upgrade to 4, keep it, wrap it — rewriting working UI buys little."
+      - tone: good
+        text: "It is still terse for quick enhancement of server-rendered pages: implicit iteration over every match, delegated and namespaced events, `.trigger`."
+      - tone: bad
+        text: "New apps: no state model, no keyed updates, no components — you rebuild a worse framework by hand. Use the DOM API for small widgets, a framework for screens."
+      - tone: good
+        text: "One owner of the data and one `update(data)` path that patches by key; never let event handlers edit the DOM and the data separately."
+      - tone: good
+        text: "Delegate events to the container: one listener instead of one closure per row, and rows added later are covered."
+      - tone: bad
+        text: "`innerHTML` / `.html()` with data: new nodes on every render (focus, scroll and listeners lost) and an injection hole. Build nodes and set `textContent`."
+      - tone: neutral
+        text: "Combining hand-written DOM code or jQuery plugins with React or Solid (refs, islands, one owner per subtree) is on the jQuery vs React vs SolidJS sheet."
+      - tone: neutral
+        text: "Moving a focused node with `insertBefore` blurs it; `querySelectorAll` is a snapshot while `children` is live — re-query after you mutate."

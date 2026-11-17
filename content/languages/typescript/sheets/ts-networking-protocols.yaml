@@ -1,0 +1,464 @@
+id: ts-networking-protocols
+concept: networking.protocols
+scope: platform
+title: "Networking — SOAP, gRPC & GraphQL"
+group: "Networking & media"
+subtitle: "SOAP envelopes and faults, GraphQL over plain fetch with errors beside data, gRPC from generated stubs with deadlines — and when to pick which."
+applies:
+  platforms: [browser, node]
+  runtime: Node.js 22.18+ or a browser; the SOAP and GraphQL examples run on Node.js against a local server or an in-process endpoint
+  versions: { typescript: ">=5.5", node: ">=22.18", fast-xml-parser: ">=5.0", graphql: ">=16.0" }
+sources:
+  - title: SOAP 1.1 — W3C Note
+    url: https://www.w3.org/TR/2000/NOTE-SOAP-20000508/
+  - title: SOAP Version 1.2 Part 1 — W3C
+    url: https://www.w3.org/TR/soap12-part1/
+  - title: GraphQL over HTTP — specification draft
+    url: https://graphql.github.io/graphql-over-http/draft/
+  - title: fast-xml-parser — GitHub
+    url: https://github.com/NaturalIntelligence/fast-xml-parser
+  - title: Serving over HTTP — GraphQL
+    url: https://graphql.org/learn/serving-over-http/
+  - title: GraphQL.js — GraphQL
+    url: https://graphql.org/graphql-js/
+  - title: Connect for Web — Connect RPC
+    url: https://connectrpc.com/docs/web/getting-started/
+  - title: Node.js basics tutorial — gRPC
+    url: https://grpc.io/docs/languages/node/basics/
+cards:
+  - id: what-goes-over-the-wire
+    kind: table
+    title: What goes over the wire
+    note: "All four are \"just HTTP\" underneath; what differs is who defines the contract and what the client needs to speak it."
+    headers: [Protocol, "Request", "Errors arrive as", "Contract and types", "From a browser"]
+    rows:
+      - - REST
+        - "Verb + URL, usually JSON"
+        - "HTTP status + a body you define"
+        - "OpenAPI (optional); validate with a schema"
+        - "`fetch`"
+      - - SOAP 1.1
+        - "`POST` of an XML envelope as `text/xml`, plus a `SOAPAction` header"
+        - "HTTP `500` with a `Fault`: `faultcode`, `faultstring`, `detail`"
+        - "WSDL + XSD; generated clients are rare in TS"
+        - "`fetch` + `DOMParser`; needs CORS on the service"
+      - - SOAP 1.2
+        - "`content-type: application/soap+xml; action=\"…\"` — no `SOAPAction` header; namespace `http://www.w3.org/2003/05/soap-envelope`"
+        - "`400` (`Sender`) or `500` (`Receiver`) with `Fault/Code/Value` and `Fault/Reason/Text`"
+        - "WSDL 1.1 or 2.0 + XSD"
+        - "Same as 1.1"
+      - - GraphQL
+        - "`POST` of `{ query, variables }` to one endpoint"
+        - "An `errors` array **beside** `data`, usually with `200`; request errors may be `4xx` under `application/graphql-response+json`"
+        - "The schema; types from GraphQL Code Generator"
+        - "`fetch`, or a client (Apollo, urql) for caching"
+      - - gRPC
+        - "HTTP/2 + Protocol Buffers, one path per method"
+        - "A status code (`NOT_FOUND`, `DEADLINE_EXCEEDED`…) in trailers"
+        - "`.proto` files → generated stubs"
+        - "Not directly: gRPC-Web or Connect through a proxy or a Connect server"
+  - id: soap-envelope-call
+    kind: code
+    title: "SOAP: build the envelope, POST it, read the response"
+    note: "Reach for this when a carrier, bank or ERP only speaks SOAP: escape every value you interpolate, send the 1.1 headers, and parse with namespace prefixes stripped."
+    prerequisites: &xml
+      - Node.js 22.18 or later (it runs `.mts` files directly by stripping the types)
+      - "`npm i fast-xml-parser`"
+      - "Save as `main.mts` and run `node main.mts`"
+    code: |-
+      import { createServer } from "node:http";
+      import { once } from "node:events";
+      import { text } from "node:stream/consumers";
+      import type { AddressInfo } from "node:net";
+      import { XMLParser } from "fast-xml-parser";
+
+      const SOAP11 = "http://schemas.xmlsoap.org/soap/envelope/";
+
+      // Values stay strings (you decide the types); attributes are kept as "@_name".
+      const parser = new XMLParser({ removeNSPrefix: true, parseTagValue: false, ignoreAttributes: false });
+
+      const server = createServer(async (req, res) => {             // stands in for the carrier's endpoint
+        const { Postcode, WeightKg } = parser.parse(await text(req)).Envelope.Body.GetRate;
+        console.log(`carrier received ${req.headers.soapaction} for "${Postcode}"`);
+        const rate = `<Rate currency="EUR">${(4.5 + 1.2 * Number(WeightKg)).toFixed(2)}</Rate>`;
+        res.writeHead(200, { "content-type": "text/xml; charset=utf-8" }).end(`<s:Envelope xmlns:s="${SOAP11}">` +
+          `<s:Body><GetRateResponse xmlns="urn:carrier">${rate}</GetRateResponse></s:Body></s:Envelope>`);
+      }).listen(0, "127.0.0.1");
+      await once(server, "listening");
+      const endpoint = `http://127.0.0.1:${(server.address() as AddressInfo).port}/RateService.asmx`;
+
+      const ENTITIES: Record<string, string> = {
+        "<": "&lt;", ">": "&gt;", "&": "&amp;", "'": "&apos;", '"': "&quot;",
+      };
+      const xml = (value: string | number) => String(value).replace(/[<>&'"]/g, (c) => ENTITIES[c]!);
+
+      async function getRate(postcode: string, weightKg: number): Promise<{ amount: number; currency: string }> {
+        const envelope = `<soap:Envelope xmlns:soap="${SOAP11}">
+        <soap:Body>
+          <GetRate xmlns="urn:carrier">
+            <Postcode>${xml(postcode)}</Postcode><WeightKg>${xml(weightKg)}</WeightKg>
+          </GetRate>
+        </soap:Body>
+      </soap:Envelope>`;
+        const response = await fetch(endpoint, {
+          method: "POST",
+          headers: { "content-type": "text/xml; charset=utf-8", soapaction: '"urn:carrier/GetRate"' },   // SOAP 1.1
+          body: envelope,
+        });
+        const rate = parser.parse(await response.text()).Envelope?.Body?.GetRateResponse?.Rate;
+        if (!response.ok || rate === undefined) throw new Error(`GetRate failed: HTTP ${response.status}`);
+        return { amount: Number(rate["#text"]), currency: String(rate["@_currency"]) };
+      }
+
+      console.log(await getRate("10115 <Mitte> & Co", 5));
+      server.close();
+    expected: |-
+      carrier received "urn:carrier/GetRate" for "10115 <Mitte> & Co"
+      { amount: 10.5, currency: 'EUR' }
+    validation: &ran
+      status: ran
+      toolchain: Node 24.16.0, TypeScript 5.9.3
+      date: "2026-11-16"
+  - id: soap-fault
+    kind: code
+    title: "SOAP: turn a Fault into a typed error"
+    note: "A fault comes back as HTTP 500 **with** an envelope, so parse the body before you look at the status — here with `DOMParser`, the browser's parser, which jsdom provides in Node."
+    prerequisites:
+      - Node.js 22.18 or later (it runs `.mts` files directly by stripping the types)
+      - "`npm i jsdom` (only for Node — in a browser `DOMParser` is a global)"
+      - "Save as `main.mts` and run `node main.mts`"
+    code: |-
+      import { JSDOM } from "jsdom";
+
+      const { DOMParser } = new JSDOM().window;           // in a browser: delete this line
+      const SOAP11 = "http://schemas.xmlsoap.org/soap/envelope/";
+
+      const send = async (_url: string, _init: RequestInit) => new Response(   // the carrier, stubbed
+        `<s:Envelope xmlns:s="${SOAP11}"><s:Body><s:Fault><faultcode>s:Client</faultcode>` +
+        `<faultstring>Weight exceeds 30 kg</faultstring><detail><MaxKg>30</MaxKg></detail>` +
+        `</s:Fault></s:Body></s:Envelope>`,
+        { status: 500, headers: { "content-type": "text/xml; charset=utf-8" } });
+
+      class SoapFault extends Error {
+        code: string;
+
+        constructor(code: string, message: string) {
+          super(message);
+          this.code = code;
+        }
+      }
+
+      function soapBody(xml: string): Element {
+        const doc = new DOMParser().parseFromString(xml, "text/xml");
+        if (doc.querySelector("parsererror")) throw new Error("response is not XML");
+        const body = doc.getElementsByTagNameNS(SOAP11, "Body")[0];
+        const fault = body?.getElementsByTagNameNS(SOAP11, "Fault")[0];
+        if (fault) {
+          const field = (tag: string) => fault.getElementsByTagName(tag)[0]?.textContent ?? "";   // unqualified
+          throw new SoapFault(field("faultcode"), field("faultstring"));
+        }
+        if (!body?.firstElementChild) throw new Error("empty SOAP body");
+        return body.firstElementChild;
+      }
+
+      const envelope = `<soap:Envelope xmlns:soap="${SOAP11}"><soap:Body>` +
+        `<GetRate xmlns="urn:carrier"><WeightKg>45</WeightKg></GetRate></soap:Body></soap:Envelope>`;
+      const response = await send("https://carrier.example/RateService.asmx", {
+        method: "POST",
+        headers: { "content-type": "text/xml; charset=utf-8", soapaction: '"urn:carrier/GetRate"' },
+        body: envelope,
+      });
+
+      try {
+        soapBody(await response.text());                  // parse first: the status alone says nothing useful
+      } catch (e) {
+        if (!(e instanceof SoapFault)) throw e;
+        console.log(response.status, e.code, "—", e.message);   // s:Client: fix the request; s:Server: retry
+      }
+    expected: "500 s:Client — Weight exceeds 30 kg"
+    applies:
+      platforms: [browser, node]
+      versions: { typescript: ">=5.5", node: ">=22.18", jsdom: ">=24" }
+    sources:
+      - title: DOMParser — MDN
+        url: https://developer.mozilla.org/en-US/docs/Web/API/DOMParser
+      - title: SOAP 1.1 — W3C Note (the Fault element, section 4.4)
+        url: https://www.w3.org/TR/2000/NOTE-SOAP-20000508/
+    validation: *ran
+  - id: graphql-query-variables
+    kind: code
+    title: "GraphQL: a typed query with variables over fetch"
+    note: "Variables travel beside the query, never spliced into it, and the result type is declared per operation (GraphQL Code Generator writes these for you from the schema)."
+    prerequisites: &graphql
+      - Node.js 22.18 or later (it runs `.mts` files directly by stripping the types)
+      - "`npm i graphql` (only for the in-process stand-in endpoint — the client is plain `fetch`)"
+      - "Save as `main.mts` and run `node main.mts`"
+    code: |-
+      import { buildSchema, graphql } from "graphql";
+
+      const schema = buildSchema(`
+        type Product { id: ID!, name: String!, priceCents: Int! }
+        type Query { products(category: String!, first: Int!): [Product!]! }`);
+
+      const CATALOG = [
+        { id: "p1", name: "Mug", priceCents: 1200, category: "kitchen" },
+        { id: "p2", name: "Tote", priceCents: 1800, category: "bags" },
+        { id: "p3", name: "Kettle", priceCents: 4500, category: "kitchen" },
+      ];
+      const rootValue = {
+        products: ({ category, first }: { category: string; first: number }) =>
+          CATALOG.filter((p) => p.category === category).slice(0, first),
+      };
+
+      // The shop's endpoint, run in-process as an injected transport; omit it and gql() uses fetch.
+      type Fetch = (url: string, init: RequestInit) => Promise<Response>;
+      const shopEndpoint: Fetch = async (_url, init) => {
+        const { query, variables } = JSON.parse(String(init.body));
+        return Response.json(await graphql({ schema, source: query, variableValues: variables, rootValue }));
+      };
+
+      type GraphQLResponse<T> = { data?: T | null; errors?: { message: string; path?: (string | number)[] }[] };
+
+      async function gql<T>(query: string, variables: object, send: Fetch = fetch): Promise<GraphQLResponse<T>> {
+        const response = await send("https://shop.example/graphql", {
+          method: "POST",
+          headers: { "content-type": "application/json", accept: "application/graphql-response+json" },
+          body: JSON.stringify({ query, variables }),          // variables beside the query, never spliced in
+        });
+        if (!response.headers.get("content-type")?.includes("json")) throw new Error(`HTTP ${response.status}`);
+        return response.json();                            // a 4xx with a JSON body still carries `errors`
+      }
+
+      const PRODUCTS = /* GraphQL */ `
+        query Products($category: String!, $first: Int!) {
+          products(category: $category, first: $first) { id name priceCents }
+        }`;
+      type ProductsQuery = { products: { id: string; name: string; priceCents: number }[] };
+
+      const { data, errors } = await gql<ProductsQuery>(PRODUCTS, { category: "kitchen", first: 5 }, shopEndpoint);
+      if (errors?.length) throw new Error(errors.map((e) => e.message).join("; "));
+      for (const product of data?.products ?? []) {
+        console.log(product.id, product.name, (product.priceCents / 100).toFixed(2));
+      }
+    expected: |-
+      p1 Mug 12.00
+      p3 Kettle 45.00
+    validation: *ran
+  - id: graphql-mutation-errors
+    kind: code
+    title: "GraphQL: a mutation, and errors beside data"
+    note: "A GraphQL response can be a partial success: read `errors` even when `data` is present, and branch on `extensions.code`, not on the message text."
+    prerequisites: *graphql
+    code: |-
+      import { buildSchema, graphql, GraphQLError } from "graphql";
+
+      const schema = buildSchema(`
+        type Cart { itemCount: Int! }
+        type Query { cart: Cart! }
+        type Mutation { addToCart(productId: ID!, quantity: Int!): Cart }`);
+
+      const STOCK: Record<string, number> = { p1: 3 };
+      let itemCount = 0;
+      const rootValue = {
+        cart: () => ({ itemCount }),
+        addToCart: ({ productId, quantity }: { productId: string; quantity: number }) => {
+          const left = STOCK[productId] ?? 0;
+          const extensions = { code: "OUT_OF_STOCK" };      // a machine-readable code for clients to branch on
+          if (quantity > left) throw new GraphQLError(`Only ${left} left`, { extensions });
+          STOCK[productId] = left - quantity;
+          return { itemCount: (itemCount += quantity) };
+        },
+      };
+
+      // The transport is injected: the client below is exactly what talks to a real endpoint.
+      const send = async (_url: string, init: RequestInit) => {
+        const { query, variables } = JSON.parse(String(init.body));
+        return Response.json(await graphql({ schema, source: query, variableValues: variables, rootValue }));
+      };
+
+      type GqlError = { message: string; path?: (string | number)[]; extensions?: { code?: string } };
+      type AddToCart = { addToCart: { itemCount: number } | null };
+      const ADD_TO_CART = /* GraphQL */ `
+        mutation AddToCart($productId: ID!, $quantity: Int!) {
+          addToCart(productId: $productId, quantity: $quantity) { itemCount }
+        }`;
+
+      async function addToCart(productId: string, quantity: number): Promise<string> {
+        const body = JSON.stringify({ query: ADD_TO_CART, variables: { productId, quantity } });
+        const response = await send("/graphql", { method: "POST", body });
+        const { data, errors } = (await response.json()) as { data?: AddToCart | null; errors?: GqlError[] };
+        const outOfStock = errors?.find((e) => e.extensions?.code === "OUT_OF_STOCK");
+        if (outOfStock) return `refused at ${outOfStock.path?.join(".")}: ${outOfStock.message}`;
+        if (errors?.length || !data?.addToCart) return `failed: ${errors?.[0]?.message ?? "no data"}`;
+        return `cart now holds ${data.addToCart.itemCount}`;
+      }
+
+      console.log(await addToCart("p1", 2));
+      console.log(await addToCart("p1", 5));
+      console.log(await addToCart("p1", "two" as unknown as number));   // an unchecked form value: no data at all
+    expected: |-
+      cart now holds 2
+      refused at addToCart: Only 1 left
+      failed: Variable "$quantity" has invalid value: Int cannot represent non-integer value: "two"
+    applies:
+      platforms: [browser, node]
+      versions: { typescript: ">=5.5", node: ">=22.18", graphql: ">=17.0" }
+    validation: *ran
+  - id: grpc-connect-browser
+    kind: code
+    title: "gRPC from a browser: Connect and gRPC-Web"
+    note: "Browsers cannot speak raw gRPC (no HTTP/2 trailers), so a Connect client calls a Connect server, or a gRPC-Web transport calls through a proxy such as Envoy — same generated stub, same code."
+    prerequisites:
+      - "`npm i @connectrpc/connect @connectrpc/connect-web @bufbuild/protobuf`, and `@bufbuild/protoc-gen-es` + `@bufbuild/buf` as dev dependencies"
+      - "Generate `gen/shop/v1/orders_pb.ts` from `orders.proto` with `npx buf generate` (plugin `es`, `target=ts`)"
+      - "A bundler (Vite, esbuild) serving the page; a server that speaks Connect or gRPC-Web, with CORS for the page's origin"
+    code: |-
+      import { createClient, ConnectError, Code } from "@connectrpc/connect";
+      import { createConnectTransport, createGrpcWebTransport } from "@connectrpc/connect-web";
+      import { OrderService, OrderStatus } from "./gen/shop/v1/orders_pb.js";   // generated by protoc-gen-es
+
+      const baseUrl = "https://api.shop.example";
+      const SERVER_SPEAKS_CONNECT = true;                    // connect-go, connect-node, connect-es servers
+      const transport = SERVER_SPEAKS_CONNECT
+        ? createConnectTransport({ baseUrl })                // the server answers the browser directly
+        : createGrpcWebTransport({ baseUrl });               // a plain gRPC server behind Envoy's gRPC-Web filter
+      const orders = createClient(OrderService, transport);
+
+      export async function showOrder(id: string): Promise<string> {
+        try {
+          const order = await orders.getOrder({ id }, { timeoutMs: 2_000 });   // unary call with a deadline
+          return `${order.id}: ${OrderStatus[order.status]}`;          // protobuf enums are numeric TS enums
+        } catch (err) {
+          const e = ConnectError.from(err);
+          if (e.code === Code.NotFound) return "No such order";
+          if (e.code === Code.DeadlineExceeded || e.code === Code.Unavailable) return "Try again";
+          throw e;
+        }
+      }
+
+      export async function followOrder(id: string, signal: AbortSignal, onUpdate: (status: OrderStatus) => void) {
+        try {
+          for await (const update of orders.watchOrder({ id }, { signal })) onUpdate(update.status);   // a stream
+        } catch (err) {
+          if (ConnectError.from(err).code !== Code.Canceled) throw err;   // aborting the signal ends the stream
+        }
+      }
+    expected: "`showOrder` resolves to the order's status or a friendly message per status code; `followOrder` reports each status update until the server ends the stream or the signal aborts."
+    applies:
+      platforms: [browser]
+      runtime: a browser page built with a bundler
+      versions: { typescript: ">=5.5", "@connectrpc/connect": ">=2.0", "@bufbuild/protobuf": ">=2.0" }
+    sources:
+      - title: Using clients — Connect for Web
+        url: https://connectrpc.com/docs/web/using-clients/
+      - title: Errors — Connect for Web
+        url: https://connectrpc.com/docs/web/errors/
+      - title: Cancellation and timeouts — Connect for Web
+        url: https://connectrpc.com/docs/web/cancellation-and-timeouts/
+    validation:
+      status: excerpt
+      host: a browser page built with Vite, calling a Connect or gRPC-Web server (the Connect packages and generated stubs are not installed here)
+  - id: grpc-node-grpc-js
+    kind: code
+    title: "gRPC in Node: @grpc/grpc-js with generated types"
+    note: "Service-to-service calls from Node: give every call an absolute `deadline`, switch on `grpc.status` codes, and listen for `error` on a stream or it crashes the process."
+    prerequisites:
+      - "`npm i @grpc/grpc-js @grpc/proto-loader`"
+      - "Generate types: `npx proto-loader-gen-types --longs=String --enums=String --defaults --oneofs --grpcLib=@grpc/grpc-js --outDir=gen orders.proto`"
+      - "A gRPC server for `shop.v1.OrderService` (unary `GetOrder`, server-streaming `WatchOrder`)"
+    code: |-
+      import * as grpc from "@grpc/grpc-js";
+      import * as protoLoader from "@grpc/proto-loader";
+      import type { ProtoGrpcType } from "./gen/orders.ts";
+      import type { Order__Output } from "./gen/shop/v1/Order.ts";
+
+      const options = { longs: String, enums: String, defaults: true, oneofs: true };   // match the gen-types flags
+      const definition = protoLoader.loadSync("orders.proto", options);
+      const proto = grpc.loadPackageDefinition(definition) as unknown as ProtoGrpcType;
+      const client = new proto.shop.v1.OrderService("orders.internal:50051", grpc.credentials.createSsl());
+
+      const deadlineIn = (ms: number) => new Date(Date.now() + ms);   // a deadline is a point in time
+
+      function getOrder(id: string): Promise<Order__Output> {
+        return new Promise((resolve, reject) =>
+          client.getOrder({ id }, { deadline: deadlineIn(2_000) }, (err, order) =>
+            err || !order ? reject(err ?? new Error("empty response")) : resolve(order)));
+      }
+
+      try {
+        console.log((await getOrder("o-1")).status);
+      } catch (e) {
+        const err = e as grpc.ServiceError;
+        if (err.code === grpc.status.NOT_FOUND) console.log("no such order");
+        else if (err.code === grpc.status.DEADLINE_EXCEEDED) console.log("orders service too slow");
+        else throw err;
+      }
+
+      const updates = client.watchOrder({ id: "o-1" }, { deadline: deadlineIn(60_000) });
+      const stopWatching = setTimeout(() => updates.cancel(), 30_000);   // the caller stopped caring
+      updates.on("data", (update: Order__Output) => console.log("status:", update.status));
+      updates.on("error", (err: grpc.ServiceError) => {   // without this listener an error crashes the process
+        if (err.code !== grpc.status.CANCELLED) console.error(grpc.status[err.code], err.details);
+      });
+      updates.on("status", () => {                                   // emitted once, however the call ended
+        clearTimeout(stopWatching);
+        client.close();
+      });
+    expected: "Prints the order's status (or `no such order` / `orders service too slow`), then each streamed status update until the stream ends or is cancelled after 30 seconds."
+    applies:
+      platforms: [node]
+      runtime: Node.js 22.18+
+      versions: { typescript: ">=5.5", node: ">=22.18", "@grpc/grpc-js": ">=1.10", "@grpc/proto-loader": ">=0.7" }
+    sources:
+      - title: Node.js basics tutorial — gRPC
+        url: https://grpc.io/docs/languages/node/basics/
+      - title: Deadlines — gRPC
+        url: https://grpc.io/docs/guides/deadlines/
+      - title: Status codes — gRPC
+        url: https://grpc.io/docs/guides/status-codes/
+      - title: "@grpc/proto-loader README — GitHub"
+        url: https://github.com/grpc/grpc-node/tree/master/packages/proto-loader
+    validation:
+      status: excerpt
+      host: Node.js talking to a gRPC server (`@grpc/grpc-js`, `@grpc/proto-loader` and the generated types are not installed here)
+  - id: choosing-a-protocol
+    kind: table
+    title: Choosing between REST, SOAP, gRPC and GraphQL
+    note: "Usually the other side has already chosen; when it is yours to choose, choose by who the clients are."
+    headers: [Pick, "When", "Strength", "Cost"]
+    rows:
+      - - REST + JSON
+        - "Public or partner APIs; browsers; anything cacheable"
+        - "HTTP caching, CDNs, every tool understands it"
+        - "Over- and under-fetching; the contract is yours to document"
+      - - GraphQL
+        - "Many screens with different data needs over one backend"
+        - "Client picks fields; one round trip; a typed schema"
+        - "No HTTP caching by URL; query cost limits; N+1 on the server"
+      - - gRPC
+        - "Service-to-service inside your network; streaming"
+        - "Compact binary, generated stubs, deadlines and streaming built in"
+        - "Browsers need gRPC-Web or Connect; payloads unreadable without the `.proto`"
+      - - SOAP
+        - "Integrating an existing enterprise, banking or government service"
+        - "WS-Security and formal contracts (WSDL) those systems expect"
+        - "Verbose XML, weak TS tooling — wrap it behind your own typed function"
+  - id: protocols-rules
+    kind: rules
+    title: Rules worth saying out loud
+    note: The protocol-specific traps behind most integration bugs.
+    items:
+      - tone: bad
+        text: "Interpolating values into a SOAP envelope or a GraphQL query string. Escape XML; pass GraphQL `variables`."
+      - tone: bad
+        text: "Checking only `response.ok`. A SOAP fault is a `500` **with** a body to read; a GraphQL failure is often a `200` with `errors`."
+      - tone: good
+        text: "GraphQL: treat `data` and `errors` as independent — partial data with errors is a normal response."
+      - tone: good
+        text: "gRPC: every call gets a deadline; the default is **none**, so a stuck server holds the call forever."
+      - tone: good
+        text: "Branch on machine codes (`faultcode`, `extensions.code`, `grpc.status`), never on human-readable messages."
+      - tone: neutral
+        text: "Keep the protocol behind one typed function per operation; the rest of the app should not know a call is SOAP."
+      - tone: neutral
+        text: "Generated code (protoc-gen-es, proto-loader-gen-types, GraphQL Code Generator) is the source of truth for types; regenerate in CI."

@@ -1,0 +1,467 @@
+id: localization
+concept: localization.practices
+scope: platform
+title: "Localization & Internationalization"
+group: iOS Practice
+subtitle: Strings that find their translation, plurals that agree, numbers and dates the reader expects, and layouts that mirror.
+applies:
+  platforms:
+    - ios
+    - ipados
+    - macos
+    - tvos
+    - watchos
+    - visionos
+  requires:
+    - Foundation
+    - SwiftUI
+  versions:
+    swift: ">=6.0"
+    ios: ">=17"
+    xcode: ">=15"
+sources:
+  - title: Localization — Xcode documentation
+    url: https://developer.apple.com/documentation/xcode/localization
+  - title: Localizing and varying text with a string catalog
+    url: https://developer.apple.com/documentation/xcode/localizing-and-varying-text-with-a-string-catalog
+  - title: Locale — Foundation
+    url: https://developer.apple.com/documentation/foundation/locale
+  - title: Bundling resources with a Swift package
+    url: https://developer.apple.com/documentation/xcode/bundling-resources-with-a-swift-package
+  - title: Right to left — Human Interface Guidelines
+    url: https://developer.apple.com/design/human-interface-guidelines/right-to-left
+cards:
+  - id: string-catalogs-and-how-lookup-works
+    kind: table
+    title: String Catalogs and how lookup works
+    note: The catalog is a build input; at runtime the bundle holds compiled `.strings` per language, exactly as before.
+    headers:
+      - Piece
+      - What it is
+      - What to know
+    rows:
+      - - "`Localizable.xcstrings`"
+        - the default table — one JSON file holding every language, plural and device variant
+        - on each build Xcode adds the keys it finds in `Text("…")`, `String(localized:)`, `LocalizedStringResource`
+      - - Other tables
+        - "`Settings.xcstrings` → `table: \"Settings\"`"
+        - split by feature so translators and reviewers see one area at a time
+      - - "`InfoPlist.xcstrings`"
+        - Info.plist values — display name, permission purpose strings
+        - the alert asking for the camera is UI too
+      - - The key
+        - defaults to the English text itself
+        - use a semantic key plus `defaultValue:` when one English word has two meanings
+      - - "`comment:`"
+        - shown to the translator next to the string
+        - the only context they get — say where it appears and what each `%@` is
+      - - Which language
+        - "`Bundle.main.preferredLocalizations.first`: the user's languages ∩ the languages you ship"
+        - the per-app language in Settings changes it without changing the device language
+      - - Fallback
+        - the development language's value, then the key itself
+        - a missing translation shows English, never a blank
+      - - States
+        - New · Needs Review · Translated · Stale
+        - Stale means the key is no longer in the code — delete it or keep it on purpose
+      - - Export for translators
+        - "Product → Export Localizations, or `xcodebuild -exportLocalizations -localizationPath Loc -exportLanguage de`"
+        - one `.xcloc` per language (an XLIFF plus context screenshots); `-importLocalizations` brings it back
+  - id: nslocalizedstring-vs-string-localized
+    kind: compare
+    title: NSLocalizedString vs String(localized:)
+    note: Interviews still ask about `.strings` and `.stringsdict`; new code uses catalogs and typed interpolation.
+    columns:
+      - label: Legacy — .strings + .stringsdict
+        tone: legacy
+        code: |-
+          // en.lproj/Localizable.strings
+          //   "transactions.title" = "Transactions";
+          //   "export.done" = "Exported to %@";
+          // en.lproj/Localizable.stringsdict — a plist per language, for plurals
+
+          let title = NSLocalizedString("transactions.title",
+                                        comment: "Navigation title of the transactions list")
+
+          // The specifier is typed by hand: %@ given a number crashes; %d given a string prints garbage
+          let done = String(format: NSLocalizedString("export.done", comment: "Toast after export"),
+                            fileName)
+
+          let button = NSLocalizedString("export.button", tableName: "Settings", bundle: .main,
+                                         value: "Export CSV",
+                                         comment: "Button that exports every transaction")
+      - label: Modern — String Catalog
+        tone: modern
+        code: |-
+          // Localizable.xcstrings — Xcode extracts these keys on every build
+
+          let title = String(localized: "Transactions",
+                             comment: "Navigation title of the transactions list")
+
+          // Interpolation keeps the argument's type: the key becomes "Exported to %@"
+          let done = String(localized: "Exported to \(fileName)",
+                            comment: "Toast after export. Argument: the file name.")
+
+          let button = String(localized: "export.button", defaultValue: "Export CSV",
+                              table: "Settings",
+                              comment: "Button that exports every transaction")
+  - id: string-localized-in-models-tables-and-bundles
+    kind: code
+    title: "String(localized:) in models, tables and bundles"
+    note: Resolve late with `LocalizedStringResource` when the value crosses a boundary; resolve now with `String(localized:)`.
+    code: |-
+      enum TransactionStatus: String, Codable {
+        case pending, cleared, disputed
+
+        /// Unresolved: SwiftUI, App Intents and widgets look it up in the language active when shown.
+        var title: LocalizedStringResource {
+          switch self {
+          case .pending:  LocalizedStringResource("Pending", comment: "Status: not settled by the bank yet")
+          case .cleared:  LocalizedStringResource("Cleared", comment: "Status: settled by the bank")
+          case .disputed: LocalizedStringResource("Disputed", table: "Statuses",
+                                                  comment: "Status: the user has contested this charge")
+          }
+        }
+      }
+
+      struct ExportResult {
+        let fileName: String
+        let total: Decimal
+
+        /// A FormatStyle inside the interpolation formats for the reader; the key stays
+        /// "Exported %@ totalling %@" for the translator.
+        var message: String {
+          String(localized: "Exported \(fileName) totalling \(total, format: .currency(code: "EUR"))",
+                 comment: "Toast after export. First: file name. Second: sum of exported rows.")
+        }
+      }
+
+      // A framework target: name the bundle that holds the catalog, or the APP's catalog is searched
+      final class LedgerKitBundleToken {}
+      let categoryLabel = String(localized: "Category", bundle: Bundle(for: LedgerKitBundleToken.self),
+                                 comment: "Column header in the exported spreadsheet")
+
+      // Using a resource
+      let statusText = String(localized: TransactionStatus.pending.title)   // resolve now
+      // Text(TransactionStatus.pending.title)                               // or let SwiftUI resolve it
+  - id: localizedstringkey-and-interpolation-in-swiftui
+    kind: code
+    title: LocalizedStringKey and interpolation in SwiftUI
+    note: A string literal is looked up and a `String` variable is shown as-is — the rule behind most "why isn't this translated?" bugs.
+    code: |-
+      struct PaymentHeader: View {
+        let merchant: String                 // server data: never a key
+        let amount: Decimal
+        let paidAt: Date
+
+        var body: some View {
+          VStack(alignment: .leading, spacing: 4) {
+            Text("Payment details")                     // literal → LocalizedStringKey → looked up
+            Text(merchant)                              // String variable → verbatim, NOT looked up
+            Text("Paid \(amount, format: .currency(code: "EUR")) on \(paidAt, format: .dateTime.day().month())")
+                                                        // key "Paid %@ on %@"
+            Text(verbatim: "SEPA")                      // a literal that must never be translated
+            Button("Report a problem") { }              // titles and labels are keys too
+            SectionTitle("Category")
+          }
+        }
+      }
+
+      /// Take a LocalizedStringKey, not a String, or callers' literals silently skip the lookup.
+      struct SectionTitle: View {
+        let title: LocalizedStringKey
+        init(_ title: LocalizedStringKey) { self.title = title }
+        var body: some View { Text(title).font(.headline) }
+      }
+
+      // Another table, another bundle, a comment for the translator:
+      // Text("Export CSV", tableName: "Settings", bundle: .main, comment: "Settings row")
+  - id: plurals-and-grammatical-agreement
+    kind: code
+    title: Plurals and grammatical agreement
+    note: "Write one interpolated key and let the catalog hold each language's forms — never `count == 1 ? … : …`."
+    code: |-
+      let pending = 3, matched = 5, receipts = 8
+
+      // One key, "%lld transactions to review". Right-click it in the catalog → Vary by Plural.
+      let badge = String(localized: "\(pending) transactions to review",
+                         comment: "Badge on the Review tab. Argument: number of transactions.")
+
+      // What the catalog stores (excerpt):
+      // "%lld transactions to review" : { "localizations" : {
+      //   "en" : { "variations" : { "plural" : {
+      //     "one"   : { "stringUnit" : { "state" : "translated", "value" : "%lld transaction to review" } },
+      //     "other" : { "stringUnit" : { "state" : "translated", "value" : "%lld transactions to review" } }
+      //   } } },
+      //   "pl" : { … "one", "few", "many", "other" … }     // Polish has four forms, Arabic six, Japanese one
+      // } }
+
+      // Two numbers: Vary by Plural creates one substitution per argument, each with its own forms
+      let progress = String(localized: "\(matched) of \(receipts) receipts matched")
+
+      // Automatic grammar agreement (iOS 15+): Foundation inflects the marked span by itself,
+      // with no variation in the catalog, in the languages it supports.
+      let review = AttributedString(localized: "^[\(pending) transaction](inflect: true) to review")
+      // pending == 1 → "1 transaction to review"    pending == 3 → "3 transactions to review"
+
+      // SwiftUI's Text understands the same markup
+      // Text("^[\(pending) transaction](inflect: true) to review")
+  - id: dates-numbers-money-units-and-lists
+    kind: code
+    title: Dates, numbers, money, units and lists
+    note: Choose the fields and let the locale choose order, separators and words (locale and time zone are pinned here, so the outputs are exact).
+    code: |-
+      let us = Locale(identifier: "en_US"), de = Locale(identifier: "de_DE"), fr = Locale(identifier: "fr_FR")
+      let paidAt = Date(timeIntervalSince1970: 1_772_534_400)          // 2026-03-03 10:40 UTC
+      let utc = TimeZone(identifier: "UTC")!                           // pinned: no output depends on the Mac
+
+      paidAt.formatted(Date.FormatStyle(locale: us, timeZone: utc).year().month().day())  // → "Mar 3, 2026"
+      paidAt.formatted(Date.FormatStyle(locale: de, timeZone: utc).year().month().day())  // → "3. März 2026"
+      paidAt.formatted(Date.FormatStyle(date: .abbreviated, time: .shortened, locale: de, timeZone: utc))
+                                                                       // → "3. März 2026, 10:40"
+
+      // Money: Decimal, and the currency comes from the ACCOUNT — the locale only decides the layout
+      let total = Decimal(string: "1234.5")!
+      total.formatted(.currency(code: "EUR").locale(de))               // → "1.234,50 €"
+      total.formatted(.currency(code: "EUR").locale(us))               // → "€1,234.50"
+      1234567.891.formatted(.number.precision(.fractionLength(2)).locale(fr))   // → "1 234 567,89"
+      0.125.formatted(.percent.locale(de))                             // → "12,5 %"
+
+      // Units: store one unit, let `usage` convert for the reader's region
+      let trip = Measurement(value: 5.2, unit: UnitLength.kilometers)
+      trip.formatted(.measurement(width: .abbreviated, usage: .road).locale(us))  // → "3.2 mi"
+      trip.formatted(.measurement(width: .wide, usage: .road).locale(de))         // → "5,2 Kilometer"
+
+      ["Rent", "Groceries", "Travel"].formatted(.list(type: .and).locale(us))  // → "Rent, Groceries, and Travel"
+      ["Rent", "Groceries", "Travel"].formatted(.list(type: .and).locale(de))  // → "Rent, Groceries und Travel"
+      Duration.seconds(3725).formatted(.units(allowed: [.hours, .minutes], width: .wide))
+                                                                       // → "1 hour, 2 minutes"
+      // Relative dates. `.relative` measures from NOW, so pin an anchor where output must be exact
+      // (iOS 18+; note it formats the ANCHOR as seen from the input date).
+      if #available(iOS 18, macOS 15, *) {
+        Date.AnchoredRelativeFormatStyle(anchor: paidAt, presentation: .named, locale: us)
+          .format(paidAt.addingTimeInterval(3 * 86_400))              // → "3 days ago"
+      }
+      paidAt.formatted(.relative(presentation: .named))                // "3 days ago", "last week"… from today
+
+      // The spaces in the German and French outputs are non-breaking (U+00A0, U+202F).
+  - id: locale-language-and-region
+    kind: code
+    title: Locale vs language vs region
+    note: "Language picks the words and region picks currency, units, calendar and first weekday, independently of each other."
+    code: |-
+      // An English speaker living in Germany: English words, German conventions.
+      let expat = Locale(identifier: "en_DE")
+      expat.language.languageCode?.identifier      // → "en"
+      expat.region?.identifier                     // → "DE"
+      expat.currency?.identifier                   // → "EUR"
+      expat.measurementSystem                      // → .metric
+      expat.firstDayOfWeek                         // → .monday
+      expat.hourCycle                              // → .zeroToTwentyThree
+
+      // Traditional vs Simplified Chinese is the SCRIPT, not the region
+      let taiwan = Locale(identifier: "zh-Hant-TW")
+      taiwan.language.script?.identifier           // → "Hant"
+
+      Locale.Language(identifier: "ar").characterDirection   // → .rightToLeft
+
+      // Which language is the app showing? Not Locale.current — that is the formatting locale.
+      let appLanguage = Bundle.main.preferredLocalizations.first   // the user's list ∩ what you ship
+      let userLanguages = Locale.preferredLanguages                 // e.g. ["es-MX", "en-US"]
+
+      // Names of languages and regions, in the reader's own language
+      Locale(identifier: "en_US").localizedString(forLanguageCode: "de")   // → "German"
+      Locale(identifier: "de_DE").localizedString(forRegionCode: "US")     // → "Vereinigte Staaten"
+
+      // Case mapping depends on the language
+      "istanbul".uppercased(with: Locale(identifier: "tr_TR"))   // → "İSTANBUL"
+      "istanbul".uppercased()                                    // → "ISTANBUL"
+
+      // Machine-readable text never uses the user's locale
+      let paidAt = Date(timeIntervalSince1970: 1_772_534_400)
+      paidAt.formatted(.iso8601)                                 // → "2026-03-03T10:40:00Z"
+      Decimal(string: "1234.5")!.formatted(.number.grouping(.never).locale(Locale(identifier: "en_US_POSIX")))
+                                                                 // → "1234.5"
+  - id: right-to-left-layout
+    kind: code
+    title: Right-to-left layout
+    note: SwiftUI mirrors leading/trailing for you; directional artwork and absolute left/right are what break.
+    code: |-
+      struct TransactionRow: View {
+        let transaction: Transaction
+
+        var body: some View {
+          HStack(spacing: 12) {                              // leading → trailing: mirrors in Arabic, Hebrew
+            Image(systemName: "arrow.forward.circle")      // .forward flips in RTL; .right never does
+            VStack(alignment: .leading) {                  // .leading, never a left-aligned frame
+              Text(transaction.merchant)                   // an English name inside Arabic UI stays LTR
+              Text(transaction.date, format: .dateTime.day().month())
+            }
+            Spacer()
+            Text(transaction.amount, format: .currency(code: transaction.currencyCode))
+            Image("disclosure-chevron")
+              .flipsForRightToLeftLayoutDirection(true)    // your own directional artwork, flipped on demand
+          }
+          .padding(.leading, 16)                           // leading/trailing, not left/right
+        }
+      }
+
+      // Playback buttons (rewind, play, fast-forward) keep their tape direction; their symbols never mirror:
+      // HStack { rewind; play; forward }.environment(\.layoutDirection, .leftToRight)
+      // A progress slider or scrubber flips like any other control — leave it mirrored.
+
+      // UIKit
+      label.textAlignment = .natural
+      stack.directionalLayoutMargins = NSDirectionalEdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 12)
+      chevron.image = UIImage(named: "disclosure-chevron")?.imageFlippedForRightToLeftLayoutDirection()
+      let isRTL = stack.effectiveUserInterfaceLayoutDirection == .rightToLeft  // for custom drawing only
+      // Constraints: leadingAnchor / trailingAnchor — leftAnchor / rightAnchor never mirror.
+  - id: previewing-and-testing-a-locale
+    kind: code
+    title: Previewing and testing a locale
+    note: Previews for the look, a pinned-locale unit test for formats, launch arguments for the whole app.
+    code: |-
+      #Preview("Arabic, right-to-left") {
+        TransactionList(transactions: .samples)
+          .environment(\.locale, Locale(identifier: "ar_EG"))      // lookups and formats
+          .environment(\.layoutDirection, .rightToLeft)           // mirroring is a separate value
+      }
+
+      #Preview("German — long words") {
+        TransactionList(transactions: .samples)
+          .environment(\.locale, Locale(identifier: "de_DE"))
+      }
+
+      // Formats: pin the locale, so the test passes on every machine in every region
+      @Test func totalIsFormattedForAGermanReader() {
+        let total = Decimal(string: "1234.5")!
+        #expect(total.formatted(.currency(code: "EUR").locale(Locale(identifier: "de_DE"))) == "1.234,50\u{A0}€")
+      }
+
+      // The whole app, in a language and region of your choice
+      @MainActor func launchInArabic() -> XCUIApplication {
+        let app = XCUIApplication()
+        app.launchArguments += ["-AppleLanguages", "(ar)", "-AppleLocale", "ar_EG"]
+        app.launch()
+        return app
+      }
+
+      // Scheme → Run → Options → App Language, no translations needed:
+      //   Double-Length Pseudolanguage    every string twice as long → truncation, overlap
+      //   Right-to-Left Pseudolanguage    your English strings in a mirrored layout
+      //   Accented Pseudolanguage         taller glyphs → clipped ascenders and fixed heights
+      //   Bounded String Pseudolanguage   markers around each string → spots concatenated fragments
+      // and tick "Show non-localized strings": anything not looked up appears in CAPITALS.
+  - id: localizing-a-swift-package
+    kind: code
+    title: Localizing a Swift package
+    note: "A package has its own bundle — every lookup in it must say `bundle: .module`."
+    code: |-
+      // swift-tools-version: 6.0
+      // ↑ the first line of Package.swift
+      import PackageDescription
+
+      let package = Package(
+        name: "LedgerUI",
+        defaultLocalization: "en",                 // required once any target has localized resources
+        platforms: [.iOS(.v17), .macOS(.v14)],
+        products: [.library(name: "LedgerUI", targets: ["LedgerUI"])],
+        targets: [
+          // Sources/LedgerUI/Resources/Localizable.xcstrings
+          .target(name: "LedgerUI", resources: [.process("Resources")]),
+        ]
+      )
+
+      // Sources/LedgerUI/BalanceCard.swift
+      import SwiftUI
+
+      public struct BalanceCard: View {
+        let balance: Decimal
+        public init(balance: Decimal) { self.balance = balance }
+
+        public var body: some View {
+          VStack(alignment: .leading) {
+            Text("Available balance", bundle: .module)        // without it: the APP's catalog is searched
+            Text(balance, format: .currency(code: "EUR")).font(.largeTitle)
+          }
+        }
+      }
+
+      enum Strings {
+        static let retry = String(localized: "Retry", bundle: .module,
+                                  comment: "Button after a failed sync")
+      }
+  - id: concatenation-and-hard-coded-formats
+    kind: compare
+    title: Concatenation and hard-coded formats
+    note: Each line on the left is correct in English and wrong somewhere else.
+    columns:
+      - label: Breaks in translation
+        tone: bad
+        code: |-
+          // Word order frozen to English; translators get fragments
+          let spent = NSLocalizedString("You spent", comment: "") + " " + amountText + " "
+                    + NSLocalizedString("at", comment: "") + " " + merchant
+
+          // Plural by `if`: wrong for Polish, Russian, Arabic…
+          let badge = count == 1 ? "1 transaction" : "\(count) transactions"
+
+          // US order for everyone, and the reader's calendar ignored
+          let formatter = DateFormatter()
+          formatter.dateFormat = "MM/dd/yyyy"
+          let shown = formatter.string(from: paidAt)
+
+          // Parsing an API date with the user's calendar and locale: a Buddhist-calendar user gets a year 543 off
+          let parsed = formatter.date(from: timestampFromAPI)
+
+          // One key, two meanings: the verb and the status share a translation
+          let action = String(localized: "Open")
+          let status = String(localized: "Open")
+      - label: Survives translation
+        tone: good
+        code: |-
+          // One sentence, one key; translators may reorder the arguments
+          let spent = String(localized: "You spent \(amount, format: .currency(code: "EUR")) at \(merchant)",
+                             comment: "Activity feed. First: amount. Second: merchant name.")
+
+          // Plural forms live in the catalog
+          let badge = String(localized: "\(count) transactions", comment: "Badge. Argument: count.")
+
+          // Fields, not a pattern: order, separators and calendar come from the locale
+          let shown = paidAt.formatted(date: .numeric, time: .omitted)
+
+          // Machine formats are fixed and locale-independent
+          let parsed = try Date(timestampFromAPI, strategy: .iso8601)
+
+          // Semantic keys keep homonyms apart
+          let action = String(localized: "statement.open", defaultValue: "Open",
+                              comment: "Button: opens the monthly statement")
+          let status = String(localized: "dispute.open", defaultValue: "Open",
+                              comment: "Label: the dispute is still being reviewed")
+  - id: pitfalls
+    kind: rules
+    title: Pitfalls
+    note: ""
+    items:
+      - tone: bad
+        text: "**Concatenating sentences** from fragments. Interpolate into one key; the translator can move the arguments."
+      - tone: bad
+        text: "**Fixed widths and one-line labels.** German and Finnish run 30–40% longer; let text wrap and test with the double-length pseudolanguage."
+      - tone: bad
+        text: "**Passing a `String` to `Text`** and expecting a lookup. Only literals and `LocalizedStringKey` are looked up."
+      - tone: bad
+        text: "**`DateFormatter.dateFormat` for display.** Use `FormatStyle` fields; keep fixed patterns for machine formats with `en_US_POSIX` or ISO 8601."
+      - tone: bad
+        text: "**Assuming `Locale.current` is the app's language.** It is the formatting locale; the UI language is `Bundle.main.preferredLocalizations.first`."
+      - tone: bad
+        text: "**Parsing user-typed numbers with `Decimal(string:)`** — it only understands a dot. Use `Decimal(text, format: .number)` with the reader's locale."
+      - tone: bad
+        text: "**Text inside images**, and `.left`/`.right` anywhere. Both survive every translation pass untouched."
+      - tone: good
+        text: "**Write a comment for every string**: where it appears, what each argument is, and any length limit."
+      - tone: good
+        text: "**Sort and search with `localizedStandardCompare`** and `localizedStandardContains` — what a Finder user expects, per language."
+      - tone: good
+        text: "**Localize `InfoPlist.xcstrings`** — the app name and permission prompts are the first strings a user sees."
+      - tone: neutral
+        text: "Localization is translation; internationalization is making the code ready for it. Do the second from day one — it is cheap until the first release."

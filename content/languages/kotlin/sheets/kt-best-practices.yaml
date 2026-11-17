@@ -1,0 +1,454 @@
+id: kt-best-practices
+concept: practice.engineering
+scope: shared
+title: "Kotlin Engineering Best Practices"
+group: Design & practice
+subtitle: "The habits that make Kotlin on Android and the JVM survive a second year and a second engineer — conventions, errors, null safety, logging, configuration, coroutines, performance and hygiene, with the runnable parts run."
+applies:
+  platforms: [jvm, android]
+  runtime: Kotlin/JVM (the standard library and kotlinx.coroutines); the same code runs on Android
+  versions: { kotlin: ">=2.0", jvm: ">=17" }
+sources:
+  - title: Coding conventions — Kotlin docs
+    url: https://kotlinlang.org/docs/coding-conventions.html
+  - title: Null safety — Kotlin docs
+    url: https://kotlinlang.org/docs/null-safety.html
+  - title: Best practices for coroutines in Android — Android Developers
+    url: https://developer.android.com/kotlin/coroutines/coroutines-best-practices
+  - title: App performance guide — Android Developers
+    url: https://developer.android.com/topic/performance/overview
+cards:
+  - id: the-ten
+    kind: rules
+    title: The ten that matter most
+    note: If you say nothing else in a review, say these.
+    items:
+      - tone: good
+        text: "**Make illegal states unrepresentable.** A `sealed interface` beats three `Boolean`s and a nullable error."
+      - tone: good
+        text: "**`val`, read-only types and `data class`es by default.** A `var` or a `MutableList` in a public signature is a decision to justify."
+      - tone: good
+        text: "**Inject dependencies through the constructor** — the clock, the dispatchers, the network, the database. Nothing reaches for a singleton."
+      - tone: good
+        text: "**Keep the public surface small.** `internal` for module details, explicit API mode in libraries; `public` is a promise."
+      - tone: good
+        text: "**Errors are designed.** Sealed results for expected failures, exceptions for bugs, and never swallow `CancellationException`."
+      - tone: good
+        text: "**No `!!`.** Give every Java value a declared nullability at the boundary, and handle absence where it is meaningful."
+      - tone: good
+        text: "**One source of truth** per piece of state, exposed as a read-only `StateFlow` by exactly one owner."
+      - tone: good
+        text: "**Structured concurrency.** Every coroutine belongs to a scope with a lifecycle; no `GlobalScope`, no fire-and-forget."
+      - tone: good
+        text: "**Tests are part of the change.** If it is hard to test, the design is telling you something."
+      - tone: good
+        text: "**Measure before optimising** — Macrobenchmark, Baseline Profiles and a system trace on the lowest-end device you support."
+  - id: conventions-and-kdoc
+    kind: compare
+    title: "Conventions that matter in review, documented with KDoc"
+    note: "Properties instead of getters, top-level functions instead of `Utils` objects, read-only exposure of mutable state, string templates — and KDoc on what the caller must know."
+    prerequisites: &run
+      - A Kotlin 2.x compiler (`kotlinc`) and JDK 17 or later
+      - "Save as `main.kt`; run `kotlinc main.kt -include-runtime -d main.jar && java -jar main.jar`"
+    columns:
+      - label: Java in Kotlin syntax
+        tone: bad
+        code: |-
+          import java.util.ArrayList
+          import java.util.Locale
+
+          class OrderUtils {
+              companion object {
+                  fun formatPrice(cents: Long): String =
+                      "EUR " + (cents / 100) + "." + String.format(Locale.ROOT, "%02d", cents % 100)
+              }
+          }
+
+          class Order(id: String) {
+              private var mId: String = id
+              private var mLines: ArrayList<Long> = ArrayList()
+
+              fun getId(): String { return mId }
+              fun getLines(): ArrayList<Long> { return mLines }        // callers can mutate it
+              fun getTotal(): Long {
+                  var total = 0L
+                  for (i in 0 until mLines.size) total = total + mLines.get(i)
+                  return total
+              }
+          }
+
+          fun main() {
+              val order = Order("A-1")
+              order.getLines().add(1200)
+              order.getLines().add(350)
+              println(order.getId() + ": " + OrderUtils.formatPrice(order.getTotal()))
+          }
+      - label: Idiomatic Kotlin
+        tone: good
+        code: |-
+          import java.util.Locale
+
+          /**
+           * An order being built at the till.
+           *
+           * Lines are added only through [addLine], so [totalCents] is always consistent.
+           */
+          class Order(val id: String) {
+              private val lines = mutableListOf<Long>()
+
+              /** A snapshot of the line prices in cents: callers cannot reach the backing list. */
+              val lineCents: List<Long> get() = lines.toList()
+
+              val totalCents: Long get() = lines.sum()
+
+              /** @throws IllegalArgumentException if [priceCents] is not positive. */
+              fun addLine(priceCents: Long) {
+                  require(priceCents > 0) { "price must be positive, was $priceCents" }
+                  lines += priceCents
+              }
+          }
+
+          /**
+           * Formats [cents] for receipts.
+           *
+           * @return the amount with its currency, for example `EUR 15.50`.
+           */
+          fun formatPrice(cents: Long): String = "EUR %d.%02d".format(Locale.ROOT, cents / 100, cents % 100)
+
+          /** The old `Int` API: callers get a warning, and the IDE offers the replacement as a quick-fix. */
+          @Deprecated("Prices are Long cents", ReplaceWith("formatPrice(cents.toLong())"))
+          fun formatPrice(cents: Int): String = formatPrice(cents.toLong())
+
+          fun main() {
+              val order = Order("A-1").apply {
+                  addLine(1200)
+                  addLine(350)
+              }
+              println("${order.id}: ${formatPrice(order.totalCents)}")
+          }
+    expected: |-
+      A-1: EUR 15.50
+    validation: &ran
+      status: ran
+      toolchain: kotlinc 2.4.21, JVM 21.0.12.1
+      date: "2026-11-16"
+  - id: model-errors
+    kind: code
+    title: "Model errors at the boundary, and never swallow cancellation"
+    note: "Translate expected exceptions into a sealed domain error in one place, keep and report the unexpected ones whole, and rethrow `CancellationException` before any broad `catch` or a cancelled coroutine keeps running."
+    prerequisites: &runCore
+      - A Kotlin 2.x compiler (`kotlinc`), JDK 17 or later, and `kotlinx-coroutines-core-jvm-1.10.2.jar`
+      - "Save as `main.kt`; run `kotlinc -cp kotlinx-coroutines-core-jvm-1.10.2.jar main.kt -d out && kotlin -cp out:kotlinx-coroutines-core-jvm-1.10.2.jar MainKt`"
+      - "Or, in a Gradle project: `implementation(\"org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.2\")`"
+    code: |-
+      import kotlinx.coroutines.*
+      import java.io.IOException
+
+      sealed interface SyncError {
+          data object Offline : SyncError
+          data class Unexpected(val cause: Throwable) : SyncError         // the exception itself: stack and cause
+      }
+
+      sealed interface SyncResult {
+          data class Synced(val count: Int) : SyncResult
+          data class Failed(val error: SyncError) : SyncResult
+      }
+
+      // report: the crash reporter in production, e.g. Firebase.crashlytics.recordException(e).
+      // The same chain ending in UI state: view-model-error-policy in the Architectural Approaches sheet.
+      class OrderSync(private val report: (Throwable) -> Unit) {
+          suspend fun sync(fetch: suspend () -> List<String>): SyncResult = try {
+              SyncResult.Synced(fetch().size)
+          } catch (e: CancellationException) {
+              throw e                                                       // cancellation is not an error
+          } catch (e: IOException) {
+              SyncResult.Failed(SyncError.Offline)                          // expected: nothing to report
+          } catch (e: Exception) {
+              report(e)                                                     // unexpected: someone must see it
+              SyncResult.Failed(SyncError.Unexpected(e))
+          }
+      }
+
+      fun main() = runBlocking {
+          val orderSync = OrderSync(report = { println("reported: $it") })
+
+          println(orderSync.sync { listOf("A-1", "A-2") })
+          println(orderSync.sync { throw IOException("no route to host") })
+          println(orderSync.sync { error("malformed order JSON") })
+
+          val screen = launch {
+              orderSync.sync {
+                  delay(10_000)
+                  emptyList()
+              }
+              println("still running after cancel")                   // printed if cancellation were swallowed
+          }
+          yield()
+          screen.cancelAndJoin()
+          println("cancelled cleanly: ${screen.isCancelled}")
+      }
+    expected: |-
+      Synced(count=2)
+      Failed(error=Offline)
+      reported: java.lang.IllegalStateException: malformed order JSON
+      Failed(error=Unexpected(cause=java.lang.IllegalStateException: malformed order JSON))
+      cancelled cleanly: true
+    validation: &ranCore
+      status: ran
+      toolchain: kotlinc 2.4.21, JVM 21.0.12.1, kotlinx-coroutines-core 1.10.2
+      date: "2026-11-16"
+  - id: null-safety-discipline
+    kind: compare
+    title: "Null-safety discipline: no `!!`, no unchecked platform types"
+    note: "A Java method returns a platform type (`String!`) the compiler will not check; give it a nullability the moment it enters Kotlin, and turn absence into a branch instead of a crash."
+    prerequisites: *run
+    columns:
+      - label: Crashes later
+        tone: bad
+        code: |-
+          import java.util.Properties
+
+          class Session { var userId: String? = null }
+
+          fun greeting(session: Session, settings: Properties): String {
+              val name = settings.getProperty("display.name")       // String! from Java: unchecked
+              val shortName = name.trim()                            // NPE when the key is missing
+              return "Hi " + shortName + " (" + session.userId!!.uppercase() + ")"   // NPE when signed out
+          }
+
+          fun main() {
+              val settings = Properties().apply { setProperty("display.name", " Ada ") }
+              val session = Session().apply { userId = "u-42" }
+              println(greeting(session, settings))
+          }
+      - label: Handled at the boundary
+        tone: good
+        code: |-
+          import java.util.Properties
+
+          class Session { var userId: String? = null }
+
+          fun greeting(session: Session, settings: Properties): String {
+              val name: String = settings.getProperty("display.name")?.trim() ?: "there"   // declared, defaulted
+              val userId = session.userId ?: return "Hi $name (signed out)"          // a local val: smart-castable
+              return "Hi $name (${userId.uppercase()})"
+          }
+
+          fun main() {
+              val settings = Properties().apply { setProperty("display.name", " Ada ") }
+              val session = Session().apply { userId = "u-42" }
+              println(greeting(session, settings))
+          }
+    expected: |-
+      Hi Ada (U-42)
+    validation: *ran
+  - id: logging-and-diagnostics
+    kind: code
+    title: "Logging: structured events, lazy messages, redacted by type"
+    note: "Log an event name with key–value fields and the `Throwable` itself, build expensive messages only when the level is on, and let PII types redact themselves (on Android behind `Log` or Timber, on the JVM behind SLF4J)."
+    prerequisites: *run
+    code: |-
+      enum class Level { DEBUG, INFO, WARN, ERROR }
+
+      class Logger(
+          private val tag: String,
+          private val minLevel: Level,
+          private val sink: (line: String, error: Throwable?) -> Unit,     // in production: Log.e(tag, line, error)
+      ) {
+          fun log(level: Level, event: String, vararg fields: Pair<String, Any?>, error: Throwable? = null) {
+              if (level < minLevel) return
+              val rendered = fields.joinToString(" ") { (key, value) -> "$key=$value" }
+              sink("${level.name} [$tag] $event $rendered", error)         // the Throwable itself, with its stack
+          }
+
+          fun debug(event: String, details: () -> String) {               // the lambda runs only if DEBUG is on
+              if (Level.DEBUG >= minLevel) sink("DEBUG [$tag] $event ${details()}", null)
+          }
+      }
+
+      @JvmInline
+      value class Email(val value: String) {
+          override fun toString() = value.take(2) + "***@" + value.substringAfter('@')   // logs never see it whole
+      }
+
+      fun main() {
+          // Only this demo sink shortens the Throwable to one line, so the output is reproducible.
+          val printSink = { line: String, error: Throwable? ->
+              println(line + (error?.let { " error=$it cause=${it.cause}" } ?: ""))
+          }
+          val log = Logger("sync", minLevel = Level.INFO, sink = printSink)   // release builds: INFO and up
+          var expensiveDumps = 0
+
+          log.log(Level.INFO, "sync_started", "user" to Email("ada@example.com"), "orders" to 3)
+          log.debug("payload") {
+              expensiveDumps++
+              "a 2 MB JSON dump"
+          }
+          val failure = IllegalStateException("sync failed", java.io.IOException("timeout"))
+          log.log(Level.ERROR, "sync_failed", "attempt" to 2, error = failure)
+          println("debug messages built: $expensiveDumps")
+      }
+    expected: |-
+      INFO [sync] sync_started user=ad***@example.com orders=3
+      ERROR [sync] sync_failed attempt=2 error=java.lang.IllegalStateException: sync failed cause=java.io.IOException: timeout
+      debug messages built: 0
+    validation: *ran
+  - id: config-secrets-flags
+    kind: code
+    title: "Configuration, secrets and feature flags"
+    note: "Parse configuration once at startup and fail with every problem at once; wrap secrets so they never print; give each flag a default, an owner and a removal date."
+    prerequisites: *run
+    code: |-
+      @JvmInline
+      value class Secret(val value: String) {
+          override fun toString() = "Secret(****)"
+      }
+
+      data class AppConfig(val apiBaseUrl: String, val apiKey: Secret, val requestTimeoutMs: Long)
+
+      // env: System.getenv() on a server. On Android, BuildConfig holds only non-secret configuration
+      // (a base URL, public ids): a server secret never ships inside an APK.
+      fun loadConfig(env: Map<String, String>): AppConfig {
+          val problems = mutableListOf<String>()
+          fun required(key: String): String {
+              val value = env[key]
+              if (value.isNullOrBlank()) problems += "$key is missing"
+              return value.orEmpty()
+          }
+          val baseUrl = required("API_BASE_URL")
+          val apiKey = required("API_KEY")
+          if (baseUrl.isNotEmpty() && !baseUrl.startsWith("https://")) problems += "API_BASE_URL must use https"
+          val rawTimeout = env["REQUEST_TIMEOUT_MS"]
+          val timeoutMs = rawTimeout?.toLongOrNull()
+          if (rawTimeout != null && timeoutMs == null) problems += "REQUEST_TIMEOUT_MS is not a number"
+          check(problems.isEmpty()) { "invalid configuration: ${problems.joinToString("; ")}" }
+          return AppConfig(baseUrl, Secret(apiKey), timeoutMs ?: 10_000)
+      }
+
+      enum class Flag(val default: Boolean, val owner: String, val removeBy: String) {
+          NEW_CHECKOUT(default = false, owner = "payments", removeBy = "2027-01"),
+          OFFLINE_CART(default = true, owner = "orders", removeBy = "2026-12"),
+      }
+
+      class FeatureFlags(private val remote: Map<Flag, Boolean>) {          // remote config, cached on disk
+          fun isEnabled(flag: Flag): Boolean = remote[flag] ?: flag.default
+      }
+
+      fun main() {
+          println(loadConfig(mapOf("API_BASE_URL" to "https://api.example.com", "API_KEY" to "test-key-123")))
+
+          val broken = mapOf("API_BASE_URL" to "http://api.example.com", "REQUEST_TIMEOUT_MS" to "abc")
+          println(runCatching { loadConfig(broken) }.exceptionOrNull()?.message)
+
+          val flags = FeatureFlags(remote = mapOf(Flag.NEW_CHECKOUT to true))
+          println(Flag.entries.map { "${it.name}=${flags.isEnabled(it)}" })
+      }
+    expected: |-
+      AppConfig(apiBaseUrl=https://api.example.com, apiKey=Secret(****), requestTimeoutMs=10000)
+      invalid configuration: API_KEY is missing; API_BASE_URL must use https; REQUEST_TIMEOUT_MS is not a number
+      [NEW_CHECKOUT=true, OFFLINE_CART=true]
+    validation: *ran
+  - id: coroutine-practices
+    kind: code
+    title: "Coroutines: injected dispatchers, main-safe functions, structured work"
+    note: "A suspend function moves its own blocking work with an injected dispatcher, so any caller (the main thread included) can call it, and parallel children inside `withContext` — or `coroutineScope` when no switch is needed — cancel each other on failure."
+    prerequisites:
+      - "A Kotlin 2.x compiler (`kotlinc`), JDK 17 or later, and the jars `kotlinx-coroutines-core-jvm-1.10.2` and `kotlinx-coroutines-test-jvm-1.10.2`"
+      - "Save as `main.kt`; run `kotlinc -cp <both jars> main.kt -d out && kotlin -cp out:<both jars> MainKt`"
+      - "Or, in a Gradle project: `implementation(\"org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.2\")` and `testImplementation(\"org.jetbrains.kotlinx:kotlinx-coroutines-test:1.10.2\")`"
+    code: |-
+      import kotlinx.coroutines.*
+      import kotlinx.coroutines.test.*
+
+      class ReceiptRepository(
+          private val io: CoroutineDispatcher = Dispatchers.IO,             // injected: a test passes its own
+          private val corrupted: Set<String> = emptySet(),
+      ) {
+          // Main-safe and structured: withContext waits for every child, and one failure cancels the rest.
+          suspend fun loadReceipts(ids: List<String>): List<String> = withContext(io) {
+              ids.map { id -> async { readReceipt(id) } }.awaitAll()
+          }
+
+          private suspend fun readReceipt(id: String): String {
+              delay(if (id in corrupted) 50 else 100)                       // stands in for a disk or database read
+              check(id !in corrupted) { "receipt $id is corrupt" }
+              return "receipt $id"
+          }
+      }
+
+      @OptIn(ExperimentalCoroutinesApi::class)
+      fun main() = runTest {
+          val io = StandardTestDispatcher(testScheduler)                    // virtual time, no real threads
+          val repository = ReceiptRepository(io, corrupted = setOf("A-9"))
+
+          println(repository.loadReceipts(listOf("A-1", "A-2", "A-3")))
+          println("after $currentTime ms of virtual time: the three reads ran in parallel")
+
+          try {
+              repository.loadReceipts(listOf("A-1", "A-9"))
+          } catch (e: IllegalStateException) {
+              println("${e.message} at $currentTime ms: A-1 was cancelled, not awaited")
+          }
+      }
+    expected: |-
+      [receipt A-1, receipt A-2, receipt A-3]
+      after 100 ms of virtual time: the three reads ran in parallel
+      receipt A-9 is corrupt at 150 ms: A-1 was cancelled, not awaited
+    validation:
+      status: ran
+      toolchain: kotlinc 2.4.21, JVM 21.0.12.1, kotlinx-coroutines-core and -test 1.10.2
+      date: "2026-11-16"
+  - id: performance-checklist
+    kind: table
+    title: Performance checklist
+    note: In rough order of how often each one is the actual culprit.
+    headers: [Symptom, Look at, Fix]
+    rows:
+      - ["Janky scrolling", "a system trace (Perfetto), recomposition counts in the Layout Inspector", "stable `key`s in lazy lists, immutable UI state, work moved off the main thread"]
+      - ["Allocation in hot paths", "the memory profiler's allocation tracking", "primitive arrays (`IntArray`) over `List<Int>` boxing, reused buffers, `buildString`, no lambdas allocated per frame"]
+      - ["Long collection chains", "a microbenchmark", "`asSequence()` for large inputs or early exit; plain lists for small ones"]
+      - ["Higher-order helpers in loops", "the bytecode (Show Kotlin Bytecode)", "`inline` small functions that take lambdas — the standard library's already are"]
+      - ["Slow cold start", "Macrobenchmark `StartupTimingMetric`", "Baseline Profiles, lazy initialization, no disk or network in `Application.onCreate`"]
+      - ["Large or slow release build", "the APK Analyzer", "R8 with `isMinifyEnabled = true` and minimal keep rules; shrink resources"]
+      - ["I/O on the main thread", "`StrictMode` in debug builds", "`withContext(ioDispatcher)` inside the repository, with `Dispatchers.IO` injected — not at every call site"]
+      - ["Memory growth", "LeakCanary, heap dumps", "no `Activity`, `View` or `Context` held by a `ViewModel` or singleton; bounded caches"]
+      - ["Regressions after a change", "benchmarks in CI", "a Macrobenchmark or Microbenchmark that fails when the number moves"]
+  - id: project-hygiene
+    kind: table
+    title: Project hygiene
+    note: What a healthy Kotlin repository has, so reviews can be about design.
+    headers: [Area, Practice]
+    rows:
+      - ["Formatting", "ktlint or ktfmt, applied by a Gradle task and a pre-commit hook — never argued about in review"]
+      - ["Static analysis", "detekt with a committed configuration, and a baseline file for legacy findings only"]
+      - ["Android Lint", "`lint { warningsAsErrors = true }` on CI, with a baseline for what predates the rule"]
+      - ["Compiler warnings", "`kotlin { compilerOptions { allWarningsAsErrors.set(true) } }` — a warning nobody fixes is one everybody ignores"]
+      - ["Public API", "`kotlin { explicitApi() }` in library modules, and a binary-compatibility check for published ones"]
+      - ["Dependencies", "a version catalog, Renovate or Dependabot pull requests, and Gradle dependency verification for the supply chain"]
+      - ["Tests", "unit tests on every pull request (`./gradlew test`); instrumented and screenshot tests on merge or nightly"]
+      - ["CI", "build, lint, detekt and tests on every pull request, with the build cache and configuration cache on; aim for under ten minutes"]
+      - ["Releases", "R8 on, the mapping file uploaded for crash deobfuscation, `versionCode` from CI, a tag per release"]
+      - ["Ownership", "`CODEOWNERS` per module so reviews route themselves"]
+  - id: review-checklist
+    kind: rules
+    title: "A five-minute review checklist — accessibility, localization and privacy included"
+    note: Cheap if checked as you go; expensive as a retrofit.
+    items:
+      - tone: modern
+        text: "**Correctness** — what happens on empty, `null`, error, cancellation, process death (`SavedStateHandle`) and a slow network?"
+      - tone: modern
+        text: "**Concurrency** — which scope owns this coroutine, which dispatcher runs it, and is the function main-safe?"
+      - tone: modern
+        text: "**Surface and naming** — does this need to be `public`? Can I tell what it does from the call site alone?"
+      - tone: modern
+        text: "**Tests** — is there one test that fails if the core behaviour regresses, using fakes and virtual time?"
+      - tone: good
+        text: "**Accessibility** — a `contentDescription` (or `null` for decoration) on every icon, touch targets of at least 48 dp, text in `sp` that survives 200% font scale, rows merged with `Modifier.semantics(mergeDescendants = true) {}`, and one pass with TalkBack — see Accessibility on Android."
+      - tone: good
+        text: "**Localization** — every user-visible string in resources with placeholders and plurals (`pluralStringResource`), no sentences built by concatenation, numbers and dates formatted for the user's locale, and a run under the `en-XA` and `ar-XB` pseudolocales for truncation and RTL — see Localization & Internationalization."
+      - tone: good
+        text: "**Privacy** — no PII or tokens in logs or crash reports, permissions asked in context, tokens in Keystore-backed storage, no secrets in `BuildConfig`, and the Play data-safety form still true — see Security, Authentication & Privacy."
+      - tone: modern
+        text: "**Size** — is the diff reviewable? Under about 400 lines gets a real review; over that gets a rubber stamp."
+      - tone: neutral
+        text: "Review the design before the syntax; formatting and style are the linters' job."

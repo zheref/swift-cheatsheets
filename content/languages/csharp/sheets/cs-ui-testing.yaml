@@ -1,0 +1,502 @@
+id: cs-ui-testing
+concept: testing.ui-e2e
+scope: platform
+title: "UI & End-to-End Testing"
+group: Quality & reach
+subtitle: "View-model tests at the base. bUnit for Blazor components, Playwright for .NET for the browser, Appium for MAUI and desktop. Select by role or AutomationId, wait without sleeping, isolate network and state, and keep CI from flaking."
+applies:
+  platforms: [dotnet, android, ios, windows, browser]
+  runtime: "a test project (xUnit or NUnit) driving a Blazor app, a .NET MAUI app or a WPF/WinUI app; the view-model card runs in plain .NET"
+  versions: { csharp: ">=13", dotnet: ">=9" }
+sources:
+  - title: Testing in .NET
+    url: https://learn.microsoft.com/en-us/dotnet/core/testing/
+  - title: bUnit — testing library for Blazor components
+    url: https://bunit.dev/
+  - title: Playwright for .NET
+    url: https://playwright.dev/dotnet/
+  - title: Appium .NET client
+    url: https://github.com/appium/dotnet-client
+  - title: .NET MAUI — UI testing with Appium and NUnit (sample)
+    url: https://learn.microsoft.com/en-us/samples/dotnet/maui-samples/uitest-appium-nunit
+cards:
+  - id: tooling
+    kind: table
+    title: The pyramid, by tool
+    note: "Prove most behaviour in view-model and component tests, which take milliseconds, and keep only a few journeys end to end on a real browser or device."
+    headers: [Layer, Tool, Drives, Selects by]
+    rows:
+      - ["view model / presentation logic", "xUnit, NUnit or MSTest + hand-written fakes", "plain .NET objects, no UI", "properties and commands"]
+      - ["Blazor component", "**bUnit** (`BunitContext`, `Render<T>`)", "the component's render tree in memory", "CSS selectors on the rendered markup, `aria-*`"]
+      - ["Blazor / web end to end", "**Playwright for .NET** (`Microsoft.Playwright.NUnit`, `.MSTest`, `.Xunit`)", "Chromium, Firefox, WebKit; headless by default", "`GetByRole`, `GetByLabel`, `GetByTestId`"]
+      - ["ASP.NET Core server in memory", "`WebApplicationFactory<Program>` (Microsoft.AspNetCore.Mvc.Testing)", "HTTP requests to the real pipeline", "responses, rendered HTML"]
+      - [".NET MAUI on Android / iOS", "**Appium** + `Appium.WebDriver` with the UiAutomator2 / XCUITest drivers", "the installed app on an emulator, simulator or device", "`AutomationId` → `MobileBy.Id` (Android), `MobileBy.AccessibilityId` (iOS)"]
+      - ["MAUI on Windows, WPF, WinUI", "Appium with the Windows driver, or **FlaUI** (UIA3)", "the desktop app through UI Automation", "`AutomationId` → `MobileBy.AccessibilityId`, `cf.ByAutomationId(...)`"]
+      - ["legacy", "WinAppDriver on its own", "—", "unmaintained, no W3C protocol: use it only behind Appium's Windows driver"]
+
+  - id: view-model-test
+    kind: code
+    title: The base of the pyramid — the screen's logic without the screen
+    note: "Every state the screen can show (loading, loaded, filtered, failed) is a view-model state, so test them all here with a fake whose answer the test releases, and no UI test has to."
+    prerequisites:
+      - .NET 9 SDK or later
+      - "`dotnet new console -o Demo`, replace `Demo/Program.cs` with the example, then `dotnet run --project Demo` (in a test project, each `Check` is an `[Fact]` or `[Test]`)"
+    code: |-
+      // the fake server: each load waits until the test answers it — no timers, no network
+      TaskCompletionSource<IReadOnlyList<Order>> answer = new();
+      var screen = new OrdersViewModel(() => (answer = new()).Task);
+
+      var loading = screen.LoadAsync();
+      Check("shows a spinner while loading", screen.IsLoading && screen.Orders.Count == 0);
+      answer.SetResult([new("A-1042", "Ada Lovelace"), new("A-1043", "Grace Hopper")]);
+      await loading;
+      Check("lists the orders", !screen.IsLoading && screen.Orders.Count == 2);
+
+      screen.Query = "GRACE";
+      Check("filters by customer, ignoring case", screen.Visible.Single().Number == "A-1043");
+
+      var failing = screen.LoadAsync();
+      answer.SetException(new HttpRequestException("503 Service Unavailable"));
+      await failing;
+      Check("keeps the list, shows a retry message", screen.Orders.Count == 2 && screen.Error == "Refresh failed");
+
+      var retry = screen.LoadAsync();
+      answer.SetResult([new("A-1042", "Ada Lovelace")]);
+      await retry;
+      Check("a successful retry clears the message", screen.Error is null && screen.Orders.Count == 1);
+
+      static void Check(string what, bool ok) => Console.WriteLine($"{(ok ? "PASS" : "FAIL")} {what}");
+
+      record Order(string Number, string Customer);
+
+      class OrdersViewModel(Func<Task<IReadOnlyList<Order>>> loadOrders)
+      {
+          public IReadOnlyList<Order> Orders { get; private set; } = [];
+          public bool IsLoading { get; private set; }
+          public string? Error { get; private set; }
+          public string Query { get; set; } = "";
+
+          // ordinal: the same answer on every machine (a culture-aware search passes the user's CompareInfo)
+          public IEnumerable<Order> Visible =>
+              Orders.Where(o => o.Customer.Contains(Query, StringComparison.OrdinalIgnoreCase));
+
+          public async Task LoadAsync()
+          {
+              (IsLoading, Error) = (true, null);
+              try { Orders = await loadOrders(); }
+              catch (HttpRequestException) { Error = "Refresh failed"; }
+              finally { IsLoading = false; }
+          }
+      }
+    expected: |-
+      PASS shows a spinner while loading
+      PASS lists the orders
+      PASS filters by customer, ignoring case
+      PASS keeps the list, shows a retry message
+      PASS a successful retry clears the message
+    sources:
+      - title: Unit testing best practices — .NET
+        url: https://learn.microsoft.com/en-us/dotnet/core/testing/unit-testing-best-practices
+    validation:
+      status: ran
+      toolchain: .NET SDK 9.0.304 (net9.0, C# 13)
+      date: "2026-11-16"
+
+  - id: bunit-component-test
+    kind: code
+    title: A Blazor component test with bUnit — render, interact, assert
+    note: "Register fakes in `Services` before `Render`, drive the component with event helpers, and wait for async renders with `WaitForAssertion`, never `Thread.Sleep`."
+    prerequisites:
+      - "An xUnit test project referencing the Blazor app, with the `bunit` package (2.x)"
+      - "`OrderList.razor` injects `IOrdersApi`, renders a search box, a `role=\"status\"` result count and a list labelled Orders; the test's `FakeOrdersApi` returns the given orders and records `Deleted` numbers"
+    code: |-
+      using Bunit;
+      using Microsoft.Extensions.DependencyInjection;
+      using Xunit;
+
+      public class OrderListTests : BunitContext
+      {
+          private static readonly Order[] Orders = [new("A-1042", "Ada Lovelace"), new("A-1043", "Grace Hopper")];
+
+          [Fact]
+          public void Search_shows_only_matching_orders()
+          {
+              Services.AddSingleton<IOrdersApi>(new FakeOrdersApi(Orders));
+              var cut = Render<OrderList>(parameters => parameters.Add(p => p.PageSize, 20));
+
+              cut.WaitForAssertion(() => Assert.Equal(2, cut.FindAll("[aria-label='Orders'] li").Count));
+
+              cut.Find("input[type=search]").Input("grace");
+
+              cut.WaitForAssertion(() => cut.Find("[role=status]").MarkupMatches("<p role=\"status\">1 order</p>"));
+              Assert.Equal("Grace Hopper", cut.Find("[aria-label='Orders'] li .customer").TextContent);
+          }
+
+          [Fact]
+          public async Task Delete_asks_the_api_and_removes_the_row()
+          {
+              var api = new FakeOrdersApi(Orders);
+              Services.AddSingleton<IOrdersApi>(api);
+              var cut = Render<OrderList>();
+
+              await cut.Find("button[aria-label='Delete order A-1042']").ClickAsync();
+
+              Assert.Equal(new[] { "A-1042" }, api.Deleted);
+              cut.WaitForAssertion(() => Assert.Single(cut.FindAll("[aria-label='Orders'] li")));
+          }
+      }
+    expected: "`dotnet test` runs both tests in milliseconds without a browser. A missing `aria-label` or a changed status text fails with a semantic markup diff."
+    applies:
+      platforms: [dotnet, browser]
+      requires: [bunit, xunit]
+      versions: { csharp: ">=13", dotnet: ">=9", bunit: ">=2.0" }
+    sources:
+      - title: Writing tests for Blazor components — bUnit
+        url: https://bunit.dev/docs/getting-started/writing-tests.html
+      - title: Triggering event handlers — bUnit
+        url: https://bunit.dev/docs/interaction/trigger-event-handlers.html
+      - title: Assertion of asynchronous changes — bUnit
+        url: https://bunit.dev/docs/verification/async-assertion.html
+    validation:
+      status: excerpt
+      host: an xUnit test project with bUnit 2.x referencing the Blazor app (bUnit is not installed here)
+
+  - id: playwright-e2e
+    kind: code
+    title: An end-to-end journey with Playwright for .NET
+    note: "Locate by role and accessible name, the way a user and a screen reader find things, and assert with `Expect(...)`, which retries until the page matches."
+    prerequisites:
+      - "`dotnet new nunit -o Shop.E2E`, `dotnet add Shop.E2E package Microsoft.Playwright.NUnit`, `dotnet build Shop.E2E`, then `pwsh Shop.E2E/bin/Debug/net9.0/playwright.ps1 install`"
+      - "The Blazor app running at the base URL, or started by a `[OneTimeSetUp]` fixture"
+    code: |-
+      using System.Text.RegularExpressions;
+      using Microsoft.Playwright;
+      using Microsoft.Playwright.NUnit;
+
+      [Parallelizable(ParallelScope.Self)]
+      public class CheckoutTests : PageTest              // a fresh browser context (cookies, storage) per test
+      {
+          // CI passes the app's URL; the dev certificate is not trusted on a CI runner
+          public override BrowserNewContextOptions ContextOptions() => new()
+          {
+              BaseURL = Environment.GetEnvironmentVariable("BASE_URL") ?? "https://localhost:7043",
+              IgnoreHTTPSErrors = true,
+          };
+
+          [Test]
+          public async Task Customer_can_place_an_order()
+          {
+              await Page.GotoAsync("/products");
+              await Page.GetByRole(AriaRole.Searchbox, new() { Name = "Search products" }).FillAsync("espresso");
+              await Page.GetByRole(AriaRole.Listitem)
+                  .Filter(new() { HasText = "Espresso beans" })
+                  .GetByRole(AriaRole.Button, new() { Name = "Add to cart" })
+                  .ClickAsync();                          // waits until it is visible, enabled and stable
+
+              var cart = Page.GetByRole(AriaRole.Link, new() { Name = "Cart (1)" });
+              await Expect(cart).ToBeVisibleAsync();
+              await cart.ClickAsync();
+
+              await Page.GetByLabel("Email for receipts").FillAsync("ada@example.com");
+              await Page.GetByRole(AriaRole.Button, new() { Name = "Place order" }).ClickAsync();
+
+              await Expect(Page).ToHaveURLAsync(new Regex(@"/orders/A-\d+$"));
+              var heading = Page.GetByRole(AriaRole.Heading, new() { Level = 1 });
+              await Expect(heading).ToHaveTextAsync(new Regex(@"^Order A-\d+$"));
+              await Expect(Page.GetByRole(AriaRole.Status)).ToContainTextAsync("Order placed");
+          }
+      }
+    expected: "`dotnet test` drives headless Chromium through search, cart and checkout. A failure reports which locator or assertion timed out. Run headed with `dotnet test -- Playwright.LaunchOptions.Headless=false`."
+    applies:
+      platforms: [dotnet, browser]
+      requires: [Microsoft.Playwright.NUnit]
+      versions: { csharp: ">=13", dotnet: ">=9", playwright: ">=1.40" }
+    sources:
+      - title: Writing tests — Playwright for .NET
+        url: https://playwright.dev/dotnet/docs/writing-tests
+      - title: Locators — Playwright for .NET
+        url: https://playwright.dev/dotnet/docs/locators
+      - title: Assertions — Playwright for .NET
+        url: https://playwright.dev/dotnet/docs/test-assertions
+    validation:
+      status: excerpt
+      host: an NUnit test project with Microsoft.Playwright.NUnit and installed browsers, against a running Blazor app (not installed here)
+
+  - id: appium-maui
+    kind: code
+    title: An Appium test for a .NET MAUI app, by AutomationId, with explicit waits
+    note: "Give every view a test touches an `AutomationId`, find it with `MobileBy.Id` on Android or `MobileBy.AccessibilityId` on iOS and Windows, and wait with `WebDriverWait` until the condition holds."
+    prerequisites:
+      - "An NUnit test project with the `Appium.WebDriver` package; an Appium 2+ server (`npm i -g appium`, `appium driver install uiautomator2`) and a booted emulator"
+      - "A **Release** APK of the MAUI app: Appium cannot install a Debug build that uses fast deployment"
+      - "In XAML: `<SearchBar AutomationId=\"SearchEntry\" … />` and `<Label AutomationId=\"ResultCount\" … />`"
+    code: |-
+      using NUnit.Framework;
+      using OpenQA.Selenium;
+      using OpenQA.Selenium.Appium;
+      using OpenQA.Selenium.Appium.Android;
+      using OpenQA.Selenium.Support.UI;
+
+      public class OrdersScreenTests
+      {
+          private const string AppPackage = "com.example.shop";
+          private AndroidDriver driver = null!;
+          private WebDriverWait wait = null!;
+
+          [OneTimeSetUp]
+          public void InstallAndLaunch()
+          {
+              var options = new AppiumOptions
+              {
+                  PlatformName = "Android",
+                  AutomationName = "UiAutomator2",
+                  App = Path.GetFullPath($"../../../../Shop/bin/Release/net9.0-android/{AppPackage}-Signed.apk"),
+              };
+              driver = new AndroidDriver(new Uri("http://127.0.0.1:4723/"), options);
+              wait = new WebDriverWait(driver, TimeSpan.FromSeconds(15));
+              // keep polling while the screen loads or the list re-renders under the element
+              wait.IgnoreExceptionTypes(typeof(NoSuchElementException), typeof(StaleElementReferenceException));
+          }
+
+          [SetUp]
+          public void RestartApp()                          // each test starts from the app's first screen
+          {
+              driver.TerminateApp(AppPackage);
+              driver.ActivateApp(AppPackage);
+          }
+
+          [Test]
+          public void Search_filters_the_order_list()
+          {
+              wait.Until(d => d.FindElement(MobileBy.Id("SearchEntry"))).SendKeys("grace");
+
+              // wait for the state you expect, not for a number of seconds; a timeout fails the test
+              wait.Until(d => d.FindElement(MobileBy.Id("ResultCount")).Text == "1 order");
+          }
+
+          [OneTimeTearDown]
+          public void QuitApp() => driver.Quit();
+      }
+    expected: "The fixture installs the app once and every test restarts it on its first screen. The test types into the search bar and passes when the count reads \"1 order\", or fails with `WebDriverTimeoutException` after 15 seconds. The same test runs on iOS with `IOSDriver`, `XCUITest` and `MobileBy.AccessibilityId`."
+    applies:
+      platforms: [dotnet, android, ios, windows]
+      requires: [Appium.WebDriver, NUnit]
+      versions: { csharp: ">=13", dotnet: ">=9", maui: ">=9", appium-webdriver: ">=5" }
+    sources:
+      - title: .NET MAUI — UI testing with Appium and NUnit (sample)
+        url: https://learn.microsoft.com/en-us/samples/dotnet/maui-samples/uitest-appium-nunit
+      - title: Appium UiAutomator2 driver
+        url: https://github.com/appium/appium-uiautomator2-driver
+    validation:
+      status: excerpt
+      host: an NUnit test project with Appium.WebDriver, a running Appium server and an Android emulator with the app's Release APK
+
+  - id: select-by-role-or-id
+    kind: compare
+    title: Select by role or AutomationId, never by layout
+    note: "A selector should survive a redesign, a translation and a wrapper `Grid`: role and accessible name first, a stable id next, a position in the tree never."
+    columns:
+      - label: By layout, text and styling
+        tone: bad
+        code: |-
+          // Appium: a path through today's view tree
+          driver.FindElement(By.XPath("//android.widget.LinearLayout[2]/android.widget.EditText[1]"));
+          driver.FindElement(By.XPath("//*[@text='Place order']"));       // breaks in Spanish
+
+          // Playwright: CSS that mirrors the grid and the theme
+          await Page.Locator("div.col-md-4 > div:nth-child(3) button.btn-primary").ClickAsync();
+
+          // bUnit: markup structure
+          cut.Find("div > div:nth-child(2) > span");
+
+          // FlaUI: the third button in the window
+          window.FindAllDescendants(cf => cf.ByControlType(ControlType.Button))[2].AsButton().Invoke();
+      - label: By role, label or AutomationId
+        tone: good
+        code: |-
+          <!-- MAUI / WPF / WinUI: a stable, untranslated id on the views a test touches -->
+          <SearchBar AutomationId="SearchEntry" Placeholder="{x:Static strings:AppResources.SearchPlaceholder}" />
+
+          // Appium: AutomationId (Android resource-id; iOS and Windows accessibility id)
+          driver.FindElement(MobileBy.Id("SearchEntry"));
+
+          // Playwright: role + accessible name, then label, then data-testid as the last resort
+          await Page.GetByRole(AriaRole.Button, new() { Name = "Place order" }).ClickAsync();
+          await Page.GetByLabel("Email for receipts").FillAsync("ada@example.com");
+          await Expect(Page.GetByTestId("order-total")).ToHaveTextAsync("$25.50");
+
+          // bUnit: the accessible structure the component promises
+          cut.Find("[aria-label='Orders'] li");
+
+          // FlaUI (WPF/WinUI): AutomationProperties.AutomationId, or x:Name by default, retried until it appears
+          var save = Retry.WhileNull(() => window.FindFirstDescendant(cf => cf.ByAutomationId("SaveButton")),
+              TimeSpan.FromSeconds(5), throwOnTimeout: true).Result;
+          save!.AsButton().Invoke();
+    expected: "Both sides find the same elements today. After a redesign or a Spanish build the left side breaks and the right side still passes. Role-based selectors also fail when a control loses its accessible name — a real bug."
+    prerequisites:
+      - "The test projects of the earlier cards (Appium, Playwright, bUnit), plus FlaUI.UIA3 for a WPF or WinUI app"
+    sources:
+      - title: Locators — Playwright for .NET
+        url: https://playwright.dev/dotnet/docs/locators
+      - title: FlaUI — GitHub
+        url: https://github.com/FlaUI/FlaUI
+    validation:
+      status: excerpt
+      host: "the UI test projects above: Appium, Playwright, bUnit and FlaUI each need their own package and app under test"
+
+  - id: isolate-network-and-state
+    kind: code
+    title: "Isolate network and state: WebApplicationFactory, route interception, launch arguments"
+    note: "A UI test owns its data — replace the service in memory, intercept the browser's requests, or start the app in a test mode that registers fakes — and never depends on a shared staging database."
+    prerequisites:
+      - "An xUnit project with `Microsoft.AspNetCore.Mvc.Testing` referencing the app, whose `Program.cs` ends with `public partial class Program { }` (or uses `InternalsVisibleTo`)"
+      - "The Playwright and Appium projects from the earlier cards"
+    code: |-
+      // 1. ASP.NET Core / Blazor Server: the real pipeline in memory, one service replaced
+      public class OrdersPageTests(WebApplicationFactory<Program> factory)
+          : IClassFixture<WebApplicationFactory<Program>>
+      {
+          [Fact]
+          public async Task Orders_page_renders_orders_from_the_fake_api()
+          {
+              var fake = new FakeOrdersApi([new("A-1042", "Ada Lovelace")]);
+              var client = factory
+                  .WithWebHostBuilder(builder => builder.ConfigureTestServices(services =>
+                      services.AddSingleton<IOrdersApi>(fake)))
+                  .CreateClient();
+
+              var html = await client.GetStringAsync("/orders");
+
+              Assert.Contains("A-1042", html);
+          }
+      }
+
+      // 2. Playwright: answer the browser's API calls from the test, including failures on demand
+      await Page.RouteAsync("**/api/orders*", route => route.FulfillAsync(new()
+      {
+          Status = 200,
+          Json = new[] { new { number = "A-1042", customer = "Ada Lovelace" } },
+      }));
+      await Page.RouteAsync("**/api/payments", route => route.FulfillAsync(new() { Status = 503 }));
+
+      // 3. Appium: launch the MAUI app with a flag it reads at startup to register fakes —
+      //    Android: an intent extra, read in MainActivity; iOS and Windows: Environment.GetCommandLineArgs()
+      options.AddAdditionalAppiumOption("appium:optionalIntentArguments", "--ez uitest true");   // UiAutomator2
+      options.AddAdditionalAppiumOption("appium:processArguments",
+          new Dictionary<string, object> { ["args"] = new[] { "--uitest" } });                   // XCUITest
+      options.AddAdditionalAppiumOption("appium:appArguments", "--uitest");                       // Windows driver
+    expected: "The server test renders A-1042 from the fake without a network. The browser test sees one order and a failing payment every run. The device test starts on known data. Nothing depends on what another test or another person left behind."
+    applies:
+      platforms: [dotnet, android, ios, windows, browser]
+      requires: [Microsoft.AspNetCore.Mvc.Testing, Microsoft.Playwright, Appium.WebDriver]
+      versions: { csharp: ">=13", dotnet: ">=9", aspnetcore: ">=9" }
+    sources:
+      - title: Integration tests in ASP.NET Core
+        url: https://learn.microsoft.com/en-us/aspnet/core/test/integration-tests?view=aspnetcore-9.0
+      - title: Mock APIs — Playwright for .NET
+        url: https://playwright.dev/dotnet/docs/mock
+      - title: Appium XCUITest driver capabilities
+        url: https://appium.github.io/appium-xcuitest-driver/latest/reference/capabilities/
+    validation:
+      status: excerpt
+      host: "an xUnit project with Microsoft.AspNetCore.Mvc.Testing, plus the Playwright and Appium test projects (none installed here)"
+
+  - id: page-objects
+    kind: code
+    title: Page objects — locators and actions in one place, assertions in the test
+    note: "Put locators and actions in a page object that exposes intent (`PlaceOrderAsync`) and keep the assertions in the test, so a changed screen means fixing one class instead of twenty tests."
+    prerequisites:
+      - "The Playwright NUnit project from the end-to-end card; the same shape works for Appium with `AutomationId` lookups"
+    code: |-
+      using System.Text.RegularExpressions;
+      using Microsoft.Playwright;
+      using Microsoft.Playwright.NUnit;
+
+      public sealed class CheckoutPage(IPage page)
+      {
+          public ILocator Email => page.GetByLabel("Email for receipts");
+          public ILocator Confirmation => page.GetByRole(AriaRole.Status);
+          private ILocator PlaceOrderButton => page.GetByRole(AriaRole.Button, new() { Name = "Place order" });
+
+          public Task OpenAsync() => page.GotoAsync("/checkout");
+
+          public async Task PlaceOrderAsync(string email)
+          {
+              await Email.FillAsync(email);
+              await PlaceOrderButton.ClickAsync();
+          }
+      }
+
+      public class CheckoutPageTests : PageTest
+      {
+          public override BrowserNewContextOptions ContextOptions() => new()
+          {
+              BaseURL = Environment.GetEnvironmentVariable("BASE_URL") ?? "https://localhost:7043",
+              IgnoreHTTPSErrors = true,
+          };
+
+          [Test]
+          public async Task Confirms_a_placed_order()
+          {
+              var checkout = new CheckoutPage(Page);
+              await checkout.OpenAsync();
+              await checkout.PlaceOrderAsync("ada@example.com");
+              await Expect(checkout.Confirmation).ToContainTextAsync("Order placed");
+          }
+
+          [Test]
+          public async Task Rejects_an_invalid_email()
+          {
+              var checkout = new CheckoutPage(Page);
+              await checkout.OpenAsync();
+              await checkout.PlaceOrderAsync("ada@");
+              await Expect(checkout.Email).ToHaveAttributeAsync("aria-invalid", "true");     // state, not wording
+              await Expect(checkout.Email).ToHaveAccessibleDescriptionAsync(new Regex(".+"));  // aria-describedby
+          }
+      }
+    expected: "Both tests read as user intent and select nothing by wording, so renaming the button, moving the email field or translating the error message changes only `CheckoutPage`, or nothing at all."
+    applies:
+      platforms: [dotnet, browser]
+      requires: [Microsoft.Playwright.NUnit]
+      versions: { csharp: ">=13", dotnet: ">=9", playwright: ">=1.44" }
+    sources:
+      - title: Page object models — Playwright for .NET
+        url: https://playwright.dev/dotnet/docs/pom
+    validation:
+      status: excerpt
+      host: an NUnit test project with Microsoft.Playwright.NUnit and installed browsers, against a running Blazor app
+
+  - id: running-in-ci
+    kind: table
+    title: Running the suites in CI
+    note: "Unit and component tests run anywhere, browsers headless on Linux, devices on emulators or a device farm, and Windows UI tools only on a Windows runner with a desktop session."
+    headers: [Suite, Runner, Setup, Keep]
+    rows:
+      - ["view model, bUnit, `WebApplicationFactory`", "any OS", "`dotnet test`", "on every push; seconds"]
+      - ["Playwright for .NET", "Linux (`ubuntu-latest`)", "`pwsh bin/Release/net9.0/playwright.ps1 install --with-deps chromium`; headless by default", "a trace and screenshot on failure as artifacts"]
+      - ["Appium + MAUI Android", "Linux with an emulator (KVM), or a device farm (BrowserStack, Sauce Labs, AWS Device Farm)", "Appium server + `uiautomator2` driver; a Release APK", "the few journeys that need a device"]
+      - ["Appium + MAUI iOS", "macOS with Xcode and a simulator, or a device farm", "`xcuitest` driver; a simulator `.app` or a signed `.ipa`", "the same journeys as Android"]
+      - ["MAUI Windows, WPF, WinUI (FlaUI, Appium Windows driver)", "**Windows only**, with an interactive (unlocked) desktop", "a self-hosted or hosted Windows runner; the app installed or built first", "not headless: no hidden-desktop mode"]
+      - ["accessibility audit", "with the Playwright job", "`Deque.AxeCore.Playwright` on each page", "zero WCAG A/AA violations as a gate"]
+
+  - id: flake-checklist
+    kind: rules
+    title: The flake checklist
+    note: A flaky test is a bug in the test, the app or the environment — find which, never retry it into silence.
+    items:
+      - tone: good
+        text: "**Wait for a state, never for time**: Playwright's auto-waiting and `Expect`, bUnit's `WaitForAssertion`, Appium's `WebDriverWait.Until`. No `Thread.Sleep`, `Task.Delay` or implicit-wait guesses."
+      - tone: good
+        text: "**Own the data**: fakes in `ConfigureTestServices`, `Page.RouteAsync` for the browser, a launch flag for the device. Each test creates what it reads."
+      - tone: good
+        text: "**Isolate every test**: a new browser context per test (the `PageTest` default), a fresh app launch or reset for Appium, no ordering between tests."
+      - tone: good
+        text: "**Pin the environment**: culture, time zone, clock (`TimeProvider`), viewport, animations off on the emulator, the same browser build in CI and locally."
+      - tone: bad
+        text: "XPath by position, CSS by layout or theme classes, and matching on translated text. All three break without any bug."
+      - tone: bad
+        text: "Asserting right after an action with a non-retrying `Assert`, such as `Assert.That(await locator.IsVisibleAsync())`. Use the web-first `Expect(locator).ToBeVisibleAsync()`."
+      - tone: neutral
+        text: "Quarantine a flaky test with an issue link and a deadline. Keep traces (`Context.Tracing`), screenshots and Appium logs from every failed run."
+      - tone: neutral
+        text: "Debug builds of MAUI Android use fast deployment, which Appium cannot install. Test a Release APK, or set `noReset` and launch an already-deployed package."

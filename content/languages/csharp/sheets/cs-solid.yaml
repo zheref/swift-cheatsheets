@@ -1,0 +1,656 @@
+id: cs-solid
+concept: principles.solid
+scope: shared
+title: "SOLID in C#"
+group: "Design & practice"
+subtitle: "The five principles as before/after refactors in C#'s own idiom — interfaces and constructor injection, polymorphism versus pattern matching, variance, role interfaces and the DI container as composition root — each pair proved to print the same."
+applies:
+  platforms: [dotnet]
+  runtime: .NET (any app model; the examples are console apps)
+  versions: { csharp: ">=12", dotnet: ">=8" }
+sources:
+  - title: Architectural principles — .NET application architecture guide
+    url: https://learn.microsoft.com/en-us/dotnet/architecture/modern-web-apps-azure/architectural-principles
+  - title: Dependency injection — .NET
+    url: https://learn.microsoft.com/en-us/dotnet/core/extensions/dependency-injection
+  - title: Covariance and contravariance in generics — .NET
+    url: https://learn.microsoft.com/en-us/dotnet/standard/generics/covariance-and-contravariance
+cards:
+  - id: one-line-versions
+    kind: rules
+    title: The one-line versions
+    note: Say the name, then the smell it prevents.
+    items:
+      - tone: modern
+        text: "**S**ingle Responsibility — a class has one reason to change. Smell: one service that parses, calculates, formats and sends."
+      - tone: modern
+        text: "**O**pen/Closed — add behaviour by adding a class, not by editing a shipped `switch`. Smell: every promotion touches the same method."
+      - tone: modern
+        text: "**L**iskov Substitution — anything typed as the base keeps the base's promises. Smell: `is SubType` checks in the caller, or an override that throws `NotSupportedException`."
+      - tone: modern
+        text: "**I**nterface Segregation — depend on the narrowest interface you use. Smell: test fakes full of `throw new NotImplementedException()`."
+      - tone: modern
+        text: "**D**ependency Inversion — logic depends on an interface it owns; the composition root passes the implementation in. Smell: `new SmtpClient()`, `DateTime.Now` or a static singleton inside business code."
+      - tone: neutral
+        text: "In .NET the principles meet in one place: constructor injection plus `Microsoft.Extensions.DependencyInjection` — the container is where implementations are chosen, and nowhere else."
+  - id: s-single-responsibility
+    kind: compare
+    title: "S — Single Responsibility"
+    note: "Split by reason to change — the file format, the business rule, the layout — so each one is a small type you can test and change alone."
+    prerequisites: &run
+      - .NET 8 SDK or later
+      - "`dotnet new console -o Demo`, replace `Demo/Program.cs` with the example, then `dotnet run --project Demo`"
+    columns:
+      - label: Violates
+        tone: bad
+        code: |-
+          using System.Globalization;
+          using System.Text;
+
+          string[] lines = ["A-1,ada,42.50,delivered", "A-2,grace,15.00,cancelled", "A-3,linus,15.00,delivered"];
+          Console.Write(new DailyReport().Build(lines));
+
+          // Parses, filters, aggregates and formats: four reasons to change, one class.
+          class DailyReport
+          {
+              public string Build(IEnumerable<string> csvLines)
+              {
+                  var (revenue, cancelled) = (0m, 0);
+                  var perCustomer = new SortedDictionary<string, decimal>(StringComparer.Ordinal);
+                  foreach (var line in csvLines)
+                  {
+                      var parts = line.Split(',');
+                      if (parts[3] == "cancelled")
+                      {
+                          cancelled++;
+                          continue;
+                      }
+                      if (parts[3] != "delivered") throw new FormatException($"bad status: {parts[3]}");
+                      var total = decimal.Parse(parts[2], CultureInfo.InvariantCulture);
+                      revenue += total;
+                      perCustomer[parts[1]] = perCustomer.GetValueOrDefault(parts[1]) + total;
+                  }
+
+                  var text = new StringBuilder();
+                  foreach (var (customer, spent) in perCustomer)
+                      text.AppendLine(CultureInfo.InvariantCulture, $"{customer}: {spent:0.00} EUR");
+                  text.AppendLine(CultureInfo.InvariantCulture, $"revenue {revenue:0.00} EUR ({cancelled} cancelled)");
+                  return text.ToString();
+              }
+          }
+      - label: Respects
+        tone: good
+        code: |-
+          using System.Globalization;
+          using static System.FormattableString;
+
+          string[] lines = ["A-1,ada,42.50,delivered", "A-2,grace,15.00,cancelled", "A-3,linus,15.00,delivered"];
+          var orders = lines.Select(Order.Parse).ToList();
+          Console.WriteLine(ReportFormatter.Format(SalesSummary.Of(orders)));
+
+          enum OrderStatus { Delivered, Cancelled }
+
+          record Order(string Id, string Customer, decimal Total, OrderStatus Status)
+          {
+              public static Order Parse(string line) =>                                // the file format
+                  line.Split(',') is [var id, var customer, var total, var status]
+                      ? new(id, customer, decimal.Parse(total, CultureInfo.InvariantCulture), ParseStatus(status))
+                      : throw new FormatException($"bad order line: {line}");
+
+              private static OrderStatus ParseStatus(string status) => status switch
+              {
+                  "delivered" => OrderStatus.Delivered,
+                  "cancelled" => OrderStatus.Cancelled,
+                  _ => throw new FormatException($"bad status: {status}"),
+              };
+          }
+
+          record SalesSummary(IReadOnlyDictionary<string, decimal> PerCustomer, decimal Revenue, int Cancelled)
+          {
+              public static SalesSummary Of(IReadOnlyList<Order> orders)              // the business rule
+              {
+                  var delivered = orders.Where(o => o.Status == OrderStatus.Delivered).ToList();
+                  var perCustomer = delivered.GroupBy(o => o.Customer)
+                                             .ToDictionary(g => g.Key, g => g.Sum(o => o.Total));
+                  var cancelled = orders.Count(o => o.Status == OrderStatus.Cancelled);
+                  return new(perCustomer, delivered.Sum(o => o.Total), cancelled);
+              }
+          }
+
+          static class ReportFormatter                                                  // the layout
+          {
+              public static string Format(SalesSummary summary) => string.Join(Environment.NewLine,
+                  summary.PerCustomer.OrderBy(p => p.Key, StringComparer.Ordinal)
+                      .Select(p => Invariant($"{p.Key}: {p.Value:0.00} EUR"))
+                      .Append(Invariant($"revenue {summary.Revenue:0.00} EUR ({summary.Cancelled} cancelled)")));
+          }
+    expected: |-
+      ada: 42.50 EUR
+      linus: 15.00 EUR
+      revenue 57.50 EUR (1 cancelled)
+    validation: &ran
+      status: ran
+      toolchain: .NET SDK 9.0.304 (net9.0, C# 13)
+      date: "2026-11-16"
+  - id: o-open-closed
+    kind: compare
+    title: "O — Open/Closed: polymorphism for an open set"
+    note: "Adding Black Friday edits the shipped `switch` on the left and only adds a class on the right; keep a `switch` expression for a set that is closed by nature, such as an order's states."
+    prerequisites: *run
+    columns:
+      - label: Violates
+        tone: bad
+        code: |-
+          using System.Globalization;
+
+          var cart = new Cart(Subtotal: 120m, ItemCount: 3, Coupon: "WELCOME10");
+          string[] activePromotions = ["bulk", "coupon"];
+          Print(Checkout.Discount(cart, activePromotions));
+          Print(Checkout.Discount(cart, [.. activePromotions, "black-friday"]));      // the new promotion
+
+          static void Print(decimal amount) => Console.WriteLine(amount.ToString("0.00", CultureInfo.InvariantCulture));
+
+          record Cart(decimal Subtotal, int ItemCount, string? Coupon);
+
+          static class Checkout
+          {
+              public static decimal Discount(Cart cart, IEnumerable<string> promotions)
+              {
+                  var discount = 0m;
+                  foreach (var promotion in promotions)
+                  {
+                      discount += promotion switch
+                      {
+                          "bulk" => cart.ItemCount >= 3 ? 5m : 0m,
+                          "coupon" => cart.Coupon == "WELCOME10" ? cart.Subtotal * 0.10m : 0m,
+                          "black-friday" => cart.Subtotal * 0.20m,                     // edited shipped code
+                          _ => throw new ArgumentException($"unknown promotion '{promotion}'", nameof(promotions)),
+                      };
+                  }
+                  return discount;
+              }
+          }
+      - label: Respects
+        tone: good
+        code: |-
+          using System.Globalization;
+
+          var cart = new Cart(Subtotal: 120m, ItemCount: 3, Coupon: "WELCOME10");
+          IDiscountRule[] activeRules =
+              [new BulkDiscount(MinItems: 3, Amount: 5m), new CouponDiscount("WELCOME10", Rate: 0.10m)];
+          Print(Checkout.Discount(cart, activeRules));
+          Print(Checkout.Discount(cart, [.. activeRules, new BlackFridayDiscount(Rate: 0.20m)]));   // new promotion
+
+          static void Print(decimal amount) => Console.WriteLine(amount.ToString("0.00", CultureInfo.InvariantCulture));
+
+          record Cart(decimal Subtotal, int ItemCount, string? Coupon);
+
+          interface IDiscountRule
+          {
+              decimal DiscountFor(Cart cart);
+          }
+
+          sealed record BulkDiscount(int MinItems, decimal Amount) : IDiscountRule
+          {
+              public decimal DiscountFor(Cart cart) => cart.ItemCount >= MinItems ? Amount : 0m;
+          }
+
+          sealed record CouponDiscount(string Code, decimal Rate) : IDiscountRule
+          {
+              public decimal DiscountFor(Cart cart) => cart.Coupon == Code ? cart.Subtotal * Rate : 0m;
+          }
+
+          static class Checkout                                     // unchanged by the new promotion
+          {
+              public static decimal Discount(Cart cart, IEnumerable<IDiscountRule> rules) =>
+                  rules.Sum(rule => rule.DiscountFor(cart));
+          }
+
+          // Added code only: a new class, and one more rule where the rules are chosen.
+          sealed record BlackFridayDiscount(decimal Rate) : IDiscountRule
+          {
+              public decimal DiscountFor(Cart cart) => cart.Subtotal * Rate;
+          }
+    expected: |-
+      17.00
+      41.00
+    validation: *ran
+  - id: l-liskov-substitution
+    kind: compare
+    title: "L — Liskov Substitution: keep the contract"
+    note: "If the caller must ask which subtype it was handed, substitution is broken; the fix keeps the base class and puts every legitimate outcome into `Refund`'s return type."
+    prerequisites: *run
+    columns:
+      - label: Violates
+        tone: bad
+        code: |-
+          using System.Globalization;
+
+          Console.WriteLine(Refunds.RefundOrder(new CardPayment("4242"), 42.50m));
+          Console.WriteLine(Refunds.RefundOrder(new GiftCardPayment(), 42.50m));
+
+          abstract class PaymentMethod
+          {
+              public abstract string Refund(decimal amount);
+          }
+
+          sealed class CardPayment(string last4) : PaymentMethod
+          {
+              public override string Refund(decimal amount) =>
+                  string.Create(CultureInfo.InvariantCulture, $"refunded {amount} to card ending {last4}");
+          }
+
+          sealed class GiftCardPayment : PaymentMethod
+          {
+              public override string Refund(decimal amount) =>
+                  throw new NotSupportedException("gift cards cannot be refunded");   // breaks the base's promise
+          }
+
+          static class Refunds
+          {
+              public static string RefundOrder(PaymentMethod method, decimal amount)
+              {
+                  // The smell: the caller has to know which subtype it was given.
+                  if (method is GiftCardPayment)
+                      return string.Create(CultureInfo.InvariantCulture, $"issued {amount} as store credit");
+                  return method.Refund(amount);
+              }
+          }
+      - label: Respects
+        tone: good
+        code: |-
+          using System.Globalization;
+
+          Console.WriteLine(Refunds.RefundOrder(new CardPayment("4242"), 42.50m));
+          Console.WriteLine(Refunds.RefundOrder(new GiftCardPayment(), 42.50m));
+
+          abstract record RefundOutcome
+          {
+              private RefundOutcome() { }                                   // closed: only the two below
+              public sealed record ToOriginalMethod(string Description) : RefundOutcome;
+              public sealed record StoreCredit(decimal Amount) : RefundOutcome;
+          }
+
+          // The contract: every payment method answers every valid refund, and never throws for one.
+          abstract class PaymentMethod
+          {
+              public abstract RefundOutcome Refund(decimal amount);
+          }
+
+          sealed class CardPayment(string last4) : PaymentMethod
+          {
+              public override RefundOutcome Refund(decimal amount) => new RefundOutcome.ToOriginalMethod(
+                  string.Create(CultureInfo.InvariantCulture, $"refunded {amount} to card ending {last4}"));
+          }
+
+          sealed class GiftCardPayment : PaymentMethod
+          {
+              public override RefundOutcome Refund(decimal amount) => new RefundOutcome.StoreCredit(amount);
+          }
+
+          static class Refunds
+          {
+              public static string RefundOrder(PaymentMethod method, decimal amount) => method.Refund(amount) switch
+              {
+                  RefundOutcome.ToOriginalMethod(var description) => description,
+                  RefundOutcome.StoreCredit(var credit) =>
+                      string.Create(CultureInfo.InvariantCulture, $"issued {credit} as store credit"),
+                  _ => throw new InvalidOperationException("unknown refund outcome"),
+              };
+          }
+    expected: |-
+      refunded 42.50 to card ending 4242
+      issued 42.50 as store credit
+    validation: *ran
+  - id: variance-and-contracts
+    kind: code
+    title: "Liskov in the type system: variance"
+    note: "Generic variance (`out` produces, `in` consumes) is substitution the compiler checks; array covariance and `ICollection<T>` on arrays are the BCL's own run-time violations."
+    prerequisites: *run
+    code: |-
+      // Array covariance compiles, then fails at run time: a CardPayment[] is not really a PaymentMethod[]
+      PaymentMethod[] methods = new CardPayment[2];
+      try { methods[0] = new GiftCardPayment(); }
+      catch (ArrayTypeMismatchException) { Console.WriteLine("array covariance: ArrayTypeMismatchException"); }
+
+      // An array "is" an ICollection<T>, but Add breaks that interface's promise
+      ICollection<string> tags = new[] { "gift" };
+      try { tags.Add("sale"); }
+      catch (NotSupportedException) { Console.WriteLine("ICollection<T>.Add on an array: NotSupportedException"); }
+
+      // Generic variance is checked: IReadOnlyList<out T> only hands Ts out, Action<in T> only takes them in
+      IReadOnlyList<CardPayment> cards = [new CardPayment("4242"), new CardPayment("1881")];
+      IReadOnlyList<PaymentMethod> readable = cards;          // safe, so it compiles
+      // List<PaymentMethod> writable = new List<CardPayment>();   // error CS0029: List<T> is invariant
+      Action<PaymentMethod> audit = method => Console.WriteLine($"audit {method.Label}");
+      Action<CardPayment> auditCard = audit;                  // a handler of any method handles a card
+      foreach (var card in cards) auditCard(card);
+      Console.WriteLine(readable.Count);
+
+      abstract record PaymentMethod(string Label);
+      sealed record CardPayment(string Last4) : PaymentMethod($"card {Last4}");
+      sealed record GiftCardPayment() : PaymentMethod("gift card");
+    expected: |-
+      array covariance: ArrayTypeMismatchException
+      ICollection<T>.Add on an array: NotSupportedException
+      audit card 4242
+      audit card 1881
+      2
+    validation: *ran
+  - id: i-interface-segregation
+    kind: compare
+    title: "I — Interface Segregation: small role interfaces"
+    note: "Split the fat repository into the roles consumers use; the real class implements several, each consumer and each fake implements one."
+    prerequisites: *run
+    columns:
+      - label: Violates
+        tone: bad
+        code: |-
+          var printer = new LabelPrinter(new FakeOrders());
+          Console.WriteLine(printer.LabelFor("A-1"));
+          Console.WriteLine(printer.LabelFor("A-9"));
+
+          record Order(string Id, string ShipTo);
+
+          interface IOrderRepository
+          {
+              Order? Find(string id);
+              IReadOnlyList<Order> ListAll();
+              void Save(Order order);
+              void Delete(string id);
+              string ExportCsv();
+          }
+
+          class LabelPrinter(IOrderRepository orders)            // uses one member, depends on five
+          {
+              public string LabelFor(string id) =>
+                  orders.Find(id) is { } order ? $"ship {order.Id} to {order.ShipTo}" : $"no order {id}";
+          }
+
+          class FakeOrders : IOrderRepository                    // the smell: a fake full of throws
+          {
+              public Order? Find(string id) => id == "A-1" ? new Order("A-1", "Ada, 12 Analytical St") : null;
+              public IReadOnlyList<Order> ListAll() => throw new NotImplementedException();
+              public void Save(Order order) => throw new NotImplementedException();
+              public void Delete(string id) => throw new NotImplementedException();
+              public string ExportCsv() => throw new NotImplementedException();
+          }
+      - label: Respects
+        tone: good
+        code: |-
+          var printer = new LabelPrinter(new FakeOrders());
+          Console.WriteLine(printer.LabelFor("A-1"));
+          Console.WriteLine(printer.LabelFor("A-9"));
+
+          record Order(string Id, string ShipTo);
+
+          interface IOrderReader
+          {
+              Order? Find(string id);
+          }
+
+          interface IOrderWriter
+          {
+              void Save(Order order);
+              void Delete(string id);
+          }
+
+          // The database-backed repository implements both roles; consumers ask for one:
+          // sealed class SqlOrderRepository : IOrderReader, IOrderWriter { ... }
+
+          class LabelPrinter(IOrderReader orders)
+          {
+              public string LabelFor(string id) =>
+                  orders.Find(id) is { } order ? $"ship {order.Id} to {order.ShipTo}" : $"no order {id}";
+          }
+
+          class FakeOrders : IOrderReader
+          {
+              public Order? Find(string id) => id == "A-1" ? new Order("A-1", "Ada, 12 Analytical St") : null;
+          }
+    expected: |-
+      ship A-1 to Ada, 12 Analytical St
+      no order A-9
+    validation: *ran
+  - id: d-dependency-inversion
+    kind: compare
+    title: "D — Dependency Inversion: constructor injection"
+    note: "The policy declares the interface it needs and receives it, with `TimeProvider` for the clock; the concrete mailer is chosen outside."
+    prerequisites: *run
+    columns:
+      - label: Violates
+        tone: bad
+        code: |-
+          var reminders = new PaymentReminders();
+          var placed = new DateTimeOffset(2026, 1, 2, 0, 0, 0, TimeSpan.Zero);
+          reminders.SendFor(new Order("A-1", "ada@example.com", placed, Paid: false));
+          reminders.SendFor(new Order("A-2", "grace@example.com", placed, Paid: true));
+
+          record Order(string Id, string Email, DateTimeOffset PlacedAt, bool Paid);
+
+          class PaymentReminders
+          {
+              private readonly SmtpMailer mailer = new();          // concrete, built inside: a test cannot replace it
+
+              public void SendFor(Order order)
+              {
+                  var overdue = DateTimeOffset.UtcNow - order.PlacedAt > TimeSpan.FromDays(3);   // real clock
+                  if (!order.Paid && overdue) mailer.Send(order.Email, $"order {order.Id} is awaiting payment");
+              }
+          }
+
+          class SmtpMailer
+          {
+              public void Send(string to, string body) => Console.WriteLine($"to {to}: {body}");   // SMTP stand-in
+          }
+      - label: Respects
+        tone: good
+        code: |-
+          var clock = new FixedClock(new DateTimeOffset(2026, 1, 10, 0, 0, 0, TimeSpan.Zero));
+          var reminders = new PaymentReminders(new ConsoleMailer(), clock);   // production: SMTP, TimeProvider.System
+          var placed = new DateTimeOffset(2026, 1, 2, 0, 0, 0, TimeSpan.Zero);
+          reminders.SendFor(new Order("A-1", "ada@example.com", placed, Paid: false));
+          reminders.SendFor(new Order("A-2", "grace@example.com", placed, Paid: true));
+
+          record Order(string Id, string Email, DateTimeOffset PlacedAt, bool Paid);
+
+          interface IMailer                                        // owned by the policy, not by the SMTP code
+          {
+              void Send(string to, string body);
+          }
+
+          sealed class PaymentReminders(IMailer mailer, TimeProvider clock)
+          {
+              public void SendFor(Order order)
+              {
+                  var overdue = clock.GetUtcNow() - order.PlacedAt > TimeSpan.FromDays(3);
+                  if (!order.Paid && overdue) mailer.Send(order.Email, $"order {order.Id} is awaiting payment");
+              }
+          }
+
+          sealed class ConsoleMailer : IMailer
+          {
+              public void Send(string to, string body) => Console.WriteLine($"to {to}: {body}");
+          }
+
+          sealed class FixedClock(DateTimeOffset now) : TimeProvider
+          {
+              public override DateTimeOffset GetUtcNow() => now;
+          }
+    expected: |-
+      to ada@example.com: order A-1 is awaiting payment
+    validation: *ran
+  - id: composition-root
+    kind: code
+    title: "The DI container is the composition root"
+    note: "Register implementations once at startup; constructors only declare what they need, and the Black Friday extension from the Open/Closed card is one more registration."
+    prerequisites:
+      - .NET 8 SDK or later
+      - "`dotnet new console -o Demo`, then `dotnet add Demo package Microsoft.Extensions.DependencyInjection`"
+      - "Replace `Demo/Program.cs` with the example, then `dotnet run --project Demo`"
+    code: |-
+      using System.Globalization;
+      using Microsoft.Extensions.DependencyInjection;
+
+      var services = new ServiceCollection();
+      services.AddSingleton<IMailer, ConsoleMailer>();
+      services.AddSingleton<IDiscountRule>(new BulkDiscount(MinItems: 3, Amount: 5m));
+      services.AddSingleton<IDiscountRule>(new BlackFridayDiscount(Rate: 0.20m));      // the extension
+      services.AddTransient<Checkout>();
+
+      // ValidateOnBuild checks that every registration's dependencies can be resolved (it creates nothing),
+      // so a missing one fails at startup, not on first use.
+      using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateOnBuild = true });
+      provider.GetRequiredService<Checkout>().Complete(new Cart("ada@example.com", Subtotal: 120m, ItemCount: 3));
+
+      record Cart(string Email, decimal Subtotal, int ItemCount);
+
+      interface IMailer { void Send(string to, string body); }
+
+      interface IDiscountRule { decimal DiscountFor(Cart cart); }
+
+      sealed class ConsoleMailer : IMailer
+      {
+          public void Send(string to, string body) => Console.WriteLine($"to {to}: {body}");
+      }
+
+      sealed record BulkDiscount(int MinItems, decimal Amount) : IDiscountRule
+      {
+          public decimal DiscountFor(Cart cart) => cart.ItemCount >= MinItems ? Amount : 0m;
+      }
+
+      sealed record BlackFridayDiscount(decimal Rate) : IDiscountRule
+      {
+          public decimal DiscountFor(Cart cart) => cart.Subtotal * Rate;
+      }
+
+      // IEnumerable<IDiscountRule> receives every registration, in registration order.
+      sealed class Checkout(IEnumerable<IDiscountRule> rules, IMailer mailer)
+      {
+          public void Complete(Cart cart)
+          {
+              var total = cart.Subtotal - rules.Sum(rule => rule.DiscountFor(cart));
+              mailer.Send(cart.Email, string.Create(CultureInfo.InvariantCulture, $"paid {total:0.00} EUR"));
+          }
+      }
+    expected: |-
+      to ada@example.com: paid 91.00 EUR
+    applies:
+      requires: [Microsoft.Extensions.DependencyInjection]
+      versions: { csharp: ">=12", dotnet: ">=8", microsoft-extensions-dependencyinjection: ">=8.0" }
+    validation:
+      status: ran
+      toolchain: .NET SDK 9.0.304 (net9.0, C# 13), Microsoft.Extensions.DependencyInjection 10.0.15
+      date: "2026-11-16"
+  - id: composition-over-inheritance
+    kind: compare
+    title: "Composition over inheritance: decorators"
+    note: "Each concern wraps an interface instead of extending a class, so caching and auditing combine in any order without a subclass per combination."
+    prerequisites: *run
+    columns:
+      - label: Inheritance
+        tone: bad
+        code: |-
+          using System.Globalization;
+
+          var catalog = new AuditedCachedPriceCatalog();
+          Console.WriteLine(catalog.PriceOf("mug").ToString("0.00", CultureInfo.InvariantCulture));
+          Console.WriteLine(catalog.PriceOf("mug").ToString("0.00", CultureInfo.InvariantCulture));
+
+          class PriceCatalog
+          {
+              public virtual decimal PriceOf(string sku)
+              {
+                  Console.WriteLine($"database lookup: {sku}");
+                  return sku == "mug" ? 12.00m : 99.00m;
+              }
+          }
+
+          class CachedPriceCatalog : PriceCatalog
+          {
+              private readonly Dictionary<string, decimal> cache = new();
+              public override decimal PriceOf(string sku)
+              {
+                  if (!cache.TryGetValue(sku, out var price)) cache[sku] = price = base.PriceOf(sku);
+                  return price;
+              }
+          }
+
+          // Auditing without caching is yet another subclass: every combination is a new class.
+          class AuditedCachedPriceCatalog : CachedPriceCatalog
+          {
+              public override decimal PriceOf(string sku)
+              {
+                  Console.WriteLine($"audit: {sku}");
+                  return base.PriceOf(sku);
+              }
+          }
+      - label: Composition
+        tone: good
+        code: |-
+          using System.Globalization;
+
+          IPriceCatalog catalog = new AuditedCatalog(new CachedCatalog(new DatabaseCatalog()));
+          Console.WriteLine(catalog.PriceOf("mug").ToString("0.00", CultureInfo.InvariantCulture));
+          Console.WriteLine(catalog.PriceOf("mug").ToString("0.00", CultureInfo.InvariantCulture));
+
+          interface IPriceCatalog { decimal PriceOf(string sku); }
+
+          sealed class DatabaseCatalog : IPriceCatalog
+          {
+              public decimal PriceOf(string sku)
+              {
+                  Console.WriteLine($"database lookup: {sku}");
+                  return sku == "mug" ? 12.00m : 99.00m;
+              }
+          }
+
+          sealed class CachedCatalog(IPriceCatalog inner) : IPriceCatalog
+          {
+              private readonly Dictionary<string, decimal> cache = new();
+              public decimal PriceOf(string sku)
+              {
+                  if (!cache.TryGetValue(sku, out var price)) cache[sku] = price = inner.PriceOf(sku);
+                  return price;
+              }
+          }
+
+          // Any subset, any order: new AuditedCatalog(new DatabaseCatalog()) needs no new class.
+          sealed class AuditedCatalog(IPriceCatalog inner) : IPriceCatalog
+          {
+              public decimal PriceOf(string sku)
+              {
+                  Console.WriteLine($"audit: {sku}");
+                  return inner.PriceOf(sku);
+              }
+          }
+    expected: |-
+      audit: mug
+      database lookup: mug
+      12.00
+      audit: mug
+      12.00
+    validation: *ran
+  - id: related-principles
+    kind: rules
+    title: Related principles an interviewer may also ask
+    note: Each one is a trade-off; say when you would break it.
+    items:
+      - tone: neutral
+        text: "**DRY** — one source of truth for each piece of knowledge; but prefer duplication over the wrong abstraction, and wait for the third copy."
+      - tone: neutral
+        text: "**KISS** — a `switch` expression over a closed `enum` beats a plugin system nobody plugs into; a static method beats a service with no state."
+      - tone: neutral
+        text: "**YAGNI** — do not add a generic type parameter or an interface until a second caller or a test needs it."
+      - tone: neutral
+        text: "**Composition over inheritance** — decorators and injected collaborators; keep inheritance for framework base classes (`ContentPage`, `ControllerBase`, `BackgroundService`) and `sealed` everything else by default."
+      - tone: neutral
+        text: "**Law of Demeter** — `order.Customer.Address.Country.Code` couples you to four types; ask for `order.ShippingCountry` or take the value as a parameter."
+      - tone: neutral
+        text: "**Tell, don't ask** — call `cart.ApplyCoupon(code)` rather than reading its properties and deciding outside."
+      - tone: bad
+        text: "**SOLID as ceremony** — an `IOrderService` with exactly one implementation and no test double is indirection, not Dependency Inversion."
+      - tone: bad
+        text: "**The service locator** — injecting `IServiceProvider` and calling `GetService` inside logic hides the dependencies again; inject what you use."
+      - tone: good
+        text: "**Captive dependency** — a singleton that takes a scoped service keeps one instance forever. `ValidateScopes` alone reports it only on first resolution and `ValidateOnBuild` alone not at all; set both to fail at startup (the generic host sets both in Development)."

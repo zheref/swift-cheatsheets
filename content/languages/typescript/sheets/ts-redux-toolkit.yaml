@@ -1,0 +1,692 @@
+id: ts-redux-toolkit
+concept: architecture.unidirectional-composition
+scope: platform
+title: "Redux Toolkit — Slices, Effects, Testing"
+group: "State management"
+subtitle: "How small slices become an app store: Immer reducers, cancellable thunks with injected dependencies, listeners, memoised selectors, entities, RTK Query, typed hooks and tests."
+applies:
+  platforms: [browser, node]
+  runtime: any ES2022+ engine; the examples run on Node.js
+  requires: ["@reduxjs/toolkit"]
+  versions: { typescript: ">=5.5", node: ">=22.18", "@reduxjs/toolkit": ">=2.0" }
+sources:
+  - title: Redux Toolkit — Usage with TypeScript
+    url: https://redux.js.org/toolkit/usage/usage-with-typescript
+  - title: configureStore — Redux Toolkit
+    url: https://redux.js.org/toolkit/api/configureStore
+  - title: createSlice — Redux Toolkit
+    url: https://redux.js.org/toolkit/api/createSlice
+cards:
+  - id: tca-to-rtk
+    kind: table
+    title: TCA composition, in Redux Toolkit
+    note: "The same jobs — compose features, inject dependencies, cancel effects, test — with RTK's names."
+    headers: [Job, TCA, Redux Toolkit]
+    rows:
+      - - A feature's state, actions and reducer
+        - "`@Reducer struct Feature`"
+        - "`createSlice({ name, initialState, reducers })`"
+      - - Parent embeds children
+        - "`Scope(state:action:)`"
+        - "`combineSlices(cartSlice, historySlice)`; `injectInto` for lazy features"
+      - - One feature reacts to another's event
+        - "parent matches `.child(.delegate(…))`"
+        - "`extraReducers` with a shared `createAction`, or a listener"
+      - - Collections of children
+        - "`IdentifiedArrayOf`, `forEach`"
+        - "`createEntityAdapter` (`ids` + `entities`)"
+      - - Async effect feeding results back
+        - "`.run { send in … }`"
+        - "`createAsyncThunk` → `pending` / `fulfilled` / `rejected`"
+      - - Cancellation
+        - "`.cancellable(id:, cancelInFlight: true)`"
+        - "the thunk's `signal` and `promise.abort()`; `cancelActiveListeners()` in a listener"
+      - - Dependencies
+        - "`@Dependency(\\.apiClient)`"
+        - "`thunk: { extraArgument }`, `createListenerMiddleware({ extra })`"
+      - - Derived state
+        - "computed properties"
+        - "`createSelector`, slice `selectors`"
+      - - Server cache
+        - "a client plus effects"
+        - "RTK Query `createApi`"
+      - - Tests
+        - "`TestStore` with `withDependencies`"
+        - "call the reducer; build a store with fake `extraArgument`"
+      - - Time in tests
+        - "`TestClock`, `clock.advance(by:)`"
+        - "`node:test`'s `mock.timers.tick(ms)` (or a test runner's fake timers)"
+  - id: slice-and-store
+    kind: code
+    title: createSlice and configureStore
+    note: "A slice generates its action creators and reducer from one object, and `configureStore` adds thunks, DevTools and dev-only mutation checks."
+    prerequisites: &run
+      - Node.js 22.18 or later (it runs `.mts` files directly by stripping the types)
+      - "`npm i @reduxjs/toolkit`"
+      - "Save as `main.mts` and run `node main.mts`"
+    code: |-
+      import { configureStore, createSlice, type PayloadAction } from "@reduxjs/toolkit";
+
+      type Line = { sku: string; name: string; unitPrice: number; qty: number };
+
+      const cartSlice = createSlice({
+        name: "cart",
+        initialState: { lines: [] as Line[] },
+        reducers: {
+          // Immer: write to a draft as if mutating; the store receives a new, frozen state.
+          productAdded(state, action: PayloadAction<Omit<Line, "qty">>) {
+            const line = state.lines.find((l) => l.sku === action.payload.sku);
+            if (line) line.qty += 1;
+            else state.lines.push({ ...action.payload, qty: 1 });
+          },
+          quantityChanged(state, action: PayloadAction<{ sku: string; qty: number }>) {
+            const { sku, qty } = action.payload;
+            const line = state.lines.find((l) => l.sku === sku);
+            if (qty <= 0) state.lines = state.lines.filter((l) => l.sku !== sku);
+            else if (line) line.qty = qty;
+          },
+          emptied: () => ({ lines: [] }),     // or return a whole new state
+        },
+        selectors: {
+          selectItemCount: (cart) => cart.lines.reduce((n, l) => n + l.qty, 0),
+          selectTotal: (cart) => cart.lines.reduce((sum, l) => sum + l.unitPrice * l.qty, 0),
+        },
+      });
+
+      export const { productAdded, quantityChanged, emptied } = cartSlice.actions;
+      export const { selectItemCount, selectTotal } = cartSlice.selectors;
+
+      export const store = configureStore({ reducer: { cart: cartSlice.reducer } });
+      export type RootState = ReturnType<typeof store.getState>;
+      export type AppDispatch = typeof store.dispatch;
+
+      const mug = { sku: "MUG", name: "Mug", unitPrice: 12.5 };
+      console.log(productAdded(mug));
+
+      store.dispatch(productAdded(mug));
+      store.dispatch(productAdded(mug));
+      store.dispatch(productAdded({ sku: "TEE", name: "T-shirt", unitPrice: 20 }));
+      store.dispatch(quantityChanged({ sku: "TEE", qty: 0 }));
+      console.log("items:", selectItemCount(store.getState()), "total:", selectTotal(store.getState()));
+      console.log("state is frozen:", Object.isFrozen(store.getState().cart.lines));
+    expected: |-
+      {
+        type: 'cart/productAdded',
+        payload: { sku: 'MUG', name: 'Mug', unitPrice: 12.5 }
+      }
+      items: 2 total: 25
+      state is frozen: true
+    validation: &ran
+      status: ran
+      toolchain: Node 24.16.0, TypeScript 5.9.3
+      date: "2026-11-16"
+  - id: async-thunk-cancellation-di
+    kind: code
+    title: createAsyncThunk — injected API, cancellation, no double submit
+    note: "The thunk reads its API from `extra` (swap it in tests), passes `signal` down so `promise.abort()` cancels the request (it still ends in `rejected`, with `meta.aborted` set, which is not an error), and `condition` skips a second submit."
+    prerequisites: *run
+    code: |-
+      import { configureStore, createAsyncThunk, createSlice } from "@reduxjs/toolkit";
+
+      type CheckoutState = { status: "idle" | "submitting" | "placed" | "failed"; orderId?: string };
+      type Extra = { api: { placeOrder(cartId: string, signal: AbortSignal): Promise<{ orderId: string }> } };
+
+      const orderSubmitted = createAsyncThunk.withTypes<{ state: { checkout: CheckoutState }; extra: Extra }>()(
+        "checkout/orderSubmitted",
+        (cartId: string, { extra, signal }) => extra.api.placeOrder(cartId, signal),
+        { condition: (_, { getState }) => getState().checkout.status !== "submitting" },
+      );
+
+      const checkoutSlice = createSlice({
+        name: "checkout",
+        initialState: { status: "idle" } as CheckoutState,
+        reducers: {},
+        extraReducers: (builder) => {
+          builder
+            .addCase(orderSubmitted.pending, () => ({ status: "submitting" }))
+            .addCase(orderSubmitted.fulfilled, (_state, { payload }) => ({ status: "placed", ...payload }))
+            .addCase(orderSubmitted.rejected, (_state, { meta }) => ({ status: meta.aborted ? "idle" : "failed" }));
+        },
+      });
+
+      const slowApi: Extra["api"] = {
+        placeOrder: (cartId, signal) => new Promise((resolve, reject) => {
+          const timer = setTimeout(() => resolve({ orderId: `ORD-for-${cartId}` }), 10);
+          signal.addEventListener("abort", () => {
+            console.log("the API saw the abort");
+            clearTimeout(timer);
+            reject(signal.reason);
+          });
+        }),
+      };
+
+      const store = configureStore({
+        reducer: { checkout: checkoutSlice.reducer },
+        middleware: (getDefault) => getDefault({ thunk: { extraArgument: { api: slowApi } satisfies Extra } }),
+      });
+
+      const first = store.dispatch(orderSubmitted("cart-7"));
+      const duplicate = await store.dispatch(orderSubmitted("cart-7"));   // condition returned false: never ran
+      console.log("second click skipped:", orderSubmitted.rejected.match(duplicate) && duplicate.meta.condition);
+
+      first.abort("left the checkout page");
+      console.log((await first).type, store.getState().checkout.status);
+
+      const placed = await store.dispatch(orderSubmitted("cart-7")).unwrap();   // the payload, or throws
+      console.log(placed.orderId, store.getState().checkout.status);
+    expected: |-
+      second click skipped: true
+      the API saw the abort
+      checkout/orderSubmitted/rejected idle
+      ORD-for-cart-7 placed
+    sources:
+      - title: createAsyncThunk — Redux Toolkit
+        url: https://redux.js.org/toolkit/api/createAsyncThunk
+    validation: *ran
+  - id: listener-debounce
+    kind: code
+    title: Listener middleware — debounce and cancel
+    note: "For effects that react to actions (search as you type, autosave), `cancelActiveListeners` plus `delay` is TCA's debounce with `cancelInFlight`."
+    prerequisites: *run
+    code: |-
+      import { configureStore, createListenerMiddleware, createSlice, type PayloadAction } from "@reduxjs/toolkit";
+
+      const searchSlice = createSlice({
+        name: "orderSearch",
+        initialState: { results: [] as string[] },
+        reducers: {
+          queryChanged(state, action: PayloadAction<string>) {
+            if (!action.payload) state.results = [];    // a cleared box clears its results at once
+          },
+          resultsLoaded(state, action: PayloadAction<string[]>) {
+            state.results = action.payload;
+          },
+        },
+      });
+
+      const { queryChanged, resultsLoaded } = searchSlice.actions;
+
+      type Extra = { searchOrders(query: string, signal: AbortSignal): Promise<string[]> };
+
+      const fakeExtra: Extra = {
+        async searchOrders(query) {
+          console.log("request:", query);
+          return ["ORD-1042 Desk lamp", "ORD-1077 Lamp shade"].filter((o) => o.toLowerCase().includes(query));
+        },
+      };
+
+      const listener = createListenerMiddleware({ extra: fakeExtra });
+      const store = configureStore({
+        reducer: { orderSearch: searchSlice.reducer },
+        middleware: (getDefault) => getDefault().prepend(listener.middleware),
+      });
+
+      // api.extra is typed from the options above; startListening.withTypes<…>() also types getState.
+      listener.startListening({
+        actionCreator: queryChanged,
+        effect: async (action, api) => {
+          api.cancelActiveListeners();          // a newer keystroke cancels this run at its next await
+          if (!action.payload) return;
+          await api.delay(250);                 // the debounce: throws if cancelled meanwhile
+          const results = await api.pause(api.extra.searchOrders(action.payload, api.signal));
+          api.dispatch(resultsLoaded(results));
+        },
+      });
+
+      for (const q of ["l", "la", "lamp"]) store.dispatch(queryChanged(q));
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      console.log("lamp:", store.getState().orderSearch.results.join(" | "));
+    expected: |-
+      request: lamp
+      lamp: ORD-1042 Desk lamp | ORD-1077 Lamp shade
+    sources:
+      - title: createListenerMiddleware — Redux Toolkit
+        url: https://redux.js.org/toolkit/api/createListenerMiddleware
+    validation: *ran
+  - id: testing-a-debounce
+    kind: code
+    title: Testing a debounced listener with mock timers
+    note: "TCA's `TestClock`, in Node: `t.mock.timers` makes the 250 ms wait instant and lets the test step to just before and just after it."
+    prerequisites:
+      - Node.js 22.18 or later (it runs `.mts` files directly by stripping the types)
+      - "`npm i @reduxjs/toolkit`"
+      - "Save as `search.test.mts` and run `node --test search.test.mts` (or `node search.test.mts`)"
+    code: |-
+      import assert from "node:assert/strict";
+      import { test } from "node:test";
+      import { configureStore, createAction, createListenerMiddleware } from "@reduxjs/toolkit";
+
+      // The listener from the card above, trimmed and repeated: the runner needs one file.
+      const queryChanged = createAction<string>("orderSearch/queryChanged");
+
+      type Extra = { searchOrders(query: string): Promise<string[]> };
+
+      test("typing fast sends one request, 250 ms after the last keystroke", async (t) => {
+        t.mock.timers.enable({ apis: ["setTimeout"] });      // t.mock is undone when the test ends
+        const searchOrders = t.mock.fn(async (query: string) => [`ORD-1042 ${query}`]);
+        const listener = createListenerMiddleware({ extra: { searchOrders } satisfies Extra });
+        listener.startListening({
+          actionCreator: queryChanged,
+          effect: async (action, api) => {
+            api.cancelActiveListeners();
+            await api.delay(250);
+            await api.pause(api.extra.searchOrders(action.payload));
+          },
+        });
+        const store = configureStore({
+          reducer: () => null,                               // only the effect is under test
+          middleware: (getDefault) => getDefault().prepend(listener.middleware),
+        });
+        const requested = () => searchOrders.mock.calls.map((call) => call.arguments[0]);
+
+        for (const q of ["l", "la", "lamp"]) store.dispatch(queryChanged(q));
+        t.mock.timers.tick(249);
+        await new Promise(setImmediate);                 // let any effect that could run, run
+        assert.deepEqual(requested(), []);               // still inside the debounce window
+
+        t.mock.timers.tick(1);
+        await new Promise(setImmediate);                 // let the effect's awaits run
+        assert.deepEqual(requested(), ["lamp"]);
+      });
+    expected: "One passing test (`ℹ pass 1`, `ℹ fail 0`) in a few milliseconds, not 250; the process exits 0."
+    sources:
+      - title: Mocking timers — Node.js test runner
+        url: https://nodejs.org/api/test.html
+    applies:
+      platforms: [node]
+      runtime: Node.js test runner
+      versions: { typescript: ">=5.5", node: ">=22.18", "@reduxjs/toolkit": ">=2.0" }
+    validation:
+      status: ran
+      toolchain: Node 24.16.0, TypeScript 5.9.3
+      date: "2026-11-16"
+      check: exit-code
+  - id: entities-and-memoized-selectors
+    kind: code
+    title: Entity adapters and createSelector
+    note: "Normalise collections (`ids` + `entities`) for O(1) updates, and memoise derived lists so a view gets the same array until an input changes."
+    prerequisites: *run
+    code: |-
+      import { configureStore, createEntityAdapter, createSelector, createSlice, type PayloadAction }
+        from "@reduxjs/toolkit";
+
+      type Status = "open" | "shipped" | "delivered";
+      type Order = { id: string; customer: string; status: Status };
+
+      const ordersAdapter = createEntityAdapter<Order>({ sortComparer: (a, b) => a.id.localeCompare(b.id) });
+
+      const ordersSlice = createSlice({
+        name: "orders",
+        initialState: ordersAdapter.getInitialState({ statusFilter: "open" as Status }),
+        reducers: {
+          ordersReceived: ordersAdapter.setAll,
+          orderShipped(state, action: PayloadAction<string>) {
+            ordersAdapter.updateOne(state, { id: action.payload, changes: { status: "shipped" } });
+          },
+          statusFilterChanged(state, action: PayloadAction<Status>) {
+            state.statusFilter = action.payload;
+          },
+        },
+      });
+
+      const { ordersReceived, orderShipped, statusFilterChanged } = ordersSlice.actions;
+
+      const store = configureStore({ reducer: { orders: ordersSlice.reducer } });
+      type RootState = ReturnType<typeof store.getState>;
+
+      const orderSelectors = ordersAdapter.getSelectors((s: RootState) => s.orders);
+      const selectStatusFilter = (s: RootState) => s.orders.statusFilter;
+      const selectVisibleOrders = createSelector([orderSelectors.selectAll, selectStatusFilter], (orders, status) =>
+        orders.filter((o) => o.status === status),
+      );
+
+      store.dispatch(ordersReceived([
+        { id: "1077", customer: "Grace", status: "open" },
+        { id: "1042", customer: "Ada", status: "open" },
+        { id: "1050", customer: "Alan", status: "delivered" },
+      ]));
+      const visible = selectVisibleOrders(store.getState());
+      console.log(visible.map((o) => o.id));
+      console.log("same array on re-select:", selectVisibleOrders(store.getState()) === visible);
+
+      store.dispatch(orderShipped("1042"));
+      console.log("1042 is", orderSelectors.selectById(store.getState(), "1042")?.status);
+
+      store.dispatch(statusFilterChanged("shipped"));
+      console.log("shipped:", selectVisibleOrders(store.getState()).map((o) => `${o.id} ${o.customer}`));
+      console.log("recomputations:", selectVisibleOrders.recomputations());
+    expected: |-
+      [ '1042', '1077' ]
+      same array on re-select: true
+      1042 is shipped
+      shipped: [ '1042 Ada' ]
+      recomputations: 2
+    sources:
+      - title: createEntityAdapter — Redux Toolkit
+        url: https://redux.js.org/toolkit/api/createEntityAdapter
+      - title: createSelector — Redux Toolkit
+        url: https://redux.js.org/toolkit/api/createSelector
+    validation: *ran
+  - id: composing-slices
+    kind: code
+    title: Composing slices with a shared event
+    note: "Features stay separate slices, and an event none of them owns (`createAction`) lets each react in its own reducer — TCA's parent observing a child's delegate action."
+    prerequisites: *run
+    code: |-
+      import { combineSlices, configureStore, createAction, createSlice, type PayloadAction }
+        from "@reduxjs/toolkit";
+
+      // An event several features care about, owned by none of them.
+      const orderPlaced = createAction<{ orderId: string }>("checkout/orderPlaced");
+
+      const cartSlice = createSlice({
+        name: "cart",
+        initialState: { skus: [] as string[] },
+        reducers: {
+          productAdded(state, action: PayloadAction<string>) {
+            state.skus.push(action.payload);
+          },
+        },
+        extraReducers: (builder) => {
+          builder.addCase(orderPlaced, (state) => {
+            state.skus = [];
+          });
+        },
+      });
+
+      const historySlice = createSlice({
+        name: "orderHistory",
+        initialState: { orderIds: [] as string[] },
+        reducers: {},
+        extraReducers: (builder) => {
+          builder.addCase(orderPlaced, (state, action) => {
+            state.orderIds.unshift(action.payload.orderId);
+          });
+        },
+      });
+
+      const store = configureStore({ reducer: combineSlices(cartSlice, historySlice) });
+
+      store.dispatch(cartSlice.actions.productAdded("MUG"));
+      store.dispatch(orderPlaced({ orderId: "ORD-1042" }));
+      console.log("cart:", store.getState().cart.skus, "history:", store.getState().orderHistory.orderIds);
+    expected: |-
+      cart: [] history: [ 'ORD-1042' ]
+    sources:
+      - title: combineSlices — Redux Toolkit
+        url: https://redux.js.org/toolkit/api/combineSlices
+    validation: *ran
+  - id: lazy-loaded-slices
+    kind: code
+    title: Lazy-loaded slices
+    note: "A code-split feature brings its slice with its route and injects it into the running store, typed in advance with `withLazyLoadedSlices`."
+    prerequisites: *run
+    code: |-
+      import { combineSlices, configureStore, createSlice, type PayloadAction, type WithSlice }
+        from "@reduxjs/toolkit";
+
+      const cartSlice = createSlice({
+        name: "cart",
+        initialState: { skus: [] as string[] },
+        reducers: {},
+      });
+
+      // Shipped in the "Returns" route's chunk, not at start-up.
+      const returnsSlice = createSlice({
+        name: "returns",
+        initialState: { requested: [] as string[] },
+        reducers: {
+          returnRequested(state, action: PayloadAction<string>) {
+            state.requested.push(action.payload);
+          },
+        },
+      });
+
+      const rootReducer = combineSlices(cartSlice).withLazyLoadedSlices<WithSlice<typeof returnsSlice>>();
+      const store = configureStore({ reducer: rootReducer });
+      console.log("at start-up:", Object.keys(store.getState()));
+
+      // In the route's module, when it loads:
+      const returns = returnsSlice.injectInto(rootReducer);
+      store.dispatch(returns.actions.returnRequested("ORD-1042"));
+      console.log("after the route loads:", Object.keys(store.getState()));
+      console.log("requested:", returns.selectSlice(store.getState()).requested);
+    expected: |-
+      at start-up: [ 'cart' ]
+      after the route loads: [ 'cart', 'returns' ]
+      requested: [ 'ORD-1042' ]
+    sources:
+      - title: combineSlices — Redux Toolkit
+        url: https://redux.js.org/toolkit/api/combineSlices
+    validation: *ran
+  - id: typed-hooks
+    kind: code
+    title: Typed hooks with react-redux
+    note: "Declare `useAppDispatch` and `useAppSelector` once, and a component re-renders only when the value it selects changes."
+    prerequisites:
+      - "A React app: `npm create vite@latest shop -- --template react-ts`, then `npm i @reduxjs/toolkit react-redux`"
+      - "To run this file alone in Node: `npm i jsdom @types/jsdom`, save as `main.tsx`, and run `npx tsx main.tsx` in a package with `\"type\": \"module\"`, beside a `tsconfig.json` with `\"jsx\": \"react-jsx\"`"
+    code: |-
+      import { configureStore, createSlice, type PayloadAction } from "@reduxjs/toolkit";
+      import { JSDOM } from "jsdom";
+      import { act } from "react";
+      import { createRoot } from "react-dom/client";
+      import { Provider, useDispatch, useSelector } from "react-redux";
+
+      const cartSlice = createSlice({
+        name: "cart",
+        initialState: { skus: [] as string[], giftNote: "" },
+        reducers: {
+          productAdded(state, action: PayloadAction<string>) {
+            state.skus.push(action.payload);
+          },
+          giftNoteEdited(state, action: PayloadAction<string>) {
+            state.giftNote = action.payload;
+          },
+        },
+      });
+
+      const store = configureStore({ reducer: { cart: cartSlice.reducer } });
+
+      // hooks.ts — import these everywhere instead of the untyped originals.
+      const useAppDispatch = useDispatch.withTypes<typeof store.dispatch>();
+      const useAppSelector = useSelector.withTypes<ReturnType<typeof store.getState>>();
+
+      function CartBadge() {
+        const count = useAppSelector((s) => s.cart.skus.length);
+        console.log("CartBadge rendered with", count);
+        return <span aria-label="Items in cart">{count}</span>;
+      }
+
+      function AddToCartButton({ sku }: { sku: string }) {
+        const dispatch = useAppDispatch();
+        return <button onClick={() => dispatch(cartSlice.actions.productAdded(sku))}>Add {sku}</button>;
+      }
+
+      // In the app, main.tsx renders this into the page; here jsdom provides the page.
+      const { window } = new JSDOM("<!doctype html><div id=root></div>");
+      Object.assign(globalThis, { window, document: window.document, IS_REACT_ACT_ENVIRONMENT: true });
+      const root = createRoot(window.document.getElementById("root")!);
+      const app = <Provider store={store}><CartBadge /><AddToCartButton sku="MUG" /></Provider>;
+
+      await act(async () => root.render(app));
+      await act(async () => window.document.querySelector("button")!.click());
+      await act(async () => store.dispatch(cartSlice.actions.giftNoteEdited("Happy birthday")));   // no re-render
+      console.log(window.document.getElementById("root")!.innerHTML);
+      await act(async () => root.unmount());
+    expected: |-
+      CartBadge rendered with 0
+      CartBadge rendered with 1
+      <span aria-label="Items in cart">1</span><button>Add MUG</button>
+    sources:
+      - title: Usage with TypeScript — React Redux
+        url: https://redux.js.org/react-redux/using-react-redux/usage-with-typescript
+    applies:
+      platforms: [browser, node]
+      runtime: a React app; runs in Node.js with jsdom
+      requires: ["@reduxjs/toolkit", react-redux]
+      versions: { typescript: ">=5.5", node: ">=22.18", "@reduxjs/toolkit": ">=2.0", react-redux: ">=9.1", react: ">=18" }
+    validation:
+      status: ran
+      toolchain: Node 24.16.0, TypeScript 5.9.3
+      date: "2026-11-16"
+      jsx: react
+  - id: rtk-query-in-brief
+    kind: code
+    title: RTK Query in brief
+    note: "For server data, declare endpoints instead of hand-writing thunks and loading flags, and the cache, deduplication and refetch-after-mutation come with them."
+    prerequisites: *run
+    code: |-
+      import { configureStore } from "@reduxjs/toolkit";
+      import { createApi, fetchBaseQuery } from "@reduxjs/toolkit/query";
+      import { createServer } from "node:http";              // a stand-in backend on a free local port
+      import type { AddressInfo } from "node:net";
+
+      type Order = { id: string; status: "open" | "shipped" };
+
+      const orders: Order[] = [{ id: "1042", status: "open" }];
+      let requests = 0;
+      const server = createServer((req, res) => {
+        requests++;
+        if (req.method === "PATCH") orders[0]!.status = "shipped";
+        res.setHeader("content-type", "application/json").end(JSON.stringify(orders));
+      });
+      await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+
+      const ordersApi = createApi({
+        reducerPath: "ordersApi",
+        baseQuery: fetchBaseQuery({ baseUrl: `http://127.0.0.1:${(server.address() as AddressInfo).port}` }),
+        tagTypes: ["Order"],
+        endpoints: (build) => ({
+          getOrders: build.query<Order[], void>({ query: () => "/orders", providesTags: ["Order"] }),
+          shipOrder: build.mutation<Order[], string>({
+            query: (id) => ({ url: `/orders/${id}/ship`, method: "PATCH" }),
+            invalidatesTags: ["Order"],     // cached getOrders results refetch after this succeeds
+          }),
+        }),
+      });
+
+      const store = configureStore({
+        reducer: { [ordersApi.reducerPath]: ordersApi.reducer },
+        middleware: (getDefault) => getDefault().concat(ordersApi.middleware),
+      });
+
+      // From "@reduxjs/toolkit/query/react", createApi adds hooks: ordersApi.useGetOrdersQuery().
+      const first = store.dispatch(ordersApi.endpoints.getOrders.initiate());
+      const second = store.dispatch(ordersApi.endpoints.getOrders.initiate());   // deduplicated: no request
+      console.log((await first).data, (await second).data === (await first).data);
+
+      await store.dispatch(ordersApi.endpoints.shipOrder.initiate("1042"));
+      await Promise.all(store.dispatch(ordersApi.util.getRunningQueriesThunk()));
+      console.log(ordersApi.endpoints.getOrders.select()(store.getState()).data, "requests:", requests);
+
+      first.unsubscribe();       // what a component's unmount does; the cache entry expires later
+      second.unsubscribe();
+      store.dispatch(ordersApi.util.resetApiState());
+      server.close();
+    expected: |-
+      [ { id: '1042', status: 'open' } ] true
+      [ { id: '1042', status: 'shipped' } ] requests: 3
+    sources:
+      - title: RTK Query overview — Redux Toolkit
+        url: https://redux.js.org/toolkit/rtk-query/overview
+    validation: *ran
+  - id: testing-slices-and-thunks
+    kind: code
+    title: Testing a reducer and a thunk with a fake dependency
+    note: "Reduce actions over the initial state for reducer tests, and build a fresh store around a fake `extraArgument` for each thunk test — the `TestStore` + `withDependencies` move."
+    prerequisites:
+      - Node.js 22.18 or later (it runs `.mts` files directly by stripping the types)
+      - "`npm i @reduxjs/toolkit`"
+      - "Save as `cart.test.mts` and run `node --test cart.test.mts` (or `node cart.test.mts`)"
+    code: |-
+      import assert from "node:assert/strict";
+      import { test } from "node:test";
+      import { configureStore, createAsyncThunk, createSlice, type PayloadAction } from "@reduxjs/toolkit";
+
+      type Line = { sku: string; qty: number };
+      type Extra = { api: { placeOrder(lines: Line[]): Promise<string> } };
+
+      const checkoutSubmitted = createAsyncThunk.withTypes<{ state: { cart: { lines: Line[] } }; extra: Extra }>()(
+        "cart/checkout",
+        (_: void, { getState, extra }) => extra.api.placeOrder(getState().cart.lines),
+      );
+
+      const cartSlice = createSlice({
+        name: "cart",
+        initialState: { lines: [] as Line[], orderId: "" },
+        reducers: {
+          productAdded(state, action: PayloadAction<string>) {
+            const line = state.lines.find((l) => l.sku === action.payload);
+            if (line) line.qty++;
+            else state.lines.push({ sku: action.payload, qty: 1 });
+          },
+        },
+        extraReducers: (builder) => {
+          builder.addCase(checkoutSubmitted.fulfilled, (_state, { payload }) => ({ lines: [], orderId: payload }));
+        },
+      });
+
+      const { productAdded } = cartSlice.actions;
+
+      test("reducer: adding the same product twice increments its quantity", () => {
+        const actions = [productAdded("MUG"), productAdded("MUG")];
+        const state = actions.reduce(cartSlice.reducer, cartSlice.getInitialState());
+        assert.deepEqual(state.lines, [{ sku: "MUG", qty: 2 }]);
+      });
+
+      test("thunk: sends the cart to the API, then empties it and records the id", async (t) => {
+        const placeOrder = t.mock.fn(async (_lines: Line[]) => "ORD-1042");
+        const store = configureStore({                      // a fresh store per test, around the fake
+          reducer: { cart: cartSlice.reducer },
+          middleware: (getDefault) => getDefault({ thunk: { extraArgument: { api: { placeOrder } } } }),
+        });
+        store.dispatch(productAdded("MUG"));
+        await store.dispatch(checkoutSubmitted());
+        assert.deepEqual(placeOrder.mock.calls.map((call) => call.arguments[0]), [[{ sku: "MUG", qty: 1 }]]);
+        assert.deepEqual(store.getState().cart, { lines: [], orderId: "ORD-1042" });
+      });
+    expected: "Two passing tests (`ℹ pass 2`, `ℹ fail 0`); the process exits 0."
+    sources:
+      - title: Writing tests — Redux
+        url: https://redux.js.org/usage/writing-tests
+    applies:
+      platforms: [node]
+    validation:
+      status: ran
+      toolchain: Node 24.16.0, TypeScript 5.9.3
+      date: "2026-11-16"
+      check: exit-code
+  - id: rtk-pitfalls
+    kind: table
+    title: Common Redux Toolkit pitfalls
+    note: The things code review and interviewers poke at.
+    headers: [Symptom, Cause, Fix]
+    rows:
+      - - "\"A non-serializable value was detected\""
+        - "a `Date`, `Map`, class instance or promise in state or an action"
+        - "store ISO strings or ids; keep live objects outside the store"
+      - - "Reducer change does nothing"
+        - "Immer: reassigned the `state` parameter (`state = …`)"
+        - "mutate the draft, or `return` the new state — never both"
+      - - "Component re-renders on every dispatch"
+        - "a selector returning a new array/object each call (`filter`, `map`, `{…}`)"
+        - "`createSelector`, or select primitives separately"
+      - - "Stale search results overwrite newer ones"
+        - "earlier requests are never cancelled"
+        - "`cancelActiveListeners()` + `signal`, or `promise.abort()` on the thunk"
+      - - "Double order on a double click"
+        - "the thunk runs twice"
+        - "`condition: (_, { getState }) => status !== \"submitting\"`"
+      - - "`rejected` shown as an error after navigating away"
+        - "an aborted thunk dispatches `rejected` too"
+        - "check `action.meta.aborted` in the reducer"
+      - - "Hand-written `isLoading` / `data` / `error` per endpoint"
+        - "server cache modelled as client state"
+        - "RTK Query `createApi`"
+      - - "A debounce test that sleeps 250 ms, or is flaky"
+        - "real timers in tests"
+        - "`mock.timers.enable({ apis: [\"setTimeout\"] })` and `tick(ms)`"
+      - - "Tests leak state between cases"
+        - "one module-level store shared by every test"
+        - "a `makeStore(extra)` factory, called per test"

@@ -1,0 +1,541 @@
+id: ts-solidjs
+concept: ui.solidjs
+scope: platform
+title: "SolidJS — Components & Fine-Grained Reactivity"
+group: "UI"
+subtitle: Signals, memos and effects and their tracking rules, components that run once, control flow, stores and resources — and the traps a React developer walks into.
+applies:
+  platforms: [browser]
+  runtime: a browser page with SolidJS (the reactive examples run in Node with Solid's browser build)
+  requires: [SolidJS]
+  versions: { typescript: ">=5.5", solid-js: ">=1.9", node: ">=22.18" }
+sources:
+  - title: SolidJS documentation
+    url: https://docs.solidjs.com/
+  - title: Signals — SolidJS
+    url: https://docs.solidjs.com/concepts/signals
+cards:
+  - id: primitives
+    kind: table
+    title: The primitives and when each one re-runs
+    note: Everything is a signal or a computation that reads signals; a computation re-runs only when something it read in its last run changes.
+    headers: [Primitive, What it is, Re-runs when]
+    rows:
+      - ["`createSignal(v)`", "a `[get, set]` pair; call `get()` to read", "— (it is the source)"]
+      - ["`() => a() + b()`", "a derived signal: a plain function", "every time it is called"]
+      - ["`createMemo(fn)`", "a cached derived value; notifies readers only if the result changed", "a signal it read changes"]
+      - ["`createEffect(fn)`", "a side effect, run after rendering", "a signal it read in its **last** run changes"]
+      - ["`on(deps, fn, { defer })`", "an effect body with explicit dependencies", "one of `deps` changes"]
+      - ["`untrack(fn)`", "a read that does not subscribe", "never"]
+      - ["`batch(fn)`", "groups writes; dependents run once at the end", "—"]
+      - ["`onCleanup(fn)`", "teardown for the current computation or component", "before the next run, and on dispose"]
+      - ["`onMount(fn)`", "runs once after the component's DOM exists", "never again"]
+      - ["`createStore(obj)`", "a deeply reactive proxy; one signal per property, created lazily", "per property read"]
+      - ["`createResource(source, fetcher)`", "async data with `loading`, `error`, `state`, `latest`", "`source()` changes, or `refetch()`"]
+      - ["`createRoot(fn)`", "an owner for computations outside a component (`render` makes one for you)", "—; `dispose()` stops everything in it"]
+  - id: signals
+    kind: code
+    title: Signals
+    note: A signal is a getter and a setter; reading the getter inside a computation subscribes that computation, reading it anywhere else is a plain read.
+    prerequisites: &core
+      - Node.js 22.18 or later (it runs `.mts` files directly by stripping the types)
+      - "`npm i solid-js`"
+      - "Save as `main.mts` and run `node --conditions=browser main.mts` — Node's default resolves Solid's server build, where effects never re-run"
+      - "In a Solid app the same code runs inside a component; `render` provides the root"
+    code: |-
+      import { createEffect, createRoot, createSignal } from "solid-js";
+
+      const cart = createRoot((dispose) => {
+        const [quantity, setQuantity] = createSignal(1);
+        const [coupon, setCoupon] = createSignal<string | null>(null);
+
+        // reads quantity() and coupon(), so it re-runs when either changes
+        createEffect(() => console.log(`qty=${quantity()} coupon=${coupon() ?? "none"}`));
+
+        return { quantity, setQuantity, setCoupon, dispose };
+      });
+
+      cart.setQuantity(2);
+      cart.setQuantity((q) => q + 1);             // updater form: based on the current value
+      cart.setQuantity(3);                        // same value (===): nothing re-runs
+      cart.setCoupon("SPRING10");
+
+      console.log("plain read:", cart.quantity()); // outside a computation: no subscription
+
+      cart.dispose();                             // stops every computation created in the root
+      cart.setQuantity(10);                       // logs nothing: the effect is gone
+    expected: |-
+      qty=1 coupon=none
+      qty=2 coupon=none
+      qty=3 coupon=none
+      qty=3 coupon=SPRING10
+      plain read: 3
+    validation: &ran
+      status: ran
+      toolchain: Node 24.16.0, TypeScript 5.9.3
+      date: "2026-11-16"
+      conditions: [browser]
+  - id: memos
+    kind: code
+    title: Derived values and memos
+    note: A plain function is enough for cheap derivations; `createMemo` caches an expensive one and stops propagation when its result did not change.
+    prerequisites: *core
+    code: |-
+      import { createEffect, createMemo, createRoot, createSignal } from "solid-js";
+
+      type Line = { name: string; unitCents: number; qty: number };
+
+      let subtotalRuns = 0;
+      let bannerRuns = 0;
+
+      const checkout = createRoot(() => {
+        const [lines, setLines] = createSignal<Line[]>([{ name: "Keyboard", unitCents: 8_900, qty: 1 }]);
+        const [shippingCents, setShipping] = createSignal(500);
+
+        const subtotal = createMemo(() => {              // computed once per change, shared by every reader
+          subtotalRuns++;
+          return lines().reduce((sum, l) => sum + l.unitCents * l.qty, 0);
+        });
+        const total = () => subtotal() + shippingCents();  // cheap: a derived function, no memo
+        const freeShipping = createMemo(() => subtotal() >= 10_000);   // readers wake only when it flips
+
+        createEffect(() => console.log(`subtotal ${subtotal()} total ${total()}`));
+        createEffect(() => {                             // e.g. show or hide a free-shipping banner
+          freeShipping();
+          bannerRuns++;
+        });
+
+        return { setLines, setShipping, subtotal };
+      });
+
+      checkout.setShipping(0);                             // subtotal is not recomputed
+      checkout.setLines((ls) => [...ls, { name: "Mouse", unitCents: 2_500, qty: 1 }]);
+
+      checkout.subtotal();                                 // cached reads
+      checkout.subtotal();
+      console.log(`subtotal computed ${subtotalRuns} times, banner updated ${bannerRuns} times`);
+    expected: |-
+      subtotal 8900 total 9400
+      subtotal 8900 total 8900
+      subtotal 11400 total 11400
+      subtotal computed 2 times, banner updated 2 times
+    sources:
+      - title: Memos — SolidJS
+        url: https://docs.solidjs.com/concepts/derived-values/memos
+    validation: *ran
+  - id: effects-and-tracking
+    kind: code
+    title: Effects and their tracking rules
+    note: Dependencies are whatever the last run read — so a branch not taken is not tracked, `untrack` opts a read out, `on()` names them explicitly, and `onCleanup` undoes the previous run.
+    prerequisites: *core
+    code: |-
+      import { createEffect, createRoot, createSignal, on, onCleanup, untrack } from "solid-js";
+
+      const session = createRoot((dispose) => {
+        const [signedIn, setSignedIn] = createSignal(false);
+        const [userName, setUserName] = createSignal("guest");
+        const [cartCount, setCartCount] = createSignal(0);
+        const [currency, setCurrency] = createSignal("EUR");
+
+        // 1. dynamic: while signed out, userName() is never read, so it is not a dependency
+        createEffect(() => console.log(signedIn() ? `hello ${userName()}` : "signed out"));
+
+        // 2. untrack: show the currency, but re-run only when the count changes
+        createEffect(() => console.log(`cart ${cartCount()} (${untrack(currency)})`));
+
+        // 3. on(): only the listed signal is tracked — userName() inside is not; `defer` skips the first run
+        const audit = (isIn: boolean) => console.log(`audit: ${userName()} signed ${isIn ? "in" : "out"}`);
+        createEffect(on(signedIn, audit, { defer: true }));
+
+        // 4. onCleanup: runs before the next run and on dispose — subscriptions, timers, sockets
+        createEffect(() => {
+          const channel = `prices:${currency()}`;
+          console.log(`subscribe ${channel}`);
+          onCleanup(() => console.log(`unsubscribe ${channel}`));
+        });
+
+        return { setSignedIn, setUserName, setCartCount, setCurrency, dispose };
+      });
+
+      session.setUserName("ada");                         // nothing: not tracked yet
+      session.setSignedIn(true);
+      session.setUserName("grace");                       // the greeting updates; the audit stays quiet
+      session.setCurrency("USD");                         // the cart effect stays quiet
+      session.setCartCount(1);
+      session.dispose();
+    expected: |-
+      signed out
+      cart 0 (EUR)
+      subscribe prices:EUR
+      hello ada
+      audit: ada signed in
+      hello grace
+      unsubscribe prices:EUR
+      subscribe prices:USD
+      cart 1 (USD)
+      unsubscribe prices:USD
+    sources:
+      - title: Effects — SolidJS
+        url: https://docs.solidjs.com/concepts/effects
+      - title: untrack — SolidJS
+        url: https://docs.solidjs.com/reference/reactive-utilities/untrack
+    validation: *ran
+  - id: batch-writes
+    kind: code
+    title: batch — event handlers are not batched for you
+    note: In Solid 1.x each write outside an effect runs its dependents at once, so two writes in a click handler show an in-between value; wrap related writes in `batch`.
+    prerequisites: *core
+    code: |-
+      import { batch, createEffect, createRoot, createSignal } from "solid-js";
+
+      const checkout = createRoot(() => {
+        const [subtotal, setSubtotal] = createSignal(8_900);
+        const [discount, setDiscount] = createSignal(0);
+        createEffect(() => console.log(`total shown: ${subtotal() - discount()}`));   // e.g. the price label
+        return { setSubtotal, setDiscount };
+      });
+
+      // Handlers are plain functions; Solid's delegated onClick calls them the same way an EventTarget does.
+      function applyCouponUnbatched() {
+        checkout.setSubtotal(8_000);                    // dependents run now: new subtotal, old discount
+        checkout.setDiscount(800);
+      }
+
+      function applyCouponBatched() {
+        batch(() => {
+          checkout.setSubtotal(7_000);
+          checkout.setDiscount(700);
+        });                                             // dependents run once, with both values
+      }
+
+      const button = new EventTarget();                 // stands in for the button element
+
+      button.addEventListener("click", applyCouponUnbatched, { once: true });
+      console.log("— click, no batch");
+      button.dispatchEvent(new Event("click"));
+
+      button.addEventListener("click", applyCouponBatched, { once: true });
+      console.log("— click, batch");
+      button.dispatchEvent(new Event("click"));
+    expected: |-
+      total shown: 8900
+      — click, no batch
+      total shown: 8000
+      total shown: 7200
+      — click, batch
+      total shown: 6300
+    sources:
+      - title: batch — SolidJS
+        url: https://docs.solidjs.com/reference/reactive-utilities/batch
+    validation: *ran
+  - id: components-run-once
+    kind: code
+    title: Components run once — why destructuring props breaks reactivity
+    note: JSX passes props as getters; destructuring calls each getter once, in a function that never runs again, so the value freezes.
+    prerequisites: *core
+    code: |-
+      import { createComponent, createEffect, createRoot, createSignal, mergeProps } from "solid-js";
+
+      type PriceProps = { cents: number; currency?: string };
+      const format = (cents: number, currency: string) => `${(cents / 100).toFixed(2)} ${currency}`;
+
+      function PriceTagBroken({ cents, currency = "EUR" }: PriceProps) {   // read once, here
+        createEffect(() => console.log(`broken: ${format(cents, currency)}`));
+        return null;
+      }
+
+      function PriceTag(props: PriceProps) {
+        console.log("PriceTag body runs");                // once, at creation — never on updates
+        const p = mergeProps({ currency: "EUR" }, props);  // defaults that stay reactive
+        createEffect(() => console.log(`fixed:  ${format(p.cents, p.currency)}`));   // read lazily, tracked
+        return null;
+      }
+
+      const setCents = createRoot(() => {
+        const [cents, setCents] = createSignal(8_900);
+        // <PriceTag cents={cents()} /> compiles to exactly this: a getter, not a value
+        createComponent(PriceTagBroken, { get cents() { return cents(); } });
+        createComponent(PriceTag, { get cents() { return cents(); } });
+        return setCents;
+      });
+
+      setCents(7_900);                                    // a price drop arrives
+    expected: |-
+      PriceTag body runs
+      broken: 89.00 EUR
+      fixed:  89.00 EUR
+      fixed:  79.00 EUR
+    sources:
+      - title: Props — SolidJS
+        url: https://docs.solidjs.com/concepts/components/props
+      - title: splitProps — SolidJS
+        url: https://docs.solidjs.com/reference/reactive-utilities/split-props
+    validation: *ran
+  - id: control-flow
+    kind: code
+    title: Control flow — Show, For, Index, Switch
+    note: Use the control-flow components instead of `&&` and `.map` — they create and dispose exactly the nodes that change.
+    prerequisites:
+      - "A Solid project: `npx degit solidjs/templates/ts app` (Vite with `vite-plugin-solid`)"
+    code: |-
+      import { For, Index, Match, Show, Switch } from "solid-js";
+
+      type Line = { sku: string; name: string; qty: number };
+      type Checkout =
+        | { step: "cart" } | { step: "paying" }
+        | { step: "failed"; reason: string } | { step: "done"; orderId: string };
+      type CartPanelProps = {
+        lines: Line[]; coupon?: string; suggestions: string[];
+        checkout: Checkout; onRemove: (sku: string) => void;
+      };
+
+      export function CartPanel(props: CartPanelProps) {
+        return (
+          <section>
+            <Show when={props.lines.length > 0} fallback={<p>Your cart is empty.</p>}>
+              <ul>
+                {/* For: keyed by reference — rows move, not rebuild, while line objects stay the same */}
+                <For each={props.lines}>{(line) => (
+                  <li>{line.name} × {line.qty}
+                    <button aria-label={`Remove ${line.name}`}
+                      onClick={() => props.onRemove(line.sku)}>Remove</button>
+                  </li>
+                )}</For>
+              </ul>
+            </Show>
+            {/* a function child receives the narrowed, non-null value as an accessor */}
+            <Show when={props.coupon}>{(code) => <p>Coupon {code()} applied</p>}</Show>
+            {/* Index: keyed by position — for primitives whose values change in place */}
+            <Index each={props.suggestions}>{(name) => <span class="chip">{name()}</span>}</Index>
+            <Switch fallback={<button>Pay now</button>}>
+              <Match when={props.checkout.step === "paying"}><p>Processing…</p></Match>
+              <Match when={props.checkout.step === "failed" && props.checkout}>
+                {(failed) => <p role="alert">{failed().reason}</p>}
+              </Match>
+              <Match when={props.checkout.step === "done" && props.checkout}>
+                {(done) => <p>Order {done().orderId} placed</p>}
+              </Match>
+            </Switch>
+          </section>
+        );
+      }
+    expected: An empty cart shows the fallback; adding a line inserts one `<li>` without touching the others; the payment area swaps between **Pay now**, **Processing…**, the error and the confirmation as `checkout` changes.
+    sources:
+      - title: Conditional rendering — SolidJS
+        url: https://docs.solidjs.com/concepts/control-flow/conditional-rendering
+      - title: List rendering — SolidJS
+        url: https://docs.solidjs.com/concepts/control-flow/list-rendering
+    validation:
+      status: compiled
+      toolchain: Node 24.16.0, TypeScript 5.9.3
+      date: "2026-11-16"
+      host: a Solid app built with `vite-plugin-solid` (Solid's JSX needs its compiler)
+      jsx: solid
+  - id: context-and-error-boundary
+    kind: code
+    title: Context and error boundaries
+    note: Provide shared state once with a context and a hook that fails loudly without it; catch a failing subtree — a rejected resource included — with `<ErrorBoundary>` and let the user retry.
+    prerequisites:
+      - "A Solid project: `npx degit solidjs/templates/ts app` (Vite with `vite-plugin-solid`)"
+      - "A page containing `<div id=\"app\">`, served by an origin with `/api/products/:sku` returning JSON `{ \"name\": … }`"
+    code: |-
+      import { createContext, createResource, ErrorBoundary, useContext, type ParentProps } from "solid-js";
+      import { createStore } from "solid-js/store";
+      import { render } from "solid-js/web";
+
+      type Cart = { lines: { sku: string; qty: number }[] };
+      type CartApi = { cart: Cart; add(sku: string): void };
+
+      const CartContext = createContext<CartApi>();                // undefined outside a provider
+
+      export function CartProvider(props: ParentProps) {
+        const [cart, setCart] = createStore<Cart>({ lines: [] });
+        const add = (sku: string) => setCart("lines", (lines) => [...lines, { sku, qty: 1 }]);
+        return <CartContext.Provider value={{ cart, add }}>{props.children}</CartContext.Provider>;
+      }
+
+      export function useCart(): CartApi {
+        const api = useContext(CartContext);
+        if (!api) throw new Error("useCart() needs a <CartProvider> above it");
+        return api;
+      }
+
+      async function fetchProduct(sku: string): Promise<{ name: string }> {
+        const response = await fetch(`/api/products/${encodeURIComponent(sku)}`);
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        return response.json();
+      }
+
+      function ProductCard(props: { sku: string }) {
+        const { add } = useCart();                      // fine: `add` is a function, not reactive state
+        const [product] = createResource(() => props.sku, fetchProduct);   // a rejection throws on read
+        const addToCart = () => add(props.sku);
+        return <article><h3>{product()?.name}</h3><button onClick={addToCart}>Add to cart</button></article>;
+      }
+
+      export function ProductPage(props: { sku: string }) {
+        const failed = (error: unknown, retry: () => void) => (
+          <p role="alert">Could not load the product ({String(error)}). <button onClick={retry}>Retry</button></p>
+        );
+        return <ErrorBoundary fallback={failed}><ProductCard sku={props.sku} /></ErrorBoundary>;
+      }
+
+      // Once, at the root: every page below shares one cart, and it survives navigation between them.
+      render(() => (
+        <CartProvider>
+          <ProductPage sku="kb-01" />
+        </CartProvider>
+      ), document.querySelector("#app")!);
+    expected: The card shows the product's name once it loads (add `<Suspense>` for a loading state); on an HTTP error the boundary replaces the card with the alert, and **Retry** re-creates the card, which fetches again.
+    sources:
+      - title: Context — SolidJS
+        url: https://docs.solidjs.com/concepts/context
+      - title: Error boundary — SolidJS
+        url: https://docs.solidjs.com/reference/components/error-boundary
+    validation:
+      status: compiled
+      toolchain: Node 24.16.0, TypeScript 5.9.3
+      date: "2026-11-16"
+      host: a Solid app built with `vite-plugin-solid` (Solid's JSX needs its compiler)
+      jsx: solid
+  - id: stores
+    kind: code
+    title: Stores — nested state, one signal per property
+    note: A store is read like a plain object and written only through its setter — by path, with `produce`, or with `reconcile` for fresh server data.
+    prerequisites: *core
+    code: |-
+      import { createEffect, createRoot } from "solid-js";
+      import { createStore, produce, reconcile } from "solid-js/store";
+
+      type Line = { sku: string; name: string; qty: number };
+      type Cart = { lines: Line[]; coupon: string | null };
+
+      const cart = createRoot(() => {
+        const [state, setState] = createStore<Cart>({
+          lines: [{ sku: "kb-01", name: "Keyboard", qty: 1 }],
+          coupon: null,
+        });
+        // each effect re-runs only for the properties it read
+        createEffect(() => console.log("first line qty:", state.lines[0]?.qty));
+        createEffect(() => console.log("coupon:", state.coupon ?? "none"));
+        createEffect(() => console.log("items:", state.lines.reduce((n, l) => n + l.qty, 0)));
+        return { state, setState };
+      });
+
+      cart.setState("lines", 0, "qty", (q) => q + 1);            // path setter: one property
+      cart.setState("coupon", "SPRING10");
+      cart.setState(produce((draft) => { draft.lines.push({ sku: "ms-02", name: "Mouse", qty: 1 }); }));
+      const keyboard = cart.state.lines[0];
+      // fresh data from the server: reconcile diffs by key and keeps unchanged items' proxies
+      const fromServer = [{ sku: "kb-01", name: "Keyboard", qty: 2 }, { sku: "ms-02", name: "Mouse", qty: 3 }];
+      cart.setState("lines", reconcile(fromServer, { key: "sku" }));
+      console.log("same keyboard proxy:", cart.state.lines[0] === keyboard);
+    expected: |-
+      first line qty: 1
+      coupon: none
+      items: 1
+      first line qty: 2
+      items: 2
+      coupon: SPRING10
+      items: 3
+      items: 5
+      same keyboard proxy: true
+    sources:
+      - title: Stores — SolidJS
+        url: https://docs.solidjs.com/concepts/stores
+      - title: reconcile — SolidJS
+        url: https://docs.solidjs.com/reference/store-utilities/reconcile
+    validation: *ran
+  - id: resources
+    kind: code
+    title: Resources — async data driven by a signal
+    note: "`createResource(source, fetcher)` refetches whenever `source()` changes and exposes the state; `<Suspense>` and `<ErrorBoundary>` read it in JSX."
+    prerequisites: *core
+    code: |-
+      import { createEffect, createResource, createRoot, createSignal } from "solid-js";
+
+      type Product = { sku: string; name: string };
+      const catalog: Record<string, Product> = {
+        "kb-01": { sku: "kb-01", name: "Keyboard" },
+        "ms-02": { sku: "ms-02", name: "Mouse" },
+      };
+
+      // In the app: fetch(`/api/products/${sku}`); here an in-memory stand-in with one await of latency.
+      async function fetchProduct(sku: string): Promise<Product> {
+        await Promise.resolve();
+        const product = catalog[sku];
+        if (!product) throw new Error(`no product ${sku}`);
+        return product;
+      }
+
+      const page = createRoot(() => {
+        const [sku, setSku] = createSignal("kb-01");
+        const [product, { mutate }] = createResource(sku, fetchProduct);
+        createEffect(() => {
+          // check `error` first: reading an errored resource throws (to the nearest ErrorBoundary)
+          if (product.error) console.log(`${product.state}: ${(product.error as Error).message}`);
+          else console.log(`${product.state}: ${product()?.name ?? "…"}`);
+        });
+        return { setSku, mutate };
+      });
+
+      const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
+      await settle();
+      page.setSku("ms-02");                       // "refreshing" keeps showing the previous product
+      await settle();
+      page.mutate({ sku: "ms-02", name: "Mouse (renamed)" });   // set the value locally, e.g. an optimistic edit
+      page.setSku("xx-99");
+      await settle();
+    expected: |-
+      pending: …
+      ready: Keyboard
+      refreshing: Keyboard
+      ready: Mouse
+      ready: Mouse (renamed)
+      refreshing: Mouse (renamed)
+      errored: no product xx-99
+    sources:
+      - title: createResource — SolidJS
+        url: https://docs.solidjs.com/reference/basic-reactivity/create-resource
+    validation: *ran
+  - id: react-to-solid
+    kind: table
+    title: React → Solid
+    note: The JSX looks the same; the execution model does not.
+    headers: [React, Solid, The trap]
+    rows:
+      - ["`const [n, setN] = useState(0)`", "`const [n, setN] = createSignal(0)`", "`n` is a function: `{n()}`, not `{n}`"]
+      - ["`useMemo(fn, deps)`", "`createMemo(fn)`", "no dependency array — reads are tracked"]
+      - ["`useEffect(fn, deps)`", "`createEffect(fn)`, or `on(deps, fn)`; `onMount` for once", "no dependency array; only what the last run read is tracked"]
+      - ["`return cleanup` from an effect", "`onCleanup(cleanup)`", "a value returned from `createEffect`'s function is passed to its next run, **not** called"]
+      - ["`useRef` for a DOM node", "`let el!: HTMLInputElement` + `ref={el}`", "assigned when the element is created; use it in `onMount`"]
+      - ["`useRef` for a mutable value", "a plain `let` in the component body", "the body runs once, so locals persist"]
+      - ["`useCallback`, `React.memo`", "nothing", "components never re-run, so identities are already stable"]
+      - ["`useReducer` / Immer", "`createStore` + `produce`", "never assign to the store directly; go through the setter"]
+      - ["`{items.map((i) => <Row key={i.id} />)}`", "`<For each={items}>{(i) => <Row item={i} />}</For>`", "`.map` works but rebuilds every row on each change"]
+      - ["`{cond && <Panel />}`, ternaries", "`<Show when={cond()} fallback={…}>`, `<Switch>`/`<Match>`", "`&&` and ternaries work in JSX; `<Show>` adds `fallback`, `keyed` and the narrowed-value callback"]
+      - ["`<Child {...props} />`, destructured props", "`props.x`, `splitProps`, `mergeProps`", "destructuring freezes the values"]
+      - ["`<Suspense>` + `use(promise)`", "`<Suspense>` + `createResource`", "read `resource()` inside the boundary"]
+      - ["`key={id}` to reset a subtree", "`<Show when={id()} keyed>`", "without `keyed` the children stay and only the value updates"]
+      - ["`className`, `onChange` on a text input", "`class`, `onInput`", "Solid's `onChange` is the native change event — it fires on blur"]
+  - id: solid-traps
+    kind: rules
+    title: Traps React developers hit
+    note: Each one compiles, renders once correctly, and then silently stops updating.
+    items:
+      - tone: bad
+        text: "Destructuring props (`function Price({ cents })`) or copying them to locals (`const c = props.cents`): read once, never updated. Use `props.cents` where it is needed."
+      - tone: bad
+        text: "Reading a signal in the component body (`const label = count() > 0 ? …`) instead of in JSX or a function: the body runs once. Make it `const label = () => …`."
+      - tone: bad
+        text: "Reading a signal after an `await` or inside `setTimeout` in an effect: it is not tracked — tracking only sees synchronous reads."
+      - tone: bad
+        text: "Returning a cleanup function from `createEffect` as in React: it is not called. Register teardown with `onCleanup`."
+      - tone: good
+        text: "Prefer derivation — a function or `createMemo` — over an effect that writes another signal; effects are for the world outside Solid."
+      - tone: good
+        text: "Keep computations under an owner (a component, or `createRoot`); one created after an `await` has none and is never disposed."
+      - tone: good
+        text: "Group several writes in `batch` so dependents run once, with consistent values. Solid 1.x does not batch event handlers for you; only effects, `onMount` and store setters are batched automatically."
+      - tone: neutral
+        text: "Solid has no virtual DOM: JSX compiles to real DOM creation plus one effect per dynamic expression, which is why the compiler (`vite-plugin-solid`) is required."

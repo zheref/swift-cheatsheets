@@ -1,0 +1,449 @@
+id: cs-fp
+concept: principles.functional
+scope: shared
+title: "Functional Programming in C#"
+group: "Design & practice"
+subtitle: "Pure functions and LINQ, Func and local functions, composition and currying, records with `with`, a hand-rolled Result, closed hierarchies with switch expressions, deferred queries, Lazy<T>, memoization and immutable collections."
+applies:
+  platforms: [dotnet]
+  runtime: .NET (any app model; the examples are console apps)
+  versions: { csharp: ">=12", dotnet: ">=8" }
+sources:
+  - title: Pattern matching overview — C#
+    url: https://learn.microsoft.com/en-us/dotnet/csharp/fundamentals/functional/pattern-matching
+  - title: Language Integrated Query (LINQ) — C#
+    url: https://learn.microsoft.com/en-us/dotnet/csharp/linq/
+  - title: Records — C# reference
+    url: https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/builtin-types/record
+  - title: System.Collections.Immutable — .NET API
+    url: https://learn.microsoft.com/en-us/dotnet/api/system.collections.immutable
+cards:
+  - id: core-ideas
+    kind: rules
+    title: Core ideas
+    note: C# is multi-paradigm; these are the functional habits that pay off in everyday code.
+    items:
+      - tone: modern
+        text: "**Pure functions** — same input, same output, no side effects: a `static` method that reads only its parameters is trivially testable and safe to call from any thread."
+      - tone: modern
+        text: "**Immutability by default** — `record`, `init`, `readonly record struct`, `with` and the immutable collections; mutate only local state you own."
+      - tone: modern
+        text: "**Functions are values** — `Func<>`, `Action<>`, lambdas, method groups and local functions."
+      - tone: modern
+        text: "**Declarative over imperative** — a LINQ pipeline says *what*; a loop with an accumulator says *how*."
+      - tone: modern
+        text: "**Expressions over statements** — `switch` expressions, property patterns and the ternary produce a value instead of assigning one in branches."
+      - tone: modern
+        text: "**Functional core, imperative shell** — pure logic in the middle, I/O (database, HTTP, UI) at the edges."
+      - tone: neutral
+        text: "There is no built-in `Option` or `Result` and no `|>` operator; when you want the whole paradigm on .NET, that is F#."
+  - id: imperative-to-declarative
+    kind: compare
+    title: "Imperative → declarative with LINQ"
+    note: "The query reads as the requirement — delivered orders, revenue per customer, top two — and has no mutable accumulator to get wrong."
+    prerequisites: &run
+      - .NET 8 SDK or later
+      - "`dotnet new console -o Demo`, replace `Demo/Program.cs` with the example, then `dotnet run --project Demo`"
+    columns:
+      - label: Imperative
+        tone: legacy
+        code: |-
+          using System.Globalization;
+
+          Order[] orders =
+          [
+              new("ada", OrderStatus.Delivered, 42.50m), new("grace", OrderStatus.Cancelled, 99.00m),
+              new("linus", OrderStatus.Placed, 15.00m), new("ada", OrderStatus.Delivered, 15.00m),
+              new("grace", OrderStatus.Delivered, 30.00m), new("linus", OrderStatus.Delivered, 9.90m),
+          ];
+
+          var totals = new Dictionary<string, decimal>();
+          foreach (var order in orders)
+          {
+              if (order.Status != OrderStatus.Delivered) continue;
+              totals.TryGetValue(order.Customer, out var sum);
+              totals[order.Customer] = sum + order.Total;
+          }
+          var ranking = new List<KeyValuePair<string, decimal>>(totals);
+          // List<T>.Sort is unstable: without the second key, equal revenues come out in any order
+          ranking.Sort((a, b) => a.Value != b.Value ? b.Value.CompareTo(a.Value) : string.CompareOrdinal(a.Key, b.Key));
+          for (var i = 0; i < Math.Min(2, ranking.Count); i++)
+          {
+              var (customer, revenue) = ranking[i];
+              Console.WriteLine(string.Create(CultureInfo.InvariantCulture, $"{customer} {revenue:0.00}"));
+          }
+
+          enum OrderStatus { Placed, Delivered, Cancelled }
+          record Order(string Customer, OrderStatus Status, decimal Total);
+      - label: Declarative
+        tone: modern
+        code: |-
+          using System.Globalization;
+
+          Order[] orders =
+          [
+              new("ada", OrderStatus.Delivered, 42.50m), new("grace", OrderStatus.Cancelled, 99.00m),
+              new("linus", OrderStatus.Placed, 15.00m), new("ada", OrderStatus.Delivered, 15.00m),
+              new("grace", OrderStatus.Delivered, 30.00m), new("linus", OrderStatus.Delivered, 9.90m),
+          ];
+
+          var topCustomers = orders
+              .Where(order => order.Status == OrderStatus.Delivered)
+              .GroupBy(order => order.Customer)
+              .Select(group => (Customer: group.Key, Revenue: group.Sum(order => order.Total)))
+              .OrderByDescending(row => row.Revenue)
+              .ThenBy(row => row.Customer, StringComparer.Ordinal)    // the same tie-break as the loop
+              .Take(2);
+
+          foreach (var (customer, revenue) in topCustomers)
+              Console.WriteLine(string.Create(CultureInfo.InvariantCulture, $"{customer} {revenue:0.00}"));
+
+          enum OrderStatus { Placed, Delivered, Cancelled }
+          record Order(string Customer, OrderStatus Status, decimal Total);
+    expected: |-
+      ada 57.50
+      grace 30.00
+    validation: &ran
+      status: ran
+      toolchain: .NET SDK 9.0.304 (net9.0, C# 13)
+      date: "2026-11-16"
+  - id: delegates-and-local-functions
+    kind: code
+    title: "Func, Action, delegates and local functions"
+    note: "`Func<T, TResult>` returns and `Action<T>` does not; a named `delegate` names a domain idea, and a local function keeps a helper next to its only caller."
+    prerequisites: *run
+    code: |-
+      using System.Globalization;
+
+      Order[] orders = [new("A-1", 42.50m), new("A-2", 120.00m), new("A-3", 250.00m)];
+
+      Func<decimal, string> eur = amount => string.Create(CultureInfo.InvariantCulture, $"{amount:0.00} EUR");
+      Action<string> print = Console.WriteLine;              // a method group converts to a delegate
+
+      var threshold = 100m;
+      bool IsLarge(Order order) => order.Total >= threshold; // a local function; this one captures `threshold`
+
+      foreach (var order in orders.Where(IsLarge)) print($"{order.Id} {eur(order.Total)}");
+
+      // `static` forbids captures, so the lambda can never allocate a closure by accident
+      PriceRule weekendSale = static total => total * 0.9m;
+      PriceRule[] rules = [weekendSale, static total => total - 5m];
+      print(eur(ApplyAll(rules, 120m)));
+
+      static decimal ApplyAll(IEnumerable<PriceRule> rules, decimal total) =>
+          rules.Aggregate(total, (running, rule) => rule(running));
+
+      // A named delegate documents intent and allows ref/out parameters and attributes;
+      // the design guidelines still prefer Func/Action for public callbacks.
+      delegate decimal PriceRule(decimal total);
+
+      record Order(string Id, decimal Total);
+    expected: |-
+      A-2 120.00 EUR
+      A-3 250.00 EUR
+      103.00 EUR
+    sources:
+      - title: Local functions — C# programming guide
+        url: https://learn.microsoft.com/en-us/dotnet/csharp/programming-guide/classes-and-structs/local-functions
+    validation: *ran
+  - id: higher-order-operations
+    kind: table
+    title: The higher-order operations to know cold
+    note: Every one is an extension method on `IEnumerable<T>` in `System.Linq`; most are deferred until enumerated.
+    headers: [Idea, LINQ, Watch out]
+    rows:
+      - ["map", "`Select(x => …)`, `Select((x, i) => …)`", "`Index()` (.NET 9) yields `(Index, Item)` pairs"]
+      - ["filter", "`Where`, `OfType<T>()`", "`OfType<T>()` also drops `null`s"]
+      - ["flatMap", "`SelectMany`", "flattens one level, e.g. orders → lines"]
+      - ["reduce / fold", "`Aggregate(seed, (acc, x) => …)`; `Sum`, `Min`, `Max`, `Average`", "`Aggregate` without a seed throws on an empty sequence"]
+      - ["group", "`GroupBy` (deferred), `ToLookup` (immediate)", "`CountBy`, `AggregateBy` (.NET 9) skip the intermediate groups"]
+      - ["sort", "`OrderBy`/`ThenBy`, `Order()` (.NET 7)", "stable; `List<T>.Sort` is not"]
+      - ["find", "`First`, `FirstOrDefault`, `Single`, `Any`, `All`", "`Single` throws on a second match — use it to assert uniqueness"]
+      - ["by key", "`DistinctBy`, `MinBy`, `MaxBy`, `ExceptBy` (.NET 6)", "no need for a custom comparer"]
+      - ["zip and batch", "`Zip`, `Chunk(size)`", "`Chunk` gives arrays: handy for batching API calls"]
+      - ["materialize", "`ToList`, `ToArray`, `ToDictionary`, `ToHashSet`", "the point where a deferred query runs"]
+  - id: compose-and-curry
+    kind: code
+    title: "Composition, currying and partial application"
+    note: "Build a pipeline from small functions with a `Then` extension, and fix arguments early with closures; C# has no built-in compose operator."
+    prerequisites: *run
+    code: |-
+      using System.Globalization;
+
+      Func<decimal, decimal> applyCoupon = total => total - 10m;
+      Func<decimal, decimal> addVat = total => total * 1.21m;
+      Func<decimal, string> format = total => total.ToString("0.00", CultureInfo.InvariantCulture);
+
+      var checkoutTotal = applyCoupon.Then(addVat).Then(format);   // left to right, like the requirement
+      Console.WriteLine(checkoutTotal(110m));
+
+      // Currying: one argument at a time, so a function is configured now and applied later
+      Func<decimal, Func<decimal, decimal>> discountBy = rate => total => total * (1 - rate);
+      var tenPercentOff = discountBy(0.10m);
+      Console.WriteLine(format(tenPercentOff(200m)));
+
+      // Partial application: fix the first argument of a two-argument function with a closure
+      Func<string, int, string> shippingLabel = (country, parcels) => $"{parcels} parcel(s) to {country}";
+      Func<int, string> toSpain = parcels => shippingLabel("ES", parcels);
+      Console.WriteLine(toSpain(2));
+
+      static class FunctionExtensions
+      {
+          public static Func<T, TResult> Then<T, TMiddle, TResult>(
+              this Func<T, TMiddle> first, Func<TMiddle, TResult> second) =>
+              value => second(first(value));
+      }
+    expected: |-
+      121.00
+      180.00
+      2 parcel(s) to ES
+    validation: *ran
+  - id: immutability
+    kind: code
+    title: "Immutability: records, `with`, immutable and frozen collections"
+    note: "`with` copies and changes; an immutable collection's `Add` returns a new collection; `FrozenDictionary` is for data built once and read often."
+    prerequisites: *run
+    code: |-
+      using System.Collections.Frozen;
+      using System.Collections.Immutable;
+      using System.Globalization;
+
+      var placed = new Order("A-1", [new Line("mug", 2)], OrderStatus.Placed);
+      var shipped = placed with { Status = OrderStatus.Shipped };                  // a copy; `placed` is untouched
+      var amended = placed with { Lines = placed.Lines.Add(new Line("lamp", 1)) }; // Add returns a new list
+
+      Console.WriteLine($"{placed.Status} {shipped.Status} | lines {placed.Lines.Count} {amended.Lines.Count}");
+      Console.WriteLine(shipped with { Status = OrderStatus.Placed } == placed);      // value equality
+
+      // ...but records compare a collection property by reference, not by contents
+      var rebuilt = new Order("A-1", [new Line("mug", 2)], OrderStatus.Placed);
+      Console.WriteLine(rebuilt == placed);
+
+      // Built once at startup, read on every request: lookups are optimised when it is frozen
+      FrozenDictionary<string, decimal> vatByCountry =
+          new Dictionary<string, decimal> { ["ES"] = 0.21m, ["DE"] = 0.19m, ["FR"] = 0.20m }.ToFrozenDictionary();
+      Console.WriteLine(vatByCountry["DE"].ToString(CultureInfo.InvariantCulture));
+
+      enum OrderStatus { Placed, Shipped }
+      record Line(string Sku, int Quantity);
+      record Order(string Id, ImmutableList<Line> Lines, OrderStatus Status);
+    expected: |-
+      Placed Shipped | lines 1 2
+      True
+      False
+      0.19
+    sources:
+      - title: Frozen collections — System.Collections.Frozen
+        url: https://learn.microsoft.com/en-us/dotnet/api/system.collections.frozen
+    validation: *ran
+  - id: option-and-result
+    kind: code
+    title: "Option and Result as containers"
+    note: "C# has no built-in Option or Result: `T?` and `TryGetValue` are the everyday Option, and a closed two-case record hierarchy with `Match`, `Bind` and `Map` is a Result."
+    prerequisites: *run
+    code: |-
+      using System.Globalization;
+
+      var prices = new Dictionary<string, decimal> { ["mug"] = 12.00m, ["lamp"] = 99.00m };
+
+      foreach (var input in new[] { "mug x2", "lamp x0", "mug two", "desk x1" })
+      {
+          var withVat = ParseLine(input)
+              .Bind(line => prices.TryGetValue(line.Sku, out var price)     // TryGetValue: the BCL's Option
+                  ? Result<decimal>.Ok(price * line.Quantity)
+                  : Result<decimal>.Fail($"unknown product '{line.Sku}'"))
+              .Map(total => total * 1.21m);
+          var text = withVat.Match(
+              total => total.ToString("0.00", CultureInfo.InvariantCulture),
+              reason => reason);
+          Console.WriteLine($"{input}: {text}");
+      }
+
+      static Result<CartLine> ParseLine(string input) => input.Split(" x") switch
+      {
+          [var sku, var raw] when int.TryParse(raw, CultureInfo.InvariantCulture, out var n) => n > 0
+              ? Result<CartLine>.Ok(new CartLine(sku, n))
+              : Result<CartLine>.Fail("quantity must be at least 1"),
+          _ => Result<CartLine>.Fail("expected 'sku xN'"),
+      };
+
+      record CartLine(string Sku, int Quantity);
+
+      abstract record Result<T>
+      {
+          private Result() { }                                   // closed: Success and Failure only
+          public sealed record Success(T Value) : Result<T>;
+          public sealed record Failure(string Reason) : Result<T>;
+
+          public static Result<T> Ok(T value) => new Success(value);
+          public static Result<T> Fail(string reason) => new Failure(reason);
+
+          public TOut Match<TOut>(Func<T, TOut> ok, Func<string, TOut> fail) => this switch
+          {
+              Success(var value) => ok(value),
+              Failure(var reason) => fail(reason),
+              _ => throw new InvalidOperationException("unreachable: the hierarchy is closed"),
+          };
+
+          // A failure short-circuits: the rest of the chain never runs
+          public Result<TNext> Bind<TNext>(Func<T, Result<TNext>> next) => Match(next, Result<TNext>.Fail);
+          public Result<TNext> Map<TNext>(Func<T, TNext> transform) =>
+              Bind(value => Result<TNext>.Ok(transform(value)));
+      }
+    expected: |-
+      mug x2: 29.04
+      lamp x0: quantity must be at least 1
+      mug two: expected 'sku xN'
+      desk x1: unknown product 'desk'
+    validation: *ran
+  - id: illegal-states
+    kind: compare
+    title: "Make illegal states unrepresentable"
+    note: "Three independent fields allow eight combinations for three real states; a closed record hierarchy plus a `switch` expression allows exactly the three."
+    prerequisites: *run
+    columns:
+      - label: Flags
+        tone: bad
+        code: |-
+          OrdersScreen[] states =
+          [
+              new() { IsLoading = true },
+              new() { Error = "offline" },
+              new() { Orders = ["A-1", "A-2"] },
+              new() { Orders = [] },
+          ];
+          foreach (var state in states) Console.WriteLine(Render(state));
+          // Also compiles — what should the screen show?
+          // new OrdersScreen { IsLoading = true, Error = "offline", Orders = ["A-1"] };
+
+          static string Render(OrdersScreen state)
+          {
+              if (state.IsLoading) return "spinner";
+              if (state.Error != null) return $"error banner: {state.Error}";
+              if (state.Orders == null || state.Orders.Count == 0) return "empty state";
+              return $"list of {state.Orders.Count}";
+          }
+
+          class OrdersScreen
+          {
+              public bool IsLoading { get; init; }
+              public string? Error { get; init; }
+              public List<string>? Orders { get; init; }
+          }
+      - label: Closed hierarchy
+        tone: good
+        code: |-
+          OrdersScreen[] states =
+          [
+              new OrdersScreen.Loading(),
+              new OrdersScreen.Failed("offline"),
+              new OrdersScreen.Loaded(["A-1", "A-2"]),
+              new OrdersScreen.Loaded([]),
+          ];
+          foreach (var state in states) Console.WriteLine(Render(state));
+          // A failed state that also has orders cannot be written down.
+
+          static string Render(OrdersScreen state) => state switch
+          {
+              OrdersScreen.Loading => "spinner",
+              OrdersScreen.Failed(var message) => $"error banner: {message}",
+              OrdersScreen.Loaded { Orders.Count: 0 } => "empty state",
+              OrdersScreen.Loaded(var orders) => $"list of {orders.Count}",
+              _ => throw new ArgumentOutOfRangeException(nameof(state)),
+          };
+
+          abstract record OrdersScreen
+          {
+              private OrdersScreen() { }                     // no other subtypes can exist
+              public sealed record Loading : OrdersScreen;
+              public sealed record Failed(string Message) : OrdersScreen;
+              public sealed record Loaded(IReadOnlyList<string> Orders) : OrdersScreen;
+          }
+    expected: |-
+      spinner
+      error banner: offline
+      list of 2
+      empty state
+    validation: *ran
+  - id: laziness-and-memoization
+    kind: code
+    title: "Laziness and memoization"
+    note: "A LINQ query or `yield` iterator is a recipe that runs when enumerated; `Lazy<T>` computes once on first use; memoize a pure, expensive function with a cache."
+    prerequisites: *run
+    code: |-
+      using System.Collections.Concurrent;
+
+      static IEnumerable<int> OrderPages()                     // yield: each page is produced on demand
+      {
+          for (var page = 1; ; page++)
+          {
+              Console.WriteLine($"fetch page {page}");
+              yield return page;
+          }
+      }
+
+      var firstTwo = OrderPages().Take(2);                     // nothing fetched yet
+      Console.WriteLine("query built");
+      foreach (var page in firstTwo) Console.WriteLine($"render page {page}");
+
+      var taxTable = new Lazy<string[]>(() =>
+      {
+          Console.WriteLine("load tax table");
+          return ["ES", "DE"];
+      });
+      Console.WriteLine($"created: {taxTable.IsValueCreated}");
+      // Loads once and is thread-safe; it also caches a factory exception (see the trade-offs)
+      Console.WriteLine($"{taxTable.Value.Length} countries, {taxTable.Value.Length} again");
+
+      var shippingQuote = Memoize((string country) =>
+      {
+          Console.WriteLine($"quote {country}");
+          return country == "ES" ? 495 : 995;
+      });
+      Console.WriteLine($"{shippingQuote("ES")} {shippingQuote("ES")} {shippingQuote("DE")}");
+
+      // GetOrAdd may run the factory twice under a race; fine for a pure function
+      static Func<TIn, TOut> Memoize<TIn, TOut>(Func<TIn, TOut> compute) where TIn : notnull
+      {
+          var cache = new ConcurrentDictionary<TIn, TOut>();
+          return input => cache.GetOrAdd(input, compute);
+      }
+    expected: |-
+      query built
+      fetch page 1
+      render page 1
+      fetch page 2
+      render page 2
+      created: False
+      load tax table
+      2 countries, 2 again
+      quote ES
+      quote DE
+      495 495 995
+    sources:
+      - title: Lazy initialization — .NET
+        url: https://learn.microsoft.com/en-us/dotnet/framework/performance/lazy-initialization
+    validation: *ran
+  - id: trade-offs
+    kind: rules
+    title: Trade-offs to say out loud
+    note: Functional style is a tool; know what it costs on the CLR.
+    items:
+      - tone: bad
+        text: "**Allocation** — every LINQ operator allocates an enumerator and usually a delegate, and a capturing lambda allocates a closure; in a hot loop, write the `for` loop or use `Span<T>`."
+      - tone: bad
+        text: "**Multiple enumeration** — a deferred query re-runs (and re-queries the database) each time it is enumerated; call `ToList()` once (analyzer `CA1851` flags it)."
+      - tone: bad
+        text: "**Closures capture variables, not values** — a lambda sees later changes to a captured local; mark lambdas `static` when they should capture nothing."
+      - tone: bad
+        text: "**`with` is a shallow copy** — the new record shares its lists with the old one; use immutable collections for members, or copy them."
+      - tone: bad
+        text: "**`Lazy<T>` caches a factory exception** — in the default mode one transient failure is permanent; use `LazyThreadSafetyMode.PublicationOnly` or retry outside it when the load can fail."
+      - tone: bad
+        text: "**A memo cache grows forever** — the `Memoize` above never evicts; bound it, or use `MemoryCache` with a size limit or an expiry."
+      - tone: neutral
+        text: "**Immutable collections are not free** — `ImmutableList<T>` is a tree (O(log n) indexing); prefer `ImmutableArray<T>` for read-mostly data and `FrozenDictionary` for build-once lookups."
+      - tone: neutral
+        text: "**Readability** — a ten-step chain is hard to debug; name intermediate queries. Libraries such as LanguageExt add a whole dialect: adopt one only if the team will read it."
+      - tone: good
+        text: "**Where it shines** — pure domain logic, validation pipelines, reducers and view-state mapping: deterministic, parallel-safe and trivially unit-tested."

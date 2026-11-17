@@ -3,7 +3,7 @@ name: C#
 title: C# Cheat Sheets
 route: /csharp/
 status: published
-description: Dense C# and .NET reference — collections and LINQ, async/await and cancellation, synchronization, the language essentials, testing, algorithm costs, files and MVVM state — with every example's setup, versions and validation stated.
+description: Dense C# and .NET reference — the language, async/await, Rx.NET, .NET MAUI, WPF, WinUI and Blazor, styling, MVVM and unidirectional state, networking, video, security, accessibility, localization, serialization, collections and strings, testing, architecture, clean code, SOLID, functional C# and project modularization — with every example's setup, versions and validation stated.
 locale: en
 codeLanguage: csharp
 requireExampleMetadata: true
@@ -19,11 +19,37 @@ applies:
 sheets:
   - cs-collections
   - cs-linq
+  - cs-strings
+  - cs-serialization
   - cs-async
   - cs-algorithms
+  - cs-streams
   - cs-testing
+  - cs-clean-code
+  - cs-solid
+  - cs-fp
+  - cs-architecture
+  - cs-best-practices
   - cs-essentials
   - cs-shared-state
   - cs-files
   - cs-mvvm-state
+  - cs-rx
+  - cs-rx-timing
+  - cs-timers
+  - cs-modularization
+  - cs-maui-ui
+  - cs-maui-code
+  - cs-wpf-winui
+  - cs-blazor
+  - cs-ui-compared
+  - cs-styling
+  - cs-unidirectional
+  - cs-networking-rest
+  - cs-networking-protocols
+  - cs-video-streaming
+  - cs-security
+  - cs-accessibility
+  - cs-localization
+  - cs-ui-testing
   - cs-coverage

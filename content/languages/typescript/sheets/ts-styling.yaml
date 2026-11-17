@@ -1,0 +1,614 @@
+id: ts-styling
+concept: ui.styling
+scope: platform
+title: "Styling — Design Tokens & Chakra UI"
+group: "UI"
+subtitle: "Decide a value once, name it by role, switch it per colour mode — as CSS custom properties, then with Chakra UI 3's system, style props and recipes."
+applies:
+  platforms: [browser]
+  runtime: a browser page; the Chakra cards need a React app with Chakra UI 3
+  versions: { typescript: ">=5.5", react: ">=18", "@chakra-ui/react": ">=3.0 <4" }
+sources:
+  - title: Using CSS custom properties — MDN
+    url: https://developer.mozilla.org/en-US/docs/Web/CSS/Guides/Cascading_variables/Using_custom_properties
+  - title: Theming overview — Chakra UI
+    url: https://chakra-ui.com/docs/theming/overview
+  - title: Semantic tokens — Chakra UI
+    url: https://chakra-ui.com/docs/theming/semantic-tokens
+cards:
+  - id: where-a-decision-lives
+    kind: table
+    title: Where a styling decision lives
+    note: "One row per decision: the theme owns scale, roles and mode, and a component only picks reusable styles, one-offs and responsive values."
+    headers: [Decision, Plain CSS, Chakra UI 3, SwiftUI equivalent]
+    rows:
+      - - "**Scale** — the raw palette, spacing, radii, type sizes"
+        - "`--space-4: 1rem` on `:root`"
+        - "`theme.tokens` — `colors.brand.700`, `radii.card`"
+        - "asset-catalog colours, a `Spacing` enum"
+      - - "**Role** — what a colour is for, per mode"
+        - "`--color-surface`, redefined under `[data-theme=\"dark\"]`"
+        - "`semanticTokens` with `{ base, _dark }`"
+        - "a named colour with Any and Dark appearances"
+      - - "**Current mode** — light or dark"
+        - "`data-theme` / `.dark` on `<html>`, plus `color-scheme`"
+        - "the `.dark` class; `useColorMode()` from the color-mode snippet"
+        - "`@Environment(\\.colorScheme)`"
+      - - "**Reusable style** — a badge, a button kind"
+        - "a class in a stylesheet"
+        - "`defineRecipe` variants, `chakra(\"span\", recipe)`"
+        - "`ViewModifier`, `ButtonStyle`"
+      - - "**Multi-part component** — a card's header, body and footer"
+        - "a block of related classes (BEM)"
+        - "`defineSlotRecipe` (one recipe, a style per slot), the way Chakra themes `Card` and `Dialog`"
+        - "a custom container view with its own modifiers"
+      - - "**One-off style** — this card's padding"
+        - "a rule scoped to the component"
+        - "style props: `p=\"4\" bg=\"surface\"`"
+        - "modifiers on the view"
+      - - "**Responsive** — layout by viewport"
+        - "`@media (width >= 48rem)`, container queries"
+        - "`{ base, md }` values, `hideBelow`, `useBreakpointValue`"
+        - "size classes, `ViewThatFits`"
+      - - "**User text size**"
+        - "`rem` units"
+        - "built-in tokens are `rem`"
+        - "Dynamic Type"
+  - id: tokens-as-custom-properties
+    kind: code
+    title: Tokens defined once, emitted as CSS variables
+    note: When several stacks (CSS, a charting library, email templates) must agree on the palette — one typed source, generated CSS.
+    prerequisites: &run
+      - Node.js 22.18 or later (it runs `.mts` files directly by stripping the types)
+      - "Save as `tokens.mts` and run `node tokens.mts` (in a build, write the result to `tokens.css`)"
+    code: |-
+      const scale = {
+        space: { 1: "0.25rem", 2: "0.5rem", 4: "1rem", 6: "1.5rem" },
+        radius: { control: "6px", card: "12px" },
+        text: { sm: "0.875rem", md: "1rem", lg: "1.125rem" },
+      } as const;
+
+      // Roles say what a colour is FOR; every scheme must give every role a value.
+      type Role = "surface" | "text" | "muted" | "accent" | "danger";
+      const schemes: Record<"light" | "dark", Record<Role, string>> = {
+        light: { surface: "#ffffff", text: "#111827", muted: "#4b5563", accent: "#1d4ed8", danger: "#b91c1c" },
+        dark: { surface: "#111827", text: "#f3f4f6", muted: "#9ca3af", accent: "#60a5fa", danger: "#f87171" },
+      };
+
+      const declare = (prefix: string, values: Record<string, string>) =>
+        Object.entries(values).map(([name, value]) => `  --${prefix}-${name}: ${value};`);
+
+      function tokensCss(): string {
+        return [
+          ":root {",
+          ...Object.entries(scale).flatMap(([group, values]) => declare(group, values)),
+          ...declare("color", schemes.light),
+          "}",
+          ':root[data-theme="dark"] {',
+          ...declare("color", schemes.dark),   // only roles change per scheme; the scale never does
+          "}",
+        ].join("\n");
+      }
+
+      console.log(tokensCss());
+    expected: |-
+      :root {
+        --space-1: 0.25rem;
+        --space-2: 0.5rem;
+        --space-4: 1rem;
+        --space-6: 1.5rem;
+        --radius-control: 6px;
+        --radius-card: 12px;
+        --text-sm: 0.875rem;
+        --text-md: 1rem;
+        --text-lg: 1.125rem;
+        --color-surface: #ffffff;
+        --color-text: #111827;
+        --color-muted: #4b5563;
+        --color-accent: #1d4ed8;
+        --color-danger: #b91c1c;
+      }
+      :root[data-theme="dark"] {
+        --color-surface: #111827;
+        --color-text: #f3f4f6;
+        --color-muted: #9ca3af;
+        --color-accent: #60a5fa;
+        --color-danger: #f87171;
+      }
+    applies:
+      platforms: [browser, node]
+      runtime: Node.js (build step); the CSS it emits runs in any browser
+      versions: { typescript: ">=5.0", node: ">=22.18" }
+    validation: &ran
+      status: ran
+      toolchain: Node 24.16.0, TypeScript 5.9.3
+      date: "2026-11-16"
+  - id: typed-token-references
+    kind: code
+    title: Typed references and per-instance variables
+    note: "A typo in a token name should fail the build, and a per-item value (progress, a brand colour from the API) belongs in a custom property, not a generated class."
+    prerequisites:
+      - "A React project: `npm create vite@latest shop -- --template react-ts`; to run this file alone, `npm i react react-dom @types/react @types/react-dom`"
+      - "Save as `main.tsx`; run it with a TSX-aware runner such as `npx tsx main.tsx` (beside a `tsconfig.json` with `\"jsx\": \"react-jsx\"`)"
+    code: |-
+      import type { CSSProperties } from "react";
+      import { renderToStaticMarkup } from "react-dom/server";
+
+      // Let `style` carry custom properties without a cast.
+      declare module "react" {
+        interface CSSProperties {
+          [property: `--${string}`]: string | number | undefined;
+        }
+      }
+
+      type Role = "surface" | "text" | "muted" | "accent";
+      type Space = 1 | 2 | 4 | 6;
+      const color = (role: Role) => `var(--color-${role})`;
+      const space = (step: Space) => `var(--space-${step})`;
+
+      // The stylesheet draws the bar from the variable:
+      //   .fulfilment { background: linear-gradient(to right, var(--color-accent) var(--progress), transparent 0) }
+      function FulfilmentBar({ packed, total }: { packed: number; total: number }) {
+        const style: CSSProperties = {
+          "--progress": `${Math.round((packed / total) * 100)}%`,
+          padding: space(2),
+          color: color("muted"),     // color("primary") does not compile: not a Role
+        };
+        return <div className="fulfilment" style={style}>{packed} of {total} items packed</div>;
+      }
+
+      console.log(renderToStaticMarkup(<FulfilmentBar packed={3} total={4} />));
+    expected: |-
+      <div class="fulfilment" style="--progress:75%;padding:var(--space-2);color:var(--color-muted)">3 of 4 items packed</div>
+    applies:
+      platforms: [browser, node]
+      runtime: a React app; runs in Node.js through react-dom/server
+      versions: { typescript: ">=5.0", node: ">=22.18", react: ">=18" }
+    validation:
+      status: ran
+      toolchain: Node 24.16.0, TypeScript 5.9.3
+      date: "2026-11-16"
+      jsx: react
+  - id: resolve-and-apply-the-scheme
+    kind: code
+    title: Resolve and apply the colour scheme
+    note: "The user's choice beats the OS; apply it before first paint so nothing flashes, keep following the OS while the choice is \"system\", and set it on one element so every consumer follows."
+    prerequisites:
+      - Node.js 22.18 or later (it runs `.mts` files directly by stripping the types)
+      - "`npm i jsdom @types/jsdom` (stands in for the page here)"
+      - "Save as `main.mts` and run `node main.mts`"
+      - "In the page: inline these functions in `<head>` as plain JavaScript (types removed), and call `startScheme(document.documentElement, localStorage, matchMedia(\"(prefers-color-scheme: dark)\"))`"
+    code: |-
+      import { JSDOM } from "jsdom";
+
+      type Preference = "light" | "dark" | "system";
+      type Scheme = "light" | "dark";
+      type OsDark = Pick<MediaQueryList, "matches" | "addEventListener">;
+
+      function readPreference(storage: Storage): Preference {
+        try {
+          const saved = storage.getItem("theme");
+          return saved === "light" || saved === "dark" ? saved : "system";
+        } catch {
+          return "system";             // storage blocked: getItem throws SecurityError
+        }
+      }
+
+      // Our tokens read data-theme; Chakra's _dark and Tailwind's class-based dark: read the
+      // class; form controls and scrollbars read color-scheme.
+      function applyScheme(root: HTMLElement, scheme: Scheme) {
+        root.dataset.theme = scheme;
+        root.classList.toggle("dark", scheme === "dark");
+        root.classList.toggle("light", scheme === "light");
+        root.style.setProperty("color-scheme", scheme);
+      }
+
+      function startScheme(root: HTMLElement, storage: Storage, osDark: OsDark) {
+        const apply = () => {
+          const preference = readPreference(storage);
+          applyScheme(root, preference === "system" ? (osDark.matches ? "dark" : "light") : preference);
+        };
+        apply();
+        osDark.addEventListener("change", apply);     // the OS switched while the page is open
+      }
+
+      const { window } = new JSDOM("<!doctype html><html></html>", { url: "https://shop.example/" });
+      const root = window.document.documentElement;
+      const osDark = Object.assign(new window.EventTarget(), { matches: false });   // a stand-in matchMedia
+      startScheme(root, window.localStorage, osDark);
+      console.log("saved none, OS light ->", root.className);
+      osDark.matches = true;
+      osDark.dispatchEvent(new window.Event("change"));
+      console.log("OS turns dark       ->", root.className, root.style.getPropertyValue("color-scheme"));
+    expected: |-
+      saved none, OS light -> light
+      OS turns dark       -> dark dark
+    sources:
+      - title: color-scheme — MDN
+        url: https://developer.mozilla.org/en-US/docs/Web/CSS/Reference/Properties/color-scheme
+      - title: prefers-color-scheme — MDN
+        url: https://developer.mozilla.org/en-US/docs/Web/CSS/Reference/At-rules/@media/prefers-color-scheme
+      - title: Window.localStorage — MDN
+        url: https://developer.mozilla.org/en-US/docs/Web/API/Window/localStorage
+    applies:
+      platforms: [browser, node]
+      runtime: a browser page's `<head>`; runs in Node.js with jsdom
+      versions: { typescript: ">=5.0", node: ">=22.18" }
+    validation: *ran
+  - id: chakra-system-tokens
+    kind: code
+    title: "Chakra: tokens, semantic tokens, the system"
+    note: "`createSystem(defaultConfig, yours)` keeps Chakra's tokens and component recipes and merges your brand on top; semantic tokens carry the light/dark switch."
+    prerequisites:
+      - "A React app: `npm create vite@latest shop -- --template react-ts`, then `npm i @chakra-ui/react @emotion/react`"
+      - "`tsconfig`: `\"moduleResolution\": \"Bundler\"` (Vite's default, and what Chakra's install guide requires) — Chakra 3's type declarations do not resolve under `nodenext`"
+      - "In the app: save as `src/theme.tsx` without the last block, and wrap the app in `<ChakraProvider value={system}>` in `src/main.tsx`"
+      - "To run this file alone: save as `main.tsx` and run `npx tsx main.tsx` in a package with `\"type\": \"module\"`, beside a `tsconfig.json` with `\"jsx\": \"react-jsx\"` and `\"moduleResolution\": \"Bundler\"`"
+      - "Optional: `npx @chakra-ui/cli typegen ./src/theme.tsx` so your own token and recipe names autocomplete and type-check"
+    code: |-
+      import { createSystem, defaultConfig, defineConfig } from "@chakra-ui/react";
+
+      const v = (value: string) => ({ value });
+      // A role's value per mode, as references to palette tokens.
+      const byMode = (light: string, dark: string) =>
+        ({ value: { base: `{colors.${light}}`, _dark: `{colors.${dark}}` } });
+
+      const config = defineConfig({
+        theme: {
+          tokens: {
+            colors: {
+              brand: { 100: v("#dbeafe"), 200: v("#bfdbfe"), 300: v("#93c5fd"), 400: v("#60a5fa"),
+                500: v("#3b82f6"), 700: v("#1d4ed8"), 800: v("#1e40af"), 900: v("#1e3a8a") },
+            },
+            radii: { card: v("12px") },
+          },
+          semanticTokens: {
+            colors: {
+              surface: byMode("white", "gray.900"),
+              // All eight keys a colorPalette needs: Button and Badge read six (not emphasized or
+              // focusRing), and inputs, tabs, sliders and steps read those two.
+              brand: {
+                solid: byMode("brand.700", "brand.500"),
+                contrast: byMode("white", "white"),
+                fg: byMode("brand.700", "brand.300"),
+                muted: byMode("brand.200", "brand.800"),
+                subtle: byMode("brand.100", "brand.900"),
+                emphasized: byMode("brand.300", "brand.700"),
+                focusRing: byMode("brand.500", "brand.400"),
+                border: byMode("brand.500", "brand.400"),
+              },
+            },
+          },
+        },
+      });
+      // In src/main.tsx: <ChakraProvider value={system}><App /></ChakraProvider>
+      export const system = createSystem(defaultConfig, config);
+
+      const hex = (reference: string) => system.token(reference.slice(1, -1));   // "{colors.white}" → "#FFFFFF"
+      for (const role of ["surface", "brand.solid", "brand.muted"]) {
+        const { base, _dark } = system.tokens.getByName(`colors.${role}`)!.extensions.conditions!;
+        console.log(`${role}: light ${hex(base)}, dark ${hex(_dark)}`);
+      }
+    expected: |-
+      surface: light #FFFFFF, dark #18181b
+      brand.solid: light #1d4ed8, dark #3b82f6
+      brand.muted: light #bfdbfe, dark #1e40af
+    sources:
+      - title: Tokens — Chakra UI
+        url: https://chakra-ui.com/docs/theming/tokens
+      - title: Colors (colorPalette keys) — Chakra UI
+        url: https://chakra-ui.com/docs/theming/customization/colors
+      - title: Installation — Chakra UI
+        url: https://chakra-ui.com/docs/get-started/installation
+    applies: &chakra-applies
+      platforms: [browser, node]
+      runtime: a React app with Chakra UI 3; runs in Node.js
+      versions: { typescript: ">=5.5", node: ">=22.18", react: ">=18", "@chakra-ui/react": ">=3.0 <4" }
+    validation: &chakra-ran
+      status: ran
+      toolchain: Node 24.16.0, TypeScript 5.9.3
+      date: "2026-11-16"
+      jsx: react
+      resolution: bundler
+  - id: chakra-style-props
+    kind: code
+    title: "Chakra: style props on a real component"
+    note: "One-off layout goes in style props, each naming a token or role — never a hex value or a pixel length."
+    prerequisites:
+      - "The app from the card above (`moduleResolution: \"Bundler\"`); in it, `OrderCard` lives in `src/OrderCard.tsx` and the system is the one in `src/theme.tsx`"
+      - "To run this file alone: save as `main.tsx` and run `npx tsx main.tsx` in a package with `\"type\": \"module\"`, beside a `tsconfig.json` with `\"jsx\": \"react-jsx\"` and `\"moduleResolution\": \"Bundler\"`"
+    code: |-
+      import { Badge, Box, Button, createSystem, defaultConfig, Flex, Heading, Stack, Text }
+        from "@chakra-ui/react";
+
+      // The two theme tokens this card uses, from the card above.
+      const surface = { value: { base: "{colors.white}", _dark: "{colors.gray.900}" } };
+      const system = createSystem(defaultConfig, {
+        theme: { tokens: { radii: { card: { value: "12px" } } }, semanticTokens: { colors: { surface } } },
+      });
+
+      type Order = { id: string; customer: string; total: string; late: boolean };
+
+      export function OrderCard({ order, onTrack }: { order: Order; onTrack: () => void }) {
+        return (
+          <Box as="article" bg="surface" borderWidth="1px" borderColor="border" rounded="card"
+            p={{ base: "3", md: "5" }} _hover={{ shadow: "md" }}>
+            <Flex justify="space-between" align="center" gap="3">
+              <Stack gap="0.5">
+                <Heading size="sm">Order #{order.id}</Heading>
+                <Text color="fg.muted" textStyle="sm">{order.customer}</Text>
+              </Stack>
+              {order.late && <Badge colorPalette="red">Late</Badge>}
+            </Flex>
+            <Flex mt="4" justify="space-between" align="center">
+              <Text fontWeight="semibold">{order.total}</Text>
+              <Button size="sm" colorPalette="blue" onClick={onTrack}>Track</Button>
+            </Flex>
+          </Box>
+        );
+      }
+
+      // What the article's style props become: tokens, and a mobile-first media query.
+      const cardCss = system.css({ bg: "surface", rounded: "card", p: { base: "3", md: "5" } });
+      console.log(JSON.stringify(cardCss, null, 2));
+      console.log("padding resolves to", system.token("spacing.3"), "then", system.token("spacing.5"));
+    expected: |-
+      {
+        "background": "var(--chakra-colors-surface)",
+        "--bg-currentcolor": "var(--chakra-colors-surface)",
+        "borderRadius": "var(--chakra-radii-card)",
+        "padding": "var(--chakra-spacing-3)",
+        "@media screen and (min-width: 48rem)": {
+          "padding": "var(--chakra-spacing-5)"
+        }
+      }
+      padding resolves to 0.75rem then 1.25rem
+    sources:
+      - title: Styling overview — Chakra UI
+        url: https://chakra-ui.com/docs/styling/overview
+    applies: *chakra-applies
+    validation: *chakra-ran
+  - id: chakra-recipe-variants
+    kind: code
+    title: "Chakra: a recipe for a reusable style"
+    note: "When the same element recurs with a few named looks (an order-status badge), make the looks variants of one recipe instead of repeating style props."
+    prerequisites:
+      - "The app from the cards above (`moduleResolution: \"Bundler\"`); in it, the recipe and `StatusBadge` live in `src/StatusBadge.tsx`"
+      - "To run this file alone: save as `main.tsx` and run `npx tsx main.tsx` in a package with `\"type\": \"module\"`, beside a `tsconfig.json` with `\"jsx\": \"react-jsx\"` and `\"moduleResolution\": \"Bundler\"`"
+    code: |-
+      import { chakra, defaultSystem, defineRecipe, type RecipeVariantProps } from "@chakra-ui/react";
+
+      const statusBadgeRecipe = defineRecipe({
+        base: { display: "inline-flex", alignItems: "center", gap: "1", rounded: "full", fontWeight: "medium" },
+        variants: {
+          status: {
+            placed: { bg: "gray.subtle", color: "gray.fg" },
+            shipped: { bg: "blue.subtle", color: "blue.fg" },
+            delivered: { bg: "green.subtle", color: "green.fg" },
+            cancelled: { bg: "red.subtle", color: "red.fg", textDecoration: "line-through" },
+          },
+          size: {
+            sm: { px: "2", py: "0.5", textStyle: "xs" },
+            md: { px: "3", py: "1", textStyle: "sm" },
+          },
+        },
+        compoundVariants: [{ status: "cancelled", size: "md", css: { fontWeight: "normal" } }],
+        defaultVariants: { status: "placed", size: "sm" },
+      });
+
+      // The variants become typed props: <StatusBadge status="shipped">; status="tasty" does not compile.
+      export const StatusBadge = chakra("span", statusBadgeRecipe);
+      type StatusBadgeVariants = RecipeVariantProps<typeof statusBadgeRecipe>;
+
+      // To theme it centrally instead: add `recipes: { statusBadge: statusBadgeRecipe }` to
+      // defineConfig's theme, then read it anywhere with `useRecipe({ key: "statusBadge" })`.
+
+      const badgeCss = defaultSystem.cva(statusBadgeRecipe);
+      const cases: Array<[label: string, variants: StatusBadgeVariants]> = [
+        ["defaults", {}],
+        ["cancelled", { status: "cancelled" }],
+        ["cancelled md", { status: "cancelled", size: "md" }],
+      ];
+      for (const [label, variants] of cases) {
+        const css = badgeCss(variants)["@layer recipes"] ?? {};   // the compound variant sets the weight
+        console.log(`${label.padEnd(12)} weight ${css.fontWeight}, decoration ${css.textDecoration ?? "none"}`);
+      }
+    expected: |-
+      defaults     weight var(--chakra-font-weights-medium), decoration none
+      cancelled    weight var(--chakra-font-weights-medium), decoration line-through
+      cancelled md weight var(--chakra-font-weights-normal), decoration line-through
+    sources:
+      - title: Recipes — Chakra UI
+        url: https://chakra-ui.com/docs/theming/recipes
+      - title: Slot recipes — Chakra UI
+        url: https://chakra-ui.com/docs/theming/slot-recipes
+    applies: *chakra-applies
+    validation: *chakra-ran
+  - id: chakra-colour-mode
+    kind: code
+    title: "Chakra: reading and switching the colour mode"
+    note: "Prefer `_dark`, semantic tokens and `currentColor` (pure CSS, right on first paint); `useColorModeValue` is for values CSS never reaches, such as a canvas chart's options."
+    prerequisites:
+      - "The app from the cards above (`moduleResolution: \"Bundler\"`), then `npx @chakra-ui/cli snippet add color-mode` (adds `src/components/ui/color-mode.tsx`; install `next-themes` if it does not). next-themes sets `.dark` / `.light` on `<html>` before paint and remembers the choice"
+      - "Save as `src/ThemeToggle.tsx`; wrap the app in `Providers` instead of a bare `ChakraProvider`"
+    code: |-
+      import { Box, chakra, ChakraProvider, ClientOnly, IconButton, Skeleton, Text } from "@chakra-ui/react";
+      import type { ReactNode } from "react";
+      import { ColorModeProvider, DarkMode, useColorMode, useColorModeValue } from "./components/ui/color-mode";
+      import { system } from "./theme";
+
+      export function Providers({ children }: { children: ReactNode }) {
+        return (
+          <ChakraProvider value={system}>
+            <ColorModeProvider defaultTheme="system">{children}</ColorModeProvider>   {/* next-themes */}
+          </ChakraProvider>
+        );
+      }
+
+      function ToggleButton() {
+        const { colorMode, toggleColorMode } = useColorMode();
+        const next = colorMode === "dark" ? "light" : "dark";
+        return (
+          <IconButton aria-label={`Switch to ${next} mode`} variant="ghost" onClick={toggleColorMode}>
+            {colorMode === "dark" ? "☾" : "☀"}
+          </IconButton>
+        );
+      }
+
+      // The mode is unknown until the client mounts: a placeholder first, as Chakra's ColorModeButton does.
+      export const ThemeToggle = () =>
+        <ClientOnly fallback={<Skeleton boxSize="9" />}><ToggleButton /></ClientOnly>;
+
+      export const RevenueLegend = () => (
+        <Box>
+          {/* stroke follows `color`, which CSS switches per mode */}
+          <chakra.svg viewBox="0 0 24 4" w="6" h="1" color={{ base: "brand.700", _dark: "brand.300" }} aria-hidden>
+            <line x1="0" y1="2" x2="24" y2="2" stroke="currentColor" strokeWidth="4" />
+          </chakra.svg>
+          <Text as="span" ms="2">Revenue</Text>
+          <DarkMode><Box bg="surface" p="3">Always dark: a video overlay</Box></DarkMode>
+        </Box>
+      );
+
+      // A canvas chart (Chart.js options) never sees CSS: hand it the value for the current mode.
+      export const useChartGridColour = () => useColorModeValue("#e5e7eb", "#374151");
+    expected: "The toggle flips the `.dark` class on `<html>` and every semantic token, `_dark` value and `currentColor` stroke follows; the choice persists across reloads, the `DarkMode` box stays dark in both modes, and a server render shows the skeleton instead of a guessed icon."
+    sources:
+      - title: Dark mode — Chakra UI
+        url: https://chakra-ui.com/docs/styling/dark-mode
+      - title: ClientOnly — Chakra UI
+        url: https://chakra-ui.com/docs/components/client-only
+    applies:
+      platforms: [browser]
+      runtime: a React app with Chakra UI 3 and next-themes
+      versions: { typescript: ">=5.5", react: ">=18", "@chakra-ui/react": ">=3.0 <4", next-themes: ">=0.4" }
+    validation:
+      status: excerpt
+      host: a React app with Chakra UI 3 and the generated color-mode snippet (`next-themes`, which this repository's example libraries do not include)
+  - id: chakra-responsive
+    kind: code
+    title: "Chakra: responsive values and breakpoints"
+    note: "Mobile-first values (`base` is every width, each key applies from that breakpoint up), with custom breakpoints written in px, the unit Chakra's defaults use."
+    prerequisites:
+      - "The app from the cards above (`moduleResolution: \"Bundler\"`); in it, the `breakpoints` go into the `defineConfig` of `src/theme.tsx` and `OrdersLayout` into `src/OrdersLayout.tsx`"
+      - "To run this file alone: save as `main.tsx` and run `npx tsx main.tsx` in a package with `\"type\": \"module\"`, beside a `tsconfig.json` with `\"jsx\": \"react-jsx\"` and `\"moduleResolution\": \"Bundler\"`"
+    code: |-
+      import { Box, createSystem, defaultConfig, Grid, Text } from "@chakra-ui/react";
+      import type { ReactNode } from "react";
+
+      // Chakra 3 sorts breakpoints by the bare number, and its defaults are px (sm 480px … 2xl 1536px):
+      // write yours in px too. "120rem" is read as 120 and sorts before sm.
+      const system = createSystem(defaultConfig, { theme: { breakpoints: { "3xl": "1920px" } } });
+      const misordered = createSystem(defaultConfig, { theme: { breakpoints: { "3xl": "120rem" } } });
+
+      type Props = { filters: ReactNode; pageSize: number; children: ReactNode };
+      export function OrdersLayout({ filters, pageSize, children }: Props) {
+        return (
+          <Grid templateColumns={{ base: "1fr", lg: "16rem 1fr" }} gap={{ base: "3", md: "6" }}>
+            <Box as="aside" hideBelow="lg">{filters}</Box>
+            <Box>
+              <Text textStyle={{ base: "sm", md: "md" }} color="fg.muted">Showing {pageSize} orders</Text>
+              <Grid templateColumns={{ base: "1fr", md: "repeat(2, 1fr)", xl: "repeat(3, 1fr)" }} gap="4">
+                {children}
+              </Grid>
+              <Text hideFrom="md" fontWeight={{ smOnly: "semibold" }}>Swipe a card to archive it</Text>
+            </Box>
+          </Grid>
+        );
+      }
+
+      const order = (s: typeof system) => s.breakpoints.values.map((b) => `${b.name}>=${b.min}`).join(" ");
+      console.log("px:  ", order(system));
+      console.log("rem: ", order(misordered));
+      const columns = { base: "1fr", md: "repeat(2, 1fr)", xl: "repeat(3, 1fr)" };
+      console.log(JSON.stringify(system.css({ gridTemplateColumns: columns }), null, 2));
+    expected: |-
+      px:   sm>=30rem md>=48rem lg>=64rem xl>=80rem 2xl>=96rem 3xl>=120rem
+      rem:  3xl>=120rem sm>=30rem md>=48rem lg>=64rem xl>=80rem 2xl>=96rem
+      {
+        "gridTemplateColumns": "1fr",
+        "@media screen and (min-width: 48rem)": {
+          "gridTemplateColumns": "repeat(2, 1fr)"
+        },
+        "@media screen and (min-width: 80rem)": {
+          "gridTemplateColumns": "repeat(3, 1fr)"
+        }
+      }
+    sources:
+      - title: Responsive design — Chakra UI
+        url: https://chakra-ui.com/docs/styling/responsive-design
+      - title: Customizing breakpoints — Chakra UI
+        url: https://chakra-ui.com/docs/theming/customization/breakpoints
+    applies: *chakra-applies
+    validation: *chakra-ran
+  - id: chakra-breakpoint-value
+    kind: code
+    title: "Chakra: useBreakpointValue without the double render"
+    note: "Use it only when JavaScript needs the value (how many rows to fetch), and pass `{ ssr: false }` in a client-only app, because the default gives the `base` value on the first render even in the browser."
+    prerequisites:
+      - "The app from the cards above (`moduleResolution: \"Bundler\"`); a Vite single-page app, so nothing renders on a server"
+      - "To run this file alone: `npm i jsdom @types/jsdom`, save as `main.tsx` and run `npx tsx main.tsx` in a package with `\"type\": \"module\"`, beside a `tsconfig.json` with `\"jsx\": \"react-jsx\"` and `\"moduleResolution\": \"Bundler\"`"
+    code: |-
+      import { ChakraProvider, defaultSystem, useBreakpointValue } from "@chakra-ui/react";
+      import { JSDOM } from "jsdom";
+      import { act } from "react";
+
+      function OrdersPage({ ssr }: { ssr: boolean }) {
+        // With ssr: true the first render (server AND browser) gets base: a fetch keyed on
+        // pageSize would request 10 rows, then 25. ssr: false reads the viewport at once.
+        const pageSize = useBreakpointValue({ base: 10, lg: 25 }, { ssr }) ?? 10;
+        console.log(`ssr: ${ssr} -> render with pageSize ${pageSize}`);
+        return <p>Showing {pageSize} orders</p>;
+      }
+
+      // A 1280px-wide browser window: jsdom has no layout, so matchMedia is a stand-in.
+      const { window } = new JSDOM("<!doctype html><main></main>");
+      const minWidthPx = (query: string) =>
+        parseFloat(/min-width: ([\d.]+)/.exec(query)?.[1] ?? "0") * (query.includes("rem") ? 16 : 1);
+      const matchMedia = (query: string) =>
+        ({ media: query, matches: minWidthPx(query) <= 1280, addEventListener() {}, removeEventListener() {} });
+      Object.assign(window, { matchMedia });
+      Object.assign(globalThis, { window, document: window.document, IS_REACT_ACT_ENVIRONMENT: true });
+      const { createRoot } = await import("react-dom/client");   // it probes the DOM when it loads
+
+      for (const ssr of [true, false]) {
+        const root = createRoot(window.document.querySelector("main")!);
+        const page = <ChakraProvider value={defaultSystem}><OrdersPage ssr={ssr} /></ChakraProvider>;
+        await act(async () => root.render(page));
+        await act(async () => root.unmount());
+      }
+    expected: |-
+      ssr: true -> render with pageSize 10
+      ssr: true -> render with pageSize 25
+      ssr: false -> render with pageSize 25
+    sources:
+      - title: Responsive design — Chakra UI
+        url: https://chakra-ui.com/docs/styling/responsive-design
+    applies:
+      platforms: [browser, node]
+      runtime: a client-rendered React app with Chakra UI 3; runs in Node.js with jsdom
+      versions: { typescript: ">=5.5", node: ">=22.18", react: ">=18", "@chakra-ui/react": ">=3.0 <4" }
+    validation: *chakra-ran
+  - id: styling-rules
+    kind: rules
+    title: Rules and pitfalls
+    note: What a design-system review checks first.
+    items:
+      - tone: good
+        text: "Components name **roles** (`surface`, `fg.muted`, `--color-accent`), never palette steps or hex values — then dark mode and a rebrand are one-file changes."
+      - tone: good
+        text: "Sizes in `rem`, so a reader who enlarges text gets a larger page, not clipped labels (WCAG 1.4.4)."
+      - tone: good
+        text: "Set the scheme class in an inline `<head>` script (next-themes does this for Chakra): applying it after hydration flashes the wrong theme."
+      - tone: good
+        text: "A custom `colorPalette` defines all eight keys: `solid`, `contrast`, `fg`, `muted`, `subtle`, `emphasized`, `focusRing`, `border` — between them the built-in recipes read each one."
+      - tone: bad
+        text: "`useColorModeValue` for anything CSS can switch: it needs JavaScript and the resolved mode, which the server does not have — use `_dark`, a semantic token or `currentColor`."
+      - tone: bad
+        text: "Custom breakpoints in a unit other than px: Chakra 3.38 sorts by the bare number, so `\"3xl\": \"120rem\"` lands before `sm: \"480px\"` and `smOnly` / `lgDown` compute wrong ranges. Write them in px, like the defaults."
+      - tone: bad
+        text: "A recipe for a one-off, or style props copied across five files: one-offs are style props, repeats are recipes."
+      - tone: neutral
+        text: "Chakra 3's types need `moduleResolution: \"bundler\"`; under `nodenext` every import from `@chakra-ui/react` type-checks as missing."
+      - tone: neutral
+        text: "Your own token, breakpoint and recipe names are typed only after `npx @chakra-ui/cli typegen`; until then a custom breakpoint key in a style prop is a type error."

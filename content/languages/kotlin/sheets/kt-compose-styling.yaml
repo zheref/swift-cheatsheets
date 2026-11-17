@@ -1,0 +1,436 @@
+id: kt-compose-styling
+concept: ui.styling
+scope: platform
+title: "Compose — Material Theme, Tokens & Styling"
+group: Android
+subtitle: MaterialTheme's colour, type and shape tokens, light, dark and dynamic colour, your own tokens through CompositionLocal, reusable styles, component defaults, font scaling and window size classes — with the XML-theme equivalents.
+applies:
+  platforms: [android]
+  runtime: an Android app with Jetpack Compose and Material 3
+  requires: [Jetpack Compose, Material 3]
+  versions: { kotlin: ">=2.0.20", compose-bom: ">=2024.09.00", android: "API 21+ at these minimums (Compose 1.10+ needs 23); dynamic colour on API 31+" }
+sources:
+  - title: Material Design 3 in Compose — Android Developers
+    url: https://developer.android.com/develop/ui/compose/designsystems/material3
+  - title: Custom design systems in Compose — Android Developers
+    url: https://developer.android.com/develop/ui/compose/designsystems/custom
+  - title: Locally scoped data with CompositionLocal — Android Developers
+    url: https://developer.android.com/develop/ui/compose/compositionlocal
+cards:
+  - id: token-map
+    kind: table
+    title: Where each token lives
+    note: Define a token once in the theme, read it by role everywhere; Material 3 components already read the Material ones.
+    headers: [Token, Defined with, Read in a composable]
+    rows:
+      - ["colour roles", "`lightColorScheme(…)` / `darkColorScheme(…)` / `dynamicLightColorScheme(context)`", "`MaterialTheme.colorScheme.primary`, `.onPrimary`, `.surfaceContainer`…"]
+      - ["type scale (15 styles)", "`Typography(titleMedium = TextStyle(…))`", "`MaterialTheme.typography.titleMedium`"]
+      - ["corner radii", "`Shapes(small = RoundedCornerShape(8.dp), …)`", "`MaterialTheme.shapes.medium`"]
+      - ["spacing, extra colours", "your own `@Immutable` class + `staticCompositionLocalOf`", "`ShopTheme.spacing.md`, `ShopTheme.statusColors.success`"]
+      - ["component look", "`ButtonDefaults`, `CardDefaults`, `TopAppBarDefaults`…", "`colors = ButtonDefaults.buttonColors(containerColor = …)`"]
+      - ["content colour", "set by `Surface` and components (`contentColorFor`)", "`LocalContentColor.current`"]
+      - ["inherited text style", "`ProvideTextStyle(…)`", "`LocalTextStyle.current`"]
+      - ["light or dark", "`isSystemInDarkTheme()`, or the user's setting", "pass `darkTheme` into the theme; read roles, never the flag, in screens"]
+  - id: app-theme
+    kind: code
+    title: An app theme — light, dark and dynamic colour
+    note: "One `ShopTheme` composable picks the scheme: dynamic (wallpaper) colours on Android 12+, your palette elsewhere."
+    prerequisites: &app
+      - "An Android Studio project with the Compose template (Kotlin 2.x with the `org.jetbrains.kotlin.plugin.compose` Gradle plugin, the Compose BOM and `androidx.compose.material3:material3`)"
+      - "Wrap your content: `setContent { ShopTheme { ShopNavHost() } }`"
+    code: |-
+      private val LightColors = lightColorScheme(
+          primary = Color(0xFF00658E), onPrimary = Color(0xFFFFFFFF),
+          primaryContainer = Color(0xFFC7E7FF), onPrimaryContainer = Color(0xFF001E2E),
+          surface = Color(0xFFF8F9FC), onSurface = Color(0xFF191C1E),
+      )   // roles you leave out keep Material's baseline values
+
+      private val DarkColors = darkColorScheme(
+          primary = Color(0xFF84CFFF), onPrimary = Color(0xFF00344C),
+          primaryContainer = Color(0xFF004C6C), onPrimaryContainer = Color(0xFFC7E7FF),
+          surface = Color(0xFF111416), onSurface = Color(0xFFE1E2E5),
+      )
+
+      @Composable
+      fun ShopTheme(
+          darkTheme: Boolean = isSystemInDarkTheme(),      // or the user's choice from settings
+          dynamicColor: Boolean = true,                    // Material You: colours from the wallpaper
+          content: @Composable () -> Unit,
+      ) {
+          val colorScheme = when {
+              dynamicColor && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S -> {
+                  val context = LocalContext.current
+                  if (darkTheme) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
+              }
+              darkTheme -> DarkColors
+              else -> LightColors
+          }
+          MaterialTheme(
+              colorScheme = colorScheme,
+              typography = ShopTypography,                 // next card
+              shapes = ShopShapes,
+              content = content,
+          )
+      }
+    expected: "Every Material component inside `ShopTheme` takes these colours; switching the system to dark mode swaps the scheme, and on Android 12+ the palette follows the wallpaper."
+    validation: &excerpt
+      status: excerpt
+      host: an Android app with Jetpack Compose (needs the Android SDK and the Compose compiler plugin)
+  - id: type-shapes-and-reading
+    kind: code
+    title: Typography, shapes, and reading tokens in a composable
+    note: Override only the styles you use; read `MaterialTheme.colorScheme`, `.typography` and `.shapes` instead of literals.
+    prerequisites:
+      - "The theme above, plus `res/font/inter_regular.ttf` and `res/font/inter_semibold.ttf` (any font family works)"
+      - "Call `OrderTotalCard` inside `ShopTheme`"
+    code: |-
+      val Inter = FontFamily(
+          Font(R.font.inter_regular),
+          Font(R.font.inter_semibold, FontWeight.SemiBold),
+      )
+
+      private val Base = TextStyle(fontFamily = Inter)
+
+      val ShopTypography = Typography(                        // unspecified styles keep Material's defaults
+          headlineSmall = Base.copy(fontWeight = FontWeight.SemiBold, fontSize = 24.sp, lineHeight = 32.sp),
+          titleMedium = Base.copy(fontWeight = FontWeight.SemiBold, fontSize = 16.sp, lineHeight = 24.sp),
+          bodyMedium = Base.copy(fontSize = 14.sp, lineHeight = 20.sp),
+          labelLarge = Base.copy(fontWeight = FontWeight.SemiBold, fontSize = 14.sp, lineHeight = 20.sp),
+      )
+
+      val ShopShapes = Shapes(
+          small = RoundedCornerShape(8.dp),
+          medium = RoundedCornerShape(12.dp),
+          large = RoundedCornerShape(20.dp),
+      )
+
+      @Composable
+      fun OrderTotalCard(total: String, itemCount: Int, modifier: Modifier = Modifier) {
+          Surface(
+              modifier = modifier,
+              shape = MaterialTheme.shapes.medium,
+              color = MaterialTheme.colorScheme.primaryContainer,   // content colour becomes onPrimaryContainer
+          ) {
+              Column(Modifier.padding(16.dp)) {
+                  Text("Total", style = MaterialTheme.typography.labelLarge)
+                  Text(total, style = MaterialTheme.typography.headlineSmall)
+                  Text("$itemCount items", style = MaterialTheme.typography.bodyMedium)
+              }
+          }
+      }
+    expected: A rounded card in the primary-container colour whose three lines use the theme's label, headline and body styles, all in the matching on-colour, in light and dark.
+    validation: *excerpt
+  - id: custom-tokens
+    kind: code
+    title: Your own tokens through CompositionLocal
+    note: "Spacing and brand colours that Material has no role for: an `@Immutable` class, a `staticCompositionLocalOf`, a provider in the theme and an accessor object."
+    prerequisites:
+      - "The theme from the app-theme card: wrap its `MaterialTheme(…)` call in the `CompositionLocalProvider` below"
+    code: |-
+      @Immutable
+      data class Spacing(val xs: Dp = 4.dp, val sm: Dp = 8.dp, val md: Dp = 16.dp, val lg: Dp = 24.dp)
+
+      @Immutable
+      data class StatusColors(val success: Color, val onSuccess: Color, val warning: Color, val onWarning: Color)
+
+      private val LightStatus = StatusColors(
+          success = Color(0xFF1B6D2F), onSuccess = Color(0xFFFFFFFF),
+          warning = Color(0xFF7A5900), onWarning = Color(0xFFFFFFFF),
+      )
+
+      private val DarkStatus = StatusColors(
+          success = Color(0xFF8BD89A), onSuccess = Color(0xFF00391A),
+          warning = Color(0xFFF4C04A), onWarning = Color(0xFF402D00),
+      )
+
+      val LocalSpacing = staticCompositionLocalOf { Spacing() }
+
+      val LocalStatusColors = staticCompositionLocalOf<StatusColors> {
+          error("No StatusColors provided: wrap the content in ShopTheme")    // fail loudly outside the theme
+      }
+
+      // Inside ShopTheme, around MaterialTheme:
+      CompositionLocalProvider(
+          LocalSpacing provides Spacing(),
+          LocalStatusColors provides if (darkTheme) DarkStatus else LightStatus,
+      ) {
+          MaterialTheme(colorScheme, typography = ShopTypography, shapes = ShopShapes, content = content)
+      }
+
+      // Read them like MaterialTheme's: ShopTheme.spacing.md, ShopTheme.statusColors.success
+      object ShopTheme {
+          val spacing: Spacing
+              @Composable @ReadOnlyComposable get() = LocalSpacing.current
+          val statusColors: StatusColors
+              @Composable @ReadOnlyComposable get() = LocalStatusColors.current
+      }
+    expected: "`ShopTheme.spacing` and `ShopTheme.statusColors` resolve anywhere under the theme and switch with dark mode; reading them outside the theme throws with a clear message."
+    sources:
+      - title: Custom design systems in Compose — Android Developers
+        url: https://developer.android.com/develop/ui/compose/designsystems/custom
+    validation: *excerpt
+  - id: contrast-check
+    kind: code
+    title: Prove the palette meets contrast — runs on the JVM
+    note: "Each on-colour against its container must reach 4.5:1 for body text (WCAG AA); check the tokens in a unit test, not by eye."
+    applies:
+      platforms: [jvm, android]
+      runtime: Kotlin/JVM
+      versions: { kotlin: ">=2.0", jvm: ">=17" }
+    prerequisites:
+      - A Kotlin 2.x compiler (`kotlinc`) and JDK 17 or later
+      - "Save as `main.kt`; run `kotlinc main.kt -include-runtime -d main.jar && java -jar main.jar`"
+    code: |-
+      import java.util.Locale
+      import kotlin.math.pow
+
+      fun luminance(argb: Long): Double {                  // WCAG 2.x relative luminance of an sRGB colour
+          fun linear(shift: Int): Double {
+              val c = ((argb shr shift) and 0xFF) / 255.0
+              return if (c <= 0.03928) c / 12.92 else ((c + 0.055) / 1.055).pow(2.4)
+          }
+          return 0.2126 * linear(16) + 0.7152 * linear(8) + 0.0722 * linear(0)
+      }
+
+      fun contrast(a: Long, b: Long): Double {
+          val (lighter, darker) = listOf(luminance(a), luminance(b)).sortedDescending()
+          return (lighter + 0.05) / (darker + 0.05)
+      }
+
+      // The same values as LightColors / DarkColors and the status tokens in ShopTheme
+      val light = mapOf(
+          "primary" to 0xFF00658E, "onPrimary" to 0xFFFFFFFF,
+          "primaryContainer" to 0xFFC7E7FF, "onPrimaryContainer" to 0xFF001E2E,
+          "surface" to 0xFFF8F9FC, "onSurface" to 0xFF191C1E,
+          "success" to 0xFF1B6D2F, "onSuccess" to 0xFFFFFFFF,
+          "warning" to 0xFF7A5900, "onWarning" to 0xFFFFFFFF,
+      )
+
+      val dark = mapOf(
+          "primary" to 0xFF84CFFF, "onPrimary" to 0xFF00344C,
+          "primaryContainer" to 0xFF004C6C, "onPrimaryContainer" to 0xFFC7E7FF,
+          "surface" to 0xFF111416, "onSurface" to 0xFFE1E2E5,
+          "success" to 0xFF8BD89A, "onSuccess" to 0xFF00391A,
+          "warning" to 0xFFF4C04A, "onWarning" to 0xFF402D00,
+      )
+
+      val pairs = listOf("onPrimary" to "primary", "onPrimaryContainer" to "primaryContainer",
+          "onSurface" to "surface", "onSuccess" to "success", "onWarning" to "warning")
+
+      fun report(label: String, foreground: Long, background: Long) {
+          val ratio = contrast(foreground, background)                      // AA body text needs 4.5:1
+          println("%-42s %5.2f:1 %s".format(Locale.ROOT, label, ratio, if (ratio >= 4.5) "AA" else "FAIL"))
+      }
+
+      fun main() {
+          for ((scheme, colors) in listOf("light" to light, "dark" to dark)) {
+              for ((fg, bg) in pairs) report("$scheme $fg on $bg", colors.getValue(fg), colors.getValue(bg))
+          }
+          report("proposed white on #FF8A00", 0xFFFFFFFF, 0xFFFF8A00)       // a designer's "brand orange" button
+      }
+    expected: |-
+      light onPrimary on primary                  6.46:1 AA
+      light onPrimaryContainer on primaryContainer 13.31:1 AA
+      light onSurface on surface                 16.27:1 AA
+      light onSuccess on success                  6.41:1 AA
+      light onWarning on warning                  6.45:1 AA
+      dark onPrimary on primary                   7.74:1 AA
+      dark onPrimaryContainer on primaryContainer  7.24:1 AA
+      dark onSurface on surface                  14.28:1 AA
+      dark onSuccess on success                   7.74:1 AA
+      dark onWarning on warning                   7.84:1 AA
+      proposed white on #FF8A00                   2.36:1 FAIL
+    sources:
+      - title: Understanding success criterion 1.4.3 Contrast (Minimum) — W3C
+        url: https://www.w3.org/WAI/WCAG21/Understanding/contrast-minimum.html
+    validation:
+      status: ran
+      toolchain: kotlinc 2.4.21, JVM 21.0.12.1
+      date: "2026-11-16"
+  - id: reusable-styles
+    kind: code
+    title: Reusable styles — a composable per variant, a Modifier extension per chain
+    note: "Callers pick an intent (`StatusChip(status)`), not colours; a repeated modifier chain becomes a plain extension that takes its values as parameters."
+    prerequisites:
+      - "The theme and `ShopTheme` accessor from the cards above; `enum class OrderStatus { Pending, Shipped, Delivered }`"
+    code: |-
+      @Composable
+      fun StatusChip(status: OrderStatus, modifier: Modifier = Modifier) {
+          val colors = MaterialTheme.colorScheme
+          val statusColors = ShopTheme.statusColors
+          val (container, content) = when (status) {
+              OrderStatus.Pending -> statusColors.warning to statusColors.onWarning
+              OrderStatus.Shipped -> colors.secondaryContainer to colors.onSecondaryContainer
+              OrderStatus.Delivered -> statusColors.success to statusColors.onSuccess
+          }
+          Text(
+              text = status.name,
+              color = content,
+              style = MaterialTheme.typography.labelMedium,
+              modifier = modifier
+                  .background(container, CircleShape)
+                  .padding(horizontal = ShopTheme.spacing.sm, vertical = ShopTheme.spacing.xs),
+          )
+      }
+
+      // Not @Composable: the theme values come in as arguments, so the chain is cheap and testable
+      fun Modifier.cardSurface(shape: Shape, color: Color, elevation: Dp = 1.dp): Modifier =
+          this
+              .shadow(elevation, shape)          // also clips to the shape when elevation > 0
+              .background(color, shape)
+
+      @Composable
+      fun OrderSummaryCard(order: Order, modifier: Modifier = Modifier) {
+          Row(
+              modifier = modifier
+                  .cardSurface(MaterialTheme.shapes.medium, MaterialTheme.colorScheme.surfaceContainer)
+                  .padding(ShopTheme.spacing.md),
+              horizontalArrangement = Arrangement.spacedBy(ShopTheme.spacing.sm),
+              verticalAlignment = Alignment.CenterVertically,
+          ) {
+              Text(order.customer, Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
+              StatusChip(order.status)
+          }
+      }
+    expected: A raised rounded card with the customer name and a pill-shaped status chip coloured by meaning (warning, neutral, success), correct in light and dark.
+    validation: *excerpt
+  - id: component-defaults
+    kind: code
+    title: Component defaults objects — override a role, keep the rest
+    note: "`ButtonDefaults`, `CardDefaults` and friends build a component's colours, elevation and padding; pass only what differs and the disabled and pressed states stay correct."
+    prerequisites:
+      - "The theme above, `StatusChip` from the reusable-styles card, and the Material Symbols drawable `res/drawable/shopping_cart_24.xml` downloaded from Google Fonts Icons (the docs no longer recommend `material-icons-core`)"
+    code: |-
+      @Composable
+      fun PlaceOrderButton(onClick: () -> Unit, placing: Boolean, modifier: Modifier = Modifier) {
+          Button(
+              onClick = onClick,
+              enabled = !placing,
+              modifier = modifier.fillMaxWidth().heightIn(min = 56.dp),   // a minimum, so large fonts still fit
+              shape = MaterialTheme.shapes.large,
+              colors = ButtonDefaults.buttonColors(
+                  containerColor = ShopTheme.statusColors.success,          // two roles overridden…
+                  contentColor = ShopTheme.statusColors.onSuccess,          // …the disabled colours stay Material's
+              ),
+              contentPadding = ButtonDefaults.ButtonWithIconContentPadding,
+          ) {
+              val iconModifier = Modifier.size(ButtonDefaults.IconSize)
+              if (placing) {
+                  CircularProgressIndicator(iconModifier, color = LocalContentColor.current, strokeWidth = 2.dp)
+              } else {
+                  val cart = painterResource(R.drawable.shopping_cart_24)
+                  Icon(cart, contentDescription = null, modifier = iconModifier)
+              }
+              Spacer(Modifier.size(ButtonDefaults.IconSpacing))
+              Text("Place order")
+          }
+      }
+
+      @Composable
+      fun OrderCard(order: Order, onClick: () -> Unit, modifier: Modifier = Modifier) {
+          Card(
+              onClick = onClick,
+              modifier = modifier,
+              colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh),
+              elevation = CardDefaults.cardElevation(defaultElevation = 0.dp, pressedElevation = 2.dp),
+          ) {
+              Row(Modifier.padding(ShopTheme.spacing.md), verticalAlignment = Alignment.CenterVertically) {
+                  Text(order.customer, Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
+                  StatusChip(order.status)                     // plain content: the Card is the surface
+              }
+          }
+      }
+    expected: A full-width green Place order button with a cart icon that turns into a spinner and the disabled colours while placing; a flat card holding the name and status chip that lifts slightly when pressed.
+    validation: *excerpt
+  - id: adaptive-and-font-scale
+    kind: code
+    title: Window size classes and font scaling
+    note: "Branch on the window's width class, not the device; size text in `sp` and give text containers minimum, not fixed, heights."
+    applies:
+      platforms: [android]
+      runtime: an Android app with Jetpack Compose and Material 3
+      requires: [Jetpack Compose, Material 3 adaptive]
+      versions: { kotlin: ">=2.0.20", compose-bom: ">=2024.09.00", material3-adaptive: ">=1.2.0", window: ">=1.4.0", android: "API 21+ at these minimums (Compose 1.10+ needs 23)" }
+    prerequisites:
+      - "The Compose template project, plus `androidx.compose.material3.adaptive:adaptive` 1.2 or later (it brings `androidx.window` 1.4, where `isWidthAtLeastBreakpoint` and the breakpoint constants are new); adaptive 1.3 deprecates `currentWindowAdaptiveInfo()` in favour of `currentWindowAdaptiveInfoV2()`, which also reports the large and extra-large width classes"
+      - "`OrderList`, `OrderGrid` and `OrderDetailPane` composables and an `OrdersUiState` with `items` and `selected`; call `OrdersAdaptive` from your screen"
+    code: |-
+      @Composable
+      fun OrdersAdaptive(state: OrdersUiState, onOpen: (String) -> Unit) {
+          val sizeClass = currentWindowAdaptiveInfo().windowSizeClass          // recomputed on resize, fold, rotate
+          when {
+              sizeClass.isWidthAtLeastBreakpoint(WindowSizeClass.WIDTH_DP_EXPANDED_LOWER_BOUND) ->   // ≥ 840 dp
+                  Row {
+                      OrderList(state.items, onOpen, Modifier.weight(0.4f))
+                      OrderDetailPane(state.selected, Modifier.weight(0.6f))
+                  }
+              sizeClass.isWidthAtLeastBreakpoint(WindowSizeClass.WIDTH_DP_MEDIUM_LOWER_BOUND) ->     // 600–839 dp
+                  OrderGrid(state.items, onOpen, columns = 2)
+              else -> OrderList(state.items, onOpen)                                                 // compact
+          }
+      }
+
+      @Composable
+      fun TotalLine(label: String, value: String) {
+          val largeText = LocalDensity.current.fontScale >= 1.5f                // the user chose big text
+          val textStyle = MaterialTheme.typography.bodyLarge                      // sp: scales with the setting
+          if (largeText) {
+              Column(Modifier.heightIn(min = 48.dp)) {                            // stack instead of squeezing
+                  Text(label, style = textStyle)
+                  Text(value, style = textStyle, fontWeight = FontWeight.SemiBold)
+              }
+          } else {
+              Row(Modifier.fillMaxWidth().heightIn(min = 48.dp), verticalAlignment = Alignment.CenterVertically) {
+                  Text(
+                      label, Modifier.weight(1f), style = textStyle,
+                      maxLines = 2, overflow = TextOverflow.Ellipsis,
+                  )
+                  Text(value, style = textStyle, fontWeight = FontWeight.SemiBold)
+              }
+          }
+      }
+    expected: "A phone shows the list; a 600 dp window a two-column grid; 840 dp and wider list and detail side by side. At 150% font size and above, each total line stacks its label over its value."
+    sources:
+      - title: Use window size classes — Android Developers
+        url: https://developer.android.com/develop/ui/compose/layouts/adaptive/use-window-size-classes
+    validation: *excerpt
+  - id: views-equivalents
+    kind: table
+    title: The View-system equivalents
+    note: What each XML theming tool becomes in Compose.
+    headers: [Views (XML), Compose]
+    rows:
+      - ["`res/values/themes.xml`: `<style name=\"Theme.Shop\" parent=\"Theme.Material3.DayNight\">` with `colorPrimary` items", "`MaterialTheme(colorScheme = …, typography = …, shapes = …)` in `ShopTheme`"]
+      - ["`res/values-night/` resources", "`isSystemInDarkTheme()` choosing `DarkColors`; `colorResource` still resolves night qualifiers"]
+      - ["`?attr/colorPrimary` in XML, `MaterialColors.getColor(view, androidx.appcompat.R.attr.colorPrimary)` in code", "`MaterialTheme.colorScheme.primary`"]
+      - ["`android:textAppearance=\"?attr/textAppearanceTitleMedium\"`", "`style = MaterialTheme.typography.titleMedium`"]
+      - ["`shapeAppearance` styles (`ShapeAppearance.*`)", "`Shapes(small = …, medium = …)` and `MaterialTheme.shapes`"]
+      - ["`styles.xml`: `Widget.Shop.Button.Destructive` with `parent=\"Widget.Material3.Button\"`, applied with `style=\"@style/…\"`", "a wrapper composable (`ShopButton(kind = Destructive)`) using `ButtonDefaults.buttonColors(…)`"]
+      - ["theme overlay: `android:theme=\"@style/ThemeOverlay…\"` on a view, `ContextThemeWrapper`", "a nested `MaterialTheme(colorScheme = …)` around that subtree"]
+      - ["`attrs.xml`: `<attr name=\"colorSuccess\" format=\"color\"/>` set in the theme", "a `CompositionLocal` (`LocalStatusColors`) provided by the theme"]
+      - ["`<declare-styleable>` + `obtainStyledAttributes` in a custom view", "composable parameters with defaults (a `…Defaults` object for shared ones)"]
+      - ["`dimens.xml` + `values-sw600dp/`", "spacing tokens + `WindowSizeClass` breakpoints"]
+      - ["`DynamicColors.applyToActivitiesIfAvailable(application)`", "`dynamicLightColorScheme(context)` / `dynamicDarkColorScheme(context)` on API 31+"]
+      - ["`AppCompatDelegate.setDefaultNightMode(…)`", "pass `darkTheme` from settings into `ShopTheme`"]
+      - ["`android:textSize=\"16sp\"`", "`fontSize = 16.sp` inside a `TextStyle`"]
+  - id: styling-rules
+    kind: rules
+    title: Styling pitfalls
+    note: What breaks dark mode, dynamic colour and large text.
+    items:
+      - tone: bad
+        text: "`Color(0xFF…)` literals in screens: dark theme and dynamic colour cannot reach them. Read a role from `MaterialTheme.colorScheme` or your own tokens."
+      - tone: bad
+        text: "Mismatched roles — `onPrimary` text on `primaryContainer` — fail contrast. Pair `onX` with `X`, or let `Surface(color = …)` pick the content colour."
+      - tone: good
+        text: "Dynamic colour replaces your palette on Android 12+; keep colours that carry meaning (success, warning, brand marks) in your own tokens and decide `dynamicColor` deliberately."
+      - tone: good
+        text: "`staticCompositionLocalOf` for theme tokens that rarely change (cheap reads, the subtree recomposes on change); `compositionLocalOf` for values that change often and are read in few places."
+      - tone: bad
+        text: "Text sized in `dp`, or containers with fixed heights: Android 14 scales fonts non-linearly up to 200%. Use `sp`, `heightIn(min = …)` and allow wrapping."
+      - tone: bad
+        text: "`isTablet`-style checks: the window size class changes with split screen, folding and resizing; read `currentWindowAdaptiveInfo()`."
+      - tone: good
+        text: "Preview every variant: `@PreviewLightDark`, `@PreviewFontScale` and `@PreviewScreenSizes` (or `@Preview(uiMode = …, fontScale = 2f)`)."
+      - tone: neutral
+        text: "Material 3 Expressive and the experimental Compose Styles API are newer than this sheet's baseline; check the BOM before adopting them."

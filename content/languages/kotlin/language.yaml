@@ -3,7 +3,7 @@ name: Kotlin
 title: Kotlin Cheat Sheets
 route: /kotlin/
 status: published
-description: Dense Kotlin reference — collections, coroutines and cancellation, Flow, shared state, the language essentials, testing, algorithm costs, JVM files and Jetpack Compose state — with every example's setup, versions and validation stated.
+description: Dense Kotlin reference — the language, coroutines and Flow, Jetpack Compose and Android Views, styling, MVVM and MVI, networking, Media3 video, security, accessibility, localization, serialization, collections and strings, testing, architecture, clean code, SOLID, functional Kotlin and Gradle modules — with every example's setup, versions and validation stated.
 locale: en
 codeLanguage: kotlin
 requireExampleMetadata: true
@@ -19,12 +19,36 @@ applies:
 sheets:
   - kt-collections
   - kt-collection-ops
+  - kt-strings
+  - kt-serialization
   - kt-coroutines
   - kt-algorithms
+  - kt-streams
   - kt-testing
+  - kt-clean-code
+  - kt-solid
+  - kt-fp
+  - kt-architecture
+  - kt-best-practices
   - kt-essentials
   - kt-flow
+  - kt-flow-operators
+  - kt-timers
   - kt-shared-state
   - kt-jvm-files
   - kt-compose-state
+  - kt-compose-ui
+  - kt-android-views
+  - kt-compose-vs-views
+  - kt-compose-styling
+  - kt-mvvm
+  - kt-mvi
+  - kt-networking-rest
+  - kt-networking-protocols
+  - kt-media3
+  - kt-security
+  - kt-accessibility
+  - kt-localization
+  - kt-ui-testing
+  - kt-modularization
   - kt-coverage

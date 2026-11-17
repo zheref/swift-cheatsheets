@@ -1,0 +1,435 @@
+id: ts-fp
+concept: principles.functional
+scope: shared
+title: "Functional Programming in TypeScript"
+group: "Design & practice"
+subtitle: "Pure functions over immutable data, typed pipe and curry, Option and Result as discriminated unions, lazy iterators and memoization — with the trade-offs."
+applies:
+  platforms: [node, browser]
+  runtime: any ES2025 engine (iterator helpers); the examples run on Node.js
+  versions: { typescript: ">=5.6", node: ">=22.18" }
+sources:
+  - title: More on Functions — TypeScript Handbook
+    url: https://www.typescriptlang.org/docs/handbook/2/functions.html
+  - title: Narrowing — TypeScript Handbook
+    url: https://www.typescriptlang.org/docs/handbook/2/narrowing.html
+  - title: Array — MDN
+    url: https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Array
+cards:
+  - id: core-ideas
+    kind: rules
+    title: Core ideas
+    note: TypeScript is multi-paradigm; use these where they make code easier to test and reason about.
+    items:
+      - tone: modern
+        text: "**Pure function** — same input, same output, no observable side effects. Trivially testable, safe to cache, safe to run twice."
+      - tone: modern
+        text: "**Immutability** — `const` bindings, `readonly` types, and new values via spread instead of mutation. JavaScript objects are references, so this is a discipline the types enforce, not a language default."
+      - tone: modern
+        text: "**Functions are values** — pass them, return them, store them in a `Record`; a callback type is the lightest interface there is."
+      - tone: modern
+        text: "**Declarative** — say what you want (`filter`, `map`, `groupBy`), not the loop mechanics."
+      - tone: modern
+        text: "**Algebraic data types** — an object type is AND, a union is OR. A discriminated union with an exhaustive `switch` makes illegal states unrepresentable."
+      - tone: modern
+        text: "**Push effects to the edges** — a pure core decides, a thin shell does the I/O (fetch, DOM, `Date.now()`)."
+      - tone: neutral
+        text: "Libraries such as fp-ts and Effect go much further; the patterns below need none of them."
+  - id: imperative-to-declarative
+    kind: compare
+    title: Imperative → declarative
+    note: The declarative version names each step, has no mutable accumulator to get wrong, and leaves `orders` untouched.
+    prerequisites: &run
+      - Node.js 22.18 or later (it runs `.mts` files directly by stripping the types)
+      - "Save as `main.mts` and run `node main.mts`"
+      - "Optional type-check: `npm i -D typescript @types/node`, then `npx tsc --noEmit --strict --target esnext --module nodenext main.mts`"
+    columns:
+      - label: Imperative
+        tone: legacy
+        code: |-
+          type Order = { customer: string; status: "placed" | "delivered" | "cancelled"; totalCents: number };
+          const orders: Order[] = [
+            { customer: "ada", status: "delivered", totalCents: 4250 },
+            { customer: "grace", status: "cancelled", totalCents: 9900 },
+            { customer: "linus", status: "placed", totalCents: 1500 },
+            { customer: "ada", status: "placed", totalCents: 1500 },
+            { customer: "grace", status: "delivered", totalCents: 3000 },
+          ];
+
+          const totals: Record<string, number> = {};
+          for (const order of orders) {
+            if (order.status !== "cancelled") {
+              totals[order.customer] = (totals[order.customer] ?? 0) + order.totalCents;
+            }
+          }
+
+          const entries: [string, number][] = [];
+          for (const customer in totals) entries.push([customer, totals[customer]!]);
+          entries.sort((a, b) => b[1] - a[1]);
+          const topCustomers: string[] = [];
+          for (let i = 0; i < entries.length && i < 2; i++) {
+            topCustomers.push(`${entries[i]![0]}: ${entries[i]![1]}`);
+          }
+
+          console.log(topCustomers);
+      - label: Declarative
+        tone: modern
+        code: |-
+          type Order = { customer: string; status: "placed" | "delivered" | "cancelled"; totalCents: number };
+          const orders: readonly Order[] = [
+            { customer: "ada", status: "delivered", totalCents: 4250 },
+            { customer: "grace", status: "cancelled", totalCents: 9900 },
+            { customer: "linus", status: "placed", totalCents: 1500 },
+            { customer: "ada", status: "placed", totalCents: 1500 },
+            { customer: "grace", status: "delivered", totalCents: 3000 },
+          ];
+
+          const sum = (values: readonly number[]) => values.reduce((total, n) => total + n, 0);
+          const isActive = (order: Order) => order.status !== "cancelled";
+
+          const byCustomer = Map.groupBy(orders.filter(isActive), (order) => order.customer);
+          const topCustomers = [...byCustomer]
+            .map(([customer, list]) => ({ customer, totalCents: sum(list.map((o) => o.totalCents)) }))
+            .toSorted((a, b) => b.totalCents - a.totalCents)
+            .slice(0, 2)
+            .map(({ customer, totalCents }) => `${customer}: ${totalCents}`);
+
+          console.log(topCustomers);
+    expected: |-
+      [ 'ada: 5750', 'grace: 3000' ]
+    validation: &ran
+      status: ran
+      toolchain: Node 24.16.0, TypeScript 5.9.3
+      date: "2026-11-16"
+  - id: higher-order-functions
+    kind: table
+    title: Higher-order functions to know cold
+    note: "Prefer the copying methods (`toSorted`, `toReversed`, `with`) — `sort` and `reverse` mutate in place."
+    headers: [Function, What it does, Example]
+    rows:
+      - ["`map`", "transform each element", "`orders.map((o) => o.totalCents)`"]
+      - ["`filter`", "keep matches; since TS 5.5 an inferred type predicate narrows the result", "`ids.filter((id) => id !== undefined)` is `string[]`"]
+      - ["`flatMap`", "map, then flatten one level; return `[]` to drop an element", "`orders.flatMap((o) => o.items)`"]
+      - ["`reduce`", "fold to one value; always pass the initial value", "`items.reduce((sum, i) => sum + i.cents, 0)`"]
+      - ["`Object.groupBy` / `Map.groupBy`", "bucket by a key (ES2024)", "`Object.groupBy(orders, (o) => o.status)`"]
+      - ["`toSorted` / `toReversed` / `with`", "copying `sort`, `reverse` and index assignment (ES2023)", "`orders.toSorted((a, b) => a.totalCents - b.totalCents)`"]
+      - ["`find` / `findLast`", "first or last match, else `undefined`", "`orders.findLast((o) => o.status === \"placed\")`"]
+      - ["`some` / `every`", "short-circuiting predicates", "`items.every((i) => i.inStock)`"]
+      - ["`Object.entries` / `fromEntries`", "map over an object's keys and values", "`Object.fromEntries(Object.entries(prices).map(([k, v]) => [k, v * 2]))`"]
+      - ["`Array.from`", "build an array from a length and a function", "`Array.from({ length: 3 }, (_, i) => i + 1)`"]
+      - ["iterator helpers", "lazy `map`, `filter`, `take`, `drop`, `toArray` on any iterator (ES2025)", "`ids.values().filter(isActive).take(10).toArray()`"]
+  - id: compose-and-curry
+    kind: code
+    title: pipe, compose and currying — with types that flow
+    note: "Overloads give `pipe` a checked type at every step — add one overload per extra step (libraries go to about 20), and expect a wrong step's error to point at its neighbour; currying fixes the first argument now and takes the rest later."
+    prerequisites: *run
+    code: |-
+      // Left to right: each step's input is the previous step's output, checked by the compiler.
+      function pipe<A, B>(ab: (a: A) => B): (a: A) => B;
+      function pipe<A, B, C>(ab: (a: A) => B, bc: (b: B) => C): (a: A) => C;
+      function pipe<A, B, C, D>(ab: (a: A) => B, bc: (b: B) => C, cd: (c: C) => D): (a: A) => D;
+      function pipe(...steps: Array<(value: unknown) => unknown>) {
+        return (input: unknown) => steps.reduce((value, step) => step(value), input);
+      }
+
+      // Right to left, as in mathematics: compose(f, g)(x) === f(g(x)).
+      const compose = <A, B, C>(f: (b: B) => C, g: (a: A) => B) => (a: A): C => f(g(a));
+
+      const normalize = (query: string) => query.trim().toLowerCase().replace(/\s+/g, " ");
+      const tokenize = (query: string) => query.split(" ");
+      const dropStopWords = (tokens: string[]) => tokens.filter((t) => !["the", "a", "of"].includes(t));
+
+      const searchTerms = pipe(normalize, tokenize, dropStopWords);    // (query: string) => string[]
+      console.log(searchTerms("  The   History of  TypeScript "));
+
+      const countTerms = compose((terms: string[]) => terms.length, searchTerms);
+      console.log(countTerms("a cup of coffee"));
+
+      // Currying: a two-argument function becomes a chain of one-argument functions.
+      const curry = <A, B, R>(fn: (a: A, b: B) => R) => (a: A) => (b: B): R => fn(a, b);
+      const addTax = (rate: number, cents: number) => Math.round(cents * (1 + rate));
+
+      const withSpanishVat = curry(addTax)(0.21);                     // (b: number) => number
+      const withGermanVat = addTax.bind(null, 0.19);                  // partial application, also typed
+      console.log([1000, 2500].map(withSpanishVat), withGermanVat(1000));
+    expected: |-
+      [ 'history', 'typescript' ]
+      2
+      [ 1210, 3025 ] 1190
+    validation: *ran
+  - id: option-and-result
+    kind: code
+    title: Option and Result as discriminated unions
+    note: "`map` and `flatMap` chain the happy path and carry the first failure through untouched — no `try`, no `null` checks in between."
+    prerequisites: *run
+    code: |-
+      type Option<T> = { kind: "some"; value: T } | { kind: "none" };
+      type Result<T, E> = { ok: true; value: T } | { ok: false; error: E };
+
+      const none: Option<never> = { kind: "none" };
+
+      function some<T>(value: T): Option<T> { return { kind: "some", value }; }
+      function ok<T>(value: T): Result<T, never> { return { ok: true, value }; }
+      function err<E>(error: E): Result<never, E> { return { ok: false, error }; }
+
+      const map = <T, U, E>(r: Result<T, E>, f: (value: T) => U): Result<U, E> => (r.ok ? ok(f(r.value)) : r);
+      const flatMap = <T, U, E, F>(r: Result<T, E>, f: (value: T) => Result<U, F>): Result<U, E | F> =>
+        r.ok ? f(r.value) : r;
+      const okOr = <T, E>(o: Option<T>, error: E): Result<T, E> => (o.kind === "some" ? ok(o.value) : err(error));
+
+      type LineError = { kind: "unknown-sku"; sku: string } | { kind: "bad-quantity"; raw: string };
+
+      const catalog = new Map([["mug", 1200], ["lamp", 9900]]);
+      const priceOf = (sku: string): Option<number> => {
+        const price = catalog.get(sku);
+        return price === undefined ? none : some(price);
+      };
+
+      const parseQuantity = (raw: string): Result<number, LineError> =>
+        /^[1-9]\d*$/.test(raw) ? ok(Number(raw)) : err({ kind: "bad-quantity", raw });
+      const unknownSku = (sku: string): LineError => ({ kind: "unknown-sku", sku });
+
+      const lineTotal = (sku: string, rawQuantity: string) =>
+        flatMap(okOr(priceOf(sku), unknownSku(sku)), (price) =>
+          map(parseQuantity(rawQuantity), (quantity) => price * quantity));
+
+      for (const [sku, quantity] of [["mug", "2"], ["vase", "2"], ["mug", "two"]] as const) {
+        const line = lineTotal(sku, quantity);
+        console.log(line.ok ? `ok ${line.value}` : `error ${line.error.kind}`);
+      }
+
+      // Day to day, Option is just `T | undefined`, read with `?.` and `??`:
+      console.log(catalog.get("vase")?.toFixed(2) ?? "not sold");
+    expected: |-
+      ok 2400
+      error unknown-sku
+      error bad-quantity
+      not sold
+    validation: *ran
+  - id: illegal-states
+    kind: compare
+    title: Make illegal states unrepresentable
+    note: "Three independent fields allow eight shapes, most of them nonsense; a union allows exactly the states the screen can be in."
+    prerequisites: *run
+    columns:
+      - label: Flags
+        tone: bad
+        code: |-
+          type Order = { id: string };
+          type OrdersState = { isLoading: boolean; orders: Order[]; error?: string };
+
+          function render(state: OrdersState): string {
+            if (state.isLoading) return "spinner";
+            if (state.error) return `error: ${state.error}`;   // and if orders are set too?
+            if (state.orders.length === 0) return "empty";      // never loaded, or loaded nothing?
+            return `${state.orders.length} orders`;
+          }
+
+          const states: OrdersState[] = [
+            { isLoading: true, orders: [] },
+            { isLoading: false, orders: [], error: "offline" },
+            { isLoading: false, orders: [{ id: "A-1" }, { id: "A-2" }] },
+            { isLoading: false, orders: [] },
+          ];
+
+          for (const state of states) console.log(render(state));
+
+          // Compiles, and means nothing:
+          export const nonsense: OrdersState = { isLoading: true, orders: [{ id: "A-1" }], error: "offline" };
+      - label: Union
+        tone: good
+        code: |-
+          type Order = { id: string };
+          type OrdersState =
+            | { status: "loading" }
+            | { status: "failed"; error: string }
+            | { status: "loaded"; orders: readonly Order[] };
+
+          function assertNever(value: never): never {
+            throw new Error(`unhandled state: ${JSON.stringify(value)}`);
+          }
+
+          function render(state: OrdersState): string {
+            switch (state.status) {
+              case "loading": return "spinner";
+              case "failed": return `error: ${state.error}`;
+              case "loaded": return state.orders.length === 0 ? "empty" : `${state.orders.length} orders`;
+              default: return assertNever(state);   // add a state and this line stops compiling
+            }
+          }
+
+          const states: OrdersState[] = [
+            { status: "loading" },
+            { status: "failed", error: "offline" },
+            { status: "loaded", orders: [{ id: "A-1" }, { id: "A-2" }] },
+            { status: "loaded", orders: [] },
+          ];
+
+          for (const state of states) console.log(render(state));
+
+          // @ts-expect-error — a loading state cannot carry orders or an error
+          export const nonsense: OrdersState = { status: "loading", orders: [{ id: "A-1" }], error: "offline" };
+    expected: |-
+      spinner
+      error: offline
+      2 orders
+      empty
+    validation: *ran
+  - id: immutability
+    kind: code
+    title: readonly, as const and structural sharing
+    note: "`readonly` is checked at compile time and free at run time; an update copies only the path it changes and shares the rest."
+    prerequisites: *run
+    code: |-
+      type Item = { readonly sku: string; readonly quantity: number };
+      type Cart = Readonly<{ id: string; items: readonly Item[] }>;
+
+      const SHIPPING_CENTS = { standard: 499, express: 1299 } as const;   // readonly, literal types
+
+      type ShippingSpeed = keyof typeof SHIPPING_CENTS;                  // "standard" | "express"
+
+      function setQuantity(cart: Cart, sku: string, quantity: number): Cart {
+        return {
+          ...cart,
+          items: cart.items.map((item) => (item.sku === sku ? { ...item, quantity } : item)),
+        };
+      }
+
+      const before: Cart = { id: "c1", items: [{ sku: "mug", quantity: 1 }, { sku: "lamp", quantity: 1 }] };
+      const after = setQuantity(before, "mug", 3);
+
+      console.log(before.items[0]?.quantity, after.items[0]?.quantity);   // the old value is intact
+      console.log(before.items[1] === after.items[1]);                   // unchanged item is shared
+      console.log(before === after, before.items === after.items);        // changed path is new
+      console.log(after.items.toSorted((a, b) => a.sku.localeCompare(b.sku)).map((i) => i.sku));
+
+      const speed: ShippingSpeed = "express";
+      console.log(SHIPPING_CENTS[speed]);
+
+      // `readonly` vanishes at run time; Object.freeze enforces it there too (shallowly).
+      const defaults = Object.freeze({ currency: "EUR", taxRate: 0.21 });
+      try {
+        // @ts-expect-error — taxRate is readonly
+        defaults.taxRate = 0;
+      } catch (error) {
+        console.log((error as Error).name);   // modules run in strict mode, so this throws
+      }
+    expected: |-
+      1 3
+      true
+      false false
+      [ 'lamp', 'mug' ]
+      1299
+      TypeError
+    validation: *ran
+  - id: laziness
+    kind: code
+    title: Laziness with generators and iterator helpers
+    note: "A generator computes on demand, so an infinite source is safe; iterator helpers chain over it without building intermediate arrays."
+    prerequisites: *run
+    code: |-
+      function* orderIds(): Generator<string> {
+        for (let n = 1; ; n++) yield `ord_${n}`;     // infinite: only safe because nothing runs until pulled
+      }
+
+      let loaded = 0;
+
+      function loadOrder(id: string) {
+        loaded++;                                     // stand-in for a lookup
+        return { id, totalCents: Number(id.slice(4)) * 1000 };
+      }
+
+      const firstThreeLarge = orderIds()
+        .map(loadOrder)
+        .filter((order) => order.totalCents >= 3000)
+        .take(3)
+        .toArray();
+
+      console.log(firstThreeLarge.map((order) => order.id), "loaded:", loaded);
+
+      // The eager version must load everything before it can slice.
+      loaded = 0;
+      const ids = Array.from({ length: 100 }, (_, i) => `ord_${i + 1}`);
+      const eager = ids.map(loadOrder).filter((order) => order.totalCents >= 3000).slice(0, 3);
+      console.log(eager.length, "loaded:", loaded);
+
+      // Built-in iterators (Set, Map, arrays' .values()) already have the helpers;
+      // Iterator.from wraps a hand-written one that lacks them, such as a cursor from an older library.
+      let page = 0;
+      const cursor = {
+        next: () => (page < 3 ? { done: false, value: `page ${++page}` } : { done: true, value: undefined }),
+      };
+
+      console.log(Iterator.from(cursor).drop(1).toArray());
+    expected: |-
+      [ 'ord_3', 'ord_4', 'ord_5' ] loaded: 5
+      3 loaded: 100
+      [ 'page 2', 'page 3' ]
+    sources:
+      - title: Iterator — MDN
+        url: https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Iterator
+    validation: *ran
+  - id: memoization
+    kind: code
+    title: Memoization
+    note: "Only a pure function can be cached safely; memoizing an async function caches the promise, which also dedupes concurrent calls."
+    prerequisites: *run
+    code: |-
+      function memoize<Args extends unknown[], R>(
+        fn: (...args: Args) => R,
+        keyOf: (...args: Args) => string = (...args) => JSON.stringify(args),
+      ): (...args: Args) => R {
+        const cache = new Map<string, R>();
+        return (...args) => {
+          const key = keyOf(...args);
+          if (cache.has(key)) return cache.get(key)!;
+          const value = fn(...args);
+          cache.set(key, value);
+          return value;
+        };
+      }
+
+      let computed = 0;
+
+      function shippingQuoteCents(country: string, weightGrams: number): number {
+        computed++;
+        const base = country === "ES" ? 399 : 1299;
+        return base + Math.ceil(weightGrams / 500) * 150;
+      }
+
+      const quote = memoize(shippingQuoteCents);
+      console.log(quote("ES", 1200), quote("ES", 1200), quote("FR", 1200), "computed:", computed);
+
+      let requests = 0;
+      const loadProfile = memoize(async (userId: string) => {
+        requests++;                                   // stand-in for fetch(`/users/${userId}`)
+        return { userId, name: "Ada" };
+      });
+
+      const [first, second] = await Promise.all([loadProfile("u1"), loadProfile("u1")]);
+      console.log(first === second, "requests:", requests);
+
+      // In production: bound the cache (LRU or a TTL), and evict a rejected promise so a retry can succeed.
+    expected: |-
+      849 849 1749 computed: 2
+      true requests: 1
+    validation: *ran
+  - id: trade-offs
+    kind: rules
+    title: Trade-offs to say out loud
+    note: FP in TypeScript is a set of habits, not a framework — know where each one costs.
+    items:
+      - tone: good
+        text: "Pure functions need no mocks: pass inputs, assert on the output. Most of a reducer, a selector or a price calculation should look like this."
+      - tone: good
+        text: "Immutable updates make change detection a reference check (`prev !== next`) — the model React and Redux are built on; a signal compares with `===` on set, so a mutated object does not notify (proxy-based stores such as Solid's, Vue's and MobX track mutation instead)."
+      - tone: bad
+        text: "Copying is not free: spreading a 10 000-item array on every keystroke shows up in a profile. Use a `Map`, batch updates, or mutate a local copy you own."
+      - tone: bad
+        text: "`readonly` is compile-time only, and shallow by default; data from `JSON.parse` or another module can still be mutated."
+      - tone: bad
+        text: "Long point-free chains and deep generic helpers hurt readability, error messages and type-check time — name the intermediate steps."
+      - tone: neutral
+        text: "Local mutation inside a function that returns a new value is still pure from the outside; a `for` loop that pushes into a fresh array is fine."
+      - tone: neutral
+        text: "`throw` remains the right tool for bugs and broken invariants; use `Result` for failures the caller is expected to handle."

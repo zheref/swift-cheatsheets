@@ -1,0 +1,940 @@
+id: kt-streams
+concept: algorithms.streaming
+scope: shared
+title: "Streaming & Time-Series Patterns"
+group: Shared concepts
+subtitle: "Unbounded data, bounded memory: windows, sketches, rate limits and backpressure — in plain Kotlin and over Flow and Channel."
+applies:
+  platforms: [jvm, android]
+  runtime: Kotlin/JVM (the standard library and java.util)
+  versions: { kotlin: ">=2.0", jvm: ">=17" }
+sources:
+  - title: Asynchronous Flow — Kotlin docs
+    url: https://kotlinlang.org/docs/flow.html
+  - title: Channels — Kotlin docs
+    url: https://kotlinlang.org/docs/channels.html
+  - title: kotlinx-coroutines-test — API reference
+    url: https://kotlinlang.org/api/kotlinx.coroutines/kotlinx-coroutines-test/
+  - title: kotlin.time — Kotlin API reference
+    url: https://kotlinlang.org/api/core/kotlin-stdlib/kotlin.time/
+cards:
+  - id: constraints
+    kind: rules
+    title: The constraints that define the field
+    note: Every card below is an answer to one of these.
+    items:
+      - tone: modern
+        text: "You see each item **once**, in order, and cannot keep them all — so answers are incremental, approximate, or windowed."
+      - tone: modern
+        text: "**Bounded memory** is the whole game: O(1) or O(window), never O(stream)."
+      - tone: modern
+        text: "**Time is two things**: event time (when it happened) and processing time (when you saw it). They diverge, and a watermark is how you decide a window is complete."
+      - tone: neutral
+        text: "**Exact vs approximate** — a sketch trades a few percent of accuracy for orders of magnitude of memory. Say the error bound out loud."
+      - tone: neutral
+        text: "In Kotlin a stream is a `Flow` (cold, suspending — the collector's pace *is* the backpressure), a `Channel` (a hot, bounded queue between coroutines) or a `Sequence` (synchronous pull, for files and replays)."
+      - tone: good
+        text: "**Inject the clock.** `TimeSource` with `TestTimeSource` for plain code, `runTest` virtual time for flows — every example here is deterministic that way."
+  - id: windows
+    kind: table
+    title: Windowing a stream
+    note: Almost every streaming requirement is one of these windows plus a lateness policy.
+    headers: [Window, Shape, Answers, Group by]
+    rows:
+      - ["Tumbling", "fixed size, no overlap: `[0, 60s)`, `[60s, 120s)`", "orders per minute, a billing period", "`t - Math.floorMod(t, size)`"]
+      - ["Hopping", "fixed size advancing by a smaller hop; an event is in `size / hop` windows", "a 5-minute error rate refreshed every 10 s", "every hop start in `(t - size, t]`"]
+      - ["Session", "per key, closed by a gap of inactivity", "a user's visit, a burst of typing", "key, extended while the next event is within the gap"]
+      - ["Count (sliding)", "the last n events", "the average of the last 100 requests", "position: a ring buffer"]
+      - ["Late events", "its window has already closed: window end ≤ watermark (highest event time − allowed lateness)", "what happens to a delayed upload", "drop and count, hold longer, or reopen the window and re-emit"]
+  - id: tumbling-window-watermark
+    kind: code
+    title: Tumbling windows with a watermark
+    note: Revenue per minute by event time — a window closes once the watermark passes its end, so a delayed order still counts, up to the allowed lateness.
+    prerequisites: &run
+      - A Kotlin 2.x compiler (`kotlinc`) and JDK 17 or later
+      - "Save as `main.kt`; run `kotlinc main.kt -include-runtime -d main.jar && java -jar main.jar`"
+    code: |-
+      import java.util.TreeMap
+
+      data class Order(val atMs: Long, val cents: Long)                // atMs: event time
+      data class Window(val startMs: Long, var orders: Int = 0, var cents: Long = 0)
+
+      class TumblingWindows(private val sizeMs: Long, private val latenessMs: Long) {
+          private val open = TreeMap<Long, Window>()                   // window start -> running totals
+          private var watermark = Long.MIN_VALUE                       // highest event time − allowed lateness
+          var late = 0
+              private set
+
+          /** Adds an order; returns the windows the advancing watermark closed, oldest first. */
+          fun add(order: Order): List<Window> {
+              val start = order.atMs - Math.floorMod(order.atMs, sizeMs)
+              if (start + sizeMs <= watermark) {                       // already final: count it, never reopen
+                  late++
+                  return emptyList()
+              }
+              open.getOrPut(start) { Window(start) }.apply { orders++; cents += order.cents }
+              watermark = maxOf(watermark, order.atMs - latenessMs)
+              return closeWhile { startMs -> startMs + sizeMs <= watermark }
+          }
+
+          fun flush(): List<Window> = closeWhile { true }              // end of stream: all open windows are final
+
+          private fun closeWhile(due: (startMs: Long) -> Boolean): List<Window> {
+              val closed = mutableListOf<Window>()
+              while (open.isNotEmpty() && due(open.firstKey())) closed += open.pollFirstEntry().value
+              return closed
+          }
+      }
+
+      fun main() {
+          val perMinute = TumblingWindows(sizeMs = 60_000, latenessMs = 10_000)
+          fun show(w: Window) = "[${w.startMs / 1000}s, +60s) count ${w.orders}, ${w.cents} cents"
+          val arrivals = listOf(5 to 1200L, 20 to 800L, 58 to 450L, 62 to 2000L, 50 to 300L, 75 to 990L,
+              130 to 1500L, 55 to 700L)                                // (second, cents), in arrival order
+          for ((second, cents) in arrivals) {
+              for (w in perMinute.add(Order(second * 1000L, cents))) println("after ${second}s: ${show(w)}")
+          }
+          for (w in perMinute.flush()) println("at the end: ${show(w)}")
+          println("late orders dropped: ${perMinute.late}")
+      }
+    expected: |-
+      after 75s: [0s, +60s) count 4, 2750 cents
+      after 130s: [60s, +60s) count 2, 2990 cents
+      at the end: [120s, +60s) count 1, 1500 cents
+      late orders dropped: 1
+    validation: &ran
+      status: ran
+      toolchain: kotlinc 2.4.21, JVM 21.0.12.1
+      date: "2026-11-16"
+  - id: ring-buffer
+    kind: code
+    title: Ring buffer — a fixed-size sliding window
+    note: A rolling average of the last k request latencies in O(1) per event and O(k) memory.
+    prerequisites: *run
+    code: |-
+      class RingBuffer<T>(val capacity: Int) {
+          private val slots = arrayOfNulls<Any>(capacity)
+          private var head = 0
+          var size = 0
+              private set
+
+          /** Appends, and returns the element that fell out of the window, if any. */
+          @Suppress("UNCHECKED_CAST")
+          fun add(element: T): T? {
+              val evicted = if (size == capacity) slots[head] as T else null
+              slots[head] = element
+              head = (head + 1) % capacity
+              if (size < capacity) size++
+              return evicted
+          }
+
+          @Suppress("UNCHECKED_CAST")
+          fun toList(): List<T> = List(size) { slots[(head - size + it + capacity) % capacity] as T }
+      }
+
+      class MovingAverage(window: Int) {
+          private val window = RingBuffer<Double>(window)
+          private var sum = 0.0
+
+          fun add(latencyMs: Double): Double {
+              window.add(latencyMs)?.let { sum -= it }   // slide: subtract what left, never re-sum
+              sum += latencyMs
+              return sum / window.size
+          }
+
+          fun samples() = window.toList()
+      }
+
+      fun main() {
+          val average = MovingAverage(window = 3)
+          println(listOf(120.0, 80.0, 100.0, 420.0, 110.0).map(average::add))
+          println(average.samples())
+      }
+    expected: |-
+      [120.0, 100.0, 100.0, 200.0, 210.0]
+      [100.0, 420.0, 110.0]
+    validation: *ran
+  - id: running-statistics
+    kind: code
+    title: Running statistics — Welford & EMA
+    note: Mean, variance, a z-score anomaly check and a smoothed level, each in O(1) memory.
+    prerequisites: *run
+    code: |-
+      import kotlin.math.abs
+      import kotlin.math.sqrt
+
+      /** Online mean and variance. Numerically stable, unlike a running sum of squares. */
+      class RunningStats {
+          var count = 0L; private set                 // Long: an Int wraps after 2^31 samples
+          var mean = 0.0; private set
+          private var m2 = 0.0
+
+          fun add(x: Double) {
+              count++
+              val delta = x - mean
+              mean += delta / count
+              m2 += delta * (x - mean)
+          }
+
+          val variance get() = if (count > 1) m2 / (count - 1) else 0.0
+          fun isAnomaly(x: Double) = sqrt(variance).let { sd -> sd > 0 && abs(x - mean) / sd > 3 }
+      }
+
+      /** Exponential moving average: no window, no history. alpha = 2 / (period + 1). */
+      class Ema(private val alpha: Double) {
+          var value: Double? = null; private set
+          fun add(x: Double): Double = (value?.let { alpha * x + (1 - alpha) * it } ?: x).also { value = it }
+      }
+
+      fun main() {
+          val stats = RunningStats()
+          val ema = Ema(alpha = 0.5)
+          val smoothed = listOf(100.0, 110.0, 90.0, 105.0, 95.0).map { stats.add(it); ema.add(it) }
+          println("n=${stats.count} mean=${stats.mean} variance=${stats.variance}")
+          println("ema=$smoothed")
+          println("400 ms anomalous? ${stats.isAnomaly(400.0)}; 104 ms? ${stats.isAnomaly(104.0)}")
+      }
+    expected: |-
+      n=5 mean=100.0 variance=62.5
+      ema=[100.0, 105.0, 97.5, 101.25, 98.125]
+      400 ms anomalous? true; 104 ms? false
+    sources:
+      - title: Algorithms for calculating variance — Wikipedia
+        url: https://en.wikipedia.org/wiki/Algorithms_for_calculating_variance
+      - title: Exponential smoothing — Wikipedia
+        url: https://en.wikipedia.org/wiki/Exponential_smoothing
+    validation: *ran
+  - id: reservoir-sampling
+    kind: code
+    title: Reservoir sampling
+    note: A uniform sample of k orders from a stream of unknown length, in O(k) memory — for audits and upload sampling.
+    prerequisites: *run
+    code: |-
+      import kotlin.random.Random
+
+      class Reservoir<T>(private val capacity: Int, private val random: Random = Random.Default) {
+          private val items = ArrayList<T>(capacity)
+          private var seen = 0L
+          val sample: List<T> get() = items
+
+          fun add(item: T) {
+              seen++
+              if (items.size < capacity) {
+                  items += item
+              } else {
+                  val slot = random.nextLong(seen)        // keep with probability k / n
+                  if (slot < capacity) items[slot.toInt()] = item
+              }
+          }
+      }
+
+      fun main() {
+          // Seeded only so the page is reproducible; production code keeps Random.Default.
+          val random = Random(42)
+          val audit = Reservoir<String>(capacity = 5, random = random)
+          for (i in 1..10_000) audit.add("order-$i")
+          println(audit.sample)
+
+          // Uniformity check: 20 000 samples of 2 out of 4 — each item should survive ~50% of the time.
+          val survived = IntArray(4)
+          repeat(20_000) {
+              val r = Reservoir<Int>(capacity = 2, random = random)
+              (0..3).forEach(r::add)
+              r.sample.forEach { survived[it]++ }
+          }
+          println(survived.map { it * 100 / 20_000 })
+      }
+    expected: |-
+      [order-4572, order-2717, order-7349, order-729, order-6529]
+      [49, 50, 50, 49]
+    sources:
+      - title: Reservoir sampling — Wikipedia
+        url: https://en.wikipedia.org/wiki/Reservoir_sampling
+    validation: *ran
+  - id: count-min-sketch
+    kind: code
+    title: Count-Min Sketch — approximate frequencies
+    note: Hits per endpoint for any number of endpoints in a fixed width × depth table, never undercounting.
+    prerequisites: *run
+    code: |-
+      /** MurmurHash3's finaliser: spreads every input bit across the output. */
+      fun mix(x: Int): Int {
+          var h = x
+          h = (h xor (h ushr 16)) * 0x85EBCA6B.toInt()
+          h = (h xor (h ushr 13)) * 0xC2B2AE35.toInt()
+          return h xor (h ushr 16)
+      }
+
+      /** width ≈ e / ε, depth ≈ ln(1 / δ). Memory is width × depth longs, whatever the key count. */
+      class CountMinSketch(private val width: Int, private val depth: Int) {
+          private val table = Array(depth) { LongArray(width) }
+
+          // String.hashCode is 32 bits and easy to collide on purpose ("Aa" and "BB" share every row):
+          // for untrusted keys, hash the UTF-8 bytes with a 64-bit hash (Guava Hashing.murmur3_128).
+          private fun column(key: String, row: Int) =
+              Math.floorMod(mix(key.hashCode() + row * 0x9E3779B9.toInt()), width)
+
+          fun add(key: String, count: Long = 1) {
+              for (row in 0 until depth) table[row][column(key, row)] += count
+          }
+
+          /** The smallest of the row counters: collisions only ever add, so this is an upper bound. */
+          fun estimate(key: String): Long = (0 until depth).minOf { table[it][column(key, it)] }
+      }
+
+      fun main() {
+          // 1024 × 4 (32 KB): over by at most e / 1024 ≈ 0.27% of all hits, with 98% probability (1 − e⁻⁴).
+          val hits = CountMinSketch(width = 1024, depth = 4)
+          repeat(500) { hits.add("/checkout") }
+          repeat(300) { hits.add("/cart") }
+          repeat(200) { hits.add("/search") }
+          for (id in 1..5_000) hits.add("/product/$id")              // the long tail
+          val exactCounts = listOf("/checkout" to 500, "/cart" to 300, "/search" to 200, "/product/7" to 1)
+          for ((path, exact) in exactCounts) {
+              println("$path exact=$exact estimate=${hits.estimate(path)}")
+          }
+      }
+    expected: |-
+      /checkout exact=500 estimate=503
+      /cart exact=300 estimate=302
+      /search exact=200 estimate=202
+      /product/7 exact=1 estimate=4
+    sources:
+      - title: Count–min sketch — Wikipedia
+        url: https://en.wikipedia.org/wiki/Count%E2%80%93min_sketch
+    validation: *ran
+  - id: bloom-filter
+    kind: code
+    title: Bloom filter — approximate membership
+    note: '"Have I already synced this event id?" — definitely not, or probably yes, in about 10 bits per id.'
+    prerequisites: *run
+    code: |-
+      import java.util.BitSet
+      import kotlin.math.ln
+      import kotlin.math.roundToInt
+
+      fun mix(x: Int): Int {
+          var h = x
+          h = (h xor (h ushr 16)) * 0x85EBCA6B.toInt()
+          h = (h xor (h ushr 13)) * 0xC2B2AE35.toInt()
+          return h xor (h ushr 16)
+      }
+
+      class BloomFilter(expected: Int, falsePositiveRate: Double) {
+          // m = -n·ln(p) / (ln 2)²    k = (m / n)·ln 2
+          val bitCount = (-expected * ln(falsePositiveRate) / (ln(2.0) * ln(2.0))).toInt()
+          val hashCount = (bitCount.toDouble() / expected * ln(2.0)).roundToInt()
+          private val bits = BitSet(bitCount)
+
+          // Two hashes make all k positions: h1 + i·h2 (Kirsch–Mitzenmacher). String.hashCode is
+          // 32 bits and easy to collide on purpose: for untrusted keys use a 64-bit hash of the bytes.
+          private fun positions(key: String): List<Int> {
+              val h1 = mix(key.hashCode())
+              val h2 = mix(h1) or 1
+              return List(hashCount) { i -> Math.floorMod(h1 + i * h2, bitCount) }
+          }
+
+          fun add(key: String) = positions(key).forEach { bits.set(it) }
+
+          /** false: definitely absent. true: probably present. */
+          fun mightContain(key: String) = positions(key).all { bits.get(it) }
+      }
+
+      fun main() {
+          // Sized for `expected` ids: past that the false-positive rate climbs (~16% at 2×), so rotate or rebuild.
+          val synced = BloomFilter(expected = 10_000, falsePositiveRate = 0.01)
+          for (i in 1..10_000) synced.add("evt-$i")
+          println("${synced.bitCount / 8 / 1024} KB, ${synced.hashCount} hashes")
+          println("evt-42 seen? ${synced.mightContain("evt-42")}")
+          val falsePositives = (1..10_000).count { synced.mightContain("new-$it") }
+          println("false positives: $falsePositives of 10000 unseen ids")
+      }
+    expected: |-
+      11 KB, 7 hashes
+      evt-42 seen? true
+      false positives: 93 of 10000 unseen ids
+    sources:
+      - title: Bloom filter — Wikipedia
+        url: https://en.wikipedia.org/wiki/Bloom_filter
+    validation: *ran
+  - id: heavy-hitters
+    kind: code
+    title: Heavy hitters — Misra–Gries
+    note: The clients hammering an API in O(k) memory, where any client above n / (k + 1) requests is guaranteed to survive.
+    prerequisites: *run
+    code: |-
+      class HeavyHitters<K>(private val capacity: Int) {
+          private val counters = LinkedHashMap<K, Long>()          // Long: a busy stream outgrows Int
+
+          fun add(key: K) {
+              val current = counters[key]
+              when {
+                  current != null -> counters[key] = current + 1
+                  counters.size < capacity -> counters[key] = 1L
+                  else -> {
+                      // No free slot: everyone loses one, and whoever reaches zero frees a slot.
+                      for (entry in counters.entries) entry.setValue(entry.value - 1)
+                      counters.values.removeAll { it == 0L }
+                  }
+              }
+          }
+
+          /** Counts are lower bounds: each may be short by at most n / (k + 1). */
+          fun top(): List<Pair<K, Long>> =
+              counters.entries.sortedByDescending { it.value }.map { it.key to it.value }
+      }
+
+      fun main() {
+          val requests = (0 until 1_000).map { i ->
+              when (i % 10) {
+                  in 0..3 -> "crawler-7"              // 40% of the traffic
+                  in 4..6 -> "mobile-app"             // 30%
+                  else -> "user-${i % 97}"            // a long tail of real users
+              }
+          }
+          val hitters = HeavyHitters<String>(capacity = 4)
+          requests.forEach(hitters::add)
+          println(hitters.top().take(2))
+          val exact = requests.groupingBy { it }.eachCount()
+          println("exact: crawler-7=${exact["crawler-7"]} mobile-app=${exact["mobile-app"]}")
+      }
+    expected: |-
+      [(crawler-7, 300), (mobile-app, 200)]
+      exact: crawler-7=400 mobile-app=300
+    sources:
+      - title: Misra–Gries heavy hitters algorithm — Wikipedia
+        url: https://en.wikipedia.org/wiki/Misra%E2%80%93Gries_heavy_hitters_algorithm
+    validation: *ran
+  - id: streaming-quantiles
+    kind: code
+    title: Streaming quantiles
+    note: p50 / p95 / p99 latency within 1% relative error, without storing the samples.
+    prerequisites: *run
+    code: |-
+      import kotlin.math.ceil
+      import kotlin.math.ln
+      import kotlin.math.pow
+      import kotlin.math.roundToLong
+
+      /** Log-spaced buckets (the DDSketch idea): relative error bounded, memory O(log(max / min)). */
+      class QuantileSketch(relativeError: Double = 0.01) {
+          private val gamma = (1 + relativeError) / (1 - relativeError)
+          private val buckets = sortedMapOf<Int, Long>()
+          var count = 0L; private set
+          val bucketCount get() = buckets.size
+
+          fun add(positive: Double) {
+              require(positive > 0) { "log buckets take positive values; count zeros separately" }
+              val index = ceil(ln(positive) / ln(gamma)).toInt()
+              buckets[index] = (buckets[index] ?: 0L) + 1
+              count++
+          }
+
+          fun quantile(q: Double): Double {
+              val rank = (q * (count - 1)).toLong()
+              var seen = 0L
+              for ((index, n) in buckets) {
+                  seen += n
+                  if (seen > rank) return 2 * gamma.pow(index) / (gamma + 1)   // the bucket's midpoint
+              }
+              error("empty sketch")
+          }
+      }
+
+      fun main() {
+          val latency = QuantileSketch()
+          for (ms in 1..10_000) latency.add(ms.toDouble())
+          repeat(200) { latency.add(30_000.0) }                  // a slow dependency timing out
+          val report = listOf(0.5, 0.95, 0.99)
+              .joinToString { q -> "p${(q * 100).toInt()}=${latency.quantile(q).roundToLong()}" }
+          println("$report from ${latency.count} samples in ${latency.bucketCount} buckets")
+          // Report percentiles, not the mean: the mean here is ~5.5 s and describes nobody.
+      }
+    expected: |-
+      p50=5066, p95=9607, p99=30040 from 10200 samples in 316 buckets
+    sources:
+      - title: "DDSketch: a fast and fully-mergeable quantile sketch with relative-error guarantees — arXiv"
+        url: https://arxiv.org/abs/1908.10693
+    validation: *ran
+  - id: rate-limiting
+    kind: code
+    title: Rate limiting — token bucket vs sliding window
+    note: The same arrivals through both limiters, on an injected clock — the bucket lets a refilled trickle through, the window is exact.
+    prerequisites: *run
+    code: |-
+      import kotlin.time.*
+      import kotlin.time.Duration.Companion.milliseconds
+      import kotlin.time.Duration.Companion.seconds
+
+      /** Bursts up to `capacity`, then `perSecond` sustained. O(1) memory. */
+      class TokenBucket(private val capacity: Double, private val perSecond: Double, clock: TimeSource) {
+          private var tokens = capacity
+          private var lastRefill = clock.markNow()
+
+          @Synchronized                                              // request threads call it concurrently
+          fun tryAcquire(): Boolean {
+              val elapsed = lastRefill.elapsedNow()
+              lastRefill += elapsed                                  // advance the mark: no drift
+              tokens = minOf(capacity, tokens + elapsed.toDouble(DurationUnit.SECONDS) * perSecond)
+              if (tokens < 1) return false
+              tokens -= 1
+              return true
+          }
+      }
+
+      /** At most `limit` in ANY trailing `window`. Exact, O(limit) memory. */
+      class SlidingWindowLog(private val limit: Int, private val window: Duration, private val clock: TimeSource) {
+          private val accepted = ArrayDeque<TimeMark>()
+
+          @Synchronized
+          fun tryAcquire(): Boolean {
+              while (accepted.isNotEmpty() && accepted.first().elapsedNow() >= window) accepted.removeFirst()
+              if (accepted.size >= limit) return false
+              accepted.addLast(clock.markNow())
+              return true
+          }
+      }
+
+      fun verdict(allowed: Boolean) = if (allowed) "ok" else "429"
+
+      fun main() {
+          val clock = TestTimeSource()
+          val bucket = TokenBucket(capacity = 3.0, perSecond = 3.0, clock = clock)
+          val window = SlidingWindowLog(limit = 3, window = 1.seconds, clock = clock)
+          var now = 0
+          for (at in listOf(0, 0, 0, 0, 500, 900, 1000, 1000)) {
+              clock += (at - now).milliseconds
+              now = at
+              println("t=${at}ms bucket=${verdict(bucket.tryAcquire())} window=${verdict(window.tryAcquire())}")
+          }
+      }
+    expected: |-
+      t=0ms bucket=ok window=ok
+      t=0ms bucket=ok window=ok
+      t=0ms bucket=ok window=ok
+      t=0ms bucket=429 window=429
+      t=500ms bucket=ok window=429
+      t=900ms bucket=ok window=429
+      t=1000ms bucket=ok window=ok
+      t=1000ms bucket=429 window=ok
+    sources:
+      - title: Token bucket — Wikipedia
+        url: https://en.wikipedia.org/wiki/Token_bucket
+      - title: TestTimeSource — Kotlin API reference
+        url: https://kotlinlang.org/api/core/kotlin-stdlib/kotlin.time/-test-time-source/
+    validation: *ran
+  - id: debounce-throttle-sample
+    kind: code
+    title: Debounce, throttle & sample over a Flow
+    note: A search box's keystrokes on virtual time — debounce waits for a pause, throttle keeps the first of each window, sample the latest per tick.
+    applies:
+      runtime: Kotlin/JVM with kotlinx.coroutines
+      requires: [kotlinx-coroutines-core, kotlinx-coroutines-test]
+      versions: { kotlin: ">=2.0", kotlinx-coroutines: ">=1.10", jvm: ">=17" }
+    prerequisites: &runFlow
+      - A Kotlin 2.x compiler (`kotlinc`), JDK 17 or later, and the jars `kotlinx-coroutines-core-jvm-1.10.2` and `kotlinx-coroutines-test-jvm-1.10.2`
+      - "Save as `main.kt`; run `kotlinc -cp <both jars> main.kt -d out && kotlin -cp out:<both jars> MainKt`"
+      - "Or, in a Gradle project: `implementation(\"org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.2\")` and `testImplementation(\"org.jetbrains.kotlinx:kotlinx-coroutines-test:1.10.2\")`"
+    code: |-
+      import kotlinx.coroutines.ExperimentalCoroutinesApi
+      import kotlinx.coroutines.FlowPreview
+      import kotlinx.coroutines.delay
+      import kotlinx.coroutines.flow.*
+      import kotlinx.coroutines.test.runTest
+
+      /** Typed at 0, 120, 240, 640, 700 and 760 ms. */
+      fun keystrokes(): Flow<String> = flow {
+          val typing = listOf("k" to 0L, "ko" to 120L, "kot" to 120L, "kotl" to 400L, "kotli" to 60L,
+              "kotlin" to 60L)
+          for ((text, pauseMs) in typing) {
+              delay(pauseMs)
+              emit(text)
+          }
+      }
+
+      /** Flow has no throttle-first: the first value of each window passes, the rest are dropped. */
+      fun <T> Flow<T>.throttleFirst(windowMs: Long, now: () -> Long): Flow<T> = flow {
+          var windowStart: Long? = null
+          collect { value ->
+              val start = windowStart
+              if (start == null || now() - start >= windowMs) {
+                  windowStart = now()
+                  emit(value)
+              }
+          }
+      }
+
+      @OptIn(FlowPreview::class, ExperimentalCoroutinesApi::class)   // debounce/sample; virtual currentTime
+      fun main() = runTest {
+          println("debounce(300): " + keystrokes().debounce(300).toList())
+          val clock = { testScheduler.currentTime }
+          println("throttle(300): " + keystrokes().throttleFirst(300, clock).toList())
+          println("sample(250):   " + keystrokes().sample(250).toList())
+      }
+    expected: |-
+      debounce(300): [kot, kotlin]
+      throttle(300): [k, kotl]
+      sample(250):   [kot, kotli]
+    validation: &ranFlow
+      status: ran
+      toolchain: kotlinc 2.4.21, JVM 21.0.12.1, kotlinx-coroutines-core and -test 1.10.2
+      date: "2026-11-16"
+  - id: backpressure
+    kind: code
+    title: Backpressure & buffering policy
+    note: A sensor emitting every 10 ms into a 27 ms consumer — when production outruns consumption, choose what to lose.
+    applies:
+      runtime: Kotlin/JVM with kotlinx.coroutines
+      requires: [kotlinx-coroutines-core, kotlinx-coroutines-test]
+      versions: { kotlin: ">=2.0", kotlinx-coroutines: ">=1.10", jvm: ">=17" }
+    prerequisites: *runFlow
+    code: |-
+      import kotlinx.coroutines.ExperimentalCoroutinesApi
+      import kotlinx.coroutines.channels.BufferOverflow
+      import kotlinx.coroutines.channels.Channel
+      import kotlinx.coroutines.channels.toList
+      import kotlinx.coroutines.delay
+      import kotlinx.coroutines.flow.*
+      import kotlinx.coroutines.test.TestScope
+      import kotlinx.coroutines.test.runTest
+
+      fun readings(): Flow<Int> = flow { for (i in 1..8) { delay(10); emit(i) } }
+
+      @OptIn(ExperimentalCoroutinesApi::class)                       // the virtual testScheduler.currentTime
+      suspend fun TestScope.render(policy: String, source: Flow<Int>) {
+          val start = testScheduler.currentTime
+          val shown = mutableListOf<Int>()
+          source.collect { delay(27); shown += it }
+          println("$policy $shown in ${testScheduler.currentTime - start} ms")
+      }
+
+      fun main() = runTest {
+          render("suspend (default)     ", readings())                                   // producer slowed down
+          render("buffer(2, DROP_OLDEST)", readings().buffer(2, BufferOverflow.DROP_OLDEST))
+          render("conflate()            ", readings().conflate())                        // only the latest waits
+          val latest = mutableListOf<Int>()
+          readings().collectLatest { delay(27); latest += it }                           // new value cancels work
+          println("collectLatest          $latest")
+
+          // A Channel states its policy up front; trySend never suspends.
+          val telemetry = Channel<Int>(capacity = 2, onBufferOverflow = BufferOverflow.DROP_OLDEST)
+          for (i in 1..5) telemetry.trySend(i)
+          telemetry.close()
+          println("Channel(2, DROP_OLDEST) kept ${telemetry.toList()}")
+          val strict = Channel<Int>(capacity = 2)                                        // SUSPEND when full
+          println("Channel(2) trySend: ${(1..3).map { strict.trySend(it).isSuccess }}")
+      }
+    expected: |-
+      suspend (default)      [1, 2, 3, 4, 5, 6, 7, 8] in 296 ms
+      buffer(2, DROP_OLDEST) [1, 2, 5, 7, 8] in 145 ms
+      conflate()             [1, 3, 6, 8] in 118 ms
+      collectLatest          [8]
+      Channel(2, DROP_OLDEST) kept [4, 5]
+      Channel(2) trySend: [true, true, false]
+    sources:
+      - title: buffer — kotlinx.coroutines API
+        url: https://kotlinlang.org/api/kotlinx.coroutines/kotlinx-coroutines-core/kotlinx.coroutines.flow/buffer.html
+    validation: *ranFlow
+  - id: flowon-upstream-only
+    kind: code
+    title: flowOn moves the upstream, never collect
+    note: Blocking parse work belongs above `flowOn(Dispatchers.IO)` or inside `withContext(Dispatchers.IO)`, because the body of `collect` always runs in the collector's context.
+    applies:
+      runtime: Kotlin/JVM with kotlinx.coroutines
+      requires: [kotlinx-coroutines-core]
+      versions: { kotlin: ">=2.0", kotlinx-coroutines: ">=1.10", jvm: ">=17" }
+    prerequisites:
+      - A Kotlin 2.x compiler (`kotlinc`), JDK 17 or later, and `kotlinx-coroutines-core-jvm-1.10.2.jar`
+      - "Save as `main.kt`; run `kotlinc -cp kotlinx-coroutines-core-jvm-1.10.2.jar main.kt -d out && kotlin -cp out:kotlinx-coroutines-core-jvm-1.10.2.jar MainKt`"
+      - "Or, in a Gradle project: `implementation(\"org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.2\")`"
+    code: |-
+      import kotlinx.coroutines.Dispatchers
+      import kotlinx.coroutines.flow.*
+      import kotlinx.coroutines.runBlocking
+      import kotlinx.coroutines.withContext
+
+      fun onIo() = Thread.currentThread().name.startsWith("DefaultDispatcher-worker")
+
+      /** Decoding one uploaded chunk: blocking work that must stay off the collector's thread. */
+      fun decode(chunk: String): String {
+          Thread.sleep(5)                                             // stands in for blocking I/O or parsing
+          return chunk.uppercase()
+      }
+
+      fun main() = runBlocking {
+          val chunks = flowOf("a", "b")
+
+          // flowOn moves only what is ABOVE it (and inserts a buffer): map runs on IO, collect stays on main.
+          chunks.map { "${decode(it)} decoded on IO=${onIo()}" }
+              .flowOn(Dispatchers.IO)
+              .collect { println("$it, collected on IO=${onIo()}") }
+
+          // Blocking work that has to happen inside collect: wrap that call, not the flow.
+          chunks.collect { chunk ->
+              val decoded = withContext(Dispatchers.IO) { "${decode(chunk)} decoded on IO=${onIo()}" }
+              println("$decoded, collected on IO=${onIo()}")
+          }
+      }
+    expected: |-
+      A decoded on IO=true, collected on IO=false
+      B decoded on IO=true, collected on IO=false
+      A decoded on IO=true, collected on IO=false
+      B decoded on IO=true, collected on IO=false
+    sources:
+      - title: flowOn — kotlinx.coroutines API
+        url: https://kotlinlang.org/api/kotlinx.coroutines/kotlinx-coroutines-core/kotlinx.coroutines.flow/flow-on.html
+    validation:
+      status: ran
+      toolchain: kotlinc 2.4.21, JVM 21.0.12.1, kotlinx-coroutines-core 1.10.2
+      date: "2026-11-16"
+  - id: batching-coalescing
+    kind: code
+    title: Batching, chunking and coalescing
+    note: Upload telemetry when 3 events are waiting or the oldest has waited 200 ms, whichever comes first.
+    applies:
+      runtime: Kotlin/JVM with kotlinx.coroutines
+      requires: [kotlinx-coroutines-core, kotlinx-coroutines-test]
+      versions: { kotlin: ">=2.0", kotlinx-coroutines: ">=1.10", jvm: ">=17" }
+    prerequisites: *runFlow
+    code: |-
+      import kotlinx.coroutines.ExperimentalCoroutinesApi
+      import kotlinx.coroutines.delay
+      import kotlinx.coroutines.flow.*
+      import kotlinx.coroutines.selects.onTimeout
+      import kotlinx.coroutines.selects.select
+      import kotlinx.coroutines.test.runTest
+
+      @OptIn(ExperimentalCoroutinesApi::class)
+      fun <T> Flow<T>.batched(size: Int, maxWaitMs: Long, now: () -> Long): Flow<List<T>> = channelFlow {
+          val upstream = this@batched.produceIn(this)
+          val batch = mutableListOf<T>()
+          var openedAt = 0L
+          var open = true
+          while (open) {
+              select<Unit> {                              // atomic: an element is received OR the timer fires
+                  upstream.onReceiveCatching { result ->
+                      if (result.isClosed) open = false
+                      else { if (batch.isEmpty()) openedAt = now(); batch += result.getOrThrow() }
+                  }
+                  if (batch.isNotEmpty()) onTimeout(openedAt + maxWaitMs - now()) {}
+              }
+              val due = batch.size >= size || !open || now() - openedAt >= maxWaitMs
+              if (batch.isNotEmpty() && due) { send(batch.toList()); batch.clear() }
+          }
+      }
+
+      @OptIn(ExperimentalCoroutinesApi::class)
+      fun main() = runTest {
+          // Events at 10, 20, 30, 40, 50 ms, then a quiet spell, then 550 and 560 ms.
+          val pauses = listOf("a" to 10L, "b" to 10L, "c" to 10L, "d" to 10L, "e" to 10L, "f" to 500L, "g" to 10L)
+          val events = flow { for ((name, pauseMs) in pauses) { delay(pauseMs); emit(name) } }
+          events.batched(size = 3, maxWaitMs = 200) { testScheduler.currentTime }
+              .collect { println("at ${testScheduler.currentTime} ms upload $it") }
+          println("chunked(3): ${events.chunked(3).toList()}")      // size only, never time
+      }
+    expected: |-
+      at 30 ms upload [a, b, c]
+      at 240 ms upload [d, e]
+      at 560 ms upload [f, g]
+      chunked(3): [[a, b, c], [d, e, f], [g]]
+    validation: *ranFlow
+  - id: dedupe-with-ttl
+    kind: code
+    title: Deduplication with a TTL
+    note: Remember each payment id as in flight while its handler runs and as done for 5 minutes after it succeeds, in bounded memory.
+    prerequisites: *run
+    code: |-
+      import kotlin.time.*
+      import kotlin.time.Duration.Companion.minutes
+
+      enum class Seen { NEW, IN_FLIGHT, DONE }
+
+      // Synchronized: deliveries arrive on many threads. Past `capacity` done ids the oldest are forgotten
+      // early (size it as peak rate × TTL); an in-flight id is never evicted.
+      class RecentIds(private val ttl: Duration, private val capacity: Int, private val clock: TimeSource) {
+          private val inFlight = HashSet<String>()
+          private val doneAt = LinkedHashMap<String, TimeMark>()          // insertion order is age order
+
+          @Synchronized fun begin(id: String): Seen {
+              val oldestFirst = doneAt.values.iterator()
+              while (oldestFirst.hasNext() && oldestFirst.next().elapsedNow() >= ttl) oldestFirst.remove()
+              return when (id) {
+                  in inFlight -> Seen.IN_FLIGHT
+                  in doneAt -> Seen.DONE
+                  else -> Seen.NEW.also { inFlight += id }
+              }
+          }
+
+          /** Only a success is remembered: after a failure the next delivery is handled again. */
+          @Synchronized fun finish(id: String, succeeded: Boolean) {
+              inFlight -= id
+              if (!succeeded) return
+              doneAt[id] = clock.markNow()
+              if (doneAt.size > capacity) doneAt.remove(doneAt.keys.first())
+          }
+      }
+
+      fun main() {
+          val clock = TestTimeSource()
+          val recent = RecentIds(ttl = 5.minutes, capacity = 10_000, clock = clock)
+          println("first delivery:      ${recent.begin("pay-1")}")
+          println("retry while running: ${recent.begin("pay-1")}")
+          recent.finish("pay-1", succeeded = false)
+          println("retry after failure: ${recent.begin("pay-1")}")
+          recent.finish("pay-1", succeeded = true)
+          println("redelivery:          ${recent.begin("pay-1")}")
+          clock += 6.minutes
+          println("6 minutes later:     ${recent.begin("pay-1")}")
+      }
+    expected: |-
+      first delivery:      NEW
+      retry while running: IN_FLIGHT
+      retry after failure: NEW
+      redelivery:          DONE
+      6 minutes later:     NEW
+    validation: *ran
+  - id: idempotent-webhook
+    kind: code
+    title: Idempotent webhook handling
+    note: "Webhooks arrive at least once, so answer a redelivery of a handled payment with 200, one still being handled with 409, and a failure with 500 so the provider retries."
+    prerequisites: *run
+    code: |-
+      enum class Seen { NEW, IN_FLIGHT, DONE }
+
+      class Deliveries {                                               // the card above, minus TTL and capacity
+          private val inFlight = HashSet<String>()
+          private val done = HashSet<String>()
+
+          @Synchronized fun begin(id: String): Seen = when (id) {
+              in inFlight -> Seen.IN_FLIGHT
+              in done -> Seen.DONE
+              else -> Seen.NEW.also { inFlight += id }
+          }
+
+          @Synchronized fun finish(id: String, succeeded: Boolean) {
+              inFlight -= id
+              if (succeeded) done += id
+          }
+      }
+
+      // In a database: insert a pending row with an expiry, mark it done after handling — a crash in between
+      // must leave a row that expires, or every retry is skipped forever.
+      fun deliver(deliveries: Deliveries, id: String, handle: (String) -> Unit): String {
+          val state = deliveries.begin(id)
+          if (state == Seen.DONE) return "200 duplicate, skipped"
+          if (state == Seen.IN_FLIGHT) return "409 in progress, provider retries later"
+          var succeeded = false
+          try {
+              handle(id)
+              succeeded = true
+              return "200 processed"
+          } catch (e: Exception) {
+              return "500 failed, provider retries"                  // not a 2xx: the provider delivers again
+          } finally {
+              deliveries.finish(id, succeeded)                       // on an Error too: never stuck in flight
+          }
+      }
+
+      fun main() {
+          val deliveries = Deliveries()
+          val slowThenFails: (String) -> Unit = { id ->                 // the provider times out and redelivers
+              println("retry during attempt 1 -> ${deliver(deliveries, id) {}}")
+              error("ledger timeout")
+          }
+          println("attempt 1  -> ${deliver(deliveries, "pay-1", slowThenFails)}")
+          for (label in listOf("retry     ", "redelivery")) println("$label -> ${deliver(deliveries, "pay-1") {}}")
+      }
+    expected: |-
+      retry during attempt 1 -> 409 in progress, provider retries later
+      attempt 1  -> 500 failed, provider retries
+      retry      -> 200 processed
+      redelivery -> 200 duplicate, skipped
+    validation: *ran
+  - id: merge-and-change-detection
+    kind: code
+    title: Merging ordered streams & change detection
+    note: Merge two sensors' time-ordered readings into one timeline, then raise an alarm with hysteresis so it does not flap.
+    prerequisites: *run
+    code: |-
+      import java.util.PriorityQueue
+
+      data class Reading(val atMs: Long, val sensor: String, val celsius: Double)
+
+      /** k-way merge of streams each sorted by time: O(log k) per item, O(k) memory. */
+      fun mergeByTime(streams: List<Sequence<Reading>>): Sequence<Reading> = sequence {
+          val sources = streams.map { it.iterator() }
+          val heads = PriorityQueue<Pair<Reading, Int>>(compareBy { it.first.atMs })
+          sources.forEachIndexed { i, source -> if (source.hasNext()) heads += source.next() to i }
+          while (heads.isNotEmpty()) {
+              val (reading, i) = heads.poll()
+              yield(reading)
+              if (sources[i].hasNext()) heads += sources[i].next() to i
+          }
+      }
+
+      /** Two thresholds: ON above `enter`, OFF only below `exit`. Returns the new state, or null. */
+      class Hysteresis(private val enter: Double, private val exit: Double) {
+          private var on = false
+          fun update(x: Double): Boolean? = when {
+              !on && x > enter -> true.also { on = true }
+              on && x < exit -> false.also { on = false }
+              else -> null
+          }
+      }
+
+      fun main() {
+          val a = sequenceOf(Reading(0, "A", 78.0), Reading(20, "A", 81.0), Reading(40, "A", 80.5),
+              Reading(60, "A", 73.0))
+          val b = sequenceOf(Reading(10, "B", 79.0), Reading(30, "B", 79.5), Reading(50, "B", 81.5))
+          val timeline = mergeByTime(listOf(a, b)).toList()
+          println(timeline.map { "${it.atMs}${it.sensor}" })
+          val alarm = Hysteresis(enter = 80.0, exit = 75.0)
+          for (r in timeline) {
+              alarm.update(r.celsius)?.let { on -> println("${r.atMs} ms alarm ${if (on) "ON" else "OFF"}") }
+          }
+          val flips = timeline.map { it.celsius > 80.0 }.zipWithNext().count { (x, y) -> x != y }
+          println("a single threshold would have flipped $flips times")
+      }
+    expected: |-
+      [0A, 10B, 20A, 30B, 40A, 50B, 60A]
+      20 ms alarm ON
+      60 ms alarm OFF
+      a single threshold would have flipped 4 times
+    validation: *ran
+  - id: sketch-selection
+    kind: table
+    title: Sketch selection
+    note: What to reach for when exact is too expensive — and where the JVM already has it.
+    headers: [Question, Structure, Memory, Error, On the JVM]
+    rows:
+      - ["How many distinct users?", "HyperLogLog", "~12 KB for billions", "~0.8% standard error (16,384 registers)", "Apache DataSketches `HllSketch`"]
+      - ["How often did key X appear?", "Count-Min Sketch", "width × depth counters", "over-counts only, by at most e / width of all hits", "hand-rolled (above)"]
+      - ["Have I seen X before?", "Bloom filter", "~10 bits per key at 1%", "false positives only, while under the sized count", "Guava `BloomFilter`"]
+      - ["What are the top K keys?", "Misra–Gries / Space-Saving", "O(k)", "may miss keys at or below n / (k + 1); counts low by at most that", "DataSketches `FrequentItemsSketch` (`ItemsSketch` before 9.0)"]
+      - ["What is the p95 latency?", "DDSketch / KLL / t-digest", "O(log range) / O(1 / ε) / O(compression)", "DDSketch: ≤ α relative value error; KLL: ± ε·n rank; t-digest: tightest at the tails", "`com.datadoghq:sketches-java`, DataSketches `KllDoublesSketch`, `com.tdunning:t-digest`, HdrHistogram"]
+      - ["A uniform sample of k items", "Reservoir sampling", "O(k)", "unbiased: each item kept with probability k / n", "hand-rolled (above)"]
+      - ["A rolling average", "Ring buffer or EMA", "O(k) or O(1)", "exact / smoothed", "hand-rolled (above)"]
+      - ["Exact counts, bounded keys", "`HashMap` / `groupingBy().eachCount()`", "O(distinct)", "exact", "standard library"]
+  - id: streaming-pitfalls
+    kind: rules
+    title: Streaming pitfalls
+    note: The ones Kotlin makes easy to fall into.
+    items:
+      - tone: bad
+        text: "Unbounded buffers: `Channel(UNLIMITED)` or `buffer(UNLIMITED)` on a hot source grows until the process dies. State a capacity and an `onBufferOverflow`."
+      - tone: bad
+        text: "Using `StateFlow` as an event stream — it conflates and skips equal values, so events vanish. Events go through a `Channel` or a buffered `SharedFlow`."
+      - tone: bad
+        text: "`MutableSharedFlow()` with no buffer: `tryEmit` always returns `false` once anyone subscribes, busy or idle. Give it `extraBufferCapacity` and a `BufferOverflow` policy."
+      - tone: bad
+        text: "Blocking inside `collect` (`Thread.sleep`, file or socket I/O) stalls the whole pipeline. Suspend; wrap the blocking call in `withContext(Dispatchers.IO)`; or do the work in an upstream `map { }` and put `flowOn(Dispatchers.IO)` after it. `flowOn` moves only what is above it, never the `collect` block, and it inserts a buffer."
+      - tone: bad
+        text: "Measuring time with `System.currentTimeMillis()`: the wall clock jumps. Use `TimeSource.Monotonic` (or `System.nanoTime`) in production and a test source in tests."
+      - tone: bad
+        text: "Recomputing the whole window per event (O(n·k)) — slide it. Summing squares for variance — use Welford."
+      - tone: bad
+        text: "Assuming exactly-once delivery. Design for at-least-once and make the consumer idempotent."
+      - tone: good
+        text: "Decide the lateness policy for event time explicitly: drop, hold until a watermark, or re-open the window and re-emit."
+      - tone: good
+        text: "Instrument the stream itself: input rate, drop count, queue depth, end-to-end lag."

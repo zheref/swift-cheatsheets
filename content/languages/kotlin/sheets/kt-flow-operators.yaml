@@ -1,0 +1,550 @@
+id: kt-flow-operators
+concept: reactive.timing-operators
+scope: language
+title: "Flow Timing Operators — debounce, sample, timeout"
+group: Kotlin language
+subtitle: "debounce, sample, throttle by hand, delay, timeout, batching, drift-free tickers and backpressure — what each drops, proved under virtual time."
+applies:
+  platforms: [jvm, android]
+  runtime: Kotlin/JVM with kotlinx.coroutines
+  requires: [kotlinx-coroutines-core, kotlinx-coroutines-test]
+  versions: { kotlin: ">=2.0", kotlinx-coroutines: ">=1.10", jvm: ">=17" }
+sources:
+  - title: Asynchronous Flow — Kotlin docs
+    url: https://kotlinlang.org/docs/flow.html
+  - title: kotlinx.coroutines.flow — API reference
+    url: https://kotlinlang.org/api/kotlinx.coroutines/kotlinx-coroutines-core/kotlinx.coroutines.flow/
+  - title: kotlinx-coroutines-test — API reference
+    url: https://kotlinlang.org/api/kotlinx.coroutines/kotlinx-coroutines-test/
+cards:
+  - id: operator-table
+    kind: table
+    title: Operator → meaning → Combine / RxJS
+    note: "Flow is suspension-based, so a slow collector slows the producer unless you say otherwise; Status is the opt-in the compiler asks for in coroutines 1.10.2."
+    headers: [Flow, What it does, Drops values?, Combine, RxJS, Status]
+    rows:
+      - ["`debounce(300)`", "emits after 300 ms of silence; the last of a burst", "yes, the rest of the burst", "`debounce(for:scheduler:)`", "`debounceTime`", "`@FlowPreview`"]
+      - ["`sample(1_000)`", "the latest value at each tick of a fixed period", "yes, all but one per period", "`throttle(for:scheduler:latest: true)` (close)", "`sampleTime`", "`@FlowPreview`"]
+      - ["`throttleFirst` (by hand)", "the first value, then nothing for the window", "yes", "`throttle(…, latest: false)`", "`throttleTime`", "not in the library"]
+      - ["`throttleLatest` (by hand)", "the first at once, then the newest per window", "yes", "`throttle(…, latest: true)`", "`throttleTime(t, s, { leading: true, trailing: true })`", "not in the library"]
+      - ["`transform { emit(it); delay(d) }`", "paces values: each shown at once, the next `d` later", "no", "`delay(for:scheduler:)` (shifts, does not pace)", "`concatMap(x => concat(of(x), timer(d).pipe(ignoreElements())))`", "stable"]
+      - ["`timeout(5.seconds)`", "fails with `TimeoutCancellationException` if no value arrives in time", "terminates", "`timeout(_:scheduler:)`", "`timeout`", "`@FlowPreview`"]
+      - ["`withTimeoutOrNull { flow.first() }`", "the first value, or `null`", "terminates", "`first()` + `timeout` + `replaceError`", "`firstValueFrom(src.pipe(timeout(t)))`", "stable"]
+      - ["`chunked(3)`", "lists of 3, by count only", "no", "`collect(3)`", "`bufferCount(3)`", "`@ExperimentalCoroutinesApi`"]
+      - ["`chunkedByTime` (by hand)", "flush when full or when the oldest item has waited long enough", "no", "`collect(.byTimeOrCount(…))`", "`bufferTime(t, null, n)`", "not in the library"]
+      - ["`conflate()` / `buffer()`", "a busy collector skips to the newest / the producer runs ahead", "conflate: yes", "`buffer(size:prefetch:whenFull:)`", "push-based: no equivalent needed", "stable"]
+      - ["`collectLatest` / `mapLatest`", "a new value cancels work on the previous one", "cancels work", "`map` + `switchToLatest`", "`switchMap`", "`mapLatest`: `@ExperimentalCoroutinesApi`"]
+  - id: debounce-search
+    kind: code
+    title: "debounce — search as you type"
+    note: "`debounce` waits for silence, `distinctUntilChanged` skips a query that settles where it was, and `mapLatest` cancels a stale request and catches its failure inside, since a `catch` after it ends the stream."
+    prerequisites: &runtest
+      - A Kotlin 2.x compiler (`kotlinc`), JDK 17 or later, `kotlinx-coroutines-core-jvm-1.10.2.jar` and `kotlinx-coroutines-test-jvm-1.10.2.jar`
+      - "Save as `main.kt`; run `kotlinc -cp kotlinx-coroutines-core-jvm-1.10.2.jar:kotlinx-coroutines-test-jvm-1.10.2.jar main.kt -d out && kotlin -cp out:kotlinx-coroutines-core-jvm-1.10.2.jar:kotlinx-coroutines-test-jvm-1.10.2.jar MainKt`"
+      - "Or, in a Gradle project: `implementation(\"org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.2\")` and `testImplementation(\"org.jetbrains.kotlinx:kotlinx-coroutines-test:1.10.2\")`"
+    code: |-
+      import kotlinx.coroutines.*
+      import kotlinx.coroutines.flow.*
+      import kotlinx.coroutines.test.*
+      import java.io.IOException
+
+      var calls = 0
+      suspend fun searchTracks(query: String): List<String> {
+          delay(200)                                                 // the catalogue API...
+          if (++calls == 1) throw IOException("503")                 // ...fails the first time
+          return listOf("Beat It", "Beautiful Day", "Bean Bag").filter { it.startsWith(query, ignoreCase = true) }
+      }
+
+      @OptIn(FlowPreview::class, ExperimentalCoroutinesApi::class)
+      fun main() = runTest {
+          // (pause before each keystroke in ms, the text): "bea", a pause, "beat" and back to "bea", "beau".
+          // The box then closes: on completion debounce emits the last value at once, without waiting.
+          val typing = listOf(0L to "b", 80L to "be", 80L to "bea", 500L to "beat", 120L to "bea", 600L to "beau")
+          val queries = flow {
+              for ((pause, text) in typing) {
+                  delay(pause)
+                  emit(text)
+              }
+          }
+
+          queries
+              .debounce(300)                                         // 300 ms of silence: they stopped typing
+              .distinctUntilChanged()                                // "bea" -> "beat" -> "bea": same query, skip
+              .onEach { println("${currentTime} ms: search '$it'") }
+              .mapLatest { q ->                                      // a newer query cancels the running request
+                  try {                                              // caught INSIDE; a catch after it ends it all
+                      "results ${searchTracks(q)}"
+                  } catch (e: IOException) {
+                      "search failed (${e.message}): show Retry"
+                  }
+              }
+              .collect { println("${currentTime} ms: $it") }
+      }
+    expected: |-
+      460 ms: search 'bea'
+      660 ms: search failed (503): show Retry
+      1380 ms: search 'beau'
+      1580 ms: results [Beautiful Day]
+    sources:
+      - title: debounce — kotlinx.coroutines API
+        url: https://kotlinlang.org/api/kotlinx.coroutines/kotlinx-coroutines-core/kotlinx.coroutines.flow/debounce.html
+    validation: &rantest
+      status: ran
+      toolchain: kotlinc 2.4.21, JVM 21.0.12.1, kotlinx-coroutines-core and -test 1.10.2
+      date: "2026-11-16"
+  - id: sample-progress
+    kind: code
+    title: "sample — one value per period from a fast source"
+    note: "Reach for `sample` when a source is faster than anyone can read (positions, sensors, download progress); it never waits for silence as `debounce` does."
+    prerequisites: *runtest
+    code: |-
+      import kotlinx.coroutines.*
+      import kotlinx.coroutines.flow.*
+      import kotlinx.coroutines.test.*
+      import java.util.Locale
+
+      fun playbackPositionMs(): Flow<Long> = flow {                // the player reports about every frame
+          var position = 0L
+          while (true) {
+              emit(position)
+              delay(17)
+              position += 17
+          }
+      }
+
+      fun label(ms: Long) = "%d:%02d.%03d".format(Locale.ROOT, ms / 60_000, ms / 1_000 % 60, ms % 1_000)
+
+      @OptIn(FlowPreview::class, ExperimentalCoroutinesApi::class)
+      fun main() = runTest {
+          var reported = 0
+          playbackPositionMs()
+              .onEach { reported++ }
+              .sample(1_000)                                       // the label needs one value a second, not sixty
+              .map(::label)
+              .take(3)
+              .collect { println("${currentTime} ms: label shows $it") }
+          println("$reported positions reported, 3 rendered")
+      }
+    expected: |-
+      1000 ms: label shows 0:00.986
+      2000 ms: label shows 0:01.989
+      3000 ms: label shows 0:02.992
+      177 positions reported, 3 rendered
+    sources:
+      - title: sample — kotlinx.coroutines API
+        url: https://kotlinlang.org/api/kotlinx.coroutines/kotlinx-coroutines-core/kotlinx.coroutines.flow/sample.html
+    validation: *rantest
+  - id: throttle-by-hand
+    kind: code
+    title: "throttleFirst — written by hand"
+    note: "Flow ships no throttle operator, so this one takes the leading edge (buttons) and stamps each value on arrival, even while the handler is still busy."
+    prerequisites: *runtest
+    code: |-
+      import kotlinx.coroutines.*
+      import kotlinx.coroutines.flow.*
+      import kotlinx.coroutines.test.*
+      import kotlin.time.*
+      import kotlin.time.Duration.Companion.milliseconds
+
+      // First value, then nothing until the window has passed (Rx throttleFirst). Time is injected.
+      // channelFlow collects upstream in its own coroutine, so taps are stamped when they ARRIVE,
+      // even while the collector is still busy with the previous one.
+      fun <T> Flow<T>.throttleFirst(window: Duration, time: TimeSource = TimeSource.Monotonic) = channelFlow {
+          var windowEnd: TimeMark? = null
+          collect { value ->
+              val end = windowEnd
+              if (end == null || end.hasPassedNow()) {              // no window yet, or it is over
+                  windowEnd = time.markNow() + window
+                  send(value)
+              }
+          }
+      }
+
+      fun timed(vararg events: Pair<Long, String>) = flow {
+          for ((pause, event) in events) {
+              delay(pause)
+              emit(event)
+          }
+      }
+
+      @OptIn(ExperimentalCoroutinesApi::class)
+      fun main() = runTest {                              // a double-tap must skip one track, not two
+          timed(0L to "tap 1", 120L to "tap 2", 600L to "tap 3")
+              .buffer()                                              // taps queue up, as with callbackFlow
+              .throttleFirst(500.milliseconds, testTimeSource)       // Monotonic in the app, virtual time here
+              .collect {
+                  println("${currentTime} ms: skip ($it)")
+                  delay(600)                                         // a 600 ms skip: tap 2 arrives meanwhile
+              }
+      }
+    expected: |-
+      0 ms: skip (tap 1)
+      720 ms: skip (tap 3)
+    validation: *rantest
+  - id: throttle-latest-by-hand
+    kind: code
+    title: "throttleLatest — written by hand"
+    note: "`conflate` plus a `delay` after each emit gives the first value at once and then the newest one per window, the shape a seek-bar drag needs."
+    prerequisites: *runtest
+    code: |-
+      import kotlinx.coroutines.*
+      import kotlinx.coroutines.flow.*
+      import kotlinx.coroutines.test.*
+      import kotlin.time.Duration
+      import kotlin.time.Duration.Companion.milliseconds
+
+      // First value at once, then the LATEST one per window: conflate keeps only the newest while we wait.
+      // (It also holds completion back by one window.)
+      fun <T> Flow<T>.throttleLatest(window: Duration): Flow<T> = conflate().transform {
+          emit(it)
+          delay(window)
+      }
+
+      fun timed(vararg events: Pair<Long, String>) = flow {
+          for ((pause, event) in events) {
+              delay(pause)
+              emit(event)
+          }
+      }
+
+      @OptIn(ExperimentalCoroutinesApi::class)
+      fun main() = runTest {                                  // one seek per 200 ms at most, the newest
+          timed(0L to "0:10", 50L to "0:12", 50L to "0:15", 50L to "0:19", 300L to "0:30")
+              .throttleLatest(200.milliseconds)
+              .collect { println("${currentTime} ms: seek to $it") }
+      }
+    expected: |-
+      0 ms: seek to 0:10
+      200 ms: seek to 0:19
+      450 ms: seek to 0:30
+    validation: *rantest
+  - id: delay-and-timeout
+    kind: code
+    title: "Pacing with delay, timeout and withTimeoutOrNull"
+    note: "`transform { emit; delay }` paces a stream, `timeout` fails it when the gap between values grows too long, and `withTimeoutOrNull` bounds a single wait."
+    prerequisites: *runtest
+    code: |-
+      import kotlinx.coroutines.*
+      import kotlinx.coroutines.flow.*
+      import kotlinx.coroutines.test.*
+      import kotlin.time.Duration.Companion.seconds
+
+      fun audioChunks(gapsMs: List<Long>): Flow<Int> = flow {           // chunks from the stream, with gaps
+          gapsMs.forEachIndexed { i, gap ->
+              delay(gap)
+              emit(i)
+          }
+          awaitCancellation()                                          // a live stream never completes
+      }
+
+      @OptIn(FlowPreview::class, ExperimentalCoroutinesApi::class)
+      fun main() = runTest {
+          // Pacing "Up next" banners: show each at once, then hold it 2 s (onEach { delay } would wait BEFORE each)
+          flowOf("Up next: Beat It", "Up next: Beautiful Day")
+              .transform {
+                  emit(it)
+                  delay(2_000)
+              }
+              .collect { println("${currentTime} ms: $it") }
+
+          // timeout: no chunk for 5 s means the stream stalled; the flow fails, catch turns it into a value
+          val start = currentTime
+          audioChunks(listOf(100, 200, 6_000))
+              .map { "chunk $it" }
+              .timeout(5.seconds)
+              .catch { e -> if (e is TimeoutCancellationException) emit("stalled: show Retry") else throw e }
+              .collect { println("+${currentTime - start} ms: $it") }
+
+          // withTimeoutOrNull: the first value, or give up
+          val ready = withTimeoutOrNull(2.seconds) { audioChunks(listOf(3_000)).first() }
+          println("player ready within 2 s? ${ready != null}")
+      }
+    expected: |-
+      0 ms: Up next: Beat It
+      2000 ms: Up next: Beautiful Day
+      +100 ms: chunk 0
+      +300 ms: chunk 1
+      +5300 ms: stalled: show Retry
+      player ready within 2 s? false
+    sources:
+      - title: timeout — kotlinx.coroutines API
+        url: https://kotlinlang.org/api/kotlinx.coroutines/kotlinx-coroutines-core/kotlinx.coroutines.flow/timeout.html
+    validation: *rantest
+  - id: batch-by-time-and-size
+    kind: code
+    title: Batching by time and size
+    note: "The built-in `Flow.chunked(size)` (experimental in 1.10.2) counts only; analytics uploads need \"3 events or 2 seconds, whichever first\"."
+    prerequisites: *runtest
+    code: |-
+      import kotlinx.coroutines.*
+      import kotlinx.coroutines.flow.*
+      import kotlinx.coroutines.sync.*
+      import kotlinx.coroutines.test.*
+      import kotlin.time.Duration
+      import kotlin.time.Duration.Companion.seconds
+
+      // Flush when the batch is full OR maxWait after its first item — whichever comes first.
+      fun <T> Flow<T>.chunkedByTime(maxSize: Int, maxWait: Duration): Flow<List<T>> = channelFlow {
+          val batch = mutableListOf<T>()
+          val lock = Mutex()                                           // the timer and the collector both flush
+          var timer: Job? = null
+
+          suspend fun flush(byTimer: Boolean = false) {                // always called holding the lock
+              if (!byTimer) timer?.cancel()                            // a timer never cancels itself
+              if (batch.isEmpty()) return
+              send(batch.toList())
+              batch.clear()
+          }
+
+          collect { item ->
+              lock.withLock {
+                  batch += item
+                  if (batch.size == maxSize) flush()
+                  else if (batch.size == 1) timer = launch {
+                      delay(maxWait)
+                      lock.withLock { flush(byTimer = true) }
+                  }
+              }
+          }
+          lock.withLock { flush() }                                    // upstream finished: send the rest
+      }
+
+      @OptIn(ExperimentalCoroutinesApi::class)
+      fun main() = runTest {
+          val pauses = listOf(0L, 100L, 100L, 100L, 100L, 4_100L, 10_000L)   // a burst of 5, then a trickle
+          val plays = pauses.withIndex().asFlow()
+              .onEach { delay(it.value) }
+              .map { "play-${it.index}" }                              // "track played" analytics events
+          plays.chunkedByTime(maxSize = 3, maxWait = 2.seconds)
+              .collect { println("${currentTime} ms: upload $it") }
+
+          println(flowOf(1, 2, 3, 4, 5).chunked(2).toList())             // built-in: by count only, experimental
+      }
+    expected: |-
+      200 ms: upload [play-0, play-1, play-2]
+      2300 ms: upload [play-3, play-4]
+      6500 ms: upload [play-5]
+      14500 ms: upload [play-6]
+      [[1, 2], [3, 4], [5]]
+    sources:
+      - title: chunked — kotlinx.coroutines API
+        url: https://kotlinlang.org/api/kotlinx.coroutines/kotlinx-coroutines-core/kotlinx.coroutines.flow/chunked.html
+    validation: *rantest
+  - id: ticker-without-drift
+    kind: code
+    title: A repeating flow without drift
+    note: "Sleep until the next deadline rather than for the period, and skip the slots missed during a stall instead of replaying them (the `Job` version is in the Timers, Delays & Scheduled Work sheet; `channels.ticker` is `@ObsoleteCoroutinesApi`)."
+    prerequisites: *runtest
+    code: |-
+      import kotlinx.coroutines.*
+      import kotlinx.coroutines.flow.*
+      import kotlinx.coroutines.test.*
+      import kotlin.time.*
+      import kotlin.time.Duration.Companion.seconds
+
+      // Drifts: each tick waits `period` AFTER the collector finished with the previous one
+      fun naiveTicker(period: Duration): Flow<Int> = flow {
+          var n = 0
+          while (true) {
+              emit(n++)
+              delay(period)
+          }
+      }
+
+      // No drift: ticks are due at start + k * period. After a stall (a slow collector, a GC pause,
+      // a sleeping device) the missed slots are skipped, not fired in a burst, and the phase is kept.
+      fun ticker(period: Duration, time: TimeSource = TimeSource.Monotonic): Flow<Int> = flow {
+          val start = time.markNow()
+          var n = 0
+          var next = period
+          while (true) {
+              emit(n++)
+              val now = start.elapsedNow()
+              while (next <= now) next += period                     // late: skip the slots already missed
+              delay(next - now)
+          }
+      }
+
+      @OptIn(ExperimentalCoroutinesApi::class)
+      fun main() = runTest {
+          suspend fun Flow<Int>.tickTimes(work: (Int) -> Long): List<Long> {
+              val t0 = currentTime
+              return take(6).map { tick ->
+                  delay(work(tick))                                  // the collector's work for this tick, in ms
+                  currentTime - t0                                   // when that work was done
+              }.toList()
+          }
+          println("naive:    ${naiveTicker(1.seconds).tickTimes { 30 }}")
+          println("deadline: ${ticker(1.seconds, testTimeSource).tickTimes { 30 }}")
+          println("stalled:  ${ticker(1.seconds, testTimeSource).tickTimes { if (it == 1) 4_500 else 30 }}")
+      }
+    expected: |-
+      naive:    [30, 1060, 2090, 3120, 4150, 5180]
+      deadline: [30, 1030, 2030, 3030, 4030, 5030]
+      stalled:  [30, 5500, 6030, 7030, 8030, 9030]
+    validation: *rantest
+  - id: conflate-buffer-collect-latest
+    kind: code
+    title: "conflate, buffer, collectLatest — and what each drops"
+    note: "When the collector is slower than the producer, choose who pays: the producer waits, the buffer grows, old values go, or old work is cancelled."
+    prerequisites: *runtest
+    code: |-
+      import kotlinx.coroutines.*
+      import kotlinx.coroutines.flow.*
+      import kotlinx.coroutines.test.*
+      import java.util.Locale
+
+      // The waveform view: a new frame of levels every 100 ms, and drawing one takes 250 ms
+      fun levels(): Flow<Int> = flow {
+          for (frame in 1..6) {
+              emit(frame)
+              delay(100)
+          }
+      }
+
+      @OptIn(ExperimentalCoroutinesApi::class)
+      fun main() = runTest {
+          val drawn = mutableListOf<Int>()
+          suspend fun draw(frame: Int) {
+              delay(250)
+              drawn += frame
+          }
+          suspend fun measure(name: String, run: suspend () -> Unit) {
+              drawn.clear()
+              val t0 = currentTime
+              run()
+              println("%-13s drew %-18s in %4d ms".format(Locale.ROOT, name, drawn, currentTime - t0))
+          }
+
+          measure("default") { levels().collect(::draw) }                // the producer waits for the drawer
+          measure("buffer()") { levels().buffer().collect(::draw) }      // producer runs ahead; nothing dropped
+          measure("conflate()") { levels().conflate().collect(::draw) }  // the drawer skips to the newest frame
+          measure("collectLatest") { levels().collectLatest(::draw) }    // a new frame cancels the drawing
+      }
+    expected: |-
+      default       drew [1, 2, 3, 4, 5, 6] in 2100 ms
+      buffer()      drew [1, 2, 3, 4, 5, 6] in 1500 ms
+      conflate()    drew [1, 3, 5, 6]       in 1000 ms
+      collectLatest drew [6]                in  750 ms
+    sources:
+      - title: Asynchronous Flow — Buffering (Kotlin docs)
+        url: https://kotlinlang.org/docs/flow.html#buffering
+    validation: *rantest
+  - id: virtual-time-and-owning-the-job
+    kind: code
+    title: Owning the collecting Job
+    note: "Keep the `Job` from `launchIn`, make `start()` idempotent and `stop()` cancel it, so a second start never adds a collector and nothing runs after stop."
+    prerequisites: *runtest
+    code: |-
+      import kotlinx.coroutines.*
+      import kotlinx.coroutines.flow.*
+      import kotlinx.coroutines.test.*
+
+      class ProgressLabel(private val scope: CoroutineScope, private val positionsMs: Flow<Long>) {
+          private var job: Job? = null                              // touched from one thread (the UI's)
+          var text = "0:00"
+              private set
+
+          fun start() {
+              if (job?.isActive == true) return                     // idempotent: never a second collector
+              job = positionsMs
+                  .map { ms -> "%d:%02d".format(java.util.Locale.ROOT, ms / 60_000, ms / 1_000 % 60) }
+                  .distinctUntilChanged()                           // one update a second, not fifty
+                  .onEach { text = it }
+                  .launchIn(scope)                                  // the Job is the handle: keep it
+          }
+
+          fun stop() {
+              job?.cancel()
+              job = null
+          }
+      }
+
+      @OptIn(ExperimentalCoroutinesApi::class)
+      fun main() = runTest {
+          var subscriptions = 0
+          val positions = flow {                                    // the player: a position every 20 ms
+              var ms = 0L
+              while (true) {
+                  emit(ms)
+                  delay(20)
+                  ms += 20
+              }
+          }.onStart { subscriptions++ }
+
+          val label = ProgressLabel(backgroundScope, positions)     // backgroundScope: cancelled when the test ends
+          label.start()
+          label.start()                                             // start() runs on every resume
+          advanceTimeBy(66_000)                                     // 66 s of playback, in no real time
+          println("${currentTime} ms: ${label.text}, subscriptions = $subscriptions")
+
+          label.stop()
+          advanceTimeBy(10_000)
+          println("${currentTime} ms: ${label.text} (stopped: nothing collects)")
+      }
+    expected: |-
+      66000 ms: 1:05, subscriptions = 1
+      76000 ms: 1:05 (stopped: nothing collects)
+    sources:
+      - title: Testing Kotlin coroutines on Android — Android Developers
+        url: https://developer.android.com/kotlin/coroutines/test
+    validation: *rantest
+  - id: advance-time-vs-run-current
+    kind: code
+    title: "Virtual time: advanceTimeBy, runCurrent, advanceUntilIdle"
+    note: "`advanceTimeBy` runs the tasks due before its target, `runCurrent` those due at the current instant, and `advanceUntilIdle` stops once only `backgroundScope` work is left."
+    prerequisites: *runtest
+    code: |-
+      import kotlinx.coroutines.*
+      import kotlinx.coroutines.test.*
+
+      @OptIn(ExperimentalCoroutinesApi::class)
+      fun main() = runTest {
+          var positionMs = 0L
+          backgroundScope.launch {                                  // the player: a position every 20 ms
+              while (true) {
+                  delay(20)
+                  positionMs += 20
+              }
+          }
+
+          advanceTimeBy(65_000)                                     // runs every task due BEFORE 65 000 ms
+          println("$currentTime ms: position $positionMs")
+          runCurrent()                                              // ...and this runs the ones due AT 65 000 ms
+          println("$currentTime ms: position $positionMs")
+          advanceUntilIdle()                                        // background work alone is not waited for
+          println("$currentTime ms: position $positionMs (it skips backgroundScope)")
+      }
+    expected: |-
+      65000 ms: position 64980
+      65000 ms: position 65000
+      65000 ms: position 65000 (it skips backgroundScope)
+    sources:
+      - title: kotlinx-coroutines-test — API reference
+        url: https://kotlinlang.org/api/kotlinx.coroutines/kotlinx-coroutines-test/
+    validation: *rantest
+  - id: timing-safety-checklist
+    kind: rules
+    title: Safety checklist for timing in Flow
+    note: The lifetime bugs outnumber the timing bugs.
+    items:
+      - tone: good
+        text: "Keep every `Job` that `launchIn` or `launch` returns; cancel it in `stop()`, and cancel before restarting so timers never pile up."
+      - tone: good
+        text: "Test with `runTest`: `delay` is virtual, so a 5-minute timeout test takes milliseconds. Launch never-ending collectors in `backgroundScope`."
+      - tone: good
+        text: "Inject a `TimeSource` into anything that compares time itself (`throttleFirst`, tickers); pass `testTimeSource` in tests."
+      - tone: good
+        text: "Periodic work sleeps until the next deadline (`start + k * period`) and skips the slots it missed — never a fixed period after the work, never a burst of late ticks."
+      - tone: good
+        text: "Catch inside `mapLatest` / `flatMapLatest` / `transformLatest`: a `catch` after the operator ends the whole stream on the first failure."
+      - tone: good
+        text: "Mark preview and experimental operators honestly: `@OptIn(FlowPreview::class)` for `debounce`, `sample`, `timeout`; `@OptIn(ExperimentalCoroutinesApi::class)` for `mapLatest`, `flatMapLatest`, `chunked`."
+      - tone: bad
+        text: "`debounce` on a value that must arrive (a payment status, a final position): it drops every value but the last of a burst."
+      - tone: bad
+        text: "`TimeSource.Monotonic` or `System.nanoTime()` inside an operator you test with `runTest`: real time does not move with virtual time."
+      - tone: bad
+        text: "`withTimeout` throws `TimeoutCancellationException`, a `CancellationException`: a broad `catch (e: Exception)` that handles it also swallows real cancellation. Use `withTimeoutOrNull`, or catch the timeout type alone."
+      - tone: neutral
+        text: "Flow has no `throttle`: write the one you mean and name it for its edge (`throttleFirst`, `throttleLatest`), or use `sample` when a fixed period is what you want."

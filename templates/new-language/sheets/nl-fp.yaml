@@ -1,0 +1,41 @@
+id: nl-fp
+concept: principles.functional
+scope: shared
+title: Functional Programming
+group: Shared concepts
+subtitle: "TODO: one line saying what this sheet answers."
+applies:
+  platforms:
+    - todo
+  runtime: "TODO: the runtime in words"
+  versions:
+    todo: ">=0"
+sources:
+  - title: "TODO: the primary documentation"
+    url: https://example.com/
+cards:
+  - id: must-cover
+    kind: rules
+    title: What this sheet must cover
+    note: Required by content/aspects.yaml (functional-programming / fp). Replace this card with real ones that answer every point.
+    items:
+      - tone: neutral
+        text: pure functions and immutability in the language; imperative to declarative
+      - tone: neutral
+        text: higher-order functions, composition, currying or partial application
+      - tone: neutral
+        text: optional and result types as containers; making illegal states unrepresentable
+      - tone: neutral
+        text: laziness and memoization; the trade-offs to say out loud
+  - id: example
+    kind: code
+    title: "TODO: a practical example"
+    note: "TODO: one line on when a reader reaches for this."
+    prerequisites:
+      - "TODO: the toolchain and version"
+      - "TODO: where to save the snippet and the command that runs it"
+    code: "// TODO: the whole program — what is on the page is what runs"
+    expected: "TODO: the output it prints, or the effect in words"
+    validation:
+      status: excerpt
+      host: "TODO: replace with 'ran' or 'compiled' plus toolchain and date once it is proved"

@@ -1,0 +1,41 @@
+id: nl-ui-programmatic
+concept: ui.programmatic
+scope: platform
+title: Programmatic UI — Building the Tree by Hand
+group: Platform
+subtitle: "TODO: one line saying what this sheet answers."
+applies:
+  platforms:
+    - todo
+  runtime: "TODO: the runtime in words"
+  versions:
+    todo: ">=0"
+sources:
+  - title: "TODO: the primary documentation"
+    url: https://example.com/
+cards:
+  - id: must-cover
+    kind: rules
+    title: What this sheet must cover
+    note: Required by content/aspects.yaml (ui-layers / ui-programmatic). Replace this card with real ones that answer every point.
+    items:
+      - tone: neutral
+        text: "the stack's imperative UI layer (UIKit, the DOM and jQuery, Android Views, code-behind): creating, configuring and inserting elements in code"
+      - tone: neutral
+        text: events and handlers, and keeping the screen in sync with the data by hand
+      - tone: neutral
+        text: lists that recycle or update in place, and layout constraints in code
+      - tone: neutral
+        text: the same small screen as the declarative sheet, so the two can be compared
+  - id: example
+    kind: code
+    title: "TODO: a practical example"
+    note: "TODO: one line on when a reader reaches for this."
+    prerequisites:
+      - "TODO: the toolchain and version"
+      - "TODO: where to save the snippet and the command that runs it"
+    code: "// TODO: the whole program — what is on the page is what runs"
+    expected: "TODO: the output it prints, or the effect in words"
+    validation:
+      status: excerpt
+      host: "TODO: replace with 'ran' or 'compiled' plus toolchain and date once it is proved"

@@ -1,0 +1,468 @@
+id: kt-fp
+concept: principles.functional
+scope: shared
+title: "Functional Programming in Kotlin"
+group: Design & practice
+subtitle: "Pure functions, immutable values and functions as data — the collection operators, function types and references, nullable and Result containers, sealed types, Sequence, tailrec and inline — every example run."
+applies:
+  platforms: [jvm, android]
+  runtime: Kotlin/JVM (the standard library); the same code runs on Android
+  versions: { kotlin: ">=2.0", jvm: ">=17" }
+sources:
+  - title: Higher-order functions and lambdas — Kotlin docs
+    url: https://kotlinlang.org/docs/lambdas.html
+  - title: Collection operations overview — Kotlin docs
+    url: https://kotlinlang.org/docs/collection-operations.html
+  - title: Sequences — Kotlin docs
+    url: https://kotlinlang.org/docs/sequences.html
+  - title: Inline functions — Kotlin docs
+    url: https://kotlinlang.org/docs/inline-functions.html
+  - title: Functions (tail recursive functions) — Kotlin docs
+    url: https://kotlinlang.org/docs/functions.html
+cards:
+  - id: core-ideas
+    kind: rules
+    title: Core ideas
+    note: The vocabulary, and where Kotlin gives it to you.
+    items:
+      - tone: modern
+        text: "**Pure function** — same input, same output, no observable side effects. Trivially testable and safe to call from any coroutine."
+      - tone: modern
+        text: "**Immutability** — `val` by default, read-only `List`/`Map` in signatures, and change as a new value with `copy(...)`."
+      - tone: modern
+        text: "**Functions are values** — function types `(Order) -> Boolean`, lambdas, and references `::isRefundable`, `Order::id`."
+      - tone: modern
+        text: "**Expressions over statements** — `if`, `when` and `try` return values, so most `var`s disappear."
+      - tone: modern
+        text: "**Algebraic data types** — `data class` is AND (a product), a `sealed interface` is OR (a sum). Make illegal states unrepresentable."
+      - tone: neutral
+        text: "Kotlin is multi-paradigm: use FP where it clarifies (transforms, pipelines, state), and a plain loop where it reads better."
+  - id: imperative-to-declarative
+    kind: compare
+    title: Imperative → declarative
+    note: Say what you want — filter, transform, aggregate — and let the operator names carry the meaning.
+    prerequisites: &run
+      - A Kotlin 2.x compiler (`kotlinc`) and JDK 17 or later
+      - "Save as `main.kt`; run `kotlinc main.kt -include-runtime -d main.jar && java -jar main.jar`"
+    columns:
+      - label: Imperative
+        tone: legacy
+        code: |-
+          data class Order(val id: String, val customer: String, val totalCents: Long, val delivered: Boolean)
+
+          val orders = listOf(
+              Order("A-1", "ada", 4200, delivered = true),
+              Order("A-2", "linus", 1500, delivered = false),
+              Order("A-3", "ada", 9900, delivered = true),
+              Order("A-4", "grace", 2500, delivered = true),
+          )
+
+          fun main() {
+              val customers = mutableListOf<String>()
+              for (order in orders) {
+                  if (order.delivered && order.totalCents >= 2000) {
+                      val name = order.customer.uppercase()
+                      if (name !in customers) customers.add(name)
+                  }
+              }
+              customers.sort()
+
+              var revenue = 0L
+              for (order in orders) if (order.delivered) revenue += order.totalCents
+
+              val totals = mutableMapOf<String, Long>()
+              for (order in orders) totals[order.customer] = (totals[order.customer] ?: 0L) + order.totalCents
+
+              println(customers)
+              println(revenue)
+              println(totals)
+          }
+      - label: Declarative
+        tone: good
+        code: |-
+          data class Order(val id: String, val customer: String, val totalCents: Long, val delivered: Boolean)
+
+          val orders = listOf(
+              Order("A-1", "ada", 4200, delivered = true),
+              Order("A-2", "linus", 1500, delivered = false),
+              Order("A-3", "ada", 9900, delivered = true),
+              Order("A-4", "grace", 2500, delivered = true),
+          )
+
+          fun main() {
+              val customers = orders
+                  .filter { it.delivered && it.totalCents >= 2000 }
+                  .map { it.customer.uppercase() }
+                  .distinct()
+                  .sorted()
+
+              val revenue = orders.filter(Order::delivered).sumOf { it.totalCents }
+
+              val totals = orders
+                  .groupBy(Order::customer)                     // keeps first-seen key order
+                  .mapValues { (_, ordersOfCustomer) -> ordersOfCustomer.sumOf { it.totalCents } }
+
+              println(customers)
+              println(revenue)
+              println(totals)
+          }
+    expected: |-
+      [ADA, GRACE]
+      16600
+      {ada=14100, linus=1500, grace=2500}
+    validation: &ran
+      status: ran
+      toolchain: kotlinc 2.4.21, JVM 21.0.12.1
+      date: "2026-11-16"
+  - id: higher-order-functions
+    kind: table
+    title: Higher-order functions to know cold
+    note: "All are on `Iterable` and most on `Sequence`; the streaming ones (`map`, `filter`, `fold`, `zip`, `runningFold`) also exist on `Flow`."
+    headers: [Function, What it does, Example]
+    rows:
+      - ["`map` / `mapNotNull`", "transform; drop the nulls", "`raw.mapNotNull { it.toIntOrNull() }`"]
+      - ["`filter` / `filterNot` / `filterIsInstance<T>()`", "keep matches; keep a subtype", "`events.filterIsInstance<Purchased>()`"]
+      - ["`flatMap` / `flatten`", "map to lists, then join them", "`orders.flatMap { it.lines }`"]
+      - ["`fold` / `reduce`", "accumulate; `reduce` throws on empty", "`lines.fold(0L) { acc, l -> acc + l.cents }`"]
+      - ["`sumOf` / `maxByOrNull` / `minOf`", "aggregate by a selector", "`orders.maxByOrNull { it.totalCents }`"]
+      - ["`groupBy` / `associateBy` / `associateWith`", "to a `Map` of lists / of one value", "`users.associateBy { it.id }`"]
+      - ["`partition`", "split by a predicate into a `Pair`", "`val (paid, unpaid) = orders.partition { it.isPaid }`"]
+      - ["`zip` / `zipWithNext`", "pair two lists; pair neighbours", "`prices.zipWithNext { a, b -> b - a }`"]
+      - ["`chunked` / `windowed`", "batches; sliding windows", "`ids.chunked(50)` for a batch API"]
+      - ["`any` / `all` / `none` / `count`", "predicates over the whole", "`cart.items.all { it.inStock }`"]
+      - ["`firstOrNull` / `singleOrNull`", "find without throwing", "`users.firstOrNull { it.email == email }`"]
+      - ["`sortedWith(compareBy(...))`", "multi-key order", "`sortedWith(compareBy({ it.country }, { -it.totalCents }))`"]
+      - ["`runningFold` / `scan`", "every intermediate accumulator", "`deposits.runningFold(0L) { b, d -> b + d }`"]
+  - id: function-values
+    kind: code
+    title: "Function types, references, composition and partial application"
+    note: "Store and combine behaviour as values, and partially apply with a plain lambda — it reads better in Kotlin than a curried chain."
+    prerequisites: *run
+    code: |-
+      data class Order(val id: String, val totalCents: Long, val country: String)
+
+      // A function type is a value: store it, pass it, return it.
+      val isLarge: (Order) -> Boolean = { it.totalCents >= 10_000 }
+
+      fun isDomestic(order: Order): Boolean = order.country == "FR"
+
+      // Composition: a new function from two existing ones.
+      infix fun <A, B, C> ((A) -> B).andThen(next: (B) -> C): (A) -> C = { next(this(it)) }
+
+      // Partial application: fix the rate now, supply the amount later.
+      val addTax: (percent: Int, cents: Long) -> Long = { percent, cents -> cents + cents * percent / 100 }
+      val withFrenchVat: (Long) -> Long = { cents -> addTax(20, cents) }
+
+      fun main() {
+          val orders = listOf(Order("A-1", 12_000, "FR"), Order("A-2", 4_000, "DE"), Order("A-3", 15_000, "DE"))
+          println(orders.filter(isLarge).map(Order::id))
+          println(orders.filter(::isDomestic).map(Order::id))        // function and property references
+
+          val grossTotal = Order::totalCents andThen withFrenchVat
+          println(orders.filter(isLarge).map(grossTotal))
+      }
+    expected: |-
+      [A-1, A-3]
+      [A-1]
+      [14400, 18000]
+    validation: *ran
+  - id: lambdas-with-receivers
+    kind: code
+    title: Lambdas with receivers and type-safe builders
+    note: "A `T.() -> Unit` parameter makes `this` the builder inside the block, which is how `buildString`, `apply`, Compose modifiers and the Gradle Kotlin DSL read like configuration."
+    prerequisites: *run
+    code: |-
+      import java.util.Locale
+
+      @DslMarker
+      annotation class ReceiptDsl                                 // stops nested blocks reaching outer receivers
+
+      @ReceiptDsl
+      class ReceiptBuilder {
+          private val lines = mutableListOf<Pair<String, Long>>()
+          var footer: String = ""
+
+          fun line(item: String, cents: Long) {
+              lines += item to cents
+          }
+
+          fun build(): String = buildString {                     // a StringBuilder.() -> Unit block
+              lines.forEach { (item, cents) -> appendLine(item.padEnd(8) + formatCents(cents)) }
+              appendLine("TOTAL".padEnd(8) + formatCents(lines.sumOf { it.second }))
+              if (footer.isNotEmpty()) append(footer)
+          }
+      }
+
+      fun formatCents(cents: Long): String = "%d.%02d".format(Locale.ROOT, cents / 100, cents % 100)
+
+      fun receipt(block: ReceiptBuilder.() -> Unit): String = ReceiptBuilder().apply(block).build()
+
+      fun main() {
+          val text = receipt {
+              line("mug", 1200)                                   // this.line(...): this is the builder
+              line("lamp", 9900)
+              footer = "Thank you!"
+          }
+          println(text)
+      }
+    expected: |-
+      mug     12.00
+      lamp    99.00
+      TOTAL   111.00
+      Thank you!
+    sources:
+      - title: Type-safe builders — Kotlin docs
+        url: https://kotlinlang.org/docs/type-safe-builders.html
+    validation: *ran
+  - id: containers
+    kind: code
+    title: "Nullable, Result and a sealed Either as containers"
+    note: "`?.` is `map`, `?.let` is `flatMap`, `?:` is `getOrElse`; `Result` holds a caught exception; a sealed `Either` holds a domain error."
+    prerequisites: *run
+    code: |-
+      data class Customer(val id: String, val email: String?)
+
+      val customers = mapOf("c1" to Customer("c1", "ada@example.com"), "c2" to Customer("c2", null))
+
+      fun emailDomain(customerId: String): String =
+          customers[customerId]?.email?.substringAfter('@') ?: "no email"
+
+      fun parseCents(raw: String): Result<Long> =
+          runCatching { (raw.toBigDecimal() * 100.toBigDecimal()).longValueExact() }
+
+      sealed interface Either<out E, out A> {
+          data class Left<E>(val error: E) : Either<E, Nothing>
+          data class Right<A>(val value: A) : Either<Nothing, A>
+      }
+
+      inline fun <E, A, B> Either<E, A>.map(transform: (A) -> B): Either<E, B> = when (this) {
+          is Either.Left -> this
+          is Either.Right -> Either.Right(transform(value))
+      }
+
+      fun validateQuantity(quantity: Int): Either<String, Int> =
+          if (quantity in 1..10) Either.Right(quantity) else Either.Left("quantity must be 1-10")
+
+      fun main() {
+          println(listOf("c1", "c2", "c9").map(::emailDomain))
+          for (raw in listOf("12.50", "12,50")) {
+              val message = parseCents(raw)
+                  .map { it + 499 }                                    // add shipping only on success
+                  .fold(onSuccess = { "total $it cents" }, onFailure = { "invalid price: ${it::class.simpleName}" })
+              println(message)
+          }
+          println(validateQuantity(3).map { it * 1250 })
+          println(validateQuantity(0).map { it * 1250 })
+      }
+    expected: |-
+      [example.com, no email, no email]
+      total 1749 cents
+      invalid price: NumberFormatException
+      Right(value=3750)
+      Left(error=quantity must be 1-10)
+    validation: *ran
+  - id: illegal-states
+    kind: compare
+    title: Make illegal states unrepresentable
+    note: "Three independent fields allow eight combinations and the screen means four; a sealed interface has exactly four, and `when` proves you handled them."
+    prerequisites: *run
+    columns:
+      - label: Flags
+        tone: bad
+        code: |-
+          data class CheckoutState(
+              val isPaying: Boolean = false,
+              val receiptId: String? = null,
+              val error: String? = null,
+          )
+
+          fun render(state: CheckoutState): String = when {
+              state.isPaying -> "spinner"
+              state.error != null -> "error: ${state.error}"
+              state.receiptId != null -> "paid: ${state.receiptId}"
+              else -> "pay button"
+          }
+
+          fun main() {
+              var state = CheckoutState()
+              println(render(state))
+              state = state.copy(isPaying = true)
+              println(render(state))
+              state = state.copy(isPaying = false, error = "card declined")
+              println(render(state))
+              state = state.copy(error = null, receiptId = "R-77")   // forget error = null and it shows "error"
+              println(render(state))
+          }
+      - label: Sealed
+        tone: good
+        code: |-
+          sealed interface CheckoutState {
+              data object Idle : CheckoutState
+              data object Paying : CheckoutState
+              data class Paid(val receiptId: String) : CheckoutState
+              data class Failed(val reason: String) : CheckoutState
+          }
+
+          fun render(state: CheckoutState): String = when (state) {   // a fifth state will not compile until handled
+              CheckoutState.Idle -> "pay button"
+              CheckoutState.Paying -> "spinner"
+              is CheckoutState.Paid -> "paid: ${state.receiptId}"
+              is CheckoutState.Failed -> "error: ${state.reason}"
+          }
+
+          fun main() {
+              val journey = listOf(
+                  CheckoutState.Idle,
+                  CheckoutState.Paying,
+                  CheckoutState.Failed("card declined"),
+                  CheckoutState.Paid("R-77"),
+              )
+              journey.map(::render).forEach(::println)
+          }
+    expected: |-
+      pay button
+      spinner
+      error: card declined
+      paid: R-77
+    validation: *ran
+  - id: immutability
+    kind: code
+    title: "Immutability: val, read-only views and copy"
+    note: "`val` fixes the reference, `List` hides the mutators — neither makes the data immutable; snapshot with `toList()` at a boundary and change values with `copy`."
+    prerequisites: *run
+    code: |-
+      data class Cart(val items: List<String>, val coupon: String? = null)
+
+      fun main() {
+          val backing = mutableListOf("mug")
+          val readOnly: List<String> = backing          // a read-only VIEW of the same list
+          backing += "lamp"
+          println(readOnly)                             // sees the change
+
+          val snapshot = backing.toList()               // a copy: later changes do not reach it
+          backing += "desk"
+          println(snapshot)
+
+          val cart = Cart(items = listOf("mug"))
+          val withCoupon = cart.copy(coupon = "WELCOME5")
+          val withLamp = withCoupon.copy(items = withCoupon.items + "lamp")   // `+` returns a new list
+          println(cart)
+          println(withLamp)
+
+          // A read-only reference can be cast back: never trust List to mean "nobody will change it".
+          val sneaky = readOnly as? MutableList<String>
+          println("cast back to MutableList: ${sneaky != null}, size ${readOnly.size}")
+      }
+    expected: |-
+      [mug, lamp]
+      [mug, lamp]
+      Cart(items=[mug], coupon=null)
+      Cart(items=[mug, lamp], coupon=WELCOME5)
+      cast back to MutableList: true, size 3
+    validation: *ran
+  - id: laziness-and-memoization
+    kind: code
+    title: "Laziness and memoization: Sequence, lazy, a cache"
+    note: "A `Sequence` runs each element through the whole chain and stops at `take`, `by lazy` computes once on first read, and this `memoize` is for pure functions only and is unbounded and single-threaded (use `ConcurrentHashMap.computeIfAbsent` or an LRU cache when shared)."
+    prerequisites: *run
+    code: |-
+      data class Product(val sku: String, val priceCents: Long)
+
+      class SalesReport(private val orderTotals: List<Long>) {
+          val total: Long by lazy {                                  // thread-safe by default
+              println("computing total")
+              orderTotals.sum()
+          }
+      }
+
+      fun <A, R> memoize(compute: (A) -> R): (A) -> R {
+          val cache = HashMap<A, R>()
+          return { key -> cache.getOrPut(key) { compute(key) } }
+      }
+
+      fun main() {
+          var priced = 0
+          val firstPremium = (1..1_000_000).asSequence()
+              .map { Product("P-$it", it * 7L % 10_000).also { priced++ } }   // nothing runs yet
+              .filter { it.priceCents > 9_000 }
+              .take(2)
+              .toList()                                                        // the terminal step pulls
+          println("${firstPremium.map(Product::sku)} after pricing $priced of 1000000")
+
+          val report = SalesReport(listOf(4200, 1500))
+          println(report.total)
+          println(report.total)
+
+          var quotes = 0                                                      // only here to show the cache hits
+          val shippingQuote = memoize { postcode: String ->
+              quotes++
+              if (postcode.startsWith("75")) 0L else 590L
+          }
+          println(listOf("75001", "69001", "75001", "69001").map(shippingQuote))
+          println("computed $quotes quotes for 4 lookups")
+      }
+    expected: |-
+      [P-1286, P-1287] after pricing 1287 of 1000000
+      computing total
+      5700
+      5700
+      [0, 590, 0, 590]
+      computed 2 quotes for 4 lookups
+    validation: *ran
+  - id: tailrec-inline-reified
+    kind: code
+    title: "tailrec, inline and reified: three compiler keywords"
+    note: "`tailrec` turns self-recursion into a loop; `inline` pastes a lambda into the caller (no allocation, non-local `return`); `reified` keeps a type argument at run time."
+    prerequisites: *run
+    code: |-
+      // tailrec: the recursive call is the last thing the function does, so it compiles to a loop.
+      tailrec fun rootCategory(id: String, parentOf: Map<String, String>): String {
+          val parent = parentOf[id] ?: return id
+          return rootCategory(parent, parentOf)
+      }
+
+      // forEach is inline, so this `return` leaves firstOutOfStock itself.
+      fun firstOutOfStock(stock: Map<String, Int>): String? {
+          stock.forEach { (sku, quantity) -> if (quantity == 0) return sku }
+          return null
+      }
+
+      // reified works only in an inline function: the type is substituted at each call site.
+      inline fun <reified T> Map<String, Any>.valueAs(key: String): T? = this[key] as? T
+
+      fun main() {
+          val deepTree = (1 until 100_000).associate { "c$it" to "c${it - 1}" }   // c99999 -> ... -> c0
+          println(rootCategory("c99999", deepTree))           // without tailrec: StackOverflowError
+          println(firstOutOfStock(mapOf("mug" to 3, "lamp" to 0, "desk" to 0)))
+
+          val remoteConfig: Map<String, Any> = mapOf("retries" to 3, "region" to "eu-west-1")
+          val retries = remoteConfig.valueAs<Int>("retries")
+          val wrongType = remoteConfig.valueAs<Int>("region")          // a String: safely null, not a crash
+          println("$retries $wrongType")
+      }
+    expected: |-
+      c0
+      lamp
+      3 null
+    validation: *ran
+  - id: trade-offs
+    kind: rules
+    title: Trade-offs to say out loud
+    note: The answers that show you have used FP in production, not just read about it.
+    items:
+      - tone: good
+        text: "Pure functions and immutable `data class`es are safe to share across coroutines and threads with no locks — the reason Compose and `StateFlow` want immutable state."
+      - tone: good
+        text: "A sealed type with an exhaustive `when` turns a forgotten case into a compile error — the highest-value FP idea in everyday Kotlin."
+      - tone: bad
+        text: "Every `List` operator allocates a new list. For long chains over large data, or when you stop early, use `asSequence()`; for a handful of elements, plain lists are faster."
+      - tone: bad
+        text: "Read-only is not immutable: a `List` parameter may be a `MutableList` someone else changes. Copy at boundaries, or use `kotlinx.collections.immutable` for persistent collections."
+      - tone: bad
+        text: "Curried, point-free code fights the language — Kotlin favours named functions, trailing lambdas and named arguments; partially apply with a lambda, as in the function-values card."
+      - tone: bad
+        text: "`inline` copies the body into every call site — keep inline functions small; `reified` ones cannot be called from Java."
+      - tone: bad
+        text: "`runCatching` catches everything, including `CancellationException` in coroutines — rethrow it, or catch the specific exception instead."
+      - tone: neutral
+        text: "Arrow (`Either`, `Raise`, optics) is the library for typed functional errors; adopt it as a team decision, not in one file."

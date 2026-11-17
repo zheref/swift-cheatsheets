@@ -1,0 +1,531 @@
+id: kt-mvi
+concept: architecture.unidirectional-core
+scope: platform
+title: "MVI — Unidirectional State with a Reducer"
+group: Android
+subtitle: "State, action, reducer, effect, store — a pure reducer and a small store on StateFlow and a Channel, with failures as actions, cancellable effects, composition, selectors and tests, all on the JVM."
+applies:
+  platforms: [jvm, android]
+  runtime: Kotlin/JVM with kotlinx.coroutines
+  requires: [kotlinx-coroutines-core]
+  versions: { kotlin: ">=2.0", kotlinx-coroutines: ">=1.10", jvm: ">=17" }
+sources:
+  - title: UI layer — Unidirectional data flow (Android Developers)
+    url: https://developer.android.com/topic/architecture/ui-layer
+  - title: Coroutines and channels — Kotlin docs
+    url: https://kotlinlang.org/docs/channels.html
+  - title: The Composable Architecture (Point-Free)
+    url: https://github.com/pointfreeco/swift-composable-architecture
+cards:
+  - id: nouns-and-tca-twins
+    kind: table
+    title: The nouns, and their TCA twins
+    note: "Golden rule, as in TCA: the reducer never does async work, effects never write state — they send actions."
+    headers: [Noun, Kotlin MVI, "TCA", What it is]
+    rows:
+      - ["**State**", "`data class TodosState`", "`@ObservableState struct State`", "everything the screen renders, immutable"]
+      - ["**Action** (intent)", "`sealed interface TodosAction`", "`enum Action`", "everything that happened: user events and results"]
+      - ["**Reducer**", "`fun reduce(state, action): Next<State, Effect>`", "`Reduce { state, action in … }`", "pure and synchronous; returns new state plus effects to run"]
+      - ["**Effect**", "a data value the store hands to a runner that returns an `Action`", "`Effect<Action>` / `.run { send in }`", "the only place I/O and time live; a failure comes back as an action"]
+      - ["**Store**", "`StateFlow<State>` + a `Channel<Action>` read by one loop", "`Store` / `StoreOf<Feature>`", "serialises actions, holds state, runs effects"]
+      - ["**Dependencies**", "constructor parameters of the effect runner", "`@Dependency(\\.apiClient)`", "swapped for fakes in tests"]
+      - ["Cancellation", "a `Job` per effect id, or `collectLatest`", "`.cancellable(id:cancelInFlight:)`", "a newer effect replaces the running one"]
+      - ["Composition", "a parent reducer delegating to child reducers", "`Scope(state:action:)`", "each child sees only its slice"]
+      - ["Testing", "call `reduce` directly; call the effect runner with a fake; drive the store with `runTest`", "`TestStore` + `store.send` / `store.receive`", "state, effects and results are plain values"]
+  - id: pure-reducer
+    kind: code
+    title: "A minimal feature: state, actions, effects, a pure reducer"
+    note: "Effects come back as data, so the reducer stays a pure function you can call in a loop."
+    prerequisites: &run
+      - A Kotlin 2.x compiler (`kotlinc`) and JDK 17 or later
+      - "Save as `main.kt`; run `kotlinc main.kt -d out && kotlin -cp out MainKt`"
+    code: |-
+      data class Todo(val id: Int, val title: String, val done: Boolean = false)
+
+      data class TodosState(val todos: List<Todo> = emptyList(), val loading: Boolean = false,
+                            val error: String? = null)
+
+      sealed interface TodosAction {                              // everything that can happen
+          data object ScreenOpened : TodosAction
+          data class TodoToggled(val id: Int) : TodosAction
+          data class TodosLoaded(val todos: List<Todo>) : TodosAction
+          data class LoadFailed(val message: String) : TodosAction
+      }
+
+      sealed interface TodosEffect {                              // work the store must do: data, not code
+          data object FetchTodos : TodosEffect
+          data class SaveDone(val id: Int, val done: Boolean) : TodosEffect
+      }
+
+      data class Next(val state: TodosState, val effects: List<TodosEffect> = emptyList())
+
+      fun reduce(state: TodosState, action: TodosAction): Next = when (action) {
+          TodosAction.ScreenOpened ->
+              Next(state.copy(loading = true, error = null), listOf(TodosEffect.FetchTodos))
+          is TodosAction.TodosLoaded -> Next(state.copy(todos = action.todos, loading = false))
+          is TodosAction.LoadFailed -> Next(state.copy(loading = false, error = action.message))
+          is TodosAction.TodoToggled -> {
+              val todos = state.todos.map { if (it.id == action.id) it.copy(done = !it.done) else it }
+              val done = todos.first { it.id == action.id }.done
+              Next(state.copy(todos = todos), listOf(TodosEffect.SaveDone(action.id, done)))   // optimistic
+          }
+      }
+
+      fun main() {
+          var state = TodosState()
+          val actions = listOf(
+              TodosAction.ScreenOpened,
+              TodosAction.TodosLoaded(listOf(Todo(1, "Buy milk"), Todo(2, "Book flights"))),
+              TodosAction.TodoToggled(2),
+          )
+          for (action in actions) {
+              val next = reduce(state, action)
+              state = next.state
+              println("$state, effects=${next.effects}")
+          }
+      }
+    expected: |-
+      TodosState(todos=[], loading=true, error=null), effects=[FetchTodos]
+      TodosState(todos=[Todo(id=1, title=Buy milk, done=false), Todo(id=2, title=Book flights, done=false)], loading=false, error=null), effects=[]
+      TodosState(todos=[Todo(id=1, title=Buy milk, done=false), Todo(id=2, title=Book flights, done=true)], loading=false, error=null), effects=[SaveDone(id=2, done=true)]
+    validation: &ranplain
+      status: ran
+      toolchain: kotlinc 2.4.21, JVM 21.0.12.1
+      date: "2026-11-16"
+  - id: store-on-stateflow
+    kind: code
+    title: "A store: StateFlow, a Channel, one loop"
+    note: "One coroutine reads the action channel so the reducer runs one action at a time, and the store catches an effect's `IOException` and sends it back as an action, so the app does not crash and the loop lives on."
+    prerequisites: &runtest
+      - A Kotlin 2.x compiler (`kotlinc`), JDK 17 or later, `kotlinx-coroutines-core-jvm-1.10.2.jar` and `kotlinx-coroutines-test-jvm-1.10.2.jar`
+      - "Save as `main.kt`; run `kotlinc -cp kotlinx-coroutines-core-jvm-1.10.2.jar:kotlinx-coroutines-test-jvm-1.10.2.jar main.kt -d out && kotlin -cp out:kotlinx-coroutines-core-jvm-1.10.2.jar:kotlinx-coroutines-test-jvm-1.10.2.jar MainKt`"
+      - "Or, in a Gradle project: `implementation(\"org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.2\")` and `testImplementation(\"org.jetbrains.kotlinx:kotlinx-coroutines-test:1.10.2\")`"
+    code: |-
+      import kotlinx.coroutines.*
+      import kotlinx.coroutines.channels.Channel
+      import kotlinx.coroutines.flow.*
+      import kotlinx.coroutines.test.runTest
+      import java.io.IOException
+
+      data class TodosState(val titles: List<String> = emptyList(), val error: String? = null)
+
+      sealed interface TodosAction {
+          data object Opened : TodosAction
+          data class Loaded(val result: Result<List<String>>) : TodosAction
+      }
+
+      fun reduce(state: TodosState, action: TodosAction): Pair<TodosState, List<String>> = when (action) {
+          TodosAction.Opened -> state.copy(error = null) to listOf("/todos")          // effects, as data
+          is TodosAction.Loaded -> action.result.fold(
+              onSuccess = { TodosState(titles = it) },
+              onFailure = { state.copy(error = it.message) },
+          ) to emptyList()
+      }
+
+      class TodosStore(private val fetch: suspend (String) -> List<String>, private val scope: CoroutineScope) {
+          private val _state = MutableStateFlow(TodosState())
+          val state: StateFlow<TodosState> = _state.asStateFlow()
+          private val actions = Channel<TodosAction>(Channel.UNLIMITED)   // send() never suspends, never drops
+
+          init { scope.launch { for (action in actions) dispatch(action) } }   // one at a time: no races
+
+          private fun dispatch(action: TodosAction) {
+              val (next, effects) = reduce(_state.value, action)
+              _state.value = next
+              for (path in effects) scope.launch {          // beside the loop; IOException only: cancel passes
+                  val result = try { Result.success(fetch(path)) } catch (e: IOException) { Result.failure(e) }
+                  actions.send(TodosAction.Loaded(result))               // a throw becomes an action: no crash
+              }
+          }
+
+          fun send(action: TodosAction) { actions.trySend(action) }
+      }
+
+      fun main() = runTest {                                         // backgroundScope: viewModelScope in the app
+          val replies = ArrayDeque(listOf(null, listOf("Buy milk")))     // the fake API: it throws, then answers
+          val store = TodosStore({ replies.removeFirst() ?: throw IOException("503") }, backgroundScope)
+
+          store.send(TodosAction.Opened)
+          println(store.state.first { it.error != null })                // the fetch threw: now it is state
+          store.send(TodosAction.Opened)
+          println(store.state.first { it.titles.isNotEmpty() })          // and Retry works: the loop is alive
+      }
+    expected: |-
+      TodosState(titles=[], error=503)
+      TodosState(titles=[Buy milk], error=null)
+    validation: &rantest
+      status: ran
+      toolchain: kotlinc 2.4.21, JVM 21.0.12.1, kotlinx-coroutines-core and -test 1.10.2
+      date: "2026-11-16"
+  - id: events-not-setters
+    kind: compare
+    title: Actions are events, not setters
+    note: "Name what happened (`AddTapped`), not what to change (`SetSaving`); the rule then lives in the reducer — and both versions provably end in the same state."
+    columns:
+      - label: Setters — the view runs the logic
+        tone: bad
+        code: |-
+          data class TodosState(val draft: String = "", val titles: List<String> = emptyList(),
+                                val saving: Boolean = false)
+
+          sealed interface TodosAction {                         // setters: the view decides what happens
+              data class SetDraft(val text: String) : TodosAction
+              data class SetTitles(val titles: List<String>) : TodosAction
+              data class SetSaving(val saving: Boolean) : TodosAction
+          }
+
+          fun reduce(state: TodosState, action: TodosAction): TodosState = when (action) {
+              is TodosAction.SetDraft -> state.copy(draft = action.text)
+              is TodosAction.SetTitles -> state.copy(titles = action.titles)
+              is TodosAction.SetSaving -> state.copy(saving = action.saving)
+          }
+
+          fun main() {
+              var state = TodosState()
+              fun send(action: TodosAction) { state = reduce(state, action) }
+
+              send(TodosAction.SetDraft("Buy milk "))
+              if (state.draft.isNotBlank()) {                    // the Add button's handler: the rule is in the view
+                  send(TodosAction.SetTitles(state.titles + state.draft.trim()))   // and each caller repeats it
+                  send(TodosAction.SetDraft(""))
+                  send(TodosAction.SetSaving(true))
+              }
+              println(state)
+          }
+      - label: Events — the reducer runs the logic
+        tone: good
+        code: |-
+          data class TodosState(val draft: String = "", val titles: List<String> = emptyList(),
+                                val saving: Boolean = false)
+
+          sealed interface TodosAction {                         // events: what the user did
+              data class DraftChanged(val text: String) : TodosAction
+              data object AddTapped : TodosAction
+          }
+
+          fun reduce(state: TodosState, action: TodosAction): TodosState = when (action) {
+              is TodosAction.DraftChanged -> state.copy(draft = action.text)
+              TodosAction.AddTapped ->
+                  if (state.draft.isBlank()) state               // the rule lives here, tested once
+                  else state.copy(draft = "", titles = state.titles + state.draft.trim(), saving = true)
+          }
+
+          fun main() {
+              var state = TodosState()
+              fun send(action: TodosAction) { state = reduce(state, action) }
+
+              send(TodosAction.DraftChanged("Buy milk "))
+              send(TodosAction.AddTapped)                        // the view reports the tap and nothing else
+              println(state)
+          }
+    prerequisites: *run
+    expected: |-
+      TodosState(draft=, titles=[Buy milk], saving=true)
+    validation: *ranplain
+  - id: cancel-in-flight-debounce
+    kind: code
+    title: "Effects that cancel in flight — and debounce inside the store"
+    note: "A `Job` per effect id gives `cancelInFlight` and a `delay` at the start of the effect makes it a debounce, so only the last keystroke reaches the API (one effect stream can use `collectLatest` instead)."
+    prerequisites: *runtest
+    code: |-
+      import kotlinx.coroutines.*
+      import kotlinx.coroutines.channels.Channel
+      import kotlinx.coroutines.flow.*
+      import kotlinx.coroutines.test.runTest
+
+      data class SearchState(val query: String = "", val results: List<String> = emptyList())
+
+      sealed interface SearchAction {
+          data class QueryChanged(val query: String) : SearchAction
+          data class ResultsLoaded(val results: List<String>) : SearchAction   // tag it with its query in an app:
+      }                                                                           // see "Stale results" below
+
+      fun reduce(state: SearchState, action: SearchAction): Pair<SearchState, String?> = when (action) {
+          is SearchAction.QueryChanged -> SearchState(query = action.query) to action.query   // effect: search it
+          is SearchAction.ResultsLoaded -> state.copy(results = action.results) to null
+      }
+
+      class SearchStore(private val search: suspend (String) -> List<String>, private val scope: CoroutineScope) {
+          private val _state = MutableStateFlow(SearchState())
+          val state: StateFlow<SearchState> = _state.asStateFlow()
+          private val actions = Channel<SearchAction>(Channel.UNLIMITED)
+          private var searchJob: Job? = null                   // a Job per effect id; this feature has one
+
+          init { scope.launch { for (action in actions) dispatch(action) } }   // one at a time, as above
+
+          private fun dispatch(action: SearchAction) {
+              val (next, query) = reduce(_state.value, action)
+              _state.value = next
+              if (query == null) return
+              searchJob?.cancel()                              // cancel in flight: the newer search wins
+              searchJob = scope.launch {
+                  delay(300)                                   // debounce: the next keystroke cancels this wait
+                  actions.send(SearchAction.ResultsLoaded(search(query)))
+              }
+          }
+
+          fun send(action: SearchAction) { actions.trySend(action) }
+      }
+
+      fun main() = runTest {
+          val searched = mutableListOf<String>()               // the queries that reached the fake API
+          val store = SearchStore({ q -> listOf("Buy milk").also { searched += q } }, backgroundScope)
+          for (q in listOf("m", "mi", "mil")) {
+              store.send(SearchAction.QueryChanged(q))
+              delay(100)                                       // a keystroke every 100 ms (virtual time)
+          }
+          println("${store.state.first { it.results.isNotEmpty() }}, searched $searched")
+      }
+    expected: |-
+      SearchState(query=mil, results=[Buy milk]), searched [mil]
+    validation: *rantest
+  - id: stale-results-are-tagged
+    kind: code
+    title: Stale results — cancelling a Job does not recall an action
+    note: "A result already queued when its Job was cancelled still reaches the reducer, so tag it with what it was computed for and drop it when the state has moved on."
+    prerequisites: *run
+    code: |-
+      data class SearchState(val query: String = "", val results: List<String> = emptyList())
+
+      sealed interface SearchAction {
+          data class QueryChanged(val query: String) : SearchAction
+          data class ResultsLoaded(val query: String, val results: List<String>) : SearchAction   // tagged
+      }
+
+      fun reduce(state: SearchState, action: SearchAction): SearchState = when (action) {
+          is SearchAction.QueryChanged -> SearchState(query = action.query)
+          is SearchAction.ResultsLoaded ->
+              if (action.query == state.query) state.copy(results = action.results)
+              else state                                       // stale: for a query the user has already left
+      }
+
+      fun main() {
+          // An order the store's channel really delivers: the "milk" search finished just as "parcel"
+          // was typed, so its result was already queued when its Job was cancelled.
+          val delivered = listOf(
+              SearchAction.QueryChanged("milk"),
+              SearchAction.QueryChanged("parcel"),
+              SearchAction.ResultsLoaded("milk", listOf("Buy milk")),
+              SearchAction.ResultsLoaded("parcel", listOf("Mail parcel")),
+          )
+          delivered.runningFold(SearchState(), ::reduce).drop(1).forEach(::println)
+      }
+    expected: |-
+      SearchState(query=milk, results=[])
+      SearchState(query=parcel, results=[])
+      SearchState(query=parcel, results=[])
+      SearchState(query=parcel, results=[Mail parcel])
+    validation: *ranplain
+  - id: composing-reducers
+    kind: code
+    title: Composing child reducers into a parent
+    note: "Each child reduces its own slice, and the parent wraps child actions and keeps the cross-cutting ones such as sign-out."
+    prerequisites: *run
+    code: |-
+      data class TodosState(val titles: List<String> = emptyList())
+      sealed interface TodosAction { data class Added(val title: String) : TodosAction }
+      fun todosReducer(state: TodosState, action: TodosAction): TodosState = when (action) {
+          is TodosAction.Added -> state.copy(titles = state.titles + action.title)
+      }
+
+      data class SettingsState(val hideDone: Boolean = false)
+      sealed interface SettingsAction { data object HideDoneToggled : SettingsAction }
+      fun settingsReducer(state: SettingsState, action: SettingsAction): SettingsState = when (action) {
+          SettingsAction.HideDoneToggled -> state.copy(hideDone = !state.hideDone)
+      }
+
+      data class AppState(
+          val todos: TodosState = TodosState(),
+          val settings: SettingsState = SettingsState(),
+          val user: String? = "ana",
+      )
+
+      sealed interface AppAction {
+          data class Todos(val action: TodosAction) : AppAction           // a child's actions, wrapped
+          data class Settings(val action: SettingsAction) : AppAction
+          data object SignedOut : AppAction                               // the parent's own
+      }
+
+      fun appReducer(state: AppState, action: AppAction): AppState = when (action) {
+          is AppAction.Todos -> state.copy(todos = todosReducer(state.todos, action.action))   // child: its slice
+          is AppAction.Settings -> state.copy(settings = settingsReducer(state.settings, action.action))
+          AppAction.SignedOut -> AppState(user = null)          // cross-cutting: the parent resets every child
+      }
+
+      fun main() {
+          val actions = listOf(
+              AppAction.Todos(TodosAction.Added("Buy milk")),
+              AppAction.Settings(SettingsAction.HideDoneToggled),
+              AppAction.SignedOut,
+          )
+          actions.runningFold(AppState(), ::appReducer).drop(1).forEach(::println)
+      }
+    expected: |-
+      AppState(todos=TodosState(titles=[Buy milk]), settings=SettingsState(hideDone=false), user=ana)
+      AppState(todos=TodosState(titles=[Buy milk]), settings=SettingsState(hideDone=true), user=ana)
+      AppState(todos=TodosState(titles=[]), settings=SettingsState(hideDone=false), user=null)
+    validation: *ranplain
+  - id: selectors-derived-state
+    kind: code
+    title: Selecting derived state without recomputing everything
+    note: "`map` the inputs, `distinctUntilChanged`, then compute: unrelated state changes reach neither the computation nor the UI."
+    prerequisites: *runtest
+    code: |-
+      import kotlinx.coroutines.*
+      import kotlinx.coroutines.flow.*
+      import kotlinx.coroutines.test.*
+
+      data class Todo(val title: String, val done: Boolean = false)
+      data class TodosState(val todos: List<Todo> = emptyList(), val hideDone: Boolean = false,
+                            val syncing: Boolean = false)
+
+      // Selectors: small pure functions of state
+      fun openCount(state: TodosState) = state.todos.count { !it.done }
+      var visibleComputations = 0
+      fun visibleTodos(todos: List<Todo>, hideDone: Boolean): List<String> {
+          visibleComputations++                                     // imagine sorting and grouping 5 000 rows
+          return todos.filter { !hideDone || !it.done }.map { it.title }
+      }
+
+      @OptIn(ExperimentalCoroutinesApi::class)
+      fun main() = runTest {
+          val state = MutableStateFlow(TodosState(listOf(Todo("Buy milk"), Todo("Book flights"))))   // store state
+
+          val badge = state.map(::openCount).distinctUntilChanged()    // emits only when the number changes
+          val visible = state
+              .map { it.todos to it.hideDone }                         // pick the inputs...
+              .distinctUntilChanged()                                  // ...and recompute only when they change
+              .map { (todos, hideDone) -> visibleTodos(todos, hideDone) }
+              .distinctUntilChanged()                                  // same rows: do not re-render
+
+          val ui = UnconfinedTestDispatcher(testScheduler)
+          backgroundScope.launch(ui) { badge.collect { println("badge: $it") } }
+          backgroundScope.launch(ui) { visible.collect { println("list: $it") } }
+
+          state.update { it.copy(syncing = true) }                     // unrelated field: nothing re-renders
+          state.update { it.copy(todos = listOf(Todo("Buy milk", done = true), Todo("Book flights"))) }
+          state.update { it.copy(hideDone = true) }                    // the list changes, the badge does not
+          state.update { it.copy(syncing = false) }
+          println("5 states, list computed $visibleComputations times")
+      }
+    expected: |-
+      badge: 2
+      list: [Buy milk, Book flights]
+      badge: 1
+      list: [Book flights]
+      5 states, list computed 3 times
+    validation: *rantest
+  - id: testing-the-reducer
+    kind: code
+    title: Testing the reducer — a plain function
+    note: "The reducer needs no coroutines, no fakes and no store: give it a state and an action, check the state and the effects it returns."
+    prerequisites: *run
+    code: |-
+      data class TodosState(val titles: List<String> = emptyList(), val loading: Boolean = false,
+                            val error: String? = null)
+
+      sealed interface TodosAction {
+          data object Opened : TodosAction
+          data class Loaded(val titles: List<String>) : TodosAction
+          data class LoadFailed(val message: String?) : TodosAction
+      }
+
+      fun reduce(state: TodosState, action: TodosAction): Pair<TodosState, List<String>> = when (action) {
+          TodosAction.Opened -> state.copy(loading = true, error = null) to listOf("/todos")
+          is TodosAction.Loaded -> TodosState(titles = action.titles) to emptyList()
+          is TodosAction.LoadFailed -> state.copy(loading = false, error = action.message) to emptyList()
+      }
+
+      fun main() {                                                // no coroutines, no fakes: input -> output
+          val (opened, effects) = reduce(TodosState(error = "old"), TodosAction.Opened)
+          check(opened == TodosState(loading = true)) { "$opened" }        // a retry clears the old error
+          check(effects == listOf("/todos")) { "$effects" }                // and asks for exactly one fetch
+
+          val (failed, none) = reduce(opened, TodosAction.LoadFailed("offline"))
+          check(failed == TodosState(error = "offline") && none.isEmpty()) { "$failed" }
+
+          val (loaded, _) = reduce(failed, TodosAction.Loaded(listOf("Buy milk")))
+          check(loaded == TodosState(titles = listOf("Buy milk"))) { "$loaded" }
+          println("reducer tests passed")
+      }
+    expected: |-
+      reducer tests passed
+    validation: *ranplain
+  - id: testing-an-effect
+    kind: code
+    title: Testing an effect — success, failure and cancellation
+    note: "Call the effect runner the store uses with a fake dependency, and check that a failure comes back as an action while a cancellation does not."
+    prerequisites: *runtest
+    code: |-
+      import kotlinx.coroutines.*
+      import kotlinx.coroutines.test.runTest
+      import java.io.IOException
+
+      sealed interface TodosAction {
+          data class Loaded(val titles: List<String>) : TodosAction
+          data class LoadFailed(val message: String?) : TodosAction
+      }
+
+      fun interface TodoApi { suspend fun titles(): List<String> }
+
+      // The effect runner the store calls: its dependency comes in through the constructor
+      class TodoEffects(private val api: TodoApi) {
+          suspend fun fetchTodos(): TodosAction = try {
+              TodosAction.Loaded(api.titles())
+          } catch (e: IOException) {                          // only what the API throws: never Exception
+              TodosAction.LoadFailed(e.message)
+          }
+      }
+
+      fun main() = runTest {
+          val ok = TodoEffects { delay(2_000); listOf("Buy milk") }.fetchTodos()
+          check(ok == TodosAction.Loaded(listOf("Buy milk"))) { "$ok" }
+
+          val failed = TodoEffects { throw IOException("offline") }.fetchTodos()
+          check(failed == TodosAction.LoadFailed("offline")) { "$failed" }   // a failure is an action, not a throw
+
+          var result: TodosAction? = null
+          val job = launch { result = TodoEffects { awaitCancellation() }.fetchTodos() }
+          delay(100)
+          job.cancel()                                         // the store cancels it: a newer fetch won
+          job.join()
+          check(result == null) { "cancellation turned into $result" }       // not reported as a failed load
+          println("effect tests passed")
+      }
+    expected: |-
+      effect tests passed
+    sources:
+      - title: Testing Kotlin coroutines on Android — Android Developers
+        url: https://developer.android.com/kotlin/coroutines/test
+    validation: *rantest
+  - id: when-a-library-earns-its-place
+    kind: table
+    title: When a library earns its place
+    note: The hand-rolled store above is enough for most screens; reach for a library for tooling, multiplatform reach, or team-wide conventions.
+    headers: [Option, What it gives you, Earns its place when, Cost]
+    rows:
+      - ["Hand-rolled (this sheet)", "a reducer, a store, effects as data", "one app, a few screens, a team that reads the 30 lines", "you write cancellation, logging and test helpers yourself"]
+      - ["Orbit MVI", "an `OrbitContainerHost` with `orbitContainer(initial)` (Orbit 12; `ContainerHost` / `container` before); `intent { reduce { … }; postSideEffect(…) }`; an `orbit-test` module", "you want MVI on existing `ViewModel`s with little ceremony; Kotlin Multiplatform", "the reducer is a lambda inside the intent, not a standalone pure function"]
+      - ["MVIKotlin", "a `Store` of intents, state and labels (one-off outputs), with logging and time-travel debugging", "several platforms share stores; you want time travel and strict layering", "more types per feature; its own lifecycle and binding APIs"]
+      - ["Molecule (Cash App)", "a `@Composable` function that produces a `StateFlow` (`launchMolecule`, `moleculeFlow`) — no Compose UI", "presenters already think in Compose state; you want `if`/`LaunchedEffect` instead of operators", "needs the Compose compiler plugin in that module; recomposition rules apply to business logic"]
+  - id: mvi-rules
+    kind: rules
+    title: Rules and pitfalls
+    note: What goes wrong in a home-grown store.
+    items:
+      - tone: bad
+        text: "I/O, `delay` or `launch` inside the reducer: it stops being pure, and the order of actions no longer explains the state."
+      - tone: bad
+        text: "An effect that writes `_state` directly: two writers race, and the action log lies. Effects send actions."
+      - tone: bad
+        text: "`runCatching { }` around a suspending effect swallows `CancellationException`, so a cancelled search still reports \"failed\". Catch the I/O exceptions you expect."
+      - tone: good
+        text: "One action loop per store (a `Channel` read by one coroutine); `update { }` is enough only for a reducer with no effects, because its lambda may run more than once."
+      - tone: good
+        text: "Give every long-running effect an id, and cancel by id: search, polling, a timer started and stopped by actions."
+      - tone: good
+        text: "Catch an effect's expected failure (`IOException`, never `Exception`) in the store or the runner and send it as an action: an uncaught one crashes the app in `viewModelScope` and kills the loop in a plain `Job` scope."
+      - tone: good
+        text: "Cancelling a `Job` does not recall an action it already sent — tag results with the query or request id they were computed for."
+      - tone: neutral
+        text: "One-off outputs (navigate, show a snackbar) are state too: put them in `State` and clear them with an action once the UI has acted — see MVVM — ViewModel, UiState & Events."

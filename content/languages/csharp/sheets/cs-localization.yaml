@@ -1,0 +1,581 @@
+id: cs-localization
+concept: localization.practices
+scope: platform
+title: "Localization & Globalization"
+group: Quality & reach
+subtitle: "CurrentCulture, CurrentUICulture or invariant. Translated .resx resources with placeholders, plurals you select yourself, and dates, money, sorting and time zones per culture. Plus right-to-left, pseudo-localization and testing a culture in .NET MAUI, WPF, WinUI and Blazor."
+applies:
+  platforms: [dotnet]
+  runtime: ".NET 9 base class library (System.Globalization, System.Resources); culture data from ICU. UI wiring in .NET MAUI, WPF, WinUI or Blazor"
+  versions: { csharp: ">=13", dotnet: ">=9" }
+sources:
+  - title: Globalization and localization in .NET
+    url: https://learn.microsoft.com/en-us/dotnet/core/extensions/globalization-and-localization
+  - title: Globalization and ICU — .NET
+    url: https://learn.microsoft.com/en-us/dotnet/core/extensions/globalization-icu
+  - title: CultureInfo class — .NET API
+    url: https://learn.microsoft.com/en-us/dotnet/api/system.globalization.cultureinfo?view=net-9.0
+  - title: Localization — .NET MAUI
+    url: https://learn.microsoft.com/en-us/dotnet/maui/fundamentals/localization?view=net-maui-9.0
+  - title: ASP.NET Core Blazor globalization and localization
+    url: https://learn.microsoft.com/en-us/aspnet/core/blazor/globalization-localization?view=aspnetcore-9.0
+cards:
+  - id: three-cultures
+    kind: table
+    title: CurrentCulture, CurrentUICulture, InvariantCulture
+    note: "Each thread has two cultures that flow across `await` — one for formatting, one for translated text — and anything a machine reads back uses neither."
+    headers: [Culture, Decides, Use it for, Never for]
+    rows:
+      - ["`CultureInfo.CurrentCulture`", "number, date and currency formats; parsing; culture-sensitive compare and casing", "values shown to or typed by the user", "files, JSON, databases, logs, URLs"]
+      - ["`CultureInfo.CurrentUICulture`", "which `.resx` satellite `ResourceManager` and `IStringLocalizer` load", "the language of the UI text", "formatting numbers (a Spanish UI can still use US dates)"]
+      - ["`CultureInfo.InvariantCulture`", "a fixed, culture-independent format (English-like, never changes)", "**persisted and exchanged data**: `ToString(CultureInfo.InvariantCulture)`, the `\"O\"` date format", "text a person reads"]
+      - ["`StringComparison.Ordinal`", "not a culture: compares UTF-16 values", "keys, identifiers, file paths, protocol tokens", "sorting names for people"]
+      - ["who sets them", "MAUI and WPF/WinUI: the OS settings at startup. ASP.NET Core and Blazor Server: `UseRequestLocalization` per request. Blazor WebAssembly: the browser, or `CultureInfo.DefaultThreadCurrentCulture` before the app runs", "set both early; `DefaultThreadCurrent*` for new threads", "changing them mid-render (MAUI documents this as inconsistent across platforms)"]
+
+  - id: resources-in-the-app
+    kind: code
+    title: ".resx in a XAML app: resources, satellite assemblies, platform declarations"
+    note: "Keep one neutral `.resx` and one per language, which the build turns into satellite assemblies that lookups choose by `CurrentUICulture`."
+    prerequisites:
+      - "A .NET MAUI, WPF or WinUI app"
+      - "MAUI: add `Resources/Strings/AppResources.resx` (Access Modifier **Public**), translated copies with **No code generation**, and `<NeutralLanguage>en-US</NeutralLanguage>` in the project file"
+      - "MAUI on iOS and Mac Catalyst: list the languages under `CFBundleLocalizations` in each `Info.plist`; on Windows: replace `<Resource Language=\"x-generate\"/>` with one `<Resource Language=\"…\"/>` per language in `Package.appxmanifest`"
+    code: |-
+      <!-- AppResources.resx (AppResources.es.resx holds the same names, translated) -->
+      <data name="OrderShipped" xml:space="preserve">
+        <value>Order {0} shipped to {1} on {2:d}.</value>
+        <comment>{0} order number, {1} customer name, {2} ship date</comment>
+      </data>
+
+      // C#: the generated class and ResourceManager both read CurrentUICulture.
+      // Satellite assemblies are built to bin/<config>/<tfm>/es/Shop.resources.dll
+      var line = string.Format(CultureInfo.CurrentCulture, AppResources.OrderShipped,
+          order.Number, order.Customer, order.ShippedOn);
+      var manager = new ResourceManager("Shop.Resources.Strings.AppResources", typeof(AppResources).Assembly);
+      var spanish = manager.GetString("OrderShipped", CultureInfo.GetCultureInfo("es-MX")); // es-MX → es → neutral
+
+      <!-- .NET MAUI page (WPF: xmlns:props="clr-namespace:Shop.Properties" and the same x:Static) -->
+      <ContentPage xmlns:strings="clr-namespace:Shop.Resources.Strings" ...>
+          <Label Text="{x:Static strings:AppResources.OrdersTitle}" />
+      </ContentPage>
+
+      <!-- Platforms/iOS/Info.plist (and MacCatalyst): without this the app stays in English -->
+      <key>CFBundleLocalizations</key>
+      <array>
+          <string>en</string>
+          <string>es</string>
+      </array>
+      <key>CFBundleDevelopmentRegion</key>
+      <string>en</string>
+
+      <!-- Platforms/Windows/Package.appxmanifest -->
+      <Resources>
+          <Resource Language="en-US" />
+          <Resource Language="es-ES" />
+      </Resources>
+
+      <!-- MAUI follows the device's layout direction; to override it set FlowDirection="RightToLeft"
+           on the Window, page or root layout. WPF and WinUI: FlowDirection on the root element -->
+    expected: "An es-MX device sees `El pedido 1042 se envió a Ada el 08/03/2026.` (es-ES formats the date `8/3/2026`), a language without a translation falls back to the neutral English text, and an Arabic or Hebrew device lays the page out right to left."
+    applies:
+      platforms: [dotnet, android, ios, maccatalyst, windows]
+      requires: [.NET MAUI or WPF/WinUI]
+      versions: { csharp: ">=13", dotnet: ">=9", maui: ">=9" }
+    sources:
+      - title: Localization — .NET MAUI (resource files, platform setup, right-to-left)
+        url: https://learn.microsoft.com/en-us/dotnet/maui/fundamentals/localization?view=net-maui-9.0
+      - title: ResourceManager class — .NET API
+        url: https://learn.microsoft.com/en-us/dotnet/api/system.resources.resourcemanager?view=net-9.0
+    validation:
+      status: excerpt
+      host: "a .NET MAUI, WPF or WinUI app with .resx resources; resource generation, satellite assemblies and the platform manifests need the app's build"
+
+  - id: blazor-localization
+    kind: code
+    title: "Blazor: IStringLocalizer, request cultures, and lang/dir"
+    note: "Give formatting and UI cultures one list holding only the languages you translate, so a page's dates, `lang` and `dir` always match the text it shows."
+    prerequisites:
+      - "A Blazor Web App (`dotnet new blazor`); `OrderSummary.resx` and `OrderSummary.es.resx` beside the component"
+      - "Blazor WebAssembly also needs `<BlazorWebAssemblyLoadAllGlobalizationData>true</BlazorWebAssemblyLoadAllGlobalizationData>` to format cultures other than the app's own"
+    code: |-
+      // Program.cs: one list for both, holding only languages you translate. A neutral culture such as "es"
+      // formats like its default region (8/3/2026), so a bare Accept-Language: es never gets a US date
+      string[] cultures = ["en-US", "es", "es-MX", "es-ES"];
+      builder.Services.AddLocalization();
+      // …
+      app.UseRequestLocalization(new RequestLocalizationOptions()
+          .SetDefaultCulture("en-US")
+          .AddSupportedCultures(cultures)                     // formatting of dates, numbers, money
+          .AddSupportedUICultures(cultures));                 // which .resx the text comes from
+
+      @* OrderSummary.razor *@
+      @using Microsoft.Extensions.Localization
+      @inject IStringLocalizer<OrderSummary> Loc
+      <h2>@Loc["OrdersTitle"]</h2>
+      <p>@Loc["OrderShipped", Order.Number, Order.Customer, Order.ShippedOn]</p>
+
+      @* App.razor: the document's language and direction follow the UI culture actually shown *@
+      @using System.Globalization
+      <html lang="@CultureInfo.CurrentUICulture.Name"
+            dir="@(CultureInfo.CurrentUICulture.TextInfo.IsRightToLeft ? "rtl" : "ltr")">
+    expected: "`Accept-Language: es` gets `<html lang=\"es\" dir=\"ltr\">` and `El pedido 1042 se envió a Ada el 8/3/2026.`; `es-MX` gets `lang=\"es-MX\"` and `08/03/2026`. An `ar-SA` request, with no Arabic translation listed, gets `<html lang=\"en-US\" dir=\"ltr\">` and English text formatted for en-US, as `en-US` does."
+    applies:
+      platforms: [dotnet, browser]
+      requires: [ASP.NET Core Blazor, Microsoft.Extensions.Localization]
+      versions: { csharp: ">=13", dotnet: ">=9", aspnetcore: ">=9" }
+    sources:
+      - title: ASP.NET Core Blazor globalization and localization
+        url: https://learn.microsoft.com/en-us/aspnet/core/blazor/globalization-localization?view=aspnetcore-9.0
+    validation:
+      status: excerpt
+      host: "a Blazor Web App (built and served in a `dotnet new blazor` project for this card)"
+
+  - id: placeholders-and-fallback
+    kind: code
+    title: Placeholders, never concatenation, and the fallback walk
+    note: "Keep the whole sentence in one resource with numbered placeholders so translators can reorder it, and format it with `string.Format(culture, template, args)`."
+    prerequisites: &run
+      - .NET 9 SDK or later
+      - "`dotnet new console -o Demo`, replace `Demo/Program.cs` with the example, then `dotnet run --project Demo`"
+    code: |-
+      using System.Globalization;
+      using System.Resources;
+
+      // stands in for Strings.resx, Strings.es.resx and Strings.ja.resx: one key, a template per language
+      var resources = new Dictionary<string, Dictionary<string, string>>
+      {
+          [""] = new()
+          {
+              ["OrderShipped"] = "Order {0} shipped to {1} on {2:d}.",
+              ["ItemsInCart"] = "Items in cart: {0:N0}",
+          },
+          ["es"] = new() { ["OrderShipped"] = "El pedido {0} se envió a {1} el {2:d}." },
+          ["ja"] = new()
+          {
+              ["OrderShipped"] = "注文 {0} は {2:d} に {1} 様へ発送されました。",
+              ["ItemsInCart"] = "カート内の商品: {0:N0}",
+          },
+      };
+
+      // the ResourceManager's fallback walk: es-MX → es → the neutral resources
+      string Lookup(string key, CultureInfo uiCulture)
+      {
+          for (var culture = uiCulture; ; culture = culture.Parent)
+          {
+              if (resources.TryGetValue(culture.Name, out var texts) && texts.TryGetValue(key, out var template))
+                  return template;
+              if (culture.Equals(CultureInfo.InvariantCulture))
+                  throw new MissingManifestResourceException($"no resource '{key}'");
+          }
+      }
+
+      var shippedOn = new DateOnly(2026, 3, 8);
+      foreach (var name in new[] { "en-US", "es-MX", "ja-JP" })
+      {
+          var culture = CultureInfo.GetCultureInfo(name);
+          // numbered placeholders let each language reorder the sentence; the culture formats the values
+          Console.WriteLine(string.Format(culture, Lookup("OrderShipped", culture), 1042, "Ada", shippedOn));
+          Console.WriteLine(string.Format(culture, Lookup("ItemsInCart", culture), 12500));
+      }
+    expected: |-
+      Order 1042 shipped to Ada on 3/8/2026.
+      Items in cart: 12,500
+      El pedido 1042 se envió a Ada el 08/03/2026.
+      Items in cart: 12,500
+      注文 1042 は 2026/03/08 に Ada 様へ発送されました。
+      カート内の商品: 12,500
+    sources:
+      - title: Composite formatting — .NET
+        url: https://learn.microsoft.com/en-us/dotnet/standard/base-types/composite-formatting
+      - title: Package and deploy resources in .NET apps (the fallback process)
+        url: https://learn.microsoft.com/en-us/dotnet/core/extensions/package-and-deploy-resources
+    validation: &ran
+      status: ran
+      toolchain: .NET SDK 9.0.304 (net9.0, C# 13)
+      date: "2026-11-16"
+
+  - id: plurals
+    kind: code
+    title: Plurals — select a CLDR category, then the message
+    note: ".NET has no plural rule engine, so either write CLDR's rules for the languages you ship, as here, or use MessageFormat.NET, whose ICU MessageFormat `plural` and `select` (gender) ship with CLDR pluralizers for every locale."
+    prerequisites: *run
+    code: |-
+      using System.Globalization;
+      using static PluralCategory;
+
+      // what the translator writes: one message per plural category
+      var orders = new Dictionary<string, Dictionary<PluralCategory, string>>
+      {
+          ["en"] = new() { [One] = "{0:N0} order", [Other] = "{0:N0} orders" },
+          ["fr"] = new() { [One] = "{0:N0} commande", [Many] = "{0:N0} de commandes",
+                           [Other] = "{0:N0} commandes" },
+          ["ru"] = new() { [One] = "{0:N0} заказ", [Few] = "{0:N0} заказа", [Many] = "{0:N0} заказов" },
+      };
+
+      long[] counts = [0, 1, 2, 5, 21, 22, -21, 1_000_000];
+      foreach (var (language, messages) in orders)
+      {
+          var phrases = counts.Select(n =>
+              string.Format(CultureInfo.GetCultureInfo(language), messages[Plurals.Select(language, n)], n));
+          // the no-break spaces French and Russian group digits with, shown as _
+          var line = string.Join(" · ", phrases).Replace('\u202F', '_').Replace('\u00A0', '_');
+          Console.WriteLine($"{language}: {line}");
+      }
+      Console.WriteLine($"pt, no rules written: {Plurals.Select("pt", 1)} {Plurals.Select("pt", 2)}");
+
+      enum PluralCategory { Zero, One, Two, Few, Many, Other }       // CLDR's six; Plurals holds its integer rules
+
+      static class Plurals
+      {
+          public static PluralCategory Select(string language, long count)
+          {
+              var n = Math.Abs(count);                                    // CLDR rules use the absolute value
+              return language switch
+              {
+                  "en" or "de" => n == 1 ? One : Other,
+                  "fr" => n is 0 or 1 ? One : Millions(n),                  // "1 000 000 de commandes"
+                  "es" or "it" or "pt-PT" => n == 1 ? One : Millions(n),
+                  "ru" when n % 10 == 1 && n % 100 != 11 => One,
+                  "ru" when n % 10 is >= 2 and <= 4 && n % 100 is < 12 or > 14 => Few,
+                  "ru" => Many,
+                  "ja" or "zh" => Other,                                    // no grammatical plural
+                  _ => n == 1 ? One : Other,              // a fallback, not a rule: a UI formatter must not throw
+              };
+          }
+
+          private static PluralCategory Millions(long n) => n != 0 && n % 1_000_000 == 0 ? Many : Other;
+      }
+    expected: |-
+      en: 0 orders · 1 order · 2 orders · 5 orders · 21 orders · 22 orders · -21 orders · 1,000,000 orders
+      fr: 0 commande · 1 commande · 2 commandes · 5 commandes · 21 commandes · 22 commandes · -21 commandes · 1_000_000 de commandes
+      ru: 0 заказов · 1 заказ · 2 заказа · 5 заказов · 21 заказ · 22 заказа · -21 заказ · 1_000_000 заказов
+      pt, no rules written: One Other
+    sources:
+      - title: Language Plural Rules — Unicode CLDR
+        url: https://www.unicode.org/cldr/charts/latest/supplemental/language_plural_rules.html
+      - title: MessageFormat.NET — GitHub
+        url: https://github.com/jeffijoe/messageformat.net
+    validation: *ran
+
+  - id: dates-numbers-money
+    kind: code
+    title: Dates, numbers, currencies and percentages with a pinned culture
+    note: "Format with an explicit `CultureInfo` (or `string.Create(culture, $\"…\")`), which supplies separators, grouping, symbol position and month names — but not units, which go into the translated template."
+    prerequisites: *run
+    code: |-
+      using System.Globalization;
+
+      decimal revenue = 1234567.891m;
+      var placed = new DateTime(2026, 3, 8, 14, 30, 0);
+
+      foreach (var name in new[] { "en-US", "en-GB", "de-DE", "fr-FR", "hi-IN", "it-IT", "pt-BR" })
+      {
+          var culture = CultureInfo.GetCultureInfo(name);
+          var row = string.Create(culture,
+              $"{name} | {revenue:N2} | {revenue:C} | {0.256:P1} | {placed:d} | {placed:MMMM}");
+          Console.WriteLine(Visible(row));
+      }
+
+      // times and long dates: the pattern, the words and even the space characters come from the culture
+      var us = CultureInfo.GetCultureInfo("en-US");
+      var german = CultureInfo.GetCultureInfo("de-DE");
+      Console.WriteLine(Visible(string.Create(us, $"{placed:t} / {placed:D}")));
+      Console.WriteLine(Visible(string.Create(german, $"{placed:t} / {placed:D}")));
+
+      // a currency is not a culture: a price in euros for a US reader keeps US formatting with a € symbol
+      var euroForUs = (NumberFormatInfo)us.NumberFormat.Clone();
+      euroForUs.CurrencySymbol = "€";
+      Console.WriteLine($"{revenue.ToString("C", euroForUs)} {(-1234.5m).ToString("C", german)}");
+
+      // .NET has no unit formatter: put the unit in the translated template, convert with IsMetric
+      var parcelKg = 2.5;
+      Console.WriteLine(string.Format(german, "{0:N1} kg", parcelKg));
+      Console.WriteLine(string.Format(us, "{0:N1} lb", parcelKg * 2.20462));
+
+      // RegionInfo answers country questions: ISO currency code, metric or not
+      var japan = new RegionInfo("JP");
+      Console.WriteLine($"{japan.EnglishName} {japan.ISOCurrencySymbol} metric={japan.IsMetric}");
+      Console.WriteLine($"metric(US)={new RegionInfo("US").IsMetric}");
+
+      // no-break (U+00A0) and narrow no-break (U+202F) spaces shown as ·
+      static string Visible(string text) => text.Replace('\u00A0', '·').Replace('\u202F', '·');
+    expected: |-
+      en-US | 1,234,567.89 | $1,234,567.89 | 25.6% | 3/8/2026 | March
+      en-GB | 1,234,567.89 | £1,234,567.89 | 25.6% | 08/03/2026 | March
+      de-DE | 1.234.567,89 | 1.234.567,89 € | 25,6 % | 08.03.2026 | März
+      fr-FR | 1·234·567,89 | 1·234·567,89 € | 25,6 % | 08/03/2026 | mars
+      hi-IN | 12,34,567.89 | ₹12,34,567.89 | 25.6% | 8/3/2026 | मार्च
+      it-IT | 1.234.567,89 | 1.234.567,89 € | 25,6% | 08/03/2026 | marzo
+      pt-BR | 1.234.567,89 | R$ 1.234.567,89 | 25,6% | 08/03/2026 | março
+      2:30·PM / Sunday, March 8, 2026
+      14:30 / Sonntag, 8. März 2026
+      €1,234,567.89 -1.234,50 €
+      2,5 kg
+      5.5 lb
+      Japan JPY metric=True
+      metric(US)=False
+    sources:
+      - title: Standard numeric format strings — .NET
+        url: https://learn.microsoft.com/en-us/dotnet/standard/base-types/standard-numeric-format-strings
+      - title: Standard date and time format strings — .NET
+        url: https://learn.microsoft.com/en-us/dotnet/standard/base-types/standard-date-and-time-format-strings
+      - title: RegionInfo class — .NET API
+        url: https://learn.microsoft.com/en-us/dotnet/api/system.globalization.regioninfo?view=net-9.0
+    validation: *ran
+
+  - id: parsing-input
+    kind: code
+    title: Parse what users type in their culture; persist invariant
+    note: "Read what users type with their culture and `TryParse` (fixed formats with `TryParseExact`), and write and read stored data with `InvariantCulture`, or the app breaks on the first German machine."
+    prerequisites: *run
+    code: |-
+      using System.Globalization;
+
+      var us = CultureInfo.GetCultureInfo("en-US");
+      var german = CultureInfo.GetCultureInfo("de-DE");
+      var british = CultureInfo.GetCultureInfo("en-GB");
+      var invariant = CultureInfo.InvariantCulture;
+
+      // what the user typed, read in the user's culture
+      foreach (var typed in new[] { "1.234,56", "1,234", "12,5 €" })
+          Console.WriteLine($"{typed,-9} de-DE: {Read(typed, german),-8} en-US: {Read(typed, us)}");
+      var price = decimal.Parse("12,5 €", NumberStyles.Currency, german);   // Currency accepts the symbol
+      Console.WriteLine(price.ToString(invariant));
+
+      // the same digits are two different days
+      var usDate = DateOnly.Parse("03/08/2026", us);
+      var ukDate = DateOnly.Parse("03/08/2026", british);
+      Console.WriteLine($"{usDate.ToString("yyyy-MM-dd", invariant)} {ukDate.ToString("yyyy-MM-dd", invariant)}");
+      // a fixed format from a form field: exact parsing, no guessing
+      Console.WriteLine(DateOnly.TryParseExact("2026-02-30", "yyyy-MM-dd", invariant, DateTimeStyles.None, out _));
+
+      // persisted data — files, databases, JSON, logs — is written and read with the invariant culture
+      var total = 1234.5m;
+      var placed = new DateTimeOffset(2026, 3, 8, 14, 30, 0, TimeSpan.FromHours(1));
+      var line = string.Join(";", total.ToString(invariant), placed.ToString("O", invariant));
+      Console.WriteLine(line);
+
+      var fields = line.Split(';');
+      CultureInfo.CurrentCulture = german;                 // a German machine reads the same file back correctly
+      var totalBack = decimal.Parse(fields[0], invariant);
+      var placedBack = DateTimeOffset.Parse(fields[1], invariant);
+      Console.WriteLine($"{totalBack == total} {placedBack == placed}");
+      Console.WriteLine($"{decimal.Parse(fields[0])} — without a culture, \"1234.5\" is misread under de-DE");
+
+      static string Read(string typed, CultureInfo culture) =>
+          decimal.TryParse(typed, NumberStyles.Number, culture, out var value)
+              ? value.ToString(CultureInfo.InvariantCulture)
+              : "invalid";
+    expected: |-
+      1.234,56  de-DE: 1234.56  en-US: invalid
+      1,234     de-DE: 1.234    en-US: 1234
+      12,5 €    de-DE: invalid  en-US: invalid
+      12.5
+      2026-03-08 2026-08-03
+      False
+      1234.5;2026-03-08T14:30:00.0000000+01:00
+      True True
+      12345 — without a culture, "1234.5" is misread under de-DE
+    sources:
+      - title: Parsing numeric strings in .NET
+        url: https://learn.microsoft.com/en-us/dotnet/standard/base-types/parsing-numeric
+      - title: Parse date and time strings in .NET
+        url: https://learn.microsoft.com/en-us/dotnet/standard/base-types/parsing-datetime
+    validation: *ran
+
+  - id: sort-and-compare
+    kind: code
+    title: Sorting, searching and the Turkish-i problem
+    note: "Sort lists for people with `StringComparer.Create(culture, ignoreCase)` and search with `CompareInfo` options, but keep every machine-facing comparison ordinal, because the current culture can be Turkish."
+    prerequisites: *run
+    code: |-
+      using System.Globalization;
+
+      string[] cities = ["Zürich", "Ängelholm", "Århus", "Zaragoza", "Ørebro", "Istanbul", "Aachen", "Łódź"];
+      // Swedish sorts å, ä, ö after z; Danish also reads "aa" as å
+      foreach (var name in new[] { "en-US", "sv-SE", "da-DK" })
+      {
+          var comparer = StringComparer.Create(CultureInfo.GetCultureInfo(name), ignoreCase: true);
+          Console.WriteLine($"{name}: {string.Join(", ", cities.Order(comparer))}");
+      }
+
+      // search-as-you-type: culture-aware prefix match that ignores case and accents
+      var compare = CultureInfo.GetCultureInfo("pl-PL").CompareInfo;
+      var options = CompareOptions.IgnoreCase | CompareOptions.IgnoreNonSpace;
+      Console.WriteLine(string.Join(", ", cities.Where(c => compare.IsPrefix(c, "a", options))));
+      Console.WriteLine(compare.IndexOf("Zürich", "UR", options));
+      Console.WriteLine(compare.IsPrefix("Łódź", "lodz", options));         // Ł is its own letter, not L + a mark
+
+      // the Turkish-i bug: code that upper-cases with the CURRENT culture breaks for Turkish users
+      CultureInfo.CurrentCulture = CultureInfo.GetCultureInfo("tr-TR");
+      var command = "quit";
+      Console.WriteLine($"{command.ToUpper()} {command.ToUpper() == "QUIT"}");
+      Console.WriteLine(command.ToUpperInvariant() == "QUIT");
+      Console.WriteLine(string.Equals(command, "QUIT", StringComparison.OrdinalIgnoreCase));
+
+      var cultureKeys = new HashSet<string>(StringComparer.CurrentCultureIgnoreCase) { "file-id" };
+      var ordinalKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "file-id" };
+      Console.WriteLine($"{cultureKeys.Contains("FILE-ID")} {ordinalKeys.Contains("FILE-ID")}");
+    expected: |-
+      en-US: Aachen, Ängelholm, Århus, Istanbul, Łódź, Ørebro, Zaragoza, Zürich
+      sv-SE: Aachen, Istanbul, Łódź, Zaragoza, Zürich, Århus, Ängelholm, Ørebro
+      da-DK: Istanbul, Łódź, Zaragoza, Zürich, Ängelholm, Ørebro, Aachen, Århus
+      Ängelholm, Århus, Aachen
+      1
+      False
+      QUİT False
+      True
+      True
+      False True
+    sources:
+      - title: Best practices for comparing strings in .NET
+        url: https://learn.microsoft.com/en-us/dotnet/standard/base-types/best-practices-strings
+      - title: CompareInfo class — .NET API
+        url: https://learn.microsoft.com/en-us/dotnet/api/system.globalization.compareinfo?view=net-9.0
+    validation: *ran
+
+  - id: time-zones
+    kind: code
+    title: Time zones, DateTimeOffset, DateOnly and TimeOnly
+    note: "Store instants as UTC or `DateTimeOffset`, future local events as local time plus a zone id, and dates without a time as `DateOnly`."
+    prerequisites: *run
+    code: |-
+      using System.Globalization;
+
+      // IANA ids work on Windows too (.NET 6+, with ICU)
+      var berlin = TimeZoneInfo.FindSystemTimeZoneById("Europe/Berlin");
+      var bogota = TimeZoneInfo.FindSystemTimeZoneById("America/Bogota");
+      var invariant = CultureInfo.InvariantCulture;
+
+      // store the instant (UTC or DateTimeOffset); convert to the reader's zone only to display it
+      var paidAt = new DateTimeOffset(2026, 3, 29, 0, 30, 0, TimeSpan.Zero);
+      foreach (var instant in new[] { paidAt, paidAt.AddHours(1) })
+      {
+          var inBerlin = TimeZoneInfo.ConvertTime(instant, berlin).ToString("HH:mm zzz", invariant);
+          var inBogota = TimeZoneInfo.ConvertTime(instant, bogota).ToString("HH:mm zzz", invariant);
+          Console.WriteLine($"{instant.ToString("u", invariant)} → Berlin {inBerlin}, Bogotá {inBogota}");
+      }
+
+      // DST makes some local times impossible and others happen twice
+      Console.WriteLine(berlin.IsInvalidTime(new DateTime(2026, 3, 29, 2, 30, 0)));
+      Console.WriteLine(berlin.IsAmbiguousTime(new DateTime(2026, 10, 25, 2, 30, 0)));
+
+      // a future local event ("the shop opens at 09:00 on 30 March") is a date + time + zone id,
+      // resolved when needed, because the zone's rules may change before then
+      var opening = new DateOnly(2026, 3, 30).ToDateTime(new TimeOnly(9, 0));
+      var openingUtc = TimeZoneInfo.ConvertTimeToUtc(opening, berlin);
+      var utcText = openingUtc.ToString("HH:mm", invariant);              // ":" is the culture's time separator
+      Console.WriteLine($"{opening.ToString("yyyy-MM-dd HH:mm", invariant)} Berlin = {utcText} UTC");
+
+      // a date of birth or a due date has no time and no zone
+      var due = DateOnly.ParseExact("2026-04-15", "yyyy-MM-dd", invariant);
+      var daysLeft = due.DayNumber - new DateOnly(2026, 3, 30).DayNumber;
+      Console.WriteLine($"{daysLeft} days, {due.ToString("D", CultureInfo.GetCultureInfo("de-DE"))}");
+      var mapped = TimeZoneInfo.TryConvertIanaIdToWindowsId("Europe/Berlin", out var windowsId);
+      Console.WriteLine(mapped ? windowsId : "unknown");
+    expected: |-
+      2026-03-29 00:30:00Z → Berlin 01:30 +01:00, Bogotá 19:30 -05:00
+      2026-03-29 01:30:00Z → Berlin 03:30 +02:00, Bogotá 20:30 -05:00
+      True
+      True
+      2026-03-30 09:00 Berlin = 07:00 UTC
+      16 days, Mittwoch, 15. April 2026
+      W. Europe Standard Time
+    sources:
+      - title: Converting times between time zones — .NET
+        url: https://learn.microsoft.com/en-us/dotnet/standard/datetime/converting-between-time-zones
+      - title: How to use the DateOnly and TimeOnly structures — .NET
+        url: https://learn.microsoft.com/en-us/dotnet/standard/datetime/how-to-use-dateonly-timeonly
+    validation: *ran
+
+  - id: pseudo-and-test
+    kind: code
+    title: Pseudo-localization and testing a culture
+    note: "Run the app on pseudo-localized resources to find hard-coded text and clipped layouts before translation, and test logic under `tr-TR`, `ar-SA` and `de-DE` inside a scope that restores the culture."
+    prerequisites: *run
+    code: |-
+      using System.Globalization;
+      using System.Text;
+      using System.Text.RegularExpressions;
+
+      // pseudo-localize the neutral resources: accents expose hard-coded text, padding and brackets clipping
+      Console.WriteLine(Pseudo.Localize("Order {0} shipped to {1}."));
+
+      var before = CultureInfo.CurrentCulture;
+      foreach (var name in new[] { "en-US", "tr-TR", "ar-SA", "de-DE" })      // cultures that break assumptions
+      {
+          using var _ = new CultureScope(name);
+          var direction = CultureInfo.CurrentUICulture.TextInfo.IsRightToLeft ? "rtl" : "ltr";
+          var separator = CultureInfo.CurrentCulture.NumberFormat.NumberDecimalSeparator;
+          // ar-SA can show Hijri dates; whether that is its default depends on the ICU version
+          var hijri = CultureInfo.CurrentCulture.OptionalCalendars.Any(c => c is UmAlQuraCalendar);
+          Console.WriteLine($"{name}: dir={direction} title={"title".ToUpper()} decimal={separator} hijri={hijri}");
+      }
+      Console.WriteLine($"restored: {CultureInfo.CurrentCulture == before}");
+
+      static class Pseudo
+      {
+          const string Plain = "abcdeghiklnorstuyACDEINOSU";
+          const string Accented = "àƀçđéğĥîķĺñöŕšţûýÅÇĐÉÎÑÖŠÛ";
+
+          public static string Localize(string text)
+          {
+              var builder = new StringBuilder("[");
+              // keep {0}-style placeholders intact; transform only the words around them
+              foreach (var part in Regex.Split(text, @"(\{\d+[^}]*\})"))
+                  builder.Append(part.StartsWith('{') ? part : new string(part.Select(Accent).ToArray()));
+              var padding = Math.Max(2, text.Length * 4 / 10);         // translations run ~40% longer
+              return builder.Append(' ').Append('~', padding).Append(']').ToString();
+          }
+
+          private static char Accent(char c) => Plain.IndexOf(c) is var i and >= 0 ? Accented[i] : c;
+      }
+
+      // sets both cultures for a block, then restores them: one test cannot leak its culture into the next
+      sealed class CultureScope : IDisposable
+      {
+          private readonly (CultureInfo Culture, CultureInfo UiCulture) saved =
+              (CultureInfo.CurrentCulture, CultureInfo.CurrentUICulture);
+
+          public CultureScope(string name) =>
+              CultureInfo.CurrentCulture = CultureInfo.CurrentUICulture = CultureInfo.GetCultureInfo(name);
+
+          public void Dispose() => (CultureInfo.CurrentCulture, CultureInfo.CurrentUICulture) = saved;
+      }
+    expected: |-
+      [Öŕđéŕ {0} šĥîppéđ ţö {1}. ~~~~~~~~~~]
+      en-US: dir=ltr title=TITLE decimal=. hijri=False
+      tr-TR: dir=ltr title=TİTLE decimal=, hijri=False
+      ar-SA: dir=rtl title=TITLE decimal=٫ hijri=True
+      de-DE: dir=ltr title=TITLE decimal=, hijri=False
+      restored: True
+    sources:
+      - title: TextInfo.IsRightToLeft property — .NET API
+        url: https://learn.microsoft.com/en-us/dotnet/api/system.globalization.textinfo.isrighttoleft?view=net-9.0
+      - title: Pseudolocalization — Microsoft Globalization
+        url: https://learn.microsoft.com/en-us/globalization/methodology/pseudolocalization
+    validation: *ran
+
+  - id: localization-rules
+    kind: rules
+    title: Rules and pitfalls
+    note: Most localization bugs are a culture that was never chosen on purpose.
+    items:
+      - tone: good
+        text: "Put whole sentences with numbered placeholders in resources, and add a `<comment>` saying what each placeholder is. Translators see no code."
+      - tone: good
+        text: "Pass a culture to every `ToString`, `Parse` and `string.Format`: the user's for display, `InvariantCulture` for anything stored or sent."
+      - tone: good
+        text: "Since .NET 5, Windows 10 1903 and later use **ICU** like Linux and macOS (older Windows falls back to NLS). To keep the old NLS behaviour, set `<RuntimeHostConfigurationOption Include=\"System.Globalization.UseNls\" Value=\"true\" />` or `DOTNET_SYSTEM_GLOBALIZATION_USENLS=1`. Sorting and `IndexOf` results change between the two."
+      - tone: neutral
+        text: "`<InvariantGlobalization>true</InvariantGlobalization>` drops ICU (a smaller app). Creating any culture other than `InvariantCulture` then throws `CultureNotFoundException` (with `<PredefinedCulturesOnly>false</PredefinedCulturesOnly>` it is created, but formats as invariant), casing is invariant, and IANA↔Windows time-zone id conversion is gone (IANA zones still load on Linux and macOS). Only for apps that never format for people."
+      - tone: bad
+        text: "Concatenating translated fragments (`\"Order \" + id + \" shipped\"`), or a `count == 1 ? \"item\" : \"items\"` ternary — Russian needs three forms, Arabic six."
+      - tone: bad
+        text: "Hard-coded formats like `ToString(\"MM/dd/yyyy\")` for display, and `DateTime.Now` stored without an offset."
+      - tone: bad
+        text: "Fixed widths and heights on text: German and Finnish run 30–40% longer, and Arabic needs taller lines. Let layouts size to content."
+      - tone: bad
+        text: "Asserting culture-formatted output against hard-coded text: it depends on the ICU version, so macOS (Apple ICU), Linux (vanilla ICU) and Windows can format the same culture differently (`¥` or `￥` for yen, `p.m.` or `p. m.`, `'` or `’` in de-CH). Assert against the formatter's own output, or pick formats that do not vary."
+      - tone: neutral
+        text: "Test by switching the device or browser language. MAUI documents setting `CurrentUICulture` in code as inconsistent across platforms."

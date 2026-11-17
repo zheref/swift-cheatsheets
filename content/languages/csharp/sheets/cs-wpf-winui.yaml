@@ -1,0 +1,548 @@
+id: cs-wpf-winui
+concept: ui.xaml-desktop
+scope: platform
+title: "WPF & WinUI — XAML Desktop UI"
+group: UI
+subtitle: How WPF, WinUI and MAUI differ, plus panels, {Binding} versus {x:Bind}, virtualized lists, commands, dependency and attached properties, templates and visual states, navigation and dialogs.
+applies:
+  platforms: [windows]
+  runtime: WPF on .NET 9 (`net9.0-windows`) and WinUI 3 (Windows App SDK) on .NET 9
+  requires: [WPF, Windows App SDK]
+  versions: { csharp: ">=13", dotnet: ">=9", windowsappsdk: ">=1.6" }
+sources:
+  - title: Windows Presentation Foundation documentation
+    url: https://learn.microsoft.com/en-us/dotnet/desktop/wpf/
+  - title: WinUI 3 — Windows App SDK
+    url: https://learn.microsoft.com/en-us/windows/apps/winui/winui3/
+  - title: "{x:Bind} markup extension — Windows apps"
+    url: https://learn.microsoft.com/en-us/windows/apps/develop/platform/xaml/x-bind-markup-extension
+cards:
+  - id: wpf-winui-maui
+    kind: table
+    title: WPF → WinUI → MAUI
+    note: "All three are XAML over C#, but the namespaces, binding engines and threading APIs differ, so code moves between them more easily than markup does."
+    headers: [Aspect, WPF, WinUI 3, .NET MAUI]
+    rows:
+      - ["Runs on", "Windows (`net9.0-windows`)", "Windows 10 1809+ via the Windows App SDK", "Android, iOS, Mac Catalyst, Windows (on WinUI)"]
+      - ["Namespaces", "`System.Windows`, `System.Windows.Controls`", "`Microsoft.UI.Xaml`, `Microsoft.UI.Xaml.Controls`", "`Microsoft.Maui.Controls`"]
+      - ["Default xmlns", "`…/winfx/2006/xaml/presentation`", "the same URI", "`http://schemas.microsoft.com/dotnet/2021/maui`"]
+      - ["Top level", "`Window` is a `FrameworkElement`: it has `Resources` and `DataContext`", "`Window` is not a `DependencyObject`: no `Resources`, no `DataContext`; it hosts a `Frame` of `Page`s", "`Window` → `Shell` → `ContentPage`"]
+      - ["Panels", "`Grid`, `StackPanel` (no `Spacing`), `DockPanel`, `WrapPanel`, `Canvas`", "`Grid`, `StackPanel` (`Spacing`), `RelativePanel`, `Canvas`; `DockPanel` only in the Community Toolkit", "`Grid`, `VerticalStackLayout`, `FlexLayout`, `AbsoluteLayout`"]
+      - ["Binding", "`{Binding}` on `DataContext`, reflection", "`{x:Bind}` compiled, rooted at the page, default `OneTime`; `{Binding}` too, default `OneWay`", "`{Binding}` on `BindingContext`, compiled by `x:DataType`"]
+      - ["Lists", "`ListBox`/`ListView` on a `VirtualizingStackPanel`; `DataGrid`", "`ListView`/`GridView` on `ItemsStackPanel`; `ItemsView` (1.4+); `ItemsRepeater`", "`CollectionView`"]
+      - ["UI thread", "`Dispatcher.Invoke` / `InvokeAsync`", "`DispatcherQueue.TryEnqueue`", "`MainThread.BeginInvokeOnMainThread`"]
+      - ["Command re-query", "`CommandManager.RequerySuggested` re-checks routed commands", "none: raise `CanExecuteChanged` yourself", "none: raise `CanExecuteChanged` yourself"]
+      - ["State styling", "`Trigger`s; `VisualState` holds a `Storyboard` only", "`VisualState` with `Setters` and `AdaptiveTrigger`; no `Trigger`s", "`VisualState` with `Setters`, plus `Trigger`s"]
+      - ["Packaging", "a plain .exe, ClickOnce or optional MSIX", "MSIX by default; unpackaged with `<WindowsPackageType>None</WindowsPackageType>`", "APK/AAB, IPA/PKG, MSIX"]
+
+  - id: wpf-window-panels
+    kind: code
+    title: A WPF Window with layout panels
+    note: "A `DockPanel` pins children to its edges in order and gives the last child the rest, while a `Grid` shares space with `*` columns and a `GridSplitter`."
+    prerequisites:
+      - "Windows with the .NET 9 SDK: `dotnet new wpf -o ShopDesk`"
+      - "Replace `MainWindow.xaml`; in `MainWindow.xaml.cs` set `DataContext = new OrdersViewModel(...)` after `InitializeComponent()`"
+    code: |-
+      <Window x:Class="ShopDesk.MainWindow"
+              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+              Title="Orders" Width="900" Height="560">
+          <DockPanel Margin="12">
+              <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,8">
+                  <TextBox Width="260" Text="{Binding Query, UpdateSourceTrigger=PropertyChanged}" />
+                  <Button Content="Refresh" Margin="8,0,0,0" Command="{Binding RefreshCommand}" />
+              </StackPanel>
+
+              <TextBlock DockPanel.Dock="Bottom" Margin="0,8,0,0" Text="{Binding Summary}" />
+
+              <!-- the last child fills what is left -->
+              <Grid>
+                  <Grid.ColumnDefinitions>
+                      <ColumnDefinition Width="2*" MinWidth="220" />
+                      <ColumnDefinition Width="Auto" />
+                      <ColumnDefinition Width="3*" />
+                  </Grid.ColumnDefinitions>
+
+                  <ListBox ItemsSource="{Binding Orders}" SelectedItem="{Binding SelectedOrder}" />
+                  <GridSplitter Grid.Column="1" Width="5" HorizontalAlignment="Stretch" />
+
+                  <!-- shows the selected Order through its implicit DataTemplate (the lists card) -->
+                  <ContentControl Grid.Column="2" Margin="12,0,0,0" Content="{Binding SelectedOrder}" />
+              </Grid>
+          </DockPanel>
+      </Window>
+    expected: "A toolbar across the top, a status line at the bottom and a resizable list and detail split in the middle, where the search box filters on every keystroke because `TextBox.Text` otherwise updates its source only on lost focus."
+    applies:
+      platforms: [windows]
+      runtime: WPF on .NET 9 (`net9.0-windows`)
+      requires: [WPF]
+      versions: { csharp: ">=13", dotnet: ">=9" }
+    sources:
+      - title: Panels overview — WPF
+        url: https://learn.microsoft.com/en-us/dotnet/desktop/wpf/controls/panel
+    validation:
+      status: excerpt
+      host: a WPF app on Windows (`dotnet new wpf`); compiled by the WPF markup compiler for `net9.0-windows` with `EnableWindowsTargeting`
+
+  - id: binding-vs-xbind
+    kind: compare
+    title: "{Binding} versus {x:Bind}"
+    note: "`{x:Bind}` is generated code checked at build time and rooted at the page's code-behind, and its default mode is `OneTime`, so anything that changes needs `Mode=OneWay`."
+    prerequisites:
+      - "WPF column: a WPF app with `DataContext` set to an `OrdersViewModel` and a `BooleanToVisibilityConverter` resource keyed `BoolToVisibility`"
+      - "WinUI column: a WinUI 3 page whose code-behind declares `public OrdersViewModel ViewModel { get; } = …;` and whose `xmlns:local` maps a static `Format` class"
+    columns:
+      - label: WPF {Binding}
+        tone: legacy
+        code: |-
+          <!-- Resolved at run time against DataContext; a typo only logs to the Output window -->
+          <StackPanel>
+              <TextBlock Text="{Binding SelectedOrder.Customer}" />
+              <TextBlock Text="{Binding SelectedOrder.Total, StringFormat={}{0:C}}" />
+
+              <!-- TextBox.Text is TwoWay by default in WPF -->
+              <TextBox Text="{Binding DeliveryNote, UpdateSourceTrigger=PropertyChanged}" />
+
+              <Button Content="Ship"
+                      Command="{Binding ShipCommand}"
+                      CommandParameter="{Binding SelectedOrder}"
+                      Visibility="{Binding CanShip, Converter={StaticResource BoolToVisibility}}" />
+          </StackPanel>
+      - label: WinUI {x:Bind}
+        tone: modern
+        code: |-
+          <!-- Compiled against the page class: a typo is a build error -->
+          <StackPanel Spacing="4">
+              <TextBlock Text="{x:Bind ViewModel.SelectedOrder.Customer, Mode=OneWay}" />
+
+              <!-- a function binding instead of a converter -->
+              <TextBlock Text="{x:Bind local:Format.Money(ViewModel.SelectedOrder.Total), Mode=OneWay}" />
+
+              <TextBox Text="{x:Bind ViewModel.DeliveryNote, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+
+              <!-- bool to Visibility converts implicitly -->
+              <Button Content="Ship"
+                      Command="{x:Bind ViewModel.ShipCommand}"
+                      CommandParameter="{x:Bind ViewModel.SelectedOrder, Mode=OneWay}"
+                      Visibility="{x:Bind ViewModel.CanShip, Mode=OneWay}" />
+          </StackPanel>
+    expected: "Both show the selected order's customer and total, edit the delivery note and show Ship only when shipping is allowed; without `Mode=OneWay` the `{x:Bind}` version would keep showing whatever was there when the page loaded, usually nothing."
+    sources:
+      - title: Data binding overview — WPF
+        url: https://learn.microsoft.com/en-us/dotnet/desktop/wpf/data/
+      - title: "{x:Bind} markup extension — Windows apps"
+        url: https://learn.microsoft.com/en-us/windows/apps/develop/platform/xaml/x-bind-markup-extension
+    validation:
+      status: excerpt
+      host: a WPF app (left, compiled by the WPF markup compiler) and a WinUI 3 app (right, checked against the x:Bind documentation; WinUI XAML compiles only on Windows)
+
+  - id: lists-templates-virtualization
+    kind: code
+    title: Lists, DataTemplates and virtualization
+    note: "`ListBox`, `ListView` and WinUI's `ListView` virtualize by creating containers only for visible rows, a bare `ItemsControl` does not, and WinUI's `x:Phase` defers costly parts of a row during fast scrolling."
+    prerequisites:
+      - "WPF part: a WPF window with `xmlns:models=\"clr-namespace:ShopDesk.Models\"`"
+      - "WinUI part: a WinUI 3 page with `xmlns:models=\"using:Shop.Models\"`, a `ViewModel` property, and an `OnOrderClicked(object sender, ItemClickEventArgs e)` handler"
+    code: |-
+      <!-- WPF: an implicit template (DataType, no x:Key) applies wherever an Order is shown -->
+      <Window.Resources>
+          <DataTemplate DataType="{x:Type models:Order}">
+              <Grid Margin="4">
+                  <Grid.ColumnDefinitions>
+                      <ColumnDefinition Width="*" />
+                      <ColumnDefinition Width="Auto" />
+                  </Grid.ColumnDefinitions>
+                  <TextBlock Text="{Binding Customer}" />
+                  <TextBlock Grid.Column="1" Text="{Binding Total, StringFormat={}{0:C}}" />
+              </Grid>
+          </DataTemplate>
+      </Window.Resources>
+
+      <ListBox ItemsSource="{Binding Orders}"
+               VirtualizingPanel.VirtualizationMode="Recycling"
+               VirtualizingPanel.ScrollUnit="Pixel" />
+
+      <!-- WinUI: a template needs x:DataType for x:Bind; OneTime is enough for the source
+           because the ObservableCollection itself raises CollectionChanged -->
+      <ListView ItemsSource="{x:Bind ViewModel.Orders}" SelectionMode="None"
+                IsItemClickEnabled="True" ItemClick="OnOrderClicked">
+          <ListView.ItemTemplate>
+              <DataTemplate x:DataType="models:Order">
+                  <StackPanel Padding="8" Spacing="2">
+                      <TextBlock Text="{x:Bind Customer}" Style="{StaticResource BodyStrongTextBlockStyle}" />
+                      <TextBlock Text="{x:Bind Notes}" x:Phase="1" Opacity="0.7" />
+                  </StackPanel>
+              </DataTemplate>
+          </ListView.ItemTemplate>
+      </ListView>
+    expected: "Both lists stay smooth with tens of thousands of orders because only visible rows get containers; the WPF list scrolls by pixel and recycles containers, and the WinUI list fills in the notes line just after the name."
+    sources:
+      - title: Optimizing performance — controls (WPF)
+        url: https://learn.microsoft.com/en-us/dotnet/desktop/wpf/advanced/optimizing-performance-controls
+      - title: Optimize ListView and GridView — Windows apps
+        url: https://learn.microsoft.com/en-us/windows/apps/develop/performance/optimize-gridview-and-listview
+    validation:
+      status: excerpt
+      host: a WPF app (WPF part compiled by the WPF markup compiler) and a WinUI 3 app (WinUI part checked against the documentation)
+
+  - id: commands-parameter
+    kind: code
+    title: Commands with a parameter and CanExecute
+    note: "A button bound to a command asks `CanExecute(parameter)` before enabling itself and calls `Execute(parameter)` on click, and since WinUI and MAUI have no `CommandManager` the view model announces changes with `NotifyCanExecuteChanged()`."
+    prerequisites:
+      - .NET 8 SDK or later
+      - "`dotnet new console -o Demo`, `dotnet add Demo package CommunityToolkit.Mvvm`, replace `Demo/Program.cs` with the example, then `dotnet run --project Demo`"
+      - "In XAML: `<Button Content=\"Ship\" Command=\"{Binding DataContext.ShipCommand, RelativeSource={RelativeSource AncestorType=ListBox}}\" CommandParameter=\"{Binding}\" />` inside the row template"
+    code: |-
+      using System.Windows.Input;
+      using CommunityToolkit.Mvvm.Input;
+
+      Order[] orders = [new(1, "Ada", "Pending"), new(2, "Grace", "Shipped")];
+      var vm = new OrdersViewModel();
+      ICommand ship = vm.ShipCommand;                    // all a Button sees
+
+      foreach (var order in orders)                      // what each row's button does
+      {
+          Console.WriteLine($"#{order.Id} Ship enabled: {ship.CanExecute(order)}");
+          if (ship.CanExecute(order)) ship.Execute(order);
+      }
+      Console.WriteLine($"shipped: {string.Join(", ", vm.Shipped)}");
+
+      ship.CanExecuteChanged += (_, _) => Console.WriteLine("buttons re-query CanExecute");
+      vm.ShippingPaused = true;                           // e.g. the warehouse closed
+      Console.WriteLine($"#1 Ship enabled now: {ship.CanExecute(orders[0])}");
+
+      class OrdersViewModel
+      {
+          private bool shippingPaused;
+          public List<int> Shipped { get; } = [];
+          public RelayCommand<Order> ShipCommand { get; }
+
+          public OrdersViewModel() => ShipCommand = new RelayCommand<Order>(
+              execute: order => Shipped.Add(order!.Id),
+              canExecute: order => !shippingPaused && order?.Status == "Pending");
+
+          public bool ShippingPaused
+          {
+              get => shippingPaused;
+              set { shippingPaused = value; ShipCommand.NotifyCanExecuteChanged(); }
+          }
+      }
+
+      record Order(int Id, string Customer, string Status);
+    expected: |-
+      #1 Ship enabled: True
+      #2 Ship enabled: False
+      shipped: 1
+      buttons re-query CanExecute
+      #1 Ship enabled now: False
+    applies:
+      platforms: [dotnet]
+      runtime: .NET console app (no UI); `ICommand` is the same interface WPF, WinUI and MAUI bind to
+      requires: [CommunityToolkit.Mvvm]
+      versions: { csharp: ">=12", dotnet: ">=8", communitytoolkit-mvvm: ">=8.0" }
+    sources:
+      - title: RelayCommand — MVVM Toolkit
+        url: https://learn.microsoft.com/en-us/dotnet/communitytoolkit/mvvm/relaycommand
+      - title: Commanding overview — WPF
+        url: https://learn.microsoft.com/en-us/dotnet/desktop/wpf/advanced/commanding-overview
+    validation:
+      status: ran
+      toolchain: .NET SDK 9.0.304 (net9.0, C# 13), CommunityToolkit.Mvvm 8.4.2
+      date: "2026-11-16"
+
+  - id: dependency-properties
+    kind: code
+    title: Dependency properties on a templated control
+    note: "A templated control's inputs are dependency properties so they can be bound, styled and animated, and the change callback, not the CLR setter, is where the control reacts."
+    prerequisites:
+      - "A WinUI 3 app (Windows App SDK); add `StatusBadge.cs`, and the badge's template in `Themes/Generic.xaml` (the visual-states card)"
+      - "WPF has the same shape in `System.Windows`; use `FrameworkPropertyMetadata` for flags such as `AffectsRender` or `BindsTwoWayByDefault`"
+    code: |-
+      using Microsoft.UI.Xaml;
+      using Microsoft.UI.Xaml.Controls;
+
+      public sealed class StatusBadge : Control
+      {
+          public static readonly DependencyProperty StatusProperty = DependencyProperty.Register(
+              nameof(Status), typeof(string), typeof(StatusBadge),
+              new PropertyMetadata("Pending", OnStatusChanged));
+
+          public string Status
+          {
+              get => (string)GetValue(StatusProperty);
+              set => SetValue(StatusProperty, value);    // no logic here: bindings call SetValue directly
+          }
+
+          public StatusBadge() => DefaultStyleKey = typeof(StatusBadge);
+
+          protected override void OnApplyTemplate()
+          {
+              base.OnApplyTemplate();
+              GoToStatus(Status);                        // the template's states exist only now
+          }
+
+          private static void OnStatusChanged(DependencyObject d, DependencyPropertyChangedEventArgs e) =>
+              ((StatusBadge)d).GoToStatus((string)e.NewValue);
+
+          private void GoToStatus(string status) =>
+              VisualStateManager.GoToState(this, status, useTransitions: true);
+      }
+    expected: "`<local:StatusBadge Status=\"{x:Bind Order.Status, Mode=OneWay}\" />` switches visual state whenever the order's status changes."
+    applies:
+      platforms: [windows]
+      runtime: WinUI 3 (Windows App SDK); WPF has the same API in `System.Windows`
+      requires: [Windows App SDK]
+      versions: { csharp: ">=13", dotnet: ">=9", windowsappsdk: ">=1.6" }
+    sources:
+      - title: Custom dependency properties — Windows apps
+        url: https://learn.microsoft.com/en-us/windows/apps/develop/platform/xaml/custom-dependency-properties
+      - title: DependencyProperty.Register — Windows App SDK API
+        url: https://learn.microsoft.com/en-us/windows/windows-app-sdk/api/winrt/microsoft.ui.xaml.dependencyproperty.register?view=windows-app-sdk-1.6
+    validation:
+      status: excerpt
+      host: a WinUI 3 app on Windows; the C# compiled against Microsoft.WindowsAppSDK 1.6
+
+  - id: attached-properties
+    kind: code
+    title: An attached property that adds behaviour
+    note: "An attached property lets any element carry a value it doesn't define, and its change callback can attach behaviour, here selecting a text box's text on focus."
+    prerequisites:
+      - "A WinUI 3 app; add `Input.cs` and use it as `<TextBox local:Input.SelectAllOnFocus=\"True\" />`"
+      - "WPF: the same code with `System.Windows` types; the static `Get`/`Set` pair is what XAML calls"
+    code: |-
+      using Microsoft.UI.Xaml;
+      using Microsoft.UI.Xaml.Controls;
+
+      public static class Input
+      {
+          public static readonly DependencyProperty SelectAllOnFocusProperty =
+              DependencyProperty.RegisterAttached(
+                  "SelectAllOnFocus", typeof(bool), typeof(Input), new PropertyMetadata(false, OnChanged));
+
+          public static bool GetSelectAllOnFocus(DependencyObject element) =>
+              (bool)element.GetValue(SelectAllOnFocusProperty);
+
+          public static void SetSelectAllOnFocus(DependencyObject element, bool value) =>
+              element.SetValue(SelectAllOnFocusProperty, value);
+
+          private static void OnChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+          {
+              if (d is not TextBox box) return;
+
+              // remove as well as add, so setting it back to False really turns it off
+              if ((bool)e.NewValue) box.GotFocus += SelectAll;
+              else box.GotFocus -= SelectAll;
+          }
+
+          private static void SelectAll(object sender, RoutedEventArgs e) => ((TextBox)sender).SelectAll();
+      }
+    expected: "Every text box marked `SelectAllOnFocus=\"True\"` selects its whole text when it gets focus, such as a quantity field the user retypes."
+    applies:
+      platforms: [windows]
+      runtime: WinUI 3 (Windows App SDK); WPF has the same API in `System.Windows`
+      requires: [Windows App SDK]
+      versions: { csharp: ">=13", dotnet: ">=9", windowsappsdk: ">=1.6" }
+    sources:
+      - title: Attached properties overview — WPF
+        url: https://learn.microsoft.com/en-us/dotnet/desktop/wpf/properties/attached-properties-overview
+      - title: DependencyProperty.RegisterAttached — Windows App SDK API
+        url: https://learn.microsoft.com/en-us/windows/windows-app-sdk/api/winrt/microsoft.ui.xaml.dependencyproperty.registerattached?view=windows-app-sdk-1.6
+    validation:
+      status: excerpt
+      host: a WinUI 3 app on Windows; the C# compiled against Microsoft.WindowsAppSDK 1.6
+
+  - id: templates-visual-states
+    kind: code
+    title: Control templates and visual states, in brief
+    note: "A `ControlTemplate` defines a control's look and `VisualStateManager` switches between named states from code or from an `AdaptiveTrigger`, where WPF uses `Trigger`s instead."
+    prerequisites:
+      - "A WinUI 3 app; the `Style` goes in `Themes/Generic.xaml` (a `ResourceDictionary` merged by default for custom controls)"
+      - "The adaptive part goes on the first child of a page's root, which holds an element named `DetailPane` with `Visibility=\"Collapsed\"`"
+    code: |-
+      <!-- Themes/Generic.xaml: the look of StatusBadge; GoToState picks the state -->
+      <Style TargetType="local:StatusBadge">
+          <Setter Property="Template">
+              <Setter.Value>
+                  <ControlTemplate TargetType="local:StatusBadge">
+                      <Border x:Name="Pill" CornerRadius="10" Padding="8,2" Background="DimGray">
+                          <VisualStateManager.VisualStateGroups>
+                              <VisualStateGroup x:Name="StatusStates">
+                                  <VisualState x:Name="Pending" />
+                                  <VisualState x:Name="Shipped">
+                                      <VisualState.Setters>
+                                          <Setter Target="Pill.Background" Value="SteelBlue" />
+                                      </VisualState.Setters>
+                                  </VisualState>
+                              </VisualStateGroup>
+                          </VisualStateManager.VisualStateGroups>
+                          <TextBlock Text="{TemplateBinding Status}" Foreground="White" />
+                      </Border>
+                  </ControlTemplate>
+              </Setter.Value>
+          </Setter>
+      </Style>
+
+      <!-- A page that adapts: the collapsed detail pane appears once the window is wide enough -->
+      <VisualStateManager.VisualStateGroups>
+          <VisualStateGroup>
+              <VisualState x:Name="Wide">
+                  <VisualState.StateTriggers>
+                      <AdaptiveTrigger MinWindowWidth="720" />
+                  </VisualState.StateTriggers>
+                  <VisualState.Setters>
+                      <Setter Target="DetailPane.Visibility" Value="Visible" />
+                  </VisualState.Setters>
+              </VisualState>
+          </VisualStateGroup>
+      </VisualStateManager.VisualStateGroups>
+
+      <!-- WPF: VisualState holds only a Storyboard (no Setters, no StateTriggers); use
+           <ControlTemplate.Triggers><Trigger Property="IsMouseOver" Value="True">…</Trigger> -->
+    expected: "A pending badge is grey and a shipped one is blue, and widening the window past 720 pixels shows the detail pane with no code involved."
+    sources:
+      - title: Responsive layouts with XAML — Windows apps
+        url: https://learn.microsoft.com/en-us/windows/apps/develop/ui/layouts-with-xaml
+      - title: VisualStateManager.GoToState — Windows App SDK API
+        url: https://learn.microsoft.com/en-us/windows/windows-app-sdk/api/winrt/microsoft.ui.xaml.visualstatemanager.gotostate?view=windows-app-sdk-1.6
+    validation:
+      status: excerpt
+      host: a WinUI 3 app on Windows (Windows App SDK); checked against the documentation (WinUI XAML compiles only on Windows)
+
+  - id: winui-navigation
+    kind: code
+    title: WinUI navigation — NavigationView and Frame
+    note: "The window holds a `NavigationView` around a `Frame`, and `Frame.Navigate` creates each page, hands it a parameter and keeps the back stack."
+    prerequisites:
+      - "A WinUI 3 app; the XAML is `MainWindow.xaml`'s content and the C# goes in `MainWindow.xaml.cs`"
+      - "`OrdersPage`, `CustomersPage`, `SettingsPage` and `OrderDetailPage` are `Page`s in the project"
+    code: |-
+      <NavigationView x:Name="Nav"
+                      IsBackEnabled="{x:Bind ContentFrame.CanGoBack, Mode=OneWay}"
+                      ItemInvoked="OnItemInvoked" BackRequested="OnBackRequested">
+          <NavigationView.MenuItems>
+              <NavigationViewItem Content="Orders" Tag="orders" Icon="Shop" />
+              <NavigationViewItem Content="Customers" Tag="customers" Icon="People" />
+          </NavigationView.MenuItems>
+          <Frame x:Name="ContentFrame" />
+      </NavigationView>
+
+      // MainWindow.xaml.cs
+      public MainWindow()
+      {
+          InitializeComponent();
+          ContentFrame.Navigate(typeof(OrdersPage));             // open on the first item, selected
+          Nav.SelectedItem = Nav.MenuItems[0];
+      }
+
+      private void OnItemInvoked(NavigationView sender, NavigationViewItemInvokedEventArgs args)
+      {
+          var page = args.IsSettingsInvoked
+              ? typeof(SettingsPage)
+              : args.InvokedItemContainer?.Tag switch
+              {
+                  "customers" => typeof(CustomersPage),
+                  _ => typeof(OrdersPage),
+              };
+          if (ContentFrame.CurrentSourcePageType != page) ContentFrame.Navigate(page);
+      }
+
+      private void OnBackRequested(NavigationView sender, NavigationViewBackRequestedEventArgs args)
+      {
+          if (ContentFrame.CanGoBack) ContentFrame.GoBack();
+      }
+
+      // OrdersPage: Frame.Navigate(typeof(OrderDetailPage), order);  OrderDetailPage receives it:
+      protected override void OnNavigatedTo(NavigationEventArgs e) => Order = (Order)e.Parameter;
+    expected: "The window opens on Orders with that item selected, picking a pane item swaps the page in the frame, and opening an order pushes its detail page so the back arrow appears and walks back through the history."
+    sources:
+      - title: NavigationView — Windows apps
+        url: https://learn.microsoft.com/en-us/windows/apps/develop/ui/controls/navigationview
+      - title: Frame.Navigate — Windows App SDK API
+        url: https://learn.microsoft.com/en-us/windows/windows-app-sdk/api/winrt/microsoft.ui.xaml.controls.frame.navigate?view=windows-app-sdk-1.6
+    validation:
+      status: excerpt
+      host: a WinUI 3 app on Windows; the C# compiled against Microsoft.WindowsAppSDK 1.6, the XAML checked against the documentation
+
+  - id: dialogs
+    kind: compare
+    title: Windows and dialogs — WPF versus WinUI
+    note: "In WPF any `Window` can be modal with `ShowDialog`, while WinUI awaits a `ContentDialog` that needs the page's `XamlRoot`, and only one can be open per UI thread at a time, even across windows."
+    prerequisites:
+      - "WPF column: in a `Window`'s code-behind; `CancelReasonWindow` sets `DialogResult = true` when the user confirms"
+      - "WinUI column: in a `Page`'s code-behind; both are wired to `Click=\"OnCancelOrderClicked\"`"
+    columns:
+      - label: WPF — ShowDialog
+        tone: legacy
+        code: |-
+          // ShowDialog blocks this handler until the dialog closes
+          private void OnCancelOrderClicked(object sender, RoutedEventArgs e)
+          {
+              var answer = MessageBox.Show(this, "Cancel this order?", "Orders",
+                                           MessageBoxButton.YesNo, MessageBoxImage.Question);
+              if (answer != MessageBoxResult.Yes) return;
+
+              var reason = new CancelReasonWindow
+              {
+                  Owner = this,
+                  WindowStartupLocation = WindowStartupLocation.CenterOwner,
+              };
+
+              // bool?: false or null means the user dismissed it
+              if (reason.ShowDialog() == true)
+                  viewModel.Cancel(reason.SelectedReason);
+          }
+      - label: WinUI 3 — ContentDialog
+        tone: modern
+        code: |-
+          // Awaited; without XamlRoot, ShowAsync throws
+          private async void OnCancelOrderClicked(object sender, RoutedEventArgs e)
+          {
+              var dialog = new ContentDialog
+              {
+                  XamlRoot = XamlRoot,
+                  Title = "Cancel this order?",
+                  Content = "The customer is refunded in full.",
+                  PrimaryButtonText = "Cancel order",
+                  CloseButtonText = "Keep it",
+                  DefaultButton = ContentDialogButton.Close,
+              };
+
+              if (await dialog.ShowAsync() == ContentDialogResult.Primary)
+                  viewModel.Cancel(CancelReason.CustomerRequest);
+          }
+
+          // A second top-level window instead: new OrderWindow().Activate();
+    expected: "WPF asks yes or no, then opens a centred, owned reason window and cancels only on OK, while WinUI shows one overlay dialog with \"Keep it\" as the default and cancels on the primary button."
+    sources:
+      - title: Dialog boxes overview — WPF
+        url: https://learn.microsoft.com/en-us/dotnet/desktop/wpf/windows/dialog-boxes-overview
+      - title: ContentDialog — Windows App SDK API
+        url: https://learn.microsoft.com/en-us/windows/windows-app-sdk/api/winrt/microsoft.ui.xaml.controls.contentdialog?view=windows-app-sdk-1.6
+    validation:
+      status: excerpt
+      host: a WPF app (compiled for `net9.0-windows` with `EnableWindowsTargeting`) and a WinUI 3 app (C# compiled against Microsoft.WindowsAppSDK 1.6)
+
+  - id: desktop-pitfalls
+    kind: rules
+    title: Pitfalls
+    note: "Most of these produce no error, only a screen that is wrong or slow."
+    items:
+      - tone: bad
+        text: "`{x:Bind}` without `Mode=OneWay` on anything that changes is `OneTime` by default and keeps the first value."
+      - tone: bad
+        text: "Changing a bound `ObservableCollection` from a background thread throws (`NotSupportedException` in WPF, a wrong-thread COM exception in WinUI); marshal first, or use `BindingOperations.EnableCollectionSynchronization` (WPF only)."
+      - tone: bad
+        text: "WPF virtualization breaks with a plain `ItemsControl`, `ScrollViewer.CanContentScroll=\"False\"`, `ListBoxItem`s added directly, or grouping without `VirtualizingPanel.IsVirtualizingWhenGrouping` (it defaults to `false`)."
+      - tone: bad
+        text: "A list inside a `StackPanel` or `ScrollViewer` gets infinite height and realizes every row; give it a `Grid` row with `*`."
+      - tone: bad
+        text: "Logic in a dependency property's CLR setter never runs for bindings and styles, which call `SetValue` directly; put it in the `PropertyChangedCallback`."
+      - tone: bad
+        text: "The WinUI `Window` is not a `DependencyObject`, so `Window.Resources` and `Window.DataContext` don't exist; put them on the root `Grid` or `Page`."
+      - tone: good
+        text: "WPF `TextBox.Text` updates its source on lost focus, so add `UpdateSourceTrigger=PropertyChanged` for search-as-you-type."
+      - tone: good
+        text: "In WinUI, call `Bindings.Update()` after changing many `OneTime` values at once (for example after loading) rather than making them all `OneWay`."
+      - tone: neutral
+        text: "Moving WPF to WinUI: `Dispatcher` becomes `DispatcherQueue`, `Trigger`s become visual states, `DockPanel` becomes `Grid` or `RelativePanel`, `{Binding}` becomes `{x:Bind}`, and `CommandManager` is gone."

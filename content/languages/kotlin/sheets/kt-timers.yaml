@@ -1,0 +1,715 @@
+id: kt-timers
+concept: reactive.timers-and-async
+scope: language
+title: "Timers, Delays & Scheduled Work"
+group: Kotlin language
+subtitle: "One-shot delays, drift-free repeating loops, countdowns, polling, timeouts, retry with backoff, bounded parallelism, injected time — and the Android tools for work that outlives the screen."
+applies:
+  platforms: [jvm, android]
+  runtime: Kotlin/JVM with kotlinx.coroutines
+  requires: [kotlinx-coroutines-core, kotlinx-coroutines-test]
+  versions: { kotlin: ">=2.0", kotlinx-coroutines: ">=1.10", jvm: ">=17" }
+sources:
+  - title: Cancellation and timeouts — Kotlin docs
+    url: https://kotlinlang.org/docs/cancellation-and-timeouts.html
+  - title: Time measurement — Kotlin docs
+    url: https://kotlinlang.org/docs/time-measurement.html
+  - title: Background tasks overview — Android Developers
+    url: https://developer.android.com/develop/background-work/background-tasks
+cards:
+  - id: which-do-i-reach-for
+    kind: table
+    title: Which do I reach for?
+    note: Decide by how long the work must outlive the screen, then by how precise it must be.
+    headers: [Tool, Lives as long as, Precision, Reach for it when]
+    rows:
+      - ["`delay` in a coroutine (`viewModelScope`, `lifecycleScope`)", "its scope: the screen or the ViewModel", "ms, while the process runs", "banners, debounce, countdowns, polling a visible screen — the default"]
+      - ["Flow operators (`debounce`, `sample`, a ticker flow)", "the collecting `Job`", "ms", "the timing belongs to a stream (see Flow Timing Operators)"]
+      - ["`Handler(Looper.getMainLooper()).postDelayed`", "the process; remove callbacks yourself", "ms, uptime-based (pauses in deep sleep)", "Java or View code with no coroutines"]
+      - ["`ScheduledExecutorService`", "until `shutdown()`", "ms, on its own threads", "JVM servers and Java libraries; not `java.util.Timer`"]
+      - ["`WorkManager`", "process death and reboots", "inexact; periodic work at least every **15 min**", "sync, uploads, cleanup: must happen, may wait for network or charging"]
+      - ["`AlarmManager` `setAndAllowWhileIdle`", "process death, not reboot (reschedule on boot)", "inexact, but fires in Doze", "a moment the user chose: a pickup reminder"]
+      - ["`AlarmManager.setAlarmClock`", "process death, not reboot (reschedule on boot)", "exact, shown to the user, never moved", "alarm clock, calendar — exact time is the app's core function (`USE_EXACT_ALARM`)"]
+      - ["Foreground service", "while it shows a notification", "continuous", "the user is watching it happen: navigation, a workout, playback"]
+  - id: one-shot-delay
+    kind: code
+    title: "A one-shot delay, restarted and cancelled — it is a Job"
+    note: "Keep the `Job`: cancel and relaunch it to restart the delay, and cancel it when the screen closes so nothing fires afterwards."
+    prerequisites: &runtest
+      - A Kotlin 2.x compiler (`kotlinc`), JDK 17 or later, `kotlinx-coroutines-core-jvm-1.10.2.jar` and `kotlinx-coroutines-test-jvm-1.10.2.jar`
+      - "Save as `main.kt`; run `kotlinc -cp kotlinx-coroutines-core-jvm-1.10.2.jar:kotlinx-coroutines-test-jvm-1.10.2.jar main.kt -d out && kotlin -cp out:kotlinx-coroutines-core-jvm-1.10.2.jar:kotlinx-coroutines-test-jvm-1.10.2.jar MainKt`"
+      - "Or, in a Gradle project: `implementation(\"org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.2\")` and `testImplementation(\"org.jetbrains.kotlinx:kotlinx-coroutines-test:1.10.2\")`"
+    code: |-
+      import kotlinx.coroutines.*
+      import kotlinx.coroutines.test.*
+
+      class BannerTimer(private val scope: CoroutineScope, private val log: (String) -> Unit) {
+          private var hideJob: Job? = null
+
+          fun show(text: String) {                               // one-shot delay, restarted by a new banner
+              log("banner: $text")
+              hideJob?.cancel()
+              hideJob = scope.launch {
+                  delay(3_000)
+                  log("banner hidden")
+              }
+          }
+
+          fun onScreenClosed() {
+              hideJob?.cancel()                                  // nothing visual outlives the screen
+          }
+      }
+
+      @OptIn(ExperimentalCoroutinesApi::class)
+      fun main() = runTest {
+          val banner = BannerTimer(this) { println("${currentTime} ms: $it") }
+          banner.show("Coupon applied")
+          advanceTimeBy(2_000)
+          banner.show("Card saved")                              // before the first one hid: its timer restarts
+          advanceTimeBy(4_000)
+          banner.show("Order placed")
+          advanceTimeBy(500)
+          banner.onScreenClosed()                                // its hide timer is cancelled, not left behind
+          advanceUntilIdle()
+          println("${currentTime} ms: nothing left running")
+      }
+    expected: |-
+      0 ms: banner: Coupon applied
+      2000 ms: banner: Card saved
+      5000 ms: banner hidden
+      6000 ms: banner: Order placed
+      6500 ms: nothing left running
+    validation: &rantest
+      status: ran
+      toolchain: kotlinc 2.4.21, JVM 21.0.12.1, kotlinx-coroutines-core and -test 1.10.2
+      date: "2026-11-16"
+  - id: throttle-with-a-job
+    kind: code
+    title: A throttle is a Job that just waits
+    note: "Refuse work while the cooldown `Job` is active, so a double tap submits one payment and a tap after the window submits the next."
+    prerequisites: *runtest
+    code: |-
+      import kotlinx.coroutines.*
+      import kotlinx.coroutines.test.*
+
+      class PayButton(private val scope: CoroutineScope, private val log: (String) -> Unit) {
+          private var cooldown: Job? = null
+
+          fun onTapped() {                                       // throttle, leading edge: one payment per 2 s
+              if (cooldown?.isActive == true) {
+                  log("pay ignored (double tap)")
+                  return
+              }
+              log("payment submitted")
+              cooldown = scope.launch { delay(2_000) }           // the window is a Job that just waits
+          }
+      }
+
+      @OptIn(ExperimentalCoroutinesApi::class)
+      fun main() = runTest {
+          val pay = PayButton(this) { println("${currentTime} ms: $it") }
+          pay.onTapped()
+          advanceTimeBy(150)
+          pay.onTapped()                                         // a double tap inside the window
+          advanceTimeBy(2_000)
+          pay.onTapped()                                         // the window is over: a real second payment
+      }
+    expected: |-
+      0 ms: payment submitted
+      150 ms: pay ignored (double tap)
+      2150 ms: payment submitted
+    validation: *rantest
+  - id: debounce-that-flushes
+    kind: code
+    title: A debounced save that flushes when the screen closes
+    note: "Debounce is a restartable one-shot delay; when the screen closes, save the pending text instead of cancelling it away (Flow's `debounce` is in the Flow Timing Operators sheet)."
+    prerequisites: *runtest
+    code: |-
+      import kotlinx.coroutines.*
+      import kotlinx.coroutines.test.*
+
+      class DeliveryNoteEditor(private val scope: CoroutineScope, private val save: (String) -> Unit) {
+          private var pendingNote: String? = null
+          private var saveJob: Job? = null
+
+          fun onNoteEdited(note: String) {                       // debounce: save 1 s after the last keystroke
+              pendingNote = note
+              saveJob?.cancel()
+              saveJob = scope.launch {
+                  delay(1_000)
+                  flush()
+              }
+          }
+
+          fun onScreenClosed() {                                 // user data is flushed, not dropped
+              saveJob?.cancel()
+              flush()                                            // in an app: from a scope that outlives the screen
+          }
+
+          private fun flush() {
+              pendingNote?.let(save)
+              pendingNote = null
+          }
+      }
+
+      @OptIn(ExperimentalCoroutinesApi::class)
+      fun main() = runTest {
+          val editor = DeliveryNoteEditor(this) { println("${currentTime} ms: saved '$it'") }
+          for (text in listOf("Ring", "Ring the", "Ring the bell")) {
+              editor.onNoteEdited(text)
+              advanceTimeBy(300)
+          }
+          advanceTimeBy(2_000)                                   // one save, 1 s after the last keystroke
+          editor.onScreenClosed()                                // left after it saved: nothing more to save
+          editor.onNoteEdited("Leave at the door")
+          advanceTimeBy(400)
+          editor.onScreenClosed()                                // closed before the debounce fired: flushed
+          advanceUntilIdle()
+          println("${currentTime} ms: nothing left running")
+      }
+    expected: |-
+      1600 ms: saved 'Ring the bell'
+      3300 ms: saved 'Leave at the door'
+      3300 ms: nothing left running
+    validation: *rantest
+  - id: repeating-without-drift
+    kind: code
+    title: A repeating timer without drift
+    note: "`delay(period)` after the work makes every run late by the work's cost, while sleeping until the next slot keeps the rate and skips the slots a hung send missed (the `Flow` version is in the Flow Timing Operators sheet)."
+    prerequisites: *runtest
+    code: |-
+      import kotlinx.coroutines.*
+      import kotlinx.coroutines.test.*
+      import kotlin.time.*
+      import kotlin.time.Duration.Companion.milliseconds
+      import kotlin.time.Duration.Companion.seconds
+
+      // Fixed delay: the period starts AFTER the work, so every send pushes all later ones back
+      fun CoroutineScope.fixedDelay(period: Duration, work: suspend () -> Unit) = launch {
+          while (isActive) {
+              work()
+              delay(period)
+          }
+      }
+
+      // Fixed rate: sleep until the next slot (start + k * period); slots missed while a send hung
+      // (or the device slept) are skipped, not fired in a burst
+      fun CoroutineScope.fixedRate(period: Duration, time: TimeSource, work: suspend () -> Unit) = launch {
+          val start = time.markNow()
+          var next = period
+          while (isActive) {
+              work()
+              val now = start.elapsedNow()
+              while (next <= now) next += period
+              delay(next - now)
+          }
+      }
+
+      @OptIn(ExperimentalCoroutinesApi::class)
+      fun main() = runTest {
+          val drifting = mutableListOf<Long>()                  // a location every 5 s; a send takes 120 ms
+          val steady = mutableListOf<Long>()
+          backgroundScope.fixedDelay(5.seconds) {
+              drifting += currentTime
+              delay(120.milliseconds)
+          }
+          backgroundScope.fixedRate(5.seconds, testTimeSource) {   // TimeSource.Monotonic in the app
+              steady += currentTime
+              delay(if (steady.size == 3) 7_000.milliseconds else 120.milliseconds)   // the 3rd send hangs 7 s
+          }
+          advanceTimeBy(20_001)                                 // both loops end with backgroundScope
+          println("fixed delay sent at $drifting")
+          println("fixed rate  sent at $steady")
+      }
+    expected: |-
+      fixed delay sent at [0, 5120, 10240, 15360]
+      fixed rate  sent at [0, 5000, 10000, 20000]
+    validation: *rantest
+  - id: failed-run-keeps-the-schedule
+    kind: code
+    title: A failed run does not end the schedule
+    note: "Catch the expected failure inside the loop, never `Exception`, so one lost send is logged, the next slot still runs, and cancelling the loop still stops it."
+    prerequisites: *runtest
+    code: |-
+      import kotlinx.coroutines.*
+      import kotlinx.coroutines.test.*
+      import java.io.IOException
+      import kotlin.time.*
+      import kotlin.time.Duration.Companion.milliseconds
+      import kotlin.time.Duration.Companion.seconds
+
+      // The fixed-rate loop from the card above, now with one failed run caught inside the loop
+      fun CoroutineScope.fixedRate(period: Duration, time: TimeSource, work: suspend () -> Unit) = launch {
+          val start = time.markNow()
+          var next = period
+          while (isActive) {
+              try {
+                  work()
+              } catch (e: IOException) {                        // only the expected failure: never Exception
+                  println("send failed (${e.message}); the schedule goes on")
+              }
+              val now = start.elapsedNow()
+              while (next <= now) next += period
+              delay(next - now)
+          }
+      }
+
+      @OptIn(ExperimentalCoroutinesApi::class)
+      fun main() = runTest {
+          val sent = mutableListOf<Long>()                      // a courier's location every 5 s
+          val sending = backgroundScope.fixedRate(5.seconds, testTimeSource) {
+              sent += currentTime
+              delay(120.milliseconds)
+              if (sent.size == 2) throw IOException("no signal")
+          }
+          advanceTimeBy(20_001)
+          sending.cancel()                                      // the screen closes: the loop stops at its delay
+          advanceTimeBy(10_000)
+          println("sent at $sent, still running: ${sending.isActive}")
+      }
+    expected: |-
+      send failed (no signal); the schedule goes on
+      sent at [0, 5000, 10000, 15000, 20000], still running: false
+    validation: *rantest
+  - id: countdown-and-polling
+    kind: code
+    title: A countdown, and polling until a condition holds
+    note: "A countdown is a loop of `delay`; polling is a loop that checks, waits and gives up under `withTimeoutOrNull`."
+    prerequisites: *runtest
+    code: |-
+      import kotlinx.coroutines.*
+      import kotlinx.coroutines.test.*
+      import kotlin.time.Duration
+      import kotlin.time.Duration.Companion.seconds
+
+      // Countdown: "Resend code in 3 s… 2 s… 1 s…", then enable the button
+      suspend fun resendCountdown(from: Int, show: (String) -> Unit) {
+          for (secondsLeft in from downTo 1) {
+              show("Resend code in ${secondsLeft} s")
+              delay(1.seconds)
+          }
+          show("Resend code")
+      }
+
+      enum class PaymentStatus(val isFinal: Boolean) {
+          PENDING(false), AUTHORISED(false), SETTLED(true), DECLINED(true)
+      }
+
+      // Polling: ask every `interval` until the status is final, or give up after `limit`
+      suspend fun awaitFinalStatus(
+          limit: Duration,
+          interval: Duration,
+          fetch: suspend () -> PaymentStatus,
+      ): PaymentStatus? =
+          withTimeoutOrNull(limit) {
+              var status = fetch()
+              while (!status.isFinal) {
+                  delay(interval)
+                  status = fetch()
+              }
+              status
+          }
+
+      @OptIn(ExperimentalCoroutinesApi::class)
+      fun main() = runTest {
+          resendCountdown(3) { println("${currentTime} ms: $it") }
+
+          val statuses = ArrayDeque(listOf(PaymentStatus.PENDING, PaymentStatus.AUTHORISED, PaymentStatus.SETTLED))
+          val start = currentTime
+          val settled = awaitFinalStatus(limit = 30.seconds, interval = 2.seconds) { statuses.removeFirst() }
+          println("+${currentTime - start} ms: payment $settled")
+
+          val stuck = awaitFinalStatus(limit = 10.seconds, interval = 2.seconds) { PaymentStatus.PENDING }
+          println("+${currentTime - start} ms: payment ${stuck ?: "still pending: show 'We'll email you'"}")
+      }
+    expected: |-
+      0 ms: Resend code in 3 s
+      1000 ms: Resend code in 2 s
+      2000 ms: Resend code in 1 s
+      3000 ms: Resend code
+      +4000 ms: payment SETTLED
+      +14000 ms: payment still pending: show 'We'll email you'
+    validation: *rantest
+  - id: timeout-and-retry
+    kind: code
+    title: A timeout per attempt, and retry with exponential backoff
+    note: "Bound each attempt with `withTimeout`, wait 500 ms, 1 s, 2 s… between them, and let the last failure reach the caller."
+    prerequisites: *runtest
+    code: |-
+      import kotlinx.coroutines.*
+      import kotlinx.coroutines.test.*
+      import java.io.IOException
+      import kotlin.time.Duration
+      import kotlin.time.Duration.Companion.milliseconds
+      import kotlin.time.Duration.Companion.seconds
+
+      suspend fun <T> retryWithBackoff(
+          retries: Int = 3,
+          perAttempt: Duration = 2.seconds,                      // a hung request counts as a failure
+          onRetry: (attempt: Int, error: Exception, wait: Duration) -> Unit = { _, _, _ -> },
+          block: suspend () -> T,
+      ): T {
+          var wait = 500.milliseconds                            // then 1 s, 2 s, … capped at 5 s
+          for (attempt in 1..retries) {
+              try {
+                  return withTimeout(perAttempt) { block() }
+              } catch (e: TimeoutCancellationException) {
+                  currentCoroutineContext().ensureActive()       // the CALLER timed out: stop (next card)
+                  onRetry(attempt, e, wait)
+              } catch (e: IOException) {
+                  onRetry(attempt, e, wait)
+              }
+              delay(wait)
+              wait = (wait * 2).coerceAtMost(5.seconds)
+          }
+          return withTimeout(perAttempt) { block() }             // the last attempt's failure reaches the caller
+      }
+
+      @OptIn(ExperimentalCoroutinesApi::class)
+      fun main() = runTest {
+          val replies = ArrayDeque<suspend () -> String>(listOf(
+              { awaitCancellation() },                           // the server never answers
+              { throw IOException("503 Service Unavailable") },
+              { delay(300); "order-1042" },
+          ))
+          val log = { n: Int, e: Exception, wait: Duration ->
+              println("${currentTime} ms: attempt $n failed (${e::class.simpleName}), retry in $wait")
+          }
+          val orderId = retryWithBackoff(onRetry = log) { replies.removeFirst().invoke() }
+          println("${currentTime} ms: placed $orderId")
+      }
+    expected: |-
+      2000 ms: attempt 1 failed (TimeoutCancellationException), retry in 500ms
+      2500 ms: attempt 2 failed (IOException), retry in 1s
+      3800 ms: placed order-1042
+    sources:
+      - title: withTimeout — kotlinx.coroutines API
+        url: https://kotlinlang.org/api/kotlinx.coroutines/kotlinx-coroutines-core/kotlinx.coroutines/with-timeout.html
+    validation: *rantest
+  - id: retry-stops-when-the-caller-gives-up
+    kind: code
+    title: A retry stops when its caller gives up
+    note: "The caller's own timeout also arrives as a `TimeoutCancellationException`, so `ensureActive()` tells it apart from an attempt's and the retry stops without reporting a failed attempt."
+    prerequisites: *runtest
+    code: |-
+      import kotlinx.coroutines.*
+      import kotlinx.coroutines.test.*
+      import java.io.IOException
+      import kotlin.time.Duration
+      import kotlin.time.Duration.Companion.milliseconds
+      import kotlin.time.Duration.Companion.seconds
+
+      suspend fun <T> retryWithBackoff(
+          retries: Int = 3,
+          perAttempt: Duration = 2.seconds,                      // a hung request counts as a failure
+          onRetry: (attempt: Int, error: Exception, wait: Duration) -> Unit = { _, _, _ -> },
+          block: suspend () -> T,
+      ): T {
+          var wait = 500.milliseconds                            // then 1 s, 2 s, … capped at 5 s
+          for (attempt in 1..retries) {
+              try {
+                  return withTimeout(perAttempt) { block() }
+              } catch (e: TimeoutCancellationException) {
+                  currentCoroutineContext().ensureActive()       // the CALLER timed out or was cancelled: stop here
+                  onRetry(attempt, e, wait)
+              } catch (e: IOException) {
+                  onRetry(attempt, e, wait)
+              }
+              delay(wait)
+              wait = (wait * 2).coerceAtMost(5.seconds)
+          }
+          return withTimeout(perAttempt) { block() }             // the last attempt's failure reaches the caller
+      }
+
+      @OptIn(ExperimentalCoroutinesApi::class)
+      fun main() = runTest {
+          var reported = 0
+          val log = { n: Int, e: Exception, wait: Duration ->
+              reported++
+              println("${currentTime} ms: attempt $n failed (${e::class.simpleName}), retry in $wait")
+          }
+          // The screen allows the whole operation 1 s: the caller's own timeout fires inside attempt 1
+          val orderId = withTimeoutOrNull(1_000) {
+              retryWithBackoff(onRetry = log) { awaitCancellation() }
+          }
+          println("${currentTime} ms: caller gave up (got $orderId), failed attempts reported: $reported")
+      }
+    expected: |-
+      1000 ms: caller gave up (got null), failed attempts reported: 0
+    sources:
+      - title: Cancellation and timeouts — Kotlin docs
+        url: https://kotlinlang.org/docs/cancellation-and-timeouts.html
+    validation: *rantest
+  - id: serial-parallel-limited
+    kind: code
+    title: N jobs — serial, parallel, or at most K at once
+    note: "`map` runs them one by one, `async` + `awaitAll` all at once, and a `Semaphore` caps how many hold a permit."
+    prerequisites: *runtest
+    code: |-
+      import kotlinx.coroutines.*
+      import kotlinx.coroutines.sync.Semaphore
+      import kotlinx.coroutines.sync.withPermit
+      import kotlinx.coroutines.test.*
+      import java.util.Locale
+
+      var running = 0
+      var peak = 0
+      suspend fun uploadPhoto(name: String): String {           // each receipt photo takes 300 ms
+          running++
+          peak = maxOf(peak, running)
+          try { delay(300) } finally { running-- }
+          return "$name ok"
+      }
+
+      @OptIn(ExperimentalCoroutinesApi::class)
+      fun main() = runTest {
+          val photos = (1..6).map { "receipt-$it.jpg" }
+          suspend fun measure(label: String, upload: suspend () -> List<String>) {
+              peak = 0
+              val t0 = currentTime
+              val results = upload()
+              val elapsed = currentTime - t0
+              val line = "%-10s %d done in %4d ms, at most %d at once"
+              println(line.format(Locale.ROOT, label, results.size, elapsed, peak))
+          }
+
+          measure("serial") { photos.map { uploadPhoto(it) } }
+          measure("parallel") { coroutineScope { photos.map { async { uploadPhoto(it) } }.awaitAll() } }
+
+          val permits = Semaphore(2)                             // the server allows two uploads per user
+          measure("limited") {
+              coroutineScope { photos.map { async { permits.withPermit { uploadPhoto(it) } } }.awaitAll() }
+          }
+      }
+    expected: |-
+      serial     6 done in 1800 ms, at most 1 at once
+      parallel   6 done in  300 ms, at most 6 at once
+      limited    6 done in  900 ms, at most 2 at once
+    sources:
+      - title: Semaphore — kotlinx.coroutines API
+        url: https://kotlinlang.org/api/kotlinx.coroutines/kotlinx-coroutines-core/kotlinx.coroutines.sync/-semaphore/
+    validation: *rantest
+  - id: injecting-time
+    kind: code
+    title: "Injecting time: Clock for when, TimeSource for how long"
+    note: "Code that reads the time takes it as a parameter — a fake `Clock` for instants, a `TestTimeSource` for durations — so tests never sleep (with `runTest`, pass its `testTimeSource`)."
+    applies:
+      platforms: [jvm, android]
+      runtime: Kotlin/JVM with kotlinx.coroutines
+      versions: { kotlin: ">=2.3", jvm: ">=17" }
+    prerequisites:
+      - A Kotlin 2.3 or later compiler (`kotlinc`) and JDK 17 or later
+      - "Save as `main.kt`; run `kotlinc main.kt -d out && kotlin -cp out MainKt`"
+    code: |-
+      import kotlin.time.*
+      import kotlin.time.Duration.Companion.minutes
+      import kotlin.time.Duration.Companion.seconds
+
+      // Wall-clock time ("when"): a cart hold that expires at an instant shown to the user and stored
+      class CartHold(private val clock: Clock) {
+          val expiresAt: Instant = clock.now() + 10.minutes
+          fun isExpired() = clock.now() >= expiresAt
+      }
+
+      // Elapsed time ("how long"): monotonic, immune to the user changing the device clock
+      class ResendLimiter(private val time: TimeSource, private val cooldown: Duration) {
+          private var lastSent: TimeMark? = null
+          fun trySend(): Boolean {
+              val last = lastSent
+              if (last != null && last.elapsedNow() < cooldown) return false
+              lastSent = time.markNow()
+              return true
+          }
+      }
+
+      class FakeClock(var now: Instant) : Clock { override fun now() = now }
+
+      fun main() {
+          val clock = FakeClock(Instant.parse("2026-11-16T12:00:00Z"))   // Clock.System in the app
+          val hold = CartHold(clock)
+          clock.now += 9.minutes
+          println("hold until ${hold.expiresAt}, expired after 9 min: ${hold.isExpired()}")
+          clock.now += 1.minutes
+          println("expired after 10 min: ${hold.isExpired()}")
+
+          val time = TestTimeSource()                                     // TimeSource.Monotonic in the app
+          val limiter = ResendLimiter(time, cooldown = 30.seconds)
+          println("send: ${limiter.trySend()}, again at once: ${limiter.trySend()}")
+          time += 30.seconds
+          println("after 30 s: ${limiter.trySend()}")
+      }
+    expected: |-
+      hold until 2026-11-16T12:10:00Z, expired after 9 min: false
+      expired after 10 min: true
+      send: true, again at once: false
+      after 30 s: true
+    sources:
+      - title: Clock — Kotlin standard library (stable since 2.3)
+        url: https://kotlinlang.org/api/core/kotlin-stdlib/kotlin.time/-clock/
+      - title: TimeSource — Kotlin standard library
+        url: https://kotlinlang.org/api/core/kotlin-stdlib/kotlin.time/-time-source/
+    validation:
+      status: ran
+      toolchain: kotlinc 2.4.21, JVM 21.0.12.1
+      date: "2026-11-16"
+  - id: jvm-scheduler-vs-coroutine
+    kind: compare
+    title: "The JVM's own scheduler, and the coroutine loop"
+    note: "`ScheduledExecutorService` still fits Java code and servers with no coroutines; `java.util.Timer` does not — one thread, and one exception kills every task."
+    columns:
+      - label: ScheduledExecutorService
+        tone: legacy
+        code: |-
+          import java.util.concurrent.CountDownLatch
+          import java.util.concurrent.Executors
+          import java.util.concurrent.TimeUnit
+          import java.util.concurrent.atomic.AtomicInteger
+
+          fun main() {
+              val scheduler = Executors.newSingleThreadScheduledExecutor()
+              val sent = AtomicInteger()
+              val thirdSent = CountDownLatch(1)
+
+              // scheduleAtFixedRate keeps the rate; scheduleWithFixedDelay drifts like a delay loop.
+              // An exception thrown here silently cancels every later run.
+              val reminders = scheduler.scheduleAtFixedRate({
+                  val n = sent.incrementAndGet()
+                  if (n <= 3) println("remind courier ($n)")
+                  if (n == 3) thirdSent.countDown()
+              }, 0, 100, TimeUnit.MILLISECONDS)
+
+              thirdSent.await()                                    // blocks a whole thread while waiting
+              reminders.cancel(false)
+              scheduler.shutdown()                                 // forget this and the JVM never exits
+              println("stopped")
+          }
+      - label: Coroutine loop
+        tone: modern
+        code: |-
+          import kotlinx.coroutines.*
+
+          fun main() = runBlocking {
+              val thirdSent = CompletableDeferred<Unit>()
+
+              // A coroutine loop: cancellable at every delay, and an exception reaches the
+              // parent instead of vanishing. (Fixed delay; use a deadline loop when rate matters.)
+              val reminders = launch {
+                  var n = 0
+                  while (isActive) {
+                      n++
+                      println("remind courier ($n)")
+                      if (n == 3) thirdSent.complete(Unit)
+                      delay(100)
+                  }
+              }
+
+              thirdSent.await()                                    // suspends; the thread is free meanwhile
+              reminders.cancelAndJoin()
+              println("stopped")
+          }
+    prerequisites:
+      - A Kotlin 2.x compiler (`kotlinc`), JDK 17 or later, and `kotlinx-coroutines-core-jvm-1.10.2.jar`
+      - "Save as `main.kt`; run `kotlinc -cp kotlinx-coroutines-core-jvm-1.10.2.jar main.kt -d out && kotlin -cp out:kotlinx-coroutines-core-jvm-1.10.2.jar MainKt`"
+    expected: |-
+      remind courier (1)
+      remind courier (2)
+      remind courier (3)
+      stopped
+    sources:
+      - title: ScheduledExecutorService — Java SE 21 API
+        url: https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/concurrent/ScheduledExecutorService.html
+    validation:
+      status: ran
+      toolchain: kotlinc 2.4.21, JVM 21.0.12.1, kotlinx-coroutines-core 1.10.2
+      date: "2026-11-16"
+  - id: work-that-outlives-the-screen
+    kind: code
+    title: "Work that outlives the screen: WorkManager and AlarmManager"
+    note: "WorkManager for work that must happen eventually (it persists across reboots), an inexact alarm for a moment the user chose, and an exact alarm only when exact time is the app's core function."
+    applies:
+      platforms: [android]
+      runtime: an Android app
+      requires: [androidx.work, android.app.AlarmManager]
+      versions: { kotlin: ">=2.0", work: ">=2.9", android: "API 23+ (work 2.9–2.11), API 24+ (work 2.12+)" }
+    prerequisites:
+      - "An Android project with `androidx.work:work-runtime` 2.9 or later (since 2.9 `work-runtime-ktx` is empty: `CoroutineWorker` lives in `work-runtime`)"
+      - "An `OrdersApplication` holding an `orderRepository` with `suspend fun syncPending()`, an `UploadReceiptWorker`, and a `PickupReminderReceiver` declared in `AndroidManifest.xml`"
+      - "For `scheduleWakeUpAlarm`: an alarm-clock or calendar app declares `USE_EXACT_ALARM` (granted on install, Play-policy restricted); any other app declares `SCHEDULE_EXACT_ALARM` and checks `canScheduleExactAlarms()` first"
+    code: |-
+      // WorkManager: work that must happen eventually; it survives process death and reboots
+      class SyncOrdersWorker(context: Context, params: WorkerParameters) : CoroutineWorker(context, params) {
+          override suspend fun doWork(): Result = try {
+              (applicationContext as OrdersApplication).orderRepository.syncPending()
+              Result.success()
+          } catch (e: IOException) {
+              if (runAttemptCount < 5) Result.retry() else Result.failure()   // retry follows the backoff below
+          }
+      }
+
+      fun scheduleOrderWork(context: Context) {
+          val online = Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build()
+          val sync = PeriodicWorkRequestBuilder<SyncOrdersWorker>(15, TimeUnit.MINUTES)   // 15 min is the minimum
+              .setConstraints(online)
+              .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 30, TimeUnit.SECONDS)
+              .build()
+          val upload = OneTimeWorkRequestBuilder<UploadReceiptWorker>().setConstraints(online).build()
+          WorkManager.getInstance(context).apply {               // unique names: one copy, not one per app start
+              enqueueUniquePeriodicWork("order-sync", ExistingPeriodicWorkPolicy.KEEP, sync)
+              enqueueUniqueWork("receipt-1042", ExistingWorkPolicy.KEEP, upload)
+          }
+      }
+
+      // AlarmManager: a moment the user chose. A reminder is fine inexact; it still fires in Doze.
+      fun schedulePickupReminder(context: Context, orderId: Int, atMillis: Long) {
+          val intent = Intent(context, PickupReminderReceiver::class.java).putExtra("orderId", orderId)
+          val flags = PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+          val pending = PendingIntent.getBroadcast(context, orderId, intent, flags)   // one alarm per order
+          val alarms = context.getSystemService(AlarmManager::class.java)
+          alarms.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, atMillis, pending)
+      }
+
+      // Exact time only when it IS the app's core function (an alarm clock, a calendar): such an app
+      // declares USE_EXACT_ALARM (granted on install, Play-policy restricted). Other apps need
+      // SCHEDULE_EXACT_ALARM, denied by default for new installs targeting API 33+ on Android 14+:
+      // they check canScheduleExactAlarms() and degrade.
+      fun scheduleWakeUpAlarm(alarms: AlarmManager, atMillis: Long, ring: PendingIntent, showAlarm: PendingIntent) {
+          alarms.setAlarmClock(AlarmManager.AlarmClockInfo(atMillis, showAlarm), ring)   // shown, never moved
+      }
+    expected: "Order sync runs about every 15 minutes whenever the device is online, retrying with exponential backoff; the receipt upload runs once when online; the pickup reminder arrives near its time even in Doze; the wake-up alarm rings at its exact time and shows in the status bar."
+    sources:
+      - title: Define work requests — Android Developers
+        url: https://developer.android.com/develop/background-work/background-tasks/persistent/getting-started/define-work
+      - title: Threading in CoroutineWorker — Android Developers
+        url: https://developer.android.com/develop/background-work/background-tasks/persistent/threading/coroutineworker
+      - title: Schedule alarms — Android Developers
+        url: https://developer.android.com/develop/background-work/services/alarms
+      - title: WorkManager release notes — Android Developers
+        url: https://developer.android.com/jetpack/androidx/releases/work
+      - title: Schedule exact alarms are denied by default — Android 14 behavior changes
+        url: https://developer.android.com/about/versions/14/changes/schedule-exact-alarms
+    validation:
+      status: excerpt
+      host: an Android app (needs the Android SDK and androidx.work)
+  - id: timer-rules
+    kind: rules
+    title: Rules and pitfalls
+    note: Most timer bugs are lifetime bugs.
+    items:
+      - tone: good
+        text: "Store every timer's `Job`, cancel it before restarting, and launch it in a scope that ends with its owner (`viewModelScope`, `lifecycleScope`)."
+      - tone: good
+        text: "Periodic work sleeps until the next slot, catches its expected failure per run (never `Exception`, which also catches cancellation), and skips the runs it missed."
+      - tone: good
+        text: "When the screen closes, cancel the timers that only change what is shown, but flush pending user data (a debounced save) from a scope that outlives the screen."
+      - tone: good
+        text: "Inject time — a `Clock` for instants, a `TimeSource` for durations, a `CoroutineScope` for `delay` — so `runTest` makes a 10-minute test instant."
+      - tone: good
+        text: "Retry only failures that can succeed later (timeouts, `IOException`, 503), cap the wait, and add random jitter in production so clients do not retry in lockstep."
+      - tone: bad
+        text: "`Thread.sleep` in a coroutine blocks the thread other coroutines need; `GlobalScope.launch { while (true) … }` outlives the screen."
+      - tone: bad
+        text: "`System.currentTimeMillis()` differences for elapsed time: the user or NTP can move the wall clock. Use `TimeSource.Monotonic`."
+      - tone: bad
+        text: "A `PeriodicWorkRequest` below 15 minutes, or exact alarms for routine sync or reminders: WorkManager raises the interval to the minimum, and `SCHEDULE_EXACT_ALARM` is denied by default for new installs targeting API 33+ on Android 14+, and can be revoked."
+      - tone: neutral
+        text: "Alarms are cleared on reboot and WorkManager work is not; `enqueueUnique…Work` keeps one copy instead of one per app start."

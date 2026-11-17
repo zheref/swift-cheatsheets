@@ -1,0 +1,489 @@
+id: ts-rxjs-react
+concept: ui.reactive-wiring
+scope: platform
+title: "RxJS + React — Wiring Them Together"
+group: "Reactive & time"
+subtitle: "Streams live outside the component; React reads them through useSyncExternalStore or an effect that unsubscribes."
+applies:
+  platforms: [browser]
+  runtime: a React app in the browser; the examples run in Node.js with jsdom
+  requires: [React, RxJS]
+  versions: { typescript: ">=5.5", react: ">=18", rxjs: ">=7.8", node: ">=22.18" }
+sources:
+  - title: useSyncExternalStore — React
+    url: https://react.dev/reference/react/useSyncExternalStore
+  - title: useEffect — React
+    url: https://react.dev/reference/react/useEffect
+  - title: RxJS — Overview
+    url: https://rxjs.dev/guide/overview
+cards:
+  - id: connection-points
+    kind: rules
+    title: The connection points
+    note: "There are only a handful, and you should know all of them."
+    items:
+      - tone: modern
+        text: "**Streams live outside render.** Build pipelines in a view model, a module or a `useState(() => create())` initialiser — never in the component body, where every render would build and subscribe a new one."
+      - tone: modern
+        text: "**State with a current value** (`BehaviorSubject`, or a pipeline fed into one) → `useSyncExternalStore(subscribe, getSnapshot)`. It is tear-free under concurrent rendering and needs no effect."
+      - tone: neutral
+        text: "**Server rendering** (Next.js, Remix): pass `useSyncExternalStore` a third argument, `getServerSnapshot`, or React throws while rendering on the server."
+      - tone: modern
+        text: "**Any other observable** (derived, events, a timer) → `useEffect` that subscribes and **returns** `() => subscription.unsubscribe()`."
+      - tone: modern
+        text: "**Inputs go in through methods**: an event handler calls `vm.search(text)`, which `next`s a private `Subject`. The component never sees the subject."
+      - tone: neutral
+        text: "RxJS is the `ObservableObject` of this world, minus the magic: React does not know about observables, so every subscription is one you wrote, and one you must end."
+      - tone: legacy
+        text: "Before React 18 a `useEffect` + `useState` pair was the only way: it renders the initial value first and the real one after the effect. Keep it for streams with no current value."
+  - id: view-model
+    kind: code
+    title: A view model that exposes observables
+    note: "Queries in, one `state$` out — debounced, de-duplicated, latest-wins, and an error that does not kill the search box."
+    prerequisites: &node
+      - Node.js 22.18 or later (it runs `.mts` files directly by stripping the types)
+      - "`npm i rxjs`"
+      - "Save as `main.mts` and run `node main.mts`"
+    code: |-
+      import { BehaviorSubject, catchError, debounceTime, defer, distinctUntilChanged } from "rxjs";
+      import { map, of, startWith, Subject, switchMap } from "rxjs";
+
+      type SearchState = { status: "idle" | "loading" | "done" | "failed"; results: string[] };
+
+      function createProductSearch(api: (query: string) => Promise<string[]>, debounceMs = 300) {
+        const queries = new Subject<string>();
+        const state = new BehaviorSubject<SearchState>({ status: "idle", results: [] });
+
+        const pipeline = queries.pipe(
+          debounceTime(debounceMs),
+          distinctUntilChanged(),
+          switchMap((q) =>                                         // a newer query discards the older response
+            defer(() => api(q)).pipe(
+              map((results): SearchState => ({ status: "done", results })),
+              catchError(() => of<SearchState>({ status: "failed", results: [] })),   // inside: the box lives on
+              startWith<SearchState>({ status: "loading", results: state.getValue().results }),
+            )),
+        );
+
+        return {
+          state$: state.asObservable(),                            // read-only to the view
+          search: (text: string) => queries.next(text),           // the view's only input
+          getSnapshot: () => state.getValue(),                     // what useSyncExternalStore reads
+          connect(): () => void {                                  // React: useEffect(() => vm.connect(), [vm])
+            const subscription = pipeline.subscribe((next) => state.next(next));
+            return () => subscription.unsubscribe();
+          },
+        };
+      }
+
+      const vm = createProductSearch(async (q) => {
+        if (q === "xx") throw new Error("HTTP 503");
+        return ["Mug", "Mug rack", "Teapot"].filter((name) => name.toLowerCase().includes(q));
+      }, 20);
+      vm.state$.subscribe(({ status, results }) => console.log(status.padEnd(7), results.join(", ")));
+      const disconnect = vm.connect();
+      const pause = () => new Promise((resolve) => setTimeout(resolve, 50));
+
+      for (const text of ["m", "mu", "mug"]) vm.search(text);     // one burst, one request
+      await pause();
+
+      vm.search("xx");                                             // this request fails…
+      await pause();
+
+      vm.search("mu");                                             // …and the box still works
+      await pause();
+      disconnect();
+    expected: |-
+      idle    
+      loading 
+      done    Mug, Mug rack
+      loading Mug, Mug rack
+      failed  
+      loading 
+      done    Mug, Mug rack
+    applies:
+      platforms: [browser, node]
+    validation: &ran
+      status: ran
+      toolchain: Node 24.16.0, TypeScript 5.9.3
+      date: "2026-11-16"
+  - id: subscribe-a-component
+    kind: compare
+    title: "Subscribing a component: useSyncExternalStore vs an effect"
+    note: "A `BehaviorSubject` has a current value, so React can read it directly; a derived stream does not, so an effect subscribes and its cleanup unsubscribes."
+    prerequisites: &react
+      - Node.js 22.18 or later
+      - "`npm i react react-dom rxjs`; to run it outside a browser, also `npm i -D esbuild jsdom @testing-library/react`"
+      - "Save as `main.tsx`. Node does not strip JSX, so build it first: `npx esbuild main.tsx --jsx=automatic --format=esm --outfile=main.mjs`, then `node main.mjs`"
+      - "In an app (`npm create vite@latest shop -- --template react-ts`) keep only the component and the hook: the jsdom lines stand in for the page"
+    columns:
+      - label: useSyncExternalStore — a BehaviorSubject
+        tone: modern
+        code: |-
+          import { JSDOM } from "jsdom";
+          import { useSyncExternalStore } from "react";
+          import { BehaviorSubject } from "rxjs";
+
+          const { window } = new JSDOM("<!doctype html><body></body>");
+          Object.assign(globalThis, { window, document: window.document });
+          const { render, act, cleanup } = await import("@testing-library/react");
+
+          type Line = { sku: string; qty: number };
+          const cart$ = new BehaviorSubject<Line[]>([]);
+
+          // Module-level: stable identities, so React subscribes once.
+          const subscribe = (onChange: () => void) => {
+            const subscription = cart$.subscribe(onChange);
+            return () => subscription.unsubscribe();
+          };
+
+          const getSnapshot = () => cart$.getValue();   // same object until it changes
+
+          function CartBadge() {
+            const lines = useSyncExternalStore(subscribe, getSnapshot);
+            const count = lines.reduce((n, l) => n + l.qty, 0);
+            return <span>{count} items</span>;
+          }
+
+          const { container } = render(<CartBadge />);
+          console.log(container.innerHTML);
+          act(() => cart$.next([{ sku: "mug", qty: 2 }]));
+          console.log(container.innerHTML);
+          cleanup();                                    // unmount
+          console.log("subscribed after unmount:", cart$.observed);
+      - label: useEffect + useState — any observable
+        tone: neutral
+        code: |-
+          import { JSDOM } from "jsdom";
+          import { useEffect, useState } from "react";
+          import { BehaviorSubject, map, type Observable } from "rxjs";
+
+          const { window } = new JSDOM("<!doctype html><body></body>");
+          Object.assign(globalThis, { window, document: window.document });
+          const { render, act, cleanup } = await import("@testing-library/react");
+
+          type Line = { sku: string; qty: number };
+          const cart$ = new BehaviorSubject<Line[]>([]);
+          const itemCount$ = cart$.pipe(map((lines) => lines.reduce((n, l) => n + l.qty, 0)));
+
+          function useObservable<T>(source$: Observable<T>, initial: T): T {
+            const [value, setValue] = useState(initial);
+            useEffect(() => {
+              const subscription = source$.subscribe(setValue);
+              return () => subscription.unsubscribe();  // the cleanup is the teardown
+            }, [source$]);                              // so source$ must be stable
+            return value;
+          }
+
+          function CartBadge() {
+            const count = useObservable(itemCount$, 0);
+            return <span>{count} items</span>;
+          }
+
+          const { container } = render(<CartBadge />);
+          console.log(container.innerHTML);
+          act(() => cart$.next([{ sku: "mug", qty: 2 }]));
+          console.log(container.innerHTML);
+          cleanup();                                    // unmount
+          console.log("subscribed after unmount:", cart$.observed);
+    expected: |-
+      <span>0 items</span>
+      <span>2 items</span>
+      subscribed after unmount: false
+    sources:
+      - title: React Testing Library — Testing Library
+        url: https://testing-library.com/docs/react-testing-library/intro/
+    validation:
+      status: ran
+      toolchain: Node 24.16.0, TypeScript 5.9.3
+      date: "2026-11-16"
+      jsx: react
+  - id: derived-validated-state
+    kind: code
+    title: Derived and validated form state
+    note: "`combineLatest` over the fields, one derived view object, and `distinctUntilChanged` so the form re-renders only when a message or the button changes."
+    prerequisites: *node
+    code: |-
+      import { BehaviorSubject, combineLatest, distinctUntilChanged, map, type Observable } from "rxjs";
+
+      type Field = "email" | "password" | "confirmation";
+      type SignUpView = { canSubmit: boolean; emailError: string | null; passwordHint: string | null };
+      const sameView = (a: SignUpView, b: SignUpView) =>
+        a.canSubmit === b.canSubmit && a.emailError === b.emailError && a.passwordHint === b.passwordHint;
+
+      class SignUpForm {
+        readonly #email = new BehaviorSubject("");
+        readonly #password = new BehaviorSubject("");
+        readonly #confirmation = new BehaviorSubject("");
+
+        readonly view$: Observable<SignUpView> = combineLatest([
+          this.#email, this.#password, this.#confirmation,
+        ]).pipe(
+          map(([email, password, confirmation]) => {
+            const emailOk = /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email);
+            return {
+              canSubmit: emailOk && password.length >= 8 && password === confirmation,
+              emailError: email === "" || emailOk ? null : "Enter a valid email",   // quiet until they type
+              passwordHint: password.length >= 8 ? null : "At least 8 characters",
+            };
+          }),
+          distinctUntilChanged(sameView),
+        );
+
+        update(field: Field, value: string) {
+          const subjects = { email: this.#email, password: this.#password, confirmation: this.#confirmation };
+          subjects[field].next(value);
+        }
+      }
+
+      const form = new SignUpForm();
+      form.view$.subscribe((v) =>
+        console.log(v.canSubmit ? "ready  " : "blocked", "|", v.emailError ?? "-", "|", v.passwordHint ?? "-"));
+      form.update("email", "ada@");
+      form.update("email", "ada@example.com");
+      form.update("password", "correct horse");
+      form.update("confirmation", "correct hors");       // nothing visible changed: no emission
+      form.update("confirmation", "correct horse");
+    expected: |-
+      blocked | - | At least 8 characters
+      blocked | Enter a valid email | At least 8 characters
+      blocked | - | At least 8 characters
+      blocked | - | -
+      ready   | - | -
+    applies:
+      platforms: [browser, node]
+    validation: *ran
+  - id: search-end-to-end
+    kind: code
+    title: Search-as-you-type, end to end
+    note: "The results are a derived stream with no current value, so an effect subscribes on mount, unsubscribes on unmount, and treats a failed request as a state rather than the end of the stream."
+    prerequisites: *react
+    code: |-
+      import { JSDOM } from "jsdom";
+      import { useEffect, useState } from "react";
+      import { catchError, debounceTime, defer, of, Subject, switchMap } from "rxjs";
+
+      const { window } = new JSDOM("<!doctype html><body></body>");
+      Object.assign(globalThis, { window, document: window.document });   // before React DOM loads: it sees a DOM
+      const { render, screen, fireEvent, cleanup } = await import("@testing-library/react");
+
+      async function searchApi(q: string): Promise<string[]> {
+        if (q === "x") throw new Error("HTTP 503");
+        return ["Mug", "Mug rack", "Teapot"].filter((name) => name.toLowerCase().includes(q));
+      }
+
+      function createProductSearch(debounceMs = 300) {
+        const queries = new Subject<string>();
+        const results$ = queries.pipe(
+          debounceTime(debounceMs),
+          switchMap((q) => defer(() => searchApi(q)).pipe(catchError(() => of(null)))),   // inside: it lives on
+        );
+        return { search: (text: string) => queries.next(text), results$ };
+      }
+
+      function ProductSearch({ debounceMs }: { debounceMs: number }) {
+        const [search] = useState(() => createProductSearch(debounceMs));   // once per mounted component
+        const [results, setResults] = useState<string[] | null>([]);       // null: the last search failed
+        useEffect(() => {                                                    // the effect starts the pipeline…
+          const subscription = search.results$.subscribe(setResults);
+          return () => subscription.unsubscribe();                           // …and its cleanup stops it
+        }, [search]);
+        return (
+          <>
+            <input type="search" onChange={(e) => search.search(e.target.value)} />
+            {results === null ? <p role="alert">Search failed — keep typing to retry</p>
+              : <ul>{results.map((name) => <li key={name}>{name}</li>)}</ul>}
+          </>
+        );
+      }
+
+      render(<ProductSearch debounceMs={20} />);
+
+      const type = (value: string) => fireEvent.change(screen.getByRole("searchbox"), { target: { value } });
+      type("x");
+      console.log((await screen.findByRole("alert")).textContent);
+
+      type("mug");
+      console.log((await screen.findAllByRole("listitem")).map((li) => li.textContent));
+      cleanup();
+    expected: |-
+      Search failed — keep typing to retry
+      [ 'Mug', 'Mug rack' ]
+    sources:
+      - title: React Testing Library — Testing Library
+        url: https://testing-library.com/docs/react-testing-library/intro/
+    validation:
+      status: ran
+      toolchain: Node 24.16.0, TypeScript 5.9.3
+      date: "2026-11-16"
+      jsx: react
+  - id: store-is-simpler
+    kind: compare
+    title: When a store is the simpler tool
+    note: "State that only changes when the user acts is not a stream; a store and a plain derived function read the same, with nothing to unsubscribe in React."
+    prerequisites:
+      - Node.js 22.18 or later (it runs `.mts` files directly by stripping the types)
+      - "`npm i rxjs` for the first column, `npm i zustand` for the second"
+      - "Save as `main.mts` and run `node main.mts`"
+    columns:
+      - label: RxJS — streams for plain state
+        tone: neutral
+        code: |-
+          import { BehaviorSubject, combineLatest, distinctUntilChanged, map } from "rxjs";
+
+          type Line = { sku: string; price: number; qty: number };
+
+          class Cart {
+            readonly #lines = new BehaviorSubject<Line[]>([]);
+            readonly #discount = new BehaviorSubject(0);
+            readonly total$ = combineLatest([this.#lines, this.#discount]).pipe(
+              map(([lines, discount]) => lines.reduce((s, l) => s + l.price * l.qty, 0) * (1 - discount)),
+              distinctUntilChanged(),
+            );
+            add(line: Line) {
+              this.#lines.next([...this.#lines.getValue(), line]);
+            }
+            applyDiscount(rate: number) {
+              this.#discount.next(rate);
+            }
+          }
+
+          const cart = new Cart();
+          const subscription = cart.total$.subscribe((total) => console.log("total:", total));
+          cart.add({ sku: "mug", price: 12, qty: 2 });
+          cart.applyDiscount(0.5);
+          subscription.unsubscribe();
+          // In React: a custom hook over total$, and its cleanup.
+      - label: A store — state plus a plain function
+        tone: good
+        code: |-
+          import { createStore } from "zustand/vanilla";
+
+          type Line = { sku: string; price: number; qty: number };
+          type CartState = {
+            lines: Line[];
+            discount: number;
+            add: (line: Line) => void;
+            applyDiscount: (rate: number) => void;
+          };
+
+          const cart = createStore<CartState>()((set) => ({
+            lines: [],
+            discount: 0,
+            add: (line) => set((s) => ({ lines: [...s.lines, line] })),
+            applyDiscount: (rate) => set({ discount: rate }),
+          }));
+
+          const total = (s: CartState) => s.lines.reduce((sum, l) => sum + l.price * l.qty, 0) * (1 - s.discount);
+
+          console.log("total:", total(cart.getState()));
+          const unsubscribe = cart.subscribe((state) => console.log("total:", total(state)));
+          cart.getState().add({ sku: "mug", price: 12, qty: 2 });
+          cart.getState().applyDiscount(0.5);
+          unsubscribe();
+          // In React: const cartTotal = useStore(cart, total) — from "zustand".
+    expected: |-
+      total: 0
+      total: 24
+      total: 12
+    applies:
+      platforms: [browser, node]
+      versions: { typescript: ">=5.5", node: ">=22.18", rxjs: ">=7.8", zustand: ">=5.0" }
+    sources:
+      - title: Zustand — documentation
+        url: https://zustand.docs.pmnd.rs/
+    validation: *ran
+  - id: solid-wiring
+    kind: code
+    title: The same wiring in SolidJS
+    note: "Solid's `from` turns an observable into a signal and unsubscribes when its owner is disposed; `observable(signal)` goes the other way."
+    prerequisites:
+      - Node.js 22.18 or later (it runs `.mts` files directly by stripping the types)
+      - "`npm i rxjs solid-js`"
+      - "Save as `main.mts` and run `node --conditions=browser main.mts` (Node otherwise loads Solid's server build, where effects never re-run)"
+      - "In a component: `const results = from(results$, [])`, then `<For each={results()}>` in the JSX"
+    code: |-
+      import { debounceTime, distinctUntilChanged, finalize, map, type Observable } from "rxjs";
+      import { from as fromInterop } from "rxjs";                 // aliased: Solid has its own `from`
+      import { createEffect, createRoot, createSignal, from, observable } from "solid-js";
+
+      const catalog = ["Mug", "Mug rack", "Teapot"];
+
+      // The same view-model idea: queries in, results out.
+      function productResults$(query$: Observable<string>): Observable<string[]> {
+        return query$.pipe(
+          debounceTime(20),
+          distinctUntilChanged(),
+          map((q) => (q ? catalog.filter((name) => name.toLowerCase().includes(q)) : [])),
+          finalize(() => console.log("unsubscribed")),
+        );
+      }
+
+      const dispose = createRoot((dispose) => {
+        const [query, setQuery] = createSignal("");             // the component's own state
+        const query$ = fromInterop(observable(query));          // signal -> RxJS, via Symbol.observable
+        const results = from(productResults$(query$), []);      // RxJS -> signal, unsubscribed on dispose
+        createEffect(() => console.log("render:", results().join(", ") || "(none)"));
+        setQuery("mu");
+        setQuery("mug");
+        return dispose;
+      });
+
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      dispose();                                                // what unmounting the component does
+    expected: |-
+      render: (none)
+      render: Mug, Mug rack
+      unsubscribed
+    applies:
+      platforms: [browser, node]
+      requires: [SolidJS, RxJS]
+      versions: { typescript: ">=5.5", node: ">=22.18", rxjs: ">=7.8", solid-js: ">=1.8" }
+    sources:
+      - title: from — SolidJS
+        url: https://docs.solidjs.com/reference/reactive-utilities/from
+      - title: observable — SolidJS
+        url: https://docs.solidjs.com/reference/reactive-utilities/observable
+    validation:
+      status: ran
+      toolchain: Node 24.16.0, TypeScript 5.9.3
+      date: "2026-11-16"
+      conditions: [browser]
+  - id: connection-cheat-table
+    kind: table
+    title: Component ← observable cheat table
+    note: ""
+    headers: [Goal, Code]
+    rows:
+      - ["Read a `BehaviorSubject` in a component", "`useSyncExternalStore(subscribe, () => subject.getValue())`"]
+      - ["Read any observable", "`useEffect(() => { const s = obs$.subscribe(setValue); return () => s.unsubscribe(); }, [obs$])`"]
+      - ["One view model per component", "`const [vm] = useState(() => createProductSearch(api))` + `useEffect(() => vm.connect(), [vm])`"]
+      - ["App-wide stream", "a module-level observable, or one passed down through context"]
+      - ["Push user input in", "`onChange={(e) => vm.search(e.target.value)}`"]
+      - ["Fire a side effect (toast, navigation)", "subscribe in `useEffect` to an events `Subject`; never store events in state"]
+      - ["Values from props into a stream", "`useEffect(() => { query$.next(props.query); }, [props.query])`"]
+      - ["Test it", "jsdom + Testing Library: `fireEvent.change`, then `await screen.findAllByRole(...)`"]
+      - ["SolidJS", "solid-js `from(obs$, initial)` → signal; RxJS `from(observable(signal))` → observable"]
+  - id: rxjs-react-pitfalls
+    kind: rules
+    title: RxJS + React pitfalls
+    note: ""
+    items:
+      - tone: bad
+        text: "**Subscribing in render** — `obs$.subscribe(...)` in the component body runs on every render and never unsubscribes. Subscribe in `useEffect` or `useSyncExternalStore`, nowhere else."
+      - tone: bad
+        text: "**Building the pipeline in render** — `useObservable(query$.pipe(debounceTime(300)))` is a new observable each render, so the effect resubscribes and the debounce never fires. Create it once (`useMemo`, `useState` initialiser, or a module)."
+      - tone: bad
+        text: "**Missing teardown** — an effect that subscribes but returns nothing leaks a subscription per mount and calls `setState` after unmount."
+      - tone: bad
+        text: "**Stale closures** — `useEffect(() => { clicks$.subscribe(() => save(draft)); }, [])` saves the first `draft` for ever. Put the value into the stream (`withLatestFrom(draft$)`) or list it in the dependencies."
+      - tone: bad
+        text: "**A new snapshot every call** — `getSnapshot: () => ({ ...subject.getValue() })` makes React re-render in a loop. Return the stored object itself."
+      - tone: bad
+        text: "**An error reaching the outer pipeline** ends the stream; the component simply stops updating. `catchError` inside the `switchMap`."
+      - tone: bad
+        text: "**Disposing in a cleanup what render created** — `useEffect(() => vm.dispose, [vm])` with `vm` from `useState`: StrictMode runs the cleanup, re-runs the effect, and the view model stays dead. Subscribe **in** the effect (`useEffect(() => vm.connect(), [vm])`) so a re-run restarts it."
+      - tone: neutral
+        text: "StrictMode mounts, unmounts and remounts every component in development. Correct teardown makes that invisible; a missing one shows up as doubled requests."
+      - tone: good
+        text: "Keep RxJS for what it is good at — debouncing, cancelling, combining events over time — and plain state (`useState`, a store, Solid signals) for everything else."

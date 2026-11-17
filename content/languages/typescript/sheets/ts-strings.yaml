@@ -1,0 +1,465 @@
+id: ts-strings
+concept: strings.operations
+scope: shared
+title: "Strings — Standard Operations"
+group: "Shared concepts"
+subtitle: "UTF-16 underneath, graphemes on screen — search, split, slice, compare, fold, build, format and match text correctly."
+applies:
+  platforms: [node, browser]
+  runtime: any ES2024+ engine; the examples run on Node.js
+  versions: { typescript: ">=5.5", node: ">=22.18", ecmascript: "2024" }
+sources:
+  - title: String — MDN
+    url: https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/String
+  - title: Intl.Segmenter — MDN
+    url: https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Intl/Segmenter
+  - title: Intl.Collator — MDN
+    url: https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Intl/Collator
+  - title: Regular expressions — MDN
+    url: https://developer.mozilla.org/en-US/docs/Web/JavaScript/Guide/Regular_expressions
+cards:
+  - id: i-want-to
+    kind: table
+    title: I want to…
+    note: The standard method for each everyday job, and the trap that comes with it.
+    headers: [I want to…, Use, Watch out]
+    rows:
+      - ["know if text contains a word", "`includes`, `startsWith`, `endsWith`", "case- and accent-sensitive: fold or collate first"]
+      - ["find where it is", "`indexOf`, `lastIndexOf`, `search(regex)`", "`-1` when absent, and `0` is falsy — compare with `-1`"]
+      - ["split into fields", "`split(\";\")`, `split(\",\", limit)`", "`\"\".split(\";\")` is `[\"\"]`, not `[]`"]
+      - ["split into what a reader sees", "`Intl.Segmenter` (`grapheme`, `word`, `sentence`)", "`split(\"\")` breaks emoji; `split(\" \")` fails on Japanese or Thai"]
+      - ["join", "`parts.join(\", \")`; `Intl.ListFormat` for prose", "\"a, b, and c\" is English only — format lists per locale"]
+      - ["trim", "`trim`, `trimStart`, `trimEnd`", "strips every Unicode space, including the no-break space"]
+      - ["replace every match", "`replaceAll(\"-\", \" \")`, or `replace(/-/g, fn)`", "`replace(\"-\", \" \")` replaces the first only; `$&` and `$1` are special in the replacement"]
+      - ["pad or repeat", "`padStart(5, \"0\")`, `padEnd`, `repeat`", "counts UTF-16 units, so emoji misalign columns"]
+      - ["take a piece", "`slice(start, end)`, `at(-1)`", "indexes are UTF-16 units: an emoji can be cut in half"]
+      - ["sort for people", "`new Intl.Collator(locale).compare`", "`<` and `sort()` compare code units: `\"Zoe\" < \"adam\"`"]
+      - ["ignore case when comparing", "a collator with `sensitivity: \"base\"` or `\"accent\"`", "`toLowerCase()` misses `ß` vs `SS` and the Turkish dotless i"]
+      - ["count characters", "`[...segmenter.segment(s)].length`", "`.length` counts UTF-16 code units"]
+  - id: what-a-character-is
+    kind: code
+    title: Code units, code points, graphemes, bytes — and slicing safely
+    note: "Reach for graphemes whenever a person will see the result (length limits, truncation, cursors); for storage and wire limits, count UTF-8 bytes."
+    prerequisites: &run
+      - Node.js 22.18 or later (it runs `.mts` files directly by stripping the types)
+      - "Save as `main.mts` and run `node main.mts`"
+      - "Optional type-check: `npm i -D typescript @types/node`, then `npx tsc --noEmit --strict --target es2024 --module nodenext main.mts`"
+    code: |-
+      const graphemes = new Intl.Segmenter("en", { granularity: "grapheme" });
+      const chars = (text: string) => Array.from(graphemes.segment(text), (s) => s.segment);
+      const utf8 = new TextEncoder();
+      const labels = ["units", "points", "graphemes", "bytes"];
+
+      const samples = {
+        plain: "Ada",
+        family: "\u{1F469}\u200D\u{1F469}\u200D\u{1F467}", // 👩‍👩‍👧: three emoji glued by ZERO WIDTH JOINER
+        composed: "Zo\u00EB",                             // Zoë, ë as one code point
+        decomposed: "Zoe\u0308",                          // Zoë, e + COMBINING DIAERESIS
+        flag: "\u{1F1E8}\u{1F1F4}",                       // 🇨🇴: two regional-indicator letters
+      };
+      for (const [name, text] of Object.entries(samples)) {
+        // .length, [i] and slice() count UTF-16 units; the string iterator yields code points;
+        // a VARCHAR(n) in bytes, a header or a payload limit counts UTF-8 bytes
+        const counts = [text.length, [...text].length, chars(text).length, utf8.encode(text).length];
+        console.log(name.padEnd(10), labels.map((label, i) => `${label} ${counts[i]}`).join("  "));
+      }
+
+      function truncate(text: string, max: number): string {
+        const all = chars(text);
+        return all.length <= max ? text : `${all.slice(0, max - 1).join("")}…`;
+      }
+
+      const status = "Shipped \u{1F680} today";                // "Shipped 🚀 today"
+      const naive = status.slice(0, 9);                     // ends on half of 🚀
+      console.log(JSON.stringify(naive), naive.isWellFormed());
+      console.log(truncate(status, 10));
+      // at(-1) is half a flag; the last grapheme is the whole flag
+      console.log(JSON.stringify(samples.flag.at(-1)), chars(samples.flag).at(-1) === samples.flag);
+    expected: |-
+      plain      units 3  points 3  graphemes 3  bytes 3
+      family     units 8  points 5  graphemes 1  bytes 18
+      composed   units 3  points 3  graphemes 3  bytes 4
+      decomposed units 4  points 4  graphemes 3  bytes 5
+      flag       units 4  points 2  graphemes 1  bytes 8
+      "Shipped \ud83d" false
+      Shipped 🚀…
+      "\uddf4" true
+    sources:
+      - title: "UAX #29: Unicode Text Segmentation"
+        url: https://www.unicode.org/reports/tr29/
+      - title: String.prototype.isWellFormed — MDN
+        url: https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/String/isWellFormed
+      - title: TextEncoder — MDN
+        url: https://developer.mozilla.org/en-US/docs/Web/API/TextEncoder
+    validation: &ran
+      status: ran
+      toolchain: Node 24.16.0, TypeScript 5.9.3
+      date: "2026-11-16"
+  - id: everyday-operations
+    kind: code
+    title: Search, split, trim, replace, pad
+    note: "Parsing a pasted contact list: trim first, split with a known separator, default every destructured field."
+    prerequisites: *run
+    code: |-
+      const pasted = [
+        "  Lovelace, Ada ; ADA@Example.com ; admin|editor ",
+        "# exported 2026-03-08",
+        "Hopper, Grace;grace@navy.example;",
+        "",
+      ];
+
+      for (const [index, raw] of pasted.entries()) {
+        const line = raw.trim();
+        if (line === "" || line.startsWith("#")) continue;
+
+        const [name = "", email = "", roles = ""] = line.split(";").map((field) => field.trim());
+        const [family = "", given = ""] = name.split(",", 2).map((part) => part.trim());
+        const at = email.indexOf("@");
+        const domain = at === -1 ? "(no email)" : email.slice(at + 1).toLowerCase();
+        const roleList = roles === "" ? [] : roles.split("|");
+
+        const id = `C-${String(index + 1).padStart(4, "0")}`;
+        const columns = [id, `${given} ${family}`.padEnd(14), domain.padEnd(14), roleList.join(", ") || "-"];
+        console.log(columns.join(" | "));
+      }
+
+      console.log("2026-03-08".replaceAll("-", "/"), "2026-03-08".replace("-", "/"));
+      console.log(JSON.stringify("".split(";")), "admin|".split("|").length);
+      // lowercasing is fine for ASCII identifiers; for names and prose, see "Compare and sort by locale"
+      console.log("Ada Lovelace".includes("love"), "Ada Lovelace".toLowerCase().includes("love"));
+    expected: |-
+      C-0001 | Ada Lovelace   | example.com    | admin, editor
+      C-0003 | Grace Hopper   | navy.example   | -
+      2026/03/08 2026/03-08
+      [""] 2
+      false true
+    validation: *ran
+  - id: compare-and-sort
+    kind: code
+    title: Compare and sort by locale
+    note: "Sort anything a person reads with an `Intl.Collator` built once; `sort()` alone orders by UTF-16 code unit."
+    prerequisites: *run
+    code: |-
+      const contacts = ["zoe", "Émile", "adam", "Zoë", "Ärzte GmbH", "Oskar", "Øster"];
+
+      console.log([...contacts].sort().join(", "));       // code units: uppercase first, accents last
+
+      const english = new Intl.Collator("en");
+      const swedish = new Intl.Collator("sv");            // å, ä, ö are letters after z
+      console.log([...contacts].sort(english.compare).join(", "));
+      console.log([...contacts].sort(swedish.compare).join(", "));
+
+      // numeric: true sorts digits by value — file names, versions, room numbers
+      const natural = new Intl.Collator("en", { numeric: true });
+      console.log(["Room 10", "Room 9", "Room 1"].sort(natural.compare).join(", "));
+
+      // sorting records: one collator, reused by every comparison
+      type Contact = { name: string; city: string };
+      const people: Contact[] = [
+        { name: "Émile", city: "Lyon" },
+        { name: "adam", city: "Lyon" },
+        { name: "Beatriz", city: "Bogotá" },
+      ];
+      people.sort((a, b) => english.compare(a.city, b.city) || english.compare(a.name, b.name));
+      console.log(people.map((p) => `${p.city}/${p.name}`).join(", "));
+
+      const base = new Intl.Collator("en", { sensitivity: "base" });     // ignores case and accents
+      const accent = new Intl.Collator("en", { sensitivity: "accent" }); // ignores case only
+      console.log(base.compare("Zoë", "zoe"), accent.compare("Zoë", "zoe"));
+    expected: |-
+      Oskar, Zoë, adam, zoe, Ärzte GmbH, Émile, Øster
+      adam, Ärzte GmbH, Émile, Oskar, Øster, zoe, Zoë
+      adam, Émile, Oskar, zoe, Zoë, Ärzte GmbH, Øster
+      Room 1, Room 9, Room 10
+      Bogotá/Beatriz, Lyon/adam, Lyon/Émile
+      0 1
+    validation: *ran
+  - id: fold-and-normalize
+    kind: code
+    title: Case folding and normalization
+    note: Normalize before you store or compare user input; compare case-insensitively with a collator, not with lowercase copies.
+    prerequisites: *run
+    code: |-
+      console.log("straße".toUpperCase());                          // case mapping can change the length
+      console.log("TITLE".toLowerCase(), "TITLE".toLocaleLowerCase("tr"));
+      console.log("İstanbul".toLowerCase().length);                 // 9: İ lowercases to i + U+0307
+
+      // case-insensitive equality: lowercase copies miss ß = SS, a base-sensitivity collator does not
+      const sameIgnoringCase = new Intl.Collator("de", { sensitivity: "base" });
+      console.log("STRASSE".toLowerCase() === "straße".toLowerCase());
+      console.log(sameIgnoringCase.compare("STRASSE", "straße") === 0);
+
+      // the same visible name in two encodings: NFC (one code point) vs NFD (letter + mark)
+      const typedOnMac: string = "Zoe\u0308";
+      const storedInDb: string = "Zo\u00EB";
+      console.log(typedOnMac === storedInDb, typedOnMac.normalize("NFC") === storedInDb);
+
+      // NFKC also folds compatibility forms (ligatures, full-width): for keys, never for display
+      console.log("ﬁle Ｎｏ１".normalize("NFKC"));
+
+      // a Latin-script search key: decompose, drop only the combining accents (U+0300–U+036F).
+      // \p{Diacritic} would be wrong: it also deletes Japanese ー and voicing marks, and ASCII ^ and `
+      const latinKey = (text: string) =>
+        text.normalize("NFD").replace(/[\u0300-\u036f]/g, "").normalize("NFC").toLowerCase();
+      console.log(latinKey("Crème Brûlée"), latinKey("Zoë") === latinKey("ZOE"));
+      console.log(latinKey("コーヒー"), latinKey("がっこう"), latinKey("C^2"));   // kana and ASCII survive intact
+      // Latin text only: Cyrillic й and Greek ά decompose into this range too, and would lose their marks.
+      // letters without a decomposition (đ, ø, ł, ß) stay as they are: "Đà Nẵng" keys to "đa nang", not "da nang".
+      // A base-sensitivity collator matches them: new Intl.Collator(locale, { sensitivity: "base" })
+    expected: |-
+      STRASSE
+      title tıtle
+      9
+      false
+      true
+      false true
+      file No1
+      creme brulee true
+      コーヒー がっこう c^2
+    sources:
+      - title: String.prototype.normalize — MDN
+        url: https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/String/normalize
+    validation: *ran
+  - id: build-strings
+    kind: compare
+    title: Building strings and formatting values
+    note: "`+=` is not slow in modern engines — the win is readability: template literals, `map` + `join`, and a number formatter instead of hand-made money."
+    columns:
+      - label: Concatenation
+        tone: legacy
+        code: |-
+          type Line = { item: string; qty: number; unitPrice: number };
+          const order: Line[] = [
+            { item: "Espresso", qty: 2, unitPrice: 3.5 },
+            { item: "Croissant", qty: 1, unitPrice: 3.25 },
+          ];
+
+          let receipt = "";
+          let total = 0;
+          for (let i = 0; i < order.length; i++) {
+            const line = order[i]!;
+            const amount = line.qty * line.unitPrice;
+            total += amount;
+            receipt += line.qty + " x " + line.item.padEnd(10) + ("$" + amount.toFixed(2)).padStart(8) + "\n";
+          }
+          receipt += "Total".padEnd(14) + ("$" + total.toFixed(2)).padStart(8);
+          console.log(receipt);
+      - label: Template literals, join, Intl
+        tone: modern
+        code: |-
+          type Line = { item: string; qty: number; unitPrice: number };
+          const order: Line[] = [
+            { item: "Espresso", qty: 2, unitPrice: 3.5 },
+            { item: "Croissant", qty: 1, unitPrice: 3.25 },
+          ];
+
+          const usd = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" });
+          const money = (amount: number) => usd.format(amount).padStart(8);
+          const total = order.reduce((sum, line) => sum + line.qty * line.unitPrice, 0);
+
+          const receipt = [
+            ...order.map(({ item, qty, unitPrice }) => `${qty} x ${item.padEnd(10)}${money(qty * unitPrice)}`),
+            `${"Total".padEnd(14)}${money(total)}`,
+          ].join("\n");
+          console.log(receipt);
+    expected: |-
+      2 x Espresso     $7.00
+      1 x Croissant    $3.25
+      Total           $10.25
+    prerequisites: *run
+    sources:
+      - title: Template literals — MDN
+        url: https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Template_literals
+    validation: *ran
+  - id: tagged-templates
+    kind: code
+    title: Tagged templates
+    note: A tag sees the literal parts and the values separately — so it can escape, parameterize or reject the values.
+    prerequisites: *run
+    code: |-
+      type Query = { text: string; values: unknown[] };
+
+      // the literal parts are code you wrote; every ${value} becomes a $n placeholder, never SQL
+      function sql(strings: TemplateStringsArray, ...values: unknown[]): Query {
+        const text = strings.reduce((query, part, i) => `${query}$${i}${part}`);
+        return { text, values };
+      }
+
+      const email = "ada@example.com' OR '1'='1";
+      const query = sql`SELECT id, name FROM users WHERE email = ${email} AND active = ${true}`;
+      console.log(query.text);
+      console.log(query.values);
+
+      // safe for element text and QUOTED attribute values only: it does not make href="${url}"
+      // (javascript: URLs), unquoted attributes, <script> or <style> safe. Validate URLs, and
+      // prefer the framework's escaping or textContent.
+      const escapes: Record<string, string> = {
+        "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+      };
+      const escape = (value: unknown) => String(value).replace(/[&<>"']/g, (c) => escapes[c]!);
+      function html(strings: TemplateStringsArray, ...values: unknown[]): string {
+        return strings.reduce((out, part, i) => out + escape(values[i - 1]) + part);
+      }
+      console.log(html`<li title="${'Ada "the first"'}">${"<b>Ada</b>"}</li>`);
+
+      // String.raw is the built-in tag: backslashes stay as typed
+      console.log(String.raw`C:\new\table`, String.raw`\d+`.length);
+    expected: |-
+      SELECT id, name FROM users WHERE email = $1 AND active = $2
+      [ "ada@example.com' OR '1'='1", true ]
+      <li title="Ada &quot;the first&quot;">&lt;b&gt;Ada&lt;/b&gt;</li>
+      C:\new\table 3
+    sources:
+      - title: Tagged templates — MDN
+        url: https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Template_literals#tagged_templates
+    validation: *ran
+  - id: regular-expressions
+    kind: code
+    title: "Regular expressions: named groups, matchAll, sticky"
+    note: "Name your groups, iterate with `matchAll`, and use the sticky flag `y` for tokenizers that must not skip input."
+    prerequisites: *run
+    code: |-
+      const log = `2026-03-08 14:30 ERROR order=A-1042 user=ada
+      2026-03-08 14:31 INFO order=A-1043 user=grace
+      2026-03-08 14:35 ERROR order=A-1044 user=zoë`;
+
+      // m: ^ and $ per line; u: \p{L} matches any letter, so "zoë" is one user name
+      const entry =
+        /^(?<date>[\d-]+) (?<time>[\d:]+) (?<level>[A-Z]+) order=(?<order>[A-Z]-\d+) user=(?<user>\p{L}+)$/gmu;
+      for (const { groups } of log.matchAll(entry)) {
+        if (groups?.level === "ERROR") console.log(groups.order, groups.user);
+      }
+      console.log("2026-03-08".replace(/(?<y>\d{4})-(?<m>\d{2})-(?<d>\d{2})/, "$<d>/$<m>/$<y>"));
+
+      // y (sticky): each match must start exactly at lastIndex, so nothing is silently skipped
+      function tokenize(source: string): string[] {
+        const token = /\s*(?:(?<number>\d+(?:\.\d+)?)|(?<op>[-+*\/()]))/y;
+        const end = source.trimEnd().length;            // trailing spaces are not an error
+        const tokens: string[] = [];
+        while (token.lastIndex < end) {
+          const at = token.lastIndex;
+          const match = token.exec(source);
+          if (!match) {
+            const rest = source.slice(at);
+            const column = at + rest.length - rest.trimStart().length;   // where the bad token starts
+            throw new SyntaxError(`unexpected "${rest.trim()}" at ${column}`);
+          }
+          tokens.push(match.groups?.number ?? match.groups?.op ?? "");
+        }
+        return tokens;
+      }
+      console.log(tokenize("(12.5 + 3) * 2 ").join(" "));
+      try {
+        tokenize("2 + two");
+      } catch (e) {
+        console.log((e as Error).message);
+      }
+    expected: |-
+      A-1042 ada
+      A-1044 zoë
+      08/03/2026
+      ( 12.5 + 3 ) * 2
+      unexpected "two" at 4
+    sources:
+      - title: String.prototype.matchAll — MDN
+        url: https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/String/matchAll
+      - title: RegExp.prototype.sticky — MDN
+        url: https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/RegExp/sticky
+    validation: *ran
+  - id: unicode-sets
+    kind: code
+    title: "The u and v flags: letters, emoji and set operations"
+    note: "Without `u`, a regex sees UTF-16 units; `v` (ES2024) adds string properties such as whole emoji sequences, and set subtraction and intersection."
+    prerequisites: *run
+    code: |-
+      const reply = "Done \u{1F680}\u{1F469}\u200D\u{1F4BB}!";       // "Done 🚀👩‍💻!"
+
+      // no flag: "." is one UTF-16 unit, so a single emoji is not "one character"
+      console.log(/^.$/.test("\u{1F680}"), /^.$/u.test("\u{1F680}"));
+
+      // u: \p{…} Unicode properties. \p{Emoji_Presentation} still splits a ZWJ sequence apart
+      console.log(reply.match(/\p{Emoji_Presentation}/gu)?.length);
+
+      // v: \p{RGI_Emoji} matches whole sequences — 🚀 and 👩‍💻 are two emoji, not three.
+      // A literal /…/v needs "target": "ES2024" in tsconfig; RegExp(…, "v") type-checks at any target.
+      const emoji = new RegExp(String.raw`\p{RGI_Emoji}`, "gv");
+      console.log(reply.match(emoji)?.length);
+
+      // v: set subtraction — letters that are not plain ASCII, e.g. to flag names for review
+      const nonAsciiLetter = new RegExp(String.raw`[\p{L}--[a-zA-Z]]`, "gv");
+      console.log("Señor Ñandú".match(nonAsciiLetter));
+
+      // v: intersection — Greek letters only, from a mixed product code
+      console.log("SKU-αβ12-Ω".match(new RegExp(String.raw`[\p{Script=Greek}&&\p{L}]`, "gv"))?.join(""));
+    expected: |-
+      false true
+      3
+      2
+      [ 'ñ', 'Ñ', 'ú' ]
+      αβΩ
+    sources:
+      - title: RegExp.prototype.unicodeSets — MDN
+        url: https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/RegExp/unicodeSets
+      - title: Unicode character class escape — MDN
+        url: https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Regular_expressions/Unicode_character_class_escape
+    validation: *ran
+  - id: catastrophic-backtracking
+    kind: compare
+    title: Catastrophic backtracking
+    note: A nested quantifier that can split the same text many ways turns one bad input into seconds of CPU — rewrite it so each character has one path, accepting exactly the same inputs.
+    columns:
+      - label: Nested quantifier
+        tone: bad
+        code: |-
+          // (\w+\s?)* can divide "aaaa…" into words in 2^n ways: on "a".repeat(28) + "!"
+          // a backtracking engine tries them all — over a second — before answering false
+          const tagList = /^(\w+\s?)*$/;
+
+          for (const input of ["vip beta", "vip beta ", "vip\tbeta", "", "vip  beta", "vip beta!"]) {
+            console.log(JSON.stringify(input), tagList.test(input));
+          }
+      - label: One path per character, same language
+        tone: good
+        code: |-
+          // words separated by exactly one whitespace, optional trailing one, or nothing at all:
+          // the separator is mandatory between words, so there is one way to match any text
+          const tagList = /^(?:\w+(?:\s\w+)*\s?)?$/;
+
+          for (const input of ["vip beta", "vip beta ", "vip\tbeta", "", "vip  beta", "vip beta!"]) {
+            console.log(JSON.stringify(input), tagList.test(input));
+          }
+    expected: |-
+      "vip beta" true
+      "vip beta " true
+      "vip\tbeta" true
+      "" true
+      "vip  beta" false
+      "vip beta!" false
+    prerequisites: *run
+    sources:
+      - title: "Regular expression Denial of Service (ReDoS) — OWASP"
+        url: https://owasp.org/www-community/attacks/Regular_expression_Denial_of_Service_-_ReDoS
+    validation: *ran
+  - id: string-pitfalls
+    kind: rules
+    title: Pitfalls worth saying out loud
+    note: Most string bugs are Unicode bugs that ASCII test data never finds.
+    items:
+      - tone: good
+        text: "Test with real text: `Zoë` in both NFC and NFD, `👩‍👩‍👧`, `🇨🇴`, `straße`, `İstanbul`, Arabic and Japanese."
+      - tone: good
+        text: "**Normalize at the boundary** (`normalize(\"NFC\")` on input), compare with `Intl.Collator`, count with `Intl.Segmenter`, limit storage by UTF-8 bytes."
+      - tone: good
+        text: "Create `Intl.Collator` and `Intl.Segmenter` once and reuse them — for large sorts MDN recommends a collator over `localeCompare`."
+      - tone: bad
+        text: "`.length` as a user-facing limit, `slice` for truncation, `split(\"\")` to reverse — all three cut emoji and accents apart."
+      - tone: bad
+        text: "`toLowerCase()` for case-insensitive keys: misses `ß`/`SS`, and `toLocaleLowerCase()` without a locale follows the machine (`I` → `ı` in Turkish)."
+      - tone: bad
+        text: "Stripping `\\p{Diacritic}` to make search keys: it also deletes Japanese `ー` and voicing marks. Strip only U+0300–U+036F, or use a collator."
+      - tone: bad
+        text: "Regexes on untrusted input with nested quantifiers like `(a+)+` or `(\\w+\\s?)*` — a ReDoS. Cap the input length too."
+      - tone: neutral
+        text: "`replace` with a string pattern replaces once; `replaceAll` with a regex requires the `g` flag or it throws."
+      - tone: neutral
+        text: "Strings are immutable: every method returns a new string; `s[0] = \"x\"` is a type error, and a `TypeError` in strict-mode JavaScript."

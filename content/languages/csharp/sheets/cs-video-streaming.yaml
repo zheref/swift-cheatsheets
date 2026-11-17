@@ -1,0 +1,606 @@
+id: cs-video-streaming
+concept: media.video-streaming
+scope: platform
+title: "Video Streaming — HLS, DASH & MediaElement"
+group: "Networking & media"
+subtitle: "Which player plays which protocol on MAUI, WinUI, WPF and Blazor; what a multivariant playlist holds and how a rendition is picked; state, errors and recovery; live versus on-demand; DRM; and the app's lifecycle."
+applies:
+  platforms: [dotnet]
+  runtime: ".NET MAUI with CommunityToolkit.Maui.MediaElement, WinUI 3 MediaPlayerElement, or Blazor with the browser's <video>; the manifest logic is plain .NET"
+  versions: { csharp: ">=12", dotnet: ">=8" }
+sources:
+  - title: MediaElement — .NET MAUI Community Toolkit
+    url: https://learn.microsoft.com/en-us/dotnet/communitytoolkit/maui/views/mediaelement
+  - title: Adaptive streaming — Windows apps
+    url: https://learn.microsoft.com/en-us/windows/apps/develop/media-playback/adaptive-streaming
+  - title: HTTP Live Streaming — Apple Developer
+    url: https://developer.apple.com/streaming/
+  - title: "RFC 8216: HTTP Live Streaming"
+    url: https://www.rfc-editor.org/rfc/rfc8216
+  - title: Call JavaScript functions from .NET methods in ASP.NET Core Blazor
+    url: https://learn.microsoft.com/en-us/aspnet/core/blazor/javascript-interoperability/call-javascript-from-dotnet
+cards:
+  - id: protocol-stack-support
+    kind: table
+    title: Protocol against player and platform
+    note: "Give each platform the manifest it plays natively (HLS for Apple, DASH or HLS elsewhere) and keep that choice in one place, knowing that `MediaElement`, AVPlayer and `MediaPlayerElement` don't let you swap their ABR algorithm while hls.js, dash.js and Media3 do."
+    headers: [Player, HLS, DASH, DRM it can reach, Notes]
+    rows:
+      - - "MAUI `MediaElement` on Android (Media3 ExoPlayer)"
+        - "yes"
+        - "yes (the toolkit ships the Media3 HLS and DASH modules)"
+        - "Widevine — through Media3 in a custom handler; `MediaElement` has no DRM API"
+        - "Android 8.0 (API 26) or later; the platform picks renditions, `MediaElement` exposes no bitrate setting"
+      - - "MAUI `MediaElement` on iOS / Mac Catalyst (AVPlayer)"
+        - "**native**"
+        - "no"
+        - "FairPlay — `AVContentKeySession` in a custom handler"
+        - "the platform's own ABR; HLS is the only adaptive format"
+      - - "MAUI `MediaElement` on Windows, WinUI `MediaPlayerElement`"
+        - "yes"
+        - "yes (Smooth Streaming too)"
+        - "PlayReady — `MediaProtectionManager`"
+        - "WinUI's `AdaptiveMediaSource` exposes bitrates, caps and download events"
+      - - "WPF `MediaElement`"
+        - "no"
+        - "no"
+        - "none"
+        - "the Windows Media Player engine plays progressive files only: host LibVLCSharp.WPF or a WebView2 page instead"
+      - - "LibVLCSharp (MAUI, WPF, WinUI, mobile)"
+        - "yes"
+        - "yes"
+        - "none of the three commercial systems"
+        - "one engine everywhere; LGPL native libraries add megabytes per platform"
+      - - "Blazor — the browser's `<video>`"
+        - "hls.js wherever Media Source Extensions or `ManagedMediaSource` exist (desktop Safari, iPadOS, iPhone Safari 17.1+ included); **native** only on older iPhones"
+        - "dash.js on Media Source Extensions"
+        - "EME: Widevine, PlayReady (Edge on Windows), FairPlay (Safari)"
+        - "JavaScript interop owns the player; .NET owns the page and the state"
+  - id: multivariant-and-abr
+    kind: code
+    title: What a multivariant playlist holds, and how a rendition is picked
+    note: "The player does this for you on every platform, so you write it to pick a rendition for a download, a preview or a bitrate cap, or to understand why the player chose 360p."
+    prerequisites: &run
+      - .NET 8 SDK or later
+      - "`dotnet new console -o Demo`, replace `Demo/Program.cs` with the example, then `dotnet run --project Demo`"
+    code: |-
+      using System.Text.RegularExpressions;
+
+      const string Multivariant = """
+          #EXTM3U
+          #EXT-X-STREAM-INF:BANDWIDTH=6500000,RESOLUTION=1920x1080,CODECS="avc1.640028,mp4a.40.2"
+          1080p/index.m3u8
+          #EXT-X-STREAM-INF:BANDWIDTH=3000000,RESOLUTION=1280x720,CODECS="avc1.4d401f,mp4a.40.2"
+          720p/index.m3u8
+          #EXT-X-STREAM-INF:BANDWIDTH=500000,RESOLUTION=640x360
+          360p/index.m3u8
+          #EXT-X-STREAM-INF:BANDWIDTH=64000,CODECS="mp4a.40.2"
+          audio/index.m3u8
+          """;
+      var all = Parse(Multivariant, new Uri("https://cdn.shop.example/videos/unboxing/master.m3u8"));
+      Console.WriteLine($"{all.Count} variants, {all.Count(r => r.Height == 0)} audio-only");
+
+      // The best video rendition under 80% of the measured throughput that the view can show; else the lowest.
+      var video = all.Where(r => r.Height > 0).ToList();
+      foreach (var (bps, viewHeight) in new[] { (400_000L, 1080), (4_500_000L, 1080), (20_000_000L, 720) })
+      {
+          var pick = video.LastOrDefault(r => r.Bandwidth <= bps * 0.8 && r.Height <= viewHeight) ?? video[0];
+          Console.WriteLine($"{bps / 1000} kbps, {viewHeight}-line view -> {pick.Height}p {pick.Uri.AbsolutePath}");
+      }
+
+      static List<Rendition> Parse(string text, Uri playlistUri)
+      {
+          // NAME=value or NAME="quoted, with commas"; RESOLUTION and CODECS are optional (RFC 8216).
+          var attribute = new Regex("([A-Z0-9-]+)=(\"[^\"]*\"|[^,]*)");
+          var lines = text.Split('\n', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+          var result = new List<Rendition>();
+          for (var i = 0; i < lines.Length - 1; i++)
+          {
+              if (!lines[i].StartsWith("#EXT-X-STREAM-INF:")) continue;
+              var a = attribute.Matches(lines[i])
+                  .ToDictionary(m => m.Groups[1].Value, m => m.Groups[2].Value.Trim('"'));
+              var height = a.TryGetValue("RESOLUTION", out var size) ? int.Parse(size.Split('x')[1]) : 0;
+              var uri = new Uri(playlistUri, lines[i + 1]);                    // relative to the playlist
+              result.Add(new Rendition(long.Parse(a["BANDWIDTH"]), height, a.GetValueOrDefault("CODECS"), uri));
+          }
+          return [.. result.OrderBy(r => r.Bandwidth)];
+      }
+
+      record Rendition(long Bandwidth, int Height, string? Codecs, Uri Uri);    // Bandwidth: peak bits per second
+    expected: |-
+      4 variants, 1 audio-only
+      400 kbps, 1080-line view -> 360p /videos/unboxing/360p/index.m3u8
+      4500 kbps, 1080-line view -> 720p /videos/unboxing/720p/index.m3u8
+      20000 kbps, 720-line view -> 720p /videos/unboxing/720p/index.m3u8
+    sources:
+      - title: "RFC 8216: HTTP Live Streaming — EXT-X-STREAM-INF"
+        url: https://www.rfc-editor.org/rfc/rfc8216#section-4.3.4.2
+    validation: &ran
+      status: ran
+      toolchain: .NET SDK 9.0.304 (net9.0, C# 13)
+      date: "2026-11-16"
+  - id: maui-mediaelement
+    kind: code
+    title: "Play a stream in .NET MAUI with MediaElement"
+    note: "Register the toolkit once, point `Source` at the `.m3u8` (or `.mpd` on Android and Windows), and drive your own UI from `StateChanged` and `MediaFailed`, dispatching to the UI thread."
+    prerequisites:
+      - "A .NET MAUI 9 app: `dotnet add package CommunityToolkit.Maui.MediaElement --version 6.1.3` (6.1.3 is the last for MAUI 9; 7.0 and later need MAUI 10, and 8.0 adds the required `bool`)"
+      - "In `MauiProgram.CreateMauiApp`: `builder.UseMauiApp<App>().UseMauiCommunityToolkitMediaElement();` — on MediaElement 8.0+ (MAUI 10) it takes a required `bool isAndroidForegroundServiceEnabled`"
+      - "Android: `MainActivity` needs `ResizeableActivity = true, LaunchMode = LaunchMode.SingleTask` on its `[Activity]` attribute"
+    code: |-
+      <!-- VideoPage.xaml -->
+      <ContentPage xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
+                   xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
+                   xmlns:toolkit="http://schemas.microsoft.com/dotnet/2022/maui/toolkit"
+                   x:Class="Shop.VideoPage">
+          <Grid>
+              <toolkit:MediaElement x:Name="player"
+                                    Source="https://cdn.shop.example/videos/unboxing/master.m3u8"
+                                    ShouldAutoPlay="True"
+                                    ShouldShowPlaybackControls="True"
+                                    ShouldKeepScreenOn="True"
+                                    MetadataTitle="Unboxing the Trail 2 backpack"
+                                    StateChanged="OnStateChanged"
+                                    MediaFailed="OnMediaFailed" />
+              <ActivityIndicator x:Name="spinner" IsRunning="False" />
+          </Grid>
+      </ContentPage>
+
+      // VideoPage.xaml.cs
+      using CommunityToolkit.Maui.Core;
+
+      namespace Shop;
+
+      public partial class VideoPage : ContentPage
+      {
+          public VideoPage() => InitializeComponent();
+
+          // Player events may arrive off the UI thread.
+          void OnStateChanged(object? sender, MediaStateChangedEventArgs e) => Dispatcher.Dispatch(() =>
+              spinner.IsRunning = e.NewState is MediaElementState.Opening or MediaElementState.Buffering);
+
+          // Or hand it to the recovery card's PlaybackSupervisor.
+          void OnMediaFailed(object? sender, MediaFailedEventArgs e) => Dispatcher.Dispatch(async () =>
+              await DisplayAlert("Playback stopped", e.ErrorMessage, "OK"));
+
+          protected override void OnDisappearing()
+          {
+              player.Stop();                                                   // leaving the page ends playback
+              base.OnDisappearing();
+          }
+      }
+    expected: "The page plays the HLS stream with the platform's controls and adaptive bitrate, shows a spinner while opening or buffering, keeps the screen on while playing, and stops when the page disappears."
+    applies:
+      platforms: [android, ios, maccatalyst, windows]
+      requires: [CommunityToolkit.Maui.MediaElement]
+      versions: { csharp: ">=12", dotnet: "9", maui: "9.0", communitytoolkit-maui-mediaelement: "6.1" }
+    sources:
+      - title: MediaElement — .NET MAUI Community Toolkit
+        url: https://learn.microsoft.com/en-us/dotnet/communitytoolkit/maui/views/mediaelement
+    validation:
+      status: excerpt
+      host: a .NET MAUI 9 app project (the MAUI workload) referencing CommunityToolkit.Maui.MediaElement 6.1
+  - id: winui-mediaplayerelement
+    kind: code
+    title: "Play HLS or DASH in WinUI with AdaptiveMediaSource"
+    note: "`MediaSource.CreateFromUri` is enough to play, so go through `AdaptiveMediaSource` only when you need a bitrate cap, the current bitrate or custom headers, and dispose both it and the player when leaving."
+    prerequisites:
+      - "A WinUI 3 app (Windows App SDK 1.7, `net9.0-windows10.0.19041.0`); WPF has no equivalent, see the first card"
+      - "Page XAML: `<MediaPlayerElement x:Name=\"Video\" AreTransportControlsEnabled=\"True\" Stretch=\"Uniform\"/>`, a `ProgressRing x:Name=\"Spinner\"` and two `TextBlock`s"
+    code: |-
+      using Microsoft.UI.Xaml.Controls;
+      using Microsoft.UI.Xaml.Navigation;
+      using Windows.Media.Core;
+      using Windows.Media.Playback;
+      using Windows.Media.Streaming.Adaptive;
+
+      public sealed partial class VideoPage : Page
+      {
+          private AdaptiveMediaSource? source;
+          private MediaPlayer? player;
+
+          public async Task PlayAsync(Uri manifest)                            // .m3u8 or .mpd
+          {
+              var created = await AdaptiveMediaSource.CreateFromUriAsync(manifest);
+              if (created.Status != AdaptiveMediaSourceCreationStatus.Success)
+              {
+                  StatusText.Text = $"Cannot open the stream ({created.Status})";
+                  return;
+              }
+              source = created.MediaSource;
+              source.DesiredMaxBitrate = 3_000_000;                            // e.g. on a metered connection
+              source.PlaybackBitrateChanged += (_, e) =>
+                  DispatcherQueue.TryEnqueue(() => BitrateText.Text = $"{e.NewValue / 1000} kbps");
+
+              player = new MediaPlayer { Source = MediaSource.CreateFromAdaptiveMediaSource(source) };
+              player.PlaybackSession.PlaybackStateChanged += (session, _) => DispatcherQueue.TryEnqueue(() =>
+                  Spinner.IsActive = session.PlaybackState is MediaPlaybackState.Opening
+                      or MediaPlaybackState.Buffering);
+              player.MediaFailed += (_, e) =>
+                  DispatcherQueue.TryEnqueue(() => StatusText.Text = $"{e.Error}: {e.ErrorMessage}");
+              Video.SetMediaPlayer(player);
+              player.Play();
+          }
+
+          protected override void OnNavigatedFrom(NavigationEventArgs e)
+          {
+              Video.SetMediaPlayer(null);                                      // detach before disposing
+              player?.Dispose();                                               // the decoder and the network
+              source?.Dispose();                                               // the adaptive source's downloads
+              base.OnNavigatedFrom(e);
+          }
+      }
+    expected: "The stream plays in the page with transport controls, never above 3 Mbps; the current playback bitrate, a buffering ring and any failure are shown on the UI thread."
+    applies:
+      platforms: [windows]
+      requires: [Windows App SDK]
+      versions: { csharp: ">=12", dotnet: ">=9", windowsappsdk: "1.7" }
+    sources:
+      - title: Adaptive streaming — Windows apps
+        url: https://learn.microsoft.com/en-us/windows/apps/develop/media-playback/adaptive-streaming
+      - title: MediaPlayerElement — Windows App SDK API
+        url: https://learn.microsoft.com/en-us/windows/windows-app-sdk/api/winrt/microsoft.ui.xaml.controls.mediaplayerelement
+    validation:
+      status: excerpt
+      host: a WinUI 3 app on Windows (Windows App SDK)
+  - id: blazor-hls-interop
+    kind: code
+    title: "Blazor: a video component that drives hls.js through JS interop"
+    note: "The component owns the player's lifetime: it attaches after the first render, shows a Retry button when the module reports a fatal error, and destroys the player in `DisposeAsync`."
+    prerequisites:
+      - "A Blazor Web App or Blazor WebAssembly project; hls.js 1.x loaded by the host page (`<script src=\"js/hls.min.js\"></script>`) or bundled"
+      - "Save this as `ProductVideo.razor` and the next card as `wwwroot/js/hls-player.js`; with server rendering it needs an interactive render mode"
+    code: |-
+      @implements IAsyncDisposable
+      @inject IJSRuntime JS
+
+      <video @ref="video" controls playsinline style="width:100%"></video>
+      @if (status is not null) { <p role="alert">@status <button @onclick="StartAsync">Retry</button></p> }
+
+      @code {
+          [Parameter, EditorRequired] public string ManifestUrl { get; set; } = "";
+          private ElementReference video;
+          private IJSObjectReference? module, playback;
+          private DotNetObjectReference<ProductVideo>? self;
+          private string? status;
+
+          protected override async Task OnAfterRenderAsync(bool firstRender)
+          {
+              if (firstRender) await StartAsync();                     // the <video> exists only after a render
+          }
+
+          private async Task StartAsync()
+          {
+              status = null;
+              if (playback is not null) await playback.DisposeAsync();     // attach() destroys the old player
+              module ??= await JS.InvokeAsync<IJSObjectReference>("import", "./js/hls-player.js");
+              self ??= DotNetObjectReference.Create(this);
+              playback = await module.InvokeAsync<IJSObjectReference>("attach", video, ManifestUrl, self);
+          }
+
+          [JSInvokable]
+          public void OnFatalError(string details)
+          {
+              status = $"Playback stopped ({details}).";
+              StateHasChanged();
+          }
+
+          public async ValueTask DisposeAsync()
+          {
+              try
+              {
+                  if (playback is not null) await playback.InvokeVoidAsync("destroy");
+                  if (playback is not null) await playback.DisposeAsync();
+                  if (module is not null) await module.DisposeAsync();
+              }
+              catch (JSDisconnectedException) { }                      // Blazor Server: the circuit is gone
+              self?.Dispose();
+          }
+      }
+    expected: "The video plays the stream; after a fatal error the message and a Retry button appear, Retry attaches a fresh player once the module has torn down the old one, and leaving the page destroys it."
+    applies:
+      platforms: [browser]
+      requires: [Blazor, hls.js]
+      versions: { csharp: ">=12", dotnet: ">=9", aspnetcore: "9.0" }
+    sources:
+      - title: JavaScript location and JS isolation in Blazor
+        url: https://learn.microsoft.com/en-us/aspnet/core/blazor/javascript-interoperability/location-of-javascript
+      - title: hls.js — API documentation
+        url: https://github.com/video-dev/hls.js/blob/master/docs/API.md
+    validation:
+      status: excerpt
+      host: a Blazor Web App project with an interactive render mode (compiled here as a Razor class library)
+  - id: blazor-hls-module
+    kind: code
+    title: "The JavaScript module: hls.js first, native HLS second, bounded retries"
+    note: "Ask `Hls.isSupported()` before `canPlayType`, let hls.js retry within its default, bounded load policies, and after that report the fatal error to .NET instead of calling `startLoad()` in a loop."
+    prerequisites:
+      - "hls.js 1.5 or later loaded by the host page (`<script src=\"js/hls.min.js\"></script>`) or bundled"
+      - "Save as `wwwroot/js/hls-player.js`; the previous card imports it"
+    code: |-
+      // wwwroot/js/hls-player.js — hls.js 1.x, loaded by the page as window.Hls
+      const players = new WeakMap();                    // video → its destroy(), so a Retry never stacks listeners
+
+      export function attach(video, url, dotnet) {
+        players.get(video)?.();                         // tear down whatever an earlier attach left behind
+        const report = (details) => dotnet.invokeMethodAsync("OnFatalError", details);
+        const destroy = start(video, url, report) ?? (() => {});
+        players.set(video, destroy);
+        return { destroy };
+      }
+
+      function start(video, url, report) {
+        if (Hls.isSupported()) {                        // MSE or ManagedMediaSource: desktop Safari, iPhone 17.1+
+          const hls = new Hls();                        // its default load policies retry a bounded number of times
+          let mediaRecoveries = 0, destroyed = false;
+          const destroy = () => {
+            if (!destroyed) hls.destroy();
+            destroyed = true;
+          };
+          hls.on(Hls.Events.ERROR, (_, data) => {
+            if (!data.fatal) return;                               // hls.js is already retrying it
+            if (data.type === Hls.ErrorTypes.MEDIA_ERROR && mediaRecoveries++ < 2) return hls.recoverMediaError();
+            destroy();                                             // never startLoad() in a loop: show Retry
+            report(data.details);
+          });
+          hls.loadSource(url);
+          hls.attachMedia(video);
+          return destroy;
+        }
+
+        if (video.canPlayType("application/vnd.apple.mpegurl")) {  // older iPhone Safari: native HLS only
+          const listeners = new AbortController();
+          const onError = () => report(`media error ${video.error?.code}`);
+          video.addEventListener("error", onError, { signal: listeners.signal });
+          video.src = url;
+          return () => {
+            listeners.abort();
+            video.removeAttribute("src");
+            video.load();
+          };
+        }
+
+        report("this browser cannot play HLS");                    // and attach() returns a no-op destroy
+      }
+    expected: "hls.js plays the stream wherever MSE or ManagedMediaSource exists and native HLS elsewhere on Apple devices; segment and playlist failures are retried within hls.js's default bounded load policies, a media error is recovered twice at most, any other fatal error destroys the player and calls `OnFatalError` once, and a Retry first tears down the previous player and its listeners (checked in Node with a fake video element: one error after two retries gives one report)."
+    applies:
+      platforms: [browser]
+      requires: [hls.js]
+      versions: { hls.js: ">=1.5" }
+    sources:
+      - title: hls.js — API documentation (fatal error recovery, load policies)
+        url: https://github.com/video-dev/hls.js/blob/master/docs/API.md
+      - title: AbortController — MDN
+        url: https://developer.mozilla.org/en-US/docs/Web/API/AbortController
+    validation:
+      status: excerpt
+      host: a browser page with hls.js, imported by a Blazor component (syntax-checked with node --check; the Retry teardown exercised in Node with a fake video element)
+  - id: recovery-policy
+    kind: code
+    title: Player state, errors and recovery — as a policy you can test
+    note: "Keep the decision out of the page: back off and reload, resume a VOD where it broke and rejoin a live stream at its edge, and let only 30 s of healthy playback earn the retry budget back so a flapping stream gives up."
+    prerequisites: *run
+    code: |-
+      var now = DateTimeOffset.UnixEpoch;
+      Func<DateTimeOffset> clock = () => now;                          // TimeProvider.System.GetUtcNow in the app
+
+      var vod = new PlaybackSupervisor(clock, Wait, Reload, isLive: false);
+      vod.OnPosition(TimeSpan.FromSeconds(42));
+      await vod.OnFailed("network lost", CancellationToken.None);
+
+      var live = new PlaybackSupervisor(clock, Wait, Reload, isLive: true);
+      for (var i = 0; i < 4; i++)
+      {
+          live.OnPlaying();
+          now += TimeSpan.FromSeconds(5);                              // plays for 5 s, then fails again
+          await live.OnFailed("HTTP 503", CancellationToken.None);
+      }
+      Console.WriteLine($"live: {live.Status}");
+
+      static Task Wait(TimeSpan delay, CancellationToken ct) =>
+          Console.Out.WriteLineAsync($"wait {delay.TotalSeconds} s");  // Task.Delay(delay, ct) in the app
+
+      static void Reload(TimeSpan? at) =>
+          Console.WriteLine(at is { } t ? $"reload at {t.TotalSeconds} s" : "reload at the live edge");
+
+      sealed class PlaybackSupervisor(Func<DateTimeOffset> now, Func<TimeSpan, CancellationToken, Task> wait,
+          Action<TimeSpan?> reload, bool isLive, int maxRetries = 3)
+      {
+          private int failures;
+          private TimeSpan resumeAt;
+          private DateTimeOffset? playingSince;
+          public string Status { get; private set; } = "playing";
+
+          public void OnPlaying() => playingSince = now();            // MediaElement: StateChanged to Playing
+
+          public void OnPosition(TimeSpan position)                    // MediaElement: PositionChanged
+          {
+              resumeAt = position;
+              if (now() - playingSince >= TimeSpan.FromSeconds(30)) failures = 0;   // only a healthy stretch
+          }
+
+          public async Task OnFailed(string reason, CancellationToken ct)
+          {
+              playingSince = null;
+              if (++failures > maxRetries) { Status = $"gave up: {reason}"; return; }
+              await wait(TimeSpan.FromSeconds(Math.Pow(2, failures - 1)), ct);   // 1 s, 2 s, 4 s
+              ct.ThrowIfCancellationRequested();                                  // the page closed: no reload
+              reload(isLive ? null : resumeAt);
+          }
+      }
+    expected: |-
+      wait 1 s
+      reload at 42 s
+      wait 1 s
+      reload at the live edge
+      wait 2 s
+      reload at the live edge
+      wait 4 s
+      reload at the live edge
+      live: gave up: HTTP 503
+    sources:
+      - title: MediaElement — determine MediaElement status
+        url: https://learn.microsoft.com/en-us/dotnet/communitytoolkit/maui/views/mediaelement#determine-mediaelement-status
+    validation: *ran
+  - id: live-vs-vod
+    kind: code
+    title: Live versus on-demand, read from the media playlist
+    note: "`#EXT-X-ENDLIST` means on-demand; without it the playlist is live and must be reloaded about every target duration, and playback should start at least three target durations from the end."
+    prerequisites: *run
+    code: |-
+      using System.Globalization;
+
+      CultureInfo.CurrentCulture = CultureInfo.InvariantCulture;
+
+      const string Vod = """
+          #EXTM3U
+          #EXT-X-TARGETDURATION:6
+          #EXT-X-PLAYLIST-TYPE:VOD
+          #EXTINF:6.0,
+          seg0.ts
+          #EXTINF:4.5,
+          seg1.ts
+          #EXT-X-ENDLIST
+          """;
+      const string Live = """
+          #EXTM3U
+          #EXT-X-TARGETDURATION:6
+          #EXT-X-MEDIA-SEQUENCE:1500
+          #EXTINF:6.0,
+          seg1500.ts
+          #EXTINF:6.0,
+          seg1501.ts
+          #EXTINF:6.0,
+          seg1502.ts
+          #EXTINF:6.0,
+          seg1503.ts
+          """;
+      Console.WriteLine(Describe(Vod));
+      Console.WriteLine(Describe(Live));
+
+      static string Describe(string playlist)
+      {
+          var lines = playlist.Split('\n', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+          string? Tag(string name) => lines.FirstOrDefault(l => l.StartsWith(name + ":"))?[(name.Length + 1)..];
+
+          var target = double.Parse(Tag("#EXT-X-TARGETDURATION")!);
+          var length = lines.Where(l => l.StartsWith("#EXTINF:")).Sum(l => double.Parse(l[8..].Split(',')[0]));
+          if (lines.Contains("#EXT-X-ENDLIST"))
+              return $"on-demand: {length} s, seekable 0..{length}, start at 0, never reload";
+
+          var kind = Tag("#EXT-X-PLAYLIST-TYPE") == "EVENT" ? "live event (grows, DVR)" : "live (sliding window)";
+          var start = Math.Max(0, length - 3 * target);                // at least 3 target durations from the edge
+          var first = Tag("#EXT-X-MEDIA-SEQUENCE") ?? "0";
+          return $"{kind}: window {length} s from segment {first}, start at {start} s, reload every {target} s";
+      }
+    expected: |-
+      on-demand: 10.5 s, seekable 0..10.5, start at 0, never reload
+      live (sliding window): window 24 s from segment 1500, start at 6 s, reload every 6 s
+    sources:
+      - title: "RFC 8216: HTTP Live Streaming — Playing the Media Playlist"
+        url: https://www.rfc-editor.org/rfc/rfc8216#section-6.3.3
+    validation: *ran
+  - id: drm-key-systems
+    kind: table
+    title: "DRM: which key system applies where"
+    note: "Package once as CMAF with `cbcs` encryption and the same segments serve all three systems (older PlayReady clients and Android before 7.1 need `cenc`), with only the licence request differing per platform and none of it reachable through `MediaElement`'s own API."
+    headers: [Key system, Where it applies, "From .NET"]
+    rows:
+      - - "**FairPlay** Streaming"
+        - "iOS, iPadOS, macOS, tvOS, Safari"
+        - "AVPlayer with `AVContentKeySession` in a MAUI handler for iOS / Mac Catalyst; EME in Safari for Blazor"
+      - - "**Widevine**"
+        - "Android, Chrome, Firefox, Edge, Android TV, Chromecast"
+        - "Media3 `DrmSessionManager` in a MAUI handler for Android (`cbcs` from Android 7.1, API 25); EME through hls.js or dash.js for Blazor"
+      - - "**PlayReady**"
+        - "Windows apps, Edge on Windows, Xbox, many smart TVs"
+        - "`MediaProtectionManager` with `MediaPlayer` in WinUI or MAUI on Windows; EME in Edge"
+      - - "AES-128 HLS encryption"
+        - "every HLS player"
+        - "no DRM: the key is fetched over HTTPS (with your auth); it stops casual copying, not a determined user"
+      - - "SAMPLE-AES HLS encryption"
+        - "AVPlayer, hls.js — **not** Media3 / ExoPlayer, so not MAUI on Android"
+        - "no DRM either; prefer AES-128 or a real key system"
+      - - "LibVLCSharp, WPF `MediaElement`"
+        - "—"
+        - "no commercial DRM: choose a platform player for protected content"
+  - id: background-lifecycle
+    kind: code
+    title: Background playback and the app lifecycle in MAUI
+    note: "Decide per screen: a product video pauses when the app leaves the foreground, while a talk keeps playing, which needs the Android foreground service and the iOS audio background mode."
+    prerequisites:
+      - "The .NET MAUI app of the MediaElement card"
+      - "Background audio on iOS / Mac Catalyst: `<key>UIBackgroundModes</key><array><string>audio</string></array>` in `Platforms/iOS/Info.plist` (and `Platforms/MacCatalyst/Info.plist`)"
+    code: |-
+      // MauiProgram.cs — MediaElement 6.x declares the Android foreground service and its permissions itself;
+      // from 8.0 (MAUI 10) it is opt-in: UseMauiCommunityToolkitMediaElement(true).
+      builder.UseMauiApp<App>().UseMauiCommunityToolkitMediaElement();
+
+      // TalkPage.xaml.cs — a long talk that may keep playing with the screen off.
+      // The page holds <toolkit:MediaElement x:Name="player" MetadataTitle="…" MetadataArtworkUrl="…"/>.
+      using CommunityToolkit.Maui.Core;
+
+      namespace Shop;
+
+      public partial class TalkPage : ContentPage
+      {
+          public TalkPage() => InitializeComponent();
+
+          static bool KeepPlayingInBackground => Preferences.Default.Get("background_playback", false);
+
+          protected override void OnAppearing()
+          {
+              base.OnAppearing();
+              if (Window is { } window) window.Stopped += OnAppBackgrounded;
+          }
+
+          protected override void OnDisappearing()
+          {
+              if (Window is { } window) window.Stopped -= OnAppBackgrounded;
+              player.Stop();
+              base.OnDisappearing();
+          }
+
+          void OnAppBackgrounded(object? sender, EventArgs e)
+          {
+              // The user comes back to a paused video, not to one that played on without them.
+              if (!KeepPlayingInBackground && player.CurrentState == MediaElementState.Playing)
+                  player.Pause();
+          }
+      }
+    expected: "When the app is sent to the background the talk pauses, unless the user enabled background playback; then it continues with lock-screen controls and metadata on Android (foreground service) and iOS (audio background mode)."
+    applies:
+      platforms: [android, ios, maccatalyst, windows]
+      requires: [CommunityToolkit.Maui.MediaElement]
+      versions: { csharp: ">=12", dotnet: "9", maui: "9.0", communitytoolkit-maui-mediaelement: "6.1" }
+    sources:
+      - title: MediaElement — Foreground service on Android
+        url: https://learn.microsoft.com/en-us/dotnet/communitytoolkit/maui/views/mediaelement#foreground-service-on-android
+      - title: App lifecycle — .NET MAUI
+        url: https://learn.microsoft.com/en-us/dotnet/maui/fundamentals/app-lifecycle
+    validation:
+      status: excerpt
+      host: a .NET MAUI 9 app project (the MAUI workload) referencing CommunityToolkit.Maui.MediaElement 6.1
+  - id: video-pitfalls
+    kind: rules
+    title: Pitfalls worth saying out loud
+    note: Most playback bugs reported from the field are one of these.
+    items:
+      - tone: bad
+        text: "Expecting WPF's `MediaElement` to play `.m3u8` or `.mpd`: it plays progressive files only. Use WinUI, LibVLCSharp or a WebView2 page."
+      - tone: bad
+        text: "Serving DASH to iOS or Mac Catalyst: AVPlayer plays HLS only. Publish both manifests, or HLS with CMAF segments for everyone."
+      - tone: bad
+        text: "Updating UI from player events without dispatching: `StateChanged`, `PlaybackStateChanged` and bitrate events can arrive off the UI thread."
+      - tone: bad
+        text: "Treating `Buffering` as an error: show a spinner, and only intervene on `Failed` or `MediaFailed`."
+      - tone: bad
+        text: "A plain `http://` stream on Android or iOS: cleartext is blocked by default. Serve HTTPS rather than weakening the platform policy."
+      - tone: good
+        text: "Stop (and on WinUI dispose) the player when the page goes away: decoders, the network and the screen-on lock are held until you do. `MediaElement` is `IDisposable` too."
+      - tone: good
+        text: "For live, start three target durations behind the edge and reload on the target duration; for VOD, remember the position so a reload resumes there."
+      - tone: good
+        text: "Set `MetadataTitle` and artwork for lock-screen controls, and keep the DRM licence request behind your own authentication."
+      - tone: neutral
+        text: "Test on real devices and with throttled networks: emulators often lack hardware decoders and DRM (Widevine L1, FairPlay)."

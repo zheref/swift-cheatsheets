@@ -1,0 +1,491 @@
+id: cs-maui-ui
+concept: ui.views-layout-animation
+scope: platform
+title: ".NET MAUI — XAML Views, Layout & Navigation"
+group: UI
+subtitle: A ContentPage with compiled bindings, layouts and sizing, CollectionView, converters, Shell routes, animation, reusable ContentViews and the rules that keep it fast.
+applies:
+  platforms: [dotnet, android, ios, maccatalyst, windows]
+  runtime: .NET MAUI app (the `maui` workload); XAML compiled with the app
+  requires: [.NET MAUI]
+  versions: { csharp: ">=13", dotnet: ">=9", maui: ">=9" }
+sources:
+  - title: .NET MAUI documentation
+    url: https://learn.microsoft.com/en-us/dotnet/maui/?view=net-maui-9.0
+  - title: Compiled bindings — .NET MAUI
+    url: https://learn.microsoft.com/en-us/dotnet/maui/fundamentals/data-binding/compiled-bindings?view=net-maui-9.0
+  - title: CollectionView — .NET MAUI
+    url: https://learn.microsoft.com/en-us/dotnet/maui/user-interface/controls/collectionview/?view=net-maui-9.0
+  - title: Shell navigation — .NET MAUI
+    url: https://learn.microsoft.com/en-us/dotnet/maui/fundamentals/shell/navigation?view=net-maui-9.0
+  - title: Improve app performance — .NET MAUI
+    url: https://learn.microsoft.com/en-us/dotnet/maui/deployment/performance?view=net-maui-9.0
+cards:
+  - id: swiftui-to-maui
+    kind: table
+    title: SwiftUI → .NET MAUI XAML
+    note: "MAUI pages are long-lived objects that bindings keep up to date, so nothing rebuilds a `body`."
+    headers: [SwiftUI, .NET MAUI XAML]
+    rows:
+      - ["`struct OrdersView: View` with `body`", "`ContentPage` (`OrdersPage.xaml` + `.xaml.cs`), built once by `InitializeComponent()`"]
+      - ["`@State` / `@Observable` model", "a view model raising `PropertyChanged`, set as `BindingContext` (see the MVVM State sheet)"]
+      - ["`Text(order.customer)`", "`<Label Text=\"{Binding Customer}\" />`, checked at build time by `x:DataType`"]
+      - ["`$query` (`@Binding`)", "`Text=\"{Binding Query}\"`; `Entry`/`SearchBar` text is `TwoWay` by default"]
+      - ["`VStack` / `HStack` / `ZStack`", "`VerticalStackLayout` / `HorizontalStackLayout` / a `Grid` cell holding several children"]
+      - ["`Grid`, `LazyVGrid`", "`Grid RowDefinitions=\"Auto,*\"`; `CollectionView` with a `GridItemsLayout`"]
+      - ["`.padding()`, `.frame()`", "`Padding`, `Margin`, `WidthRequest`/`HeightRequest`, `HorizontalOptions`"]
+      - ["`List` + `ForEach`", "`CollectionView` + `DataTemplate` (virtualized)"]
+      - ["`if` / `switch` in `body`", "`IsVisible=\"{Binding …}\"`, a `DataTrigger`, `CollectionView.EmptyView`"]
+      - ["`Button(action:)`", "`Command=\"{Binding SaveCommand}\"`, or a `Clicked` handler in code-behind"]
+      - ["`NavigationStack` + `navigationDestination`", "`Shell` routes + `await Shell.Current.GoToAsync(\"detail\", parameters)`"]
+      - ["`.task { }`", "override `OnAppearing()`; nothing is cancelled for you, so cancel a token in `OnDisappearing()`"]
+      - ["`withAnimation { }`", "imperative, awaitable `view.FadeTo(…)` / `TranslateTo(…)` (MAUI 10: `FadeToAsync`)"]
+      - ["a custom `View` with init parameters", "`ContentView` with a `BindableProperty`"]
+      - ["`ViewModifier`", "a `Style` in a `ResourceDictionary`"]
+
+  - id: content-page
+    kind: code
+    title: A ContentPage with compiled bindings
+    note: "Set `x:DataType` where the `BindingContext` is set, so every `{Binding}` below it is checked at build time and generated without reflection."
+    prerequisites: &maui
+      - "The .NET 9 SDK with the MAUI workload: `dotnet workload install maui`, then `dotnet new maui -o Shop`"
+      - "Save as `Views/OrdersPage.xaml` with its code-behind `Views/OrdersPage.xaml.cs`, and add the `WarningsAsErrors` line to `Shop.csproj`"
+      - "Register both in `MauiProgram.cs` — `builder.Services.AddTransient<OrdersPage>()` and `AddTransient<OrdersViewModel>()` — so Shell builds the page through dependency injection"
+    code: |-
+      <ContentPage xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
+                   xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
+                   xmlns:vm="clr-namespace:Shop.ViewModels"
+                   x:Class="Shop.Views.OrdersPage"
+                   x:DataType="vm:OrdersViewModel"
+                   Title="Orders">
+          <Grid RowDefinitions="Auto,Auto,*" RowSpacing="8" Padding="16">
+              <SearchBar Text="{Binding Query}" Placeholder="Search by customer" />
+              <Label Grid.Row="1" Text="{Binding Orders.Count, StringFormat='{0} orders'}" />
+              <ActivityIndicator Grid.Row="2" IsRunning="{Binding IsLoading}" IsVisible="{Binding IsLoading}" />
+              <!-- Grid.Row="2" also holds the CollectionView from the next card -->
+          </Grid>
+      </ContentPage>
+
+      // OrdersPage.xaml.cs
+      public partial class OrdersPage : ContentPage
+      {
+          private readonly OrdersViewModel viewModel;
+
+          public OrdersPage(OrdersViewModel viewModel)
+          {
+              InitializeComponent();
+              BindingContext = this.viewModel = viewModel;
+          }
+
+          protected override async void OnAppearing()
+          {
+              base.OnAppearing();
+              await viewModel.LoadAsync();      // runs on every appearance, so LoadAsync skips work it already did
+          }
+      }
+
+      <!-- Shop.csproj: a misspelled path is only warning XC0045, so make it fail the build;
+           the second line compiles Source bindings too, which clears XC0025 -->
+      <PropertyGroup>
+          <WarningsAsErrors>$(WarningsAsErrors);XC0022;XC0023;XC0025;XC0045</WarningsAsErrors>
+          <MauiEnableXamlCBindingWithSourceCompilation>true</MauiEnableXamlCBindingWithSourceCompilation>
+      </PropertyGroup>
+    expected: "The page shows a search bar, an order count that updates as the view model changes, and a spinner while loading; with the `WarningsAsErrors` line, a misspelled binding path such as `{Binding Querry}` fails the build (XC0045) instead of leaving a blank label."
+    validation:
+      status: excerpt
+      host: a .NET MAUI 9 app project; compiled by XamlC from Microsoft.Maui.Controls 9.0.120, where the misspelled path gives warning XC0045
+
+  - id: layouts-sizing
+    kind: code
+    title: Layouts and sizing
+    note: "A `Grid` sizes rows and columns as `Auto`, `*` (a share of what is left) or fixed, the stacks place children in a line with `Spacing`, and `FlexLayout` wraps."
+    prerequisites:
+      - "A .NET MAUI app project (`dotnet new maui -o Shop`)"
+      - "Use inside the `Content` of an order detail `ContentPage` whose `x:DataType` is the order"
+    code: |-
+      <VerticalStackLayout Spacing="12" Padding="16">
+          <!-- the name takes the room left after the total; the date spans both columns -->
+          <Grid ColumnDefinitions="*,Auto" RowDefinitions="Auto,Auto" ColumnSpacing="12">
+              <Label Text="{Binding Customer}" FontSize="20" LineBreakMode="TailTruncation" />
+              <Label Grid.Column="1" Text="{Binding Total, StringFormat='{0:C}'}" FontAttributes="Bold" />
+              <Label Grid.Row="1" Grid.ColumnSpan="2"
+                     Text="{Binding PlacedOn, StringFormat='Placed {0:d MMM yyyy}'}" />
+          </Grid>
+
+          <HorizontalStackLayout Spacing="6">
+              <Image Source="truck.png" WidthRequest="20" HeightRequest="20" />
+              <Label Text="{Binding ShippingStatus}" VerticalOptions="Center" />
+          </HorizontalStackLayout>
+
+          <!-- Border replaces Frame, which is obsolete in MAUI 9 -->
+          <Border Stroke="LightGray" StrokeShape="RoundRectangle 8" Padding="12">
+              <Label Text="{Binding Notes}" />
+          </Border>
+
+          <!-- tags flow onto the next line when the row is full -->
+          <FlexLayout Wrap="Wrap" BindableLayout.ItemsSource="{Binding Tags}">
+              <BindableLayout.ItemTemplate>
+                  <DataTemplate x:DataType="x:String">
+                      <Border Margin="0,0,6,6" Padding="8,2" StrokeShape="RoundRectangle 10">
+                          <Label Text="{Binding .}" FontSize="12" />
+                      </Border>
+                  </DataTemplate>
+              </BindableLayout.ItemTemplate>
+          </FlexLayout>
+      </VerticalStackLayout>
+    expected: "The customer name is truncated before it can push the total off screen, the notes get a rounded border and the tags wrap onto as many lines as they need; `HorizontalOptions` defaults to `Fill`, and `Frame` and the `*AndExpand` options are obsolete, a CS0618 warning in C# but silent in XAML."
+    sources:
+      - title: Grid — .NET MAUI
+        url: https://learn.microsoft.com/en-us/dotnet/maui/user-interface/layouts/grid?view=net-maui-9.0
+      - title: FlexLayout — .NET MAUI
+        url: https://learn.microsoft.com/en-us/dotnet/maui/user-interface/layouts/flexlayout?view=net-maui-9.0
+      - title: Border — .NET MAUI
+        url: https://learn.microsoft.com/en-us/dotnet/maui/user-interface/controls/border?view=net-maui-9.0
+    validation:
+      status: excerpt
+      host: a .NET MAUI 9 app project; compiled by XamlC from Microsoft.Maui.Controls 9.0.120
+
+  - id: collection-view
+    kind: code
+    title: CollectionView with a DataTemplate and selection
+    note: "Every `DataTemplate` declares its own `x:DataType`, and a command on the view model is reached through `RelativeSource AncestorType`."
+    prerequisites: *maui
+    code: |-
+      <CollectionView Grid.Row="2"
+                      ItemsSource="{Binding Orders}"
+                      SelectionMode="Single"
+                      SelectedItem="{Binding SelectedOrder}"
+                      SelectionChangedCommand="{Binding OpenSelectedCommand}"
+                      RemainingItemsThreshold="5"
+                      RemainingItemsThresholdReachedCommand="{Binding LoadMoreCommand}">
+          <CollectionView.ItemsLayout>
+              <LinearItemsLayout Orientation="Vertical" ItemSpacing="8" />
+          </CollectionView.ItemsLayout>
+
+          <CollectionView.EmptyView>
+              <Label Text="No orders match your search." HorizontalOptions="Center" />
+          </CollectionView.EmptyView>
+
+          <CollectionView.ItemTemplate>
+              <DataTemplate x:DataType="models:Order">
+                  <Grid ColumnDefinitions="*,Auto,Auto" ColumnSpacing="8" Padding="12">
+                      <Label Text="{Binding Customer}" VerticalOptions="Center" />
+                      <Label Grid.Column="1" VerticalOptions="Center"
+                             Text="{Binding Total, StringFormat='{0:C}'}" />
+                      <Button Grid.Column="2" Text="Cancel"
+                              Command="{Binding x:DataType='vm:OrdersViewModel',
+                                                Source={RelativeSource AncestorType={x:Type vm:OrdersViewModel}},
+                                                Path=CancelCommand}"
+                              CommandParameter="{Binding .}" />
+                  </Grid>
+              </DataTemplate>
+          </CollectionView.ItemTemplate>
+      </CollectionView>
+    expected: "Tapping a row sets `SelectedOrder` (`TwoWay` by default) and runs `OpenSelectedCommand`, nearing the end runs `LoadMoreCommand`, an empty list shows the message, and Cancel passes its row's order to the page's command; that `Source` binding falls back to reflection (warning XC0025) unless the project sets `MauiEnableXamlCBindingWithSourceCompilation` to `true`, as the previous card's project file does."
+    sources:
+      - title: Configure CollectionView item selection — .NET MAUI
+        url: https://learn.microsoft.com/en-us/dotnet/maui/user-interface/controls/collectionview/selection?view=net-maui-9.0
+      - title: Relative bindings — .NET MAUI
+        url: https://learn.microsoft.com/en-us/dotnet/maui/fundamentals/data-binding/relative-bindings?view=net-maui-9.0
+    validation:
+      status: excerpt
+      host: a .NET MAUI 9 app project with `xmlns:models` and `xmlns:vm` mapped; compiled by XamlC from Microsoft.Maui.Controls 9.0.120 (XC0025 as stated)
+
+  - id: binding-modes-converters
+    kind: code
+    title: Binding modes, formatting and converters
+    note: "Choose the cheapest mode that works, and keep a converter a thin `IValueConverter` that calls plain logic, as the next card shows."
+    prerequisites:
+      - "A .NET MAUI app project (`dotnet new maui -o Shop`)"
+      - "Declare `xmlns:conv=\"clr-namespace:Shop.Converters\"` on the page; put the C# class in `Converters/OrderStatusToColorConverter.cs`"
+    code: |-
+      <ContentPage.Resources>
+          <conv:OrderStatusToColorConverter x:Key="StatusColor" />
+      </ContentPage.Resources>
+
+      <!-- OneWay (the default for most properties): view model → view -->
+      <Label Text="{Binding Status}" TextColor="{Binding Status, Converter={StaticResource StatusColor}}" />
+
+      <!-- TwoWay is the default for Entry.Text, SearchBar.Text and Slider.Value -->
+      <Entry Text="{Binding DeliveryNote}" Placeholder="Note for the courier" />
+
+      <!-- OneTime: read once, no change subscription; the cheapest binding -->
+      <Label Text="{Binding Id, Mode=OneTime, StringFormat='Order #{0}'}" />
+
+      <!-- TargetNullValue when the value is null, FallbackValue when the path cannot be resolved -->
+      <Label Text="{Binding TrackingCode, TargetNullValue='Not shipped yet', FallbackValue='—'}" />
+
+      // Converters/OrderStatusToColorConverter.cs
+      public class OrderStatusToColorConverter : IValueConverter
+      {
+          public object? Convert(object? value, Type targetType, object? parameter, CultureInfo culture) =>
+              value is OrderStatus status ? Color.FromArgb(StatusPalette.HexFor(status)) : Colors.Gray;
+
+          public object? ConvertBack(object? value, Type targetType, object? parameter, CultureInfo culture) =>
+              throw new NotSupportedException("Status colours are display-only.");
+      }
+    expected: "The status label is coloured by state, the courier note writes back to the view model as you type, the order number never re-reads, and a missing tracking code shows \"Not shipped yet\"."
+    sources:
+      - title: Binding mode — .NET MAUI
+        url: https://learn.microsoft.com/en-us/dotnet/maui/fundamentals/data-binding/binding-mode?view=net-maui-9.0
+      - title: Binding value converters — .NET MAUI
+        url: https://learn.microsoft.com/en-us/dotnet/maui/fundamentals/data-binding/converters?view=net-maui-9.0
+    validation:
+      status: excerpt
+      host: a .NET MAUI 9 app project; compiled by XamlC from Microsoft.Maui.Controls 9.0.120
+
+  - id: converter-logic
+    kind: code
+    title: The converter's logic, run without a UI
+    note: "Keep the mapping in a plain class so it can be tested without a UI, and pass \"today\" in instead of reading the clock inside a converter."
+    prerequisites: &run
+      - .NET 8 SDK or later
+      - "`dotnet new console -o Demo`, replace `Demo/Program.cs` with the example, then `dotnet run --project Demo` (a MAUI converter calls these same methods)"
+    code: |-
+      using System.Globalization;
+
+      var today = new DateOnly(2026, 11, 16);
+      var culture = CultureInfo.GetCultureInfo("en-US");
+
+      foreach (var status in Enum.GetValues<OrderStatus>())
+          Console.WriteLine($"{status}: {StatusPalette.HexFor(status)}");
+
+      DateOnly[] placed = [today, today.AddDays(-1), today.AddDays(-3), new(2026, 9, 2), today.AddDays(2)];
+      foreach (var day in placed)
+          Console.WriteLine(OrderText.Placed(day, today, culture));
+
+      enum OrderStatus { Pending, Shipped, Delivered, Cancelled }
+
+      static class StatusPalette
+      {
+          public static string HexFor(OrderStatus status) => status switch
+          {
+              OrderStatus.Pending => "#B26A00",
+              OrderStatus.Shipped => "#1565C0",
+              OrderStatus.Delivered => "#2E7D32",
+              OrderStatus.Cancelled => "#757575",
+              _ => throw new ArgumentOutOfRangeException(nameof(status)),
+          };
+      }
+
+      static class OrderText
+      {
+          public static string Placed(DateOnly placed, DateOnly today, CultureInfo culture)
+          {
+              var days = today.DayNumber - placed.DayNumber;
+              return days switch
+              {
+                  < 0 or >= 7 => "Placed " + placed.ToString("d MMM yyyy", culture),   // future: clock skew
+                  0 => "Placed today",
+                  1 => "Placed yesterday",
+                  _ => $"Placed {days} days ago",
+              };
+          }
+      }
+    expected: |-
+      Pending: #B26A00
+      Shipped: #1565C0
+      Delivered: #2E7D32
+      Cancelled: #757575
+      Placed today
+      Placed yesterday
+      Placed 3 days ago
+      Placed 2 Sep 2026
+      Placed 18 Nov 2026
+    applies:
+      platforms: [dotnet]
+      runtime: .NET console app (no UI)
+      versions: { csharp: ">=12", dotnet: ">=8" }
+    validation: &ran
+      status: ran
+      toolchain: .NET SDK 9.0.304 (net9.0, C# 13)
+      date: "2026-11-16"
+
+  - id: shell-navigation
+    kind: code
+    title: Shell routes and query parameters
+    note: "Visual routes live in `AppShell.xaml`, while detail pages are registered with `Routing.RegisterRoute` and reached with `GoToAsync`."
+    prerequisites:
+      - "A .NET MAUI app project (`dotnet new maui -o Shop`) with the `CommunityToolkit.Mvvm` NuGet package"
+      - "Edit `AppShell.xaml`, `AppShell.xaml.cs` and `App.xaml.cs`; the methods go in `OrdersViewModel` and `OrderDetailViewModel`, both deriving from `ObservableObject`"
+    code: |-
+      <!-- AppShell.xaml -->
+      <Shell xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
+             xmlns:views="clr-namespace:Shop.Views"
+             x:Class="Shop.AppShell">
+          <TabBar>
+              <ShellContent Title="Orders" Route="orders" ContentTemplate="{DataTemplate views:OrdersPage}" />
+              <ShellContent Title="Account" Route="account" ContentTemplate="{DataTemplate views:AccountPage}" />
+          </TabBar>
+      </Shell>
+
+      // AppShell.xaml.cs: a detail page that is not in the tab bar
+      Routing.RegisterRoute("detail", typeof(OrderDetailPage));
+
+      // App.xaml.cs: MAUI 9 marks Application.MainPage obsolete; create the window instead
+      protected override Window CreateWindow(IActivationState? activationState) => new(new AppShell());
+
+      // OrdersViewModel: the command is declared by hand, not with [RelayCommand],
+      // so typed C# bindings can reach it too (see the C# UI sheet)
+      public IAsyncRelayCommand OpenSelectedCommand { get; }
+
+      public OrdersViewModel() => OpenSelectedCommand = new AsyncRelayCommand(OpenSelectedAsync);
+
+      private async Task OpenSelectedAsync()
+      {
+          if (SelectedOrder is not { } order) return;
+          SelectedOrder = null;                       // so the same row can be tapped again after Back
+          await Shell.Current.GoToAsync("detail", new ShellNavigationQueryParameters { { "Order", order } });
+      }
+
+      // OrderDetailViewModel: IQueryAttributable is trim-safe; [QueryProperty] is not
+      public void ApplyQueryAttributes(IDictionary<string, object> query) => Order = (Order)query["Order"];
+
+      // Back: GoToAsync("..").  A string id instead: GoToAsync($"detail?id={order.Id}")
+    expected: "Tapping an order pushes the detail page on top of the Orders tab with the order object as its single-use parameter, and `..` pops back to the list, where the row can be tapped again."
+    validation:
+      status: excerpt
+      host: a .NET MAUI 9 Shell app with CommunityToolkit.Mvvm; compiled against Microsoft.Maui.Controls 9.0.120
+
+  - id: animations
+    kind: code
+    title: Animations in code-behind, and cancelling them
+    note: "The `ViewExtensions` animations return `Task<bool>` that is true when cancelled, so check it, and give the pause between animations its own token."
+    prerequisites:
+      - "A .NET MAUI app project (`dotnet new maui -o Shop`)"
+      - "In `CheckoutPage.xaml` add `<Border x:Name=\"ConfirmationBanner\" IsVisible=\"False\">` holding an \"Order placed\" label, and `<Button Text=\"Place order\" Clicked=\"OnPlaceOrderClicked\" />`; this code goes in `CheckoutPage.xaml.cs`"
+    code: |-
+      private CancellationTokenSource? bannerCts;
+
+      private async void OnPlaceOrderClicked(object? sender, EventArgs e)
+      {
+          await viewModel.PlaceOrderAsync();
+          await ShowConfirmationAsync();
+      }
+
+      private async Task ShowConfirmationAsync()
+      {
+          bannerCts?.Cancel();                                   // a second order restarts the banner
+          bannerCts = new CancellationTokenSource();
+          var token = bannerCts.Token;
+
+          // Lay the banner out in its final place and animate from an offset;
+          // a view translated in from off screen keeps its hit area off screen
+          ConfirmationBanner.Opacity = 0;
+          ConfirmationBanner.TranslationY = -40;
+          ConfirmationBanner.IsVisible = true;
+
+          bool[] cancelled = await Task.WhenAll(
+              ConfirmationBanner.FadeTo(1, 250, Easing.CubicOut),
+              ConfirmationBanner.TranslateTo(0, 0, 250, Easing.CubicOut));
+          if (cancelled.Contains(true)) return;                  // the page went away mid-animation
+
+          try { await Task.Delay(2000, token); }
+          catch (OperationCanceledException) { return; }
+
+          if (await ConfirmationBanner.FadeTo(0, 400)) return;
+          ConfirmationBanner.IsVisible = false;
+      }
+
+      protected override void OnDisappearing()
+      {
+          base.OnDisappearing();
+          bannerCts?.Cancel();                                    // stops the pause
+          ConfirmationBanner.CancelAnimations();                  // stops a running fade
+      }
+
+      // MAUI 10 renames these FadeToAsync, TranslateToAsync…; the old names are [Obsolete]
+    expected: "After the order is placed the banner fades and slides into place, stays for two seconds and fades out, and leaving the page at any point stops it without the fade-out running later."
+    sources:
+      - title: Basic animation — .NET MAUI
+        url: https://learn.microsoft.com/en-us/dotnet/maui/user-interface/animation/basic?view=net-maui-9.0
+      - title: What's new in .NET MAUI for .NET 10
+        url: https://learn.microsoft.com/en-us/dotnet/maui/whats-new/dotnet-10?view=net-maui-10.0
+    validation:
+      status: excerpt
+      host: a .NET MAUI 9 app project; compiled against Microsoft.Maui.Controls 9.0.120 (not run on a device)
+
+  - id: content-view-bindable
+    kind: code
+    title: A reusable ContentView with a BindableProperty
+    note: "A component's inputs are `BindableProperty`s that callers can bind, so react to a change in `propertyChanged` and never set the control's own `BindingContext`."
+    prerequisites:
+      - "A .NET MAUI app project (`dotnet new maui -o Shop`)"
+      - "Add a .NET MAUI ContentView named `Controls/StatusBadge.xaml`; `StatusPalette` is the class from the converter-logic card"
+      - "Use it inside a template: `<controls:StatusBadge Status=\"{Binding Status}\" />`"
+    code: |-
+      <!-- Controls/StatusBadge.xaml -->
+      <ContentView xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
+                   xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
+                   x:Class="Shop.Controls.StatusBadge">
+          <Border x:Name="Pill" StrokeThickness="0" StrokeShape="RoundRectangle 10" Padding="8,2">
+              <Label x:Name="Caption" FontSize="12" TextColor="White" />
+          </Border>
+      </ContentView>
+
+      // Controls/StatusBadge.xaml.cs
+      public partial class StatusBadge : ContentView
+      {
+          public static readonly BindableProperty StatusProperty = BindableProperty.Create(
+              nameof(Status), typeof(OrderStatus), typeof(StatusBadge), OrderStatus.Pending,
+              propertyChanged: (bindable, _, newValue) => ((StatusBadge)bindable).Render((OrderStatus)newValue));
+
+          public OrderStatus Status
+          {
+              get => (OrderStatus)GetValue(StatusProperty);
+              set => SetValue(StatusProperty, value);      // no logic here: bindings call SetValue directly
+          }
+
+          public StatusBadge()
+          {
+              InitializeComponent();
+              Render(Status);                                // the default value raises no change
+          }
+
+          private void Render(OrderStatus status)
+          {
+              Caption.Text = status.ToString();
+              Pill.BackgroundColor = Color.FromArgb(StatusPalette.HexFor(status));
+          }
+      }
+    expected: "Each row shows a coloured pill that updates when that order's `Status` changes, while the row's own binding context, the order, keeps flowing into the control untouched."
+    sources:
+      - title: Bindable properties — .NET MAUI
+        url: https://learn.microsoft.com/en-us/dotnet/maui/fundamentals/bindable-properties?view=net-maui-9.0
+      - title: ContentView — .NET MAUI
+        url: https://learn.microsoft.com/en-us/dotnet/maui/user-interface/controls/contentview?view=net-maui-9.0
+    validation:
+      status: excerpt
+      host: a .NET MAUI 9 app project; compiled by XamlC from Microsoft.Maui.Controls 9.0.120
+
+  - id: performance-rules
+    kind: rules
+    title: Performance rules
+    note: "Measure and arrange passes cost the most, then reflection bindings."
+    sources:
+      - title: Improve app performance — .NET MAUI
+        url: https://learn.microsoft.com/en-us/dotnet/maui/deployment/performance?view=net-maui-9.0
+      - title: Grid — .NET MAUI (sizing rows and columns)
+        url: https://learn.microsoft.com/en-us/dotnet/maui/user-interface/layouts/grid?view=net-maui-9.0
+    items:
+      - tone: good
+        text: "Put `x:DataType` on every page and every `DataTemplate`: compiled bindings are typically 8–20× quicker, and full trimming and NativeAOT require them."
+      - tone: good
+        text: "Use `CollectionView` for lists: `ListView` and the cells are deprecated in MAUI 10, and MAUI 9 adds faster opt-in `CollectionViewHandler2` handlers on iOS and Mac Catalyst (the default in MAUI 10)."
+      - tone: good
+        text: "Flatten layouts: one `Grid` instead of nested stacks, and no layout around a single child, because every level of nesting adds layout calculations."
+      - tone: good
+        text: "Prefer fixed or `*` rows and columns to `Auto` where you can: the Grid docs note that each auto-sized row or column makes the layout engine do extra calculations."
+      - tone: good
+        text: "Ship images near the size they are displayed at, so the platform doesn't decode a large bitmap for a small slot."
+      - tone: good
+        text: "Use `OneTime` (or plain assignment) for values that never change, such as `Button.Text = \"Accept\"`: every binding costs a subscription."
+      - tone: bad
+        text: "A `CollectionView` inside a `VerticalStackLayout` or `ScrollView` gets infinite height, renders every row, and incremental loading can loop."
+      - tone: bad
+        text: "`x:DataType=\"x:Object\"` to silence XC0022 turns compiled bindings off for that whole subtree; fix the type instead."
+      - tone: bad
+        text: "Replacing `ItemsSource` with a new list on each refresh rebuilds every row and resets the scroll position; update the `ObservableCollection` in place."
+      - tone: neutral
+        text: "Treat the binding warnings as errors in CI: `<WarningsAsErrors>$(WarningsAsErrors);XC0022;XC0023;XC0025;XC0045</WarningsAsErrors>`."

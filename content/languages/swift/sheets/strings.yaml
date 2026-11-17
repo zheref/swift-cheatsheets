@@ -1,0 +1,495 @@
+id: strings
+concept: strings.operations
+scope: shared
+title: "Strings — Characters, Unicode & Operations"
+group: Design & Language
+subtitle: "A String is a collection of grapheme clusters: count, index, slice, compare, format and match it without breaking an emoji."
+applies:
+  platforms:
+    - ios
+    - ipados
+    - macos
+    - tvos
+    - watchos
+    - visionos
+  runtime: Swift toolchain
+  requires:
+    - Foundation
+  versions:
+    swift: ">=6.0"
+    ios: ">=16"
+    macos: ">=13"
+sources:
+  - title: Strings and Characters — The Swift Programming Language
+    url: https://docs.swift.org/swift-book/documentation/the-swift-programming-language/stringsandcharacters/
+  - title: String — Apple Developer Documentation
+    url: https://developer.apple.com/documentation/swift/string
+  - title: Regex — Apple Developer Documentation
+    url: https://developer.apple.com/documentation/swift/regex
+  - title: RegexBuilder — Apple Developer Documentation
+    url: https://developer.apple.com/documentation/regexbuilder
+  - title: FormatStyle — Apple Developer Documentation
+    url: https://developer.apple.com/documentation/foundation/formatstyle
+cards:
+  - id: what-a-character-is
+    kind: table
+    title: What a Character is
+    note: "One string, four honest answers to \"how long is it?\" — pick the view whose unit the question is about."
+    headers:
+      - View
+      - Element
+      - "`\"Chloe\\u{301} 👩‍👩‍👧\".…count`"
+      - Use it for
+    rows:
+      - - "`String` itself"
+        - "`Character` — an extended **grapheme cluster**, what a user sees as one symbol"
+        - "**7**"
+        - UI limits, truncation, cursor movement, \"first letter\" avatars
+      - - "`unicodeScalars`"
+        - "`Unicode.Scalar` — one code point (`U+0065`, `U+0301`, `U+200D`)"
+        - "12"
+        - parsing by code point, `properties` (emoji, letter, script)
+      - - "`utf16`"
+        - "`UInt16` code unit — what `NSString.length` and `NSRange` count"
+        - "15"
+        - "bridging to UIKit/Foundation APIs that take `NSRange`; JavaScript lengths"
+      - - "`utf8`"
+        - "`UInt8` code unit — native storage since Swift 5"
+        - "26"
+        - "byte limits: a database column, a push payload, a hash, the wire"
+      - - "`Array(s)`"
+        - "`[Character]`"
+        - "7"
+        - only when you truly need O(1) random access; it copies
+  - id: counting-and-indexing
+    kind: code
+    title: Counting, and why `s[0]` does not compile
+    note: Characters have variable width, so an index is an opaque position you walk to — never an Int.
+    code: |-
+      let name = "Chloe\u{301} 👩‍👩‍👧"           // "Chloé" with a combining accent, then a ZWJ family
+
+      print(name.count)                          // → 7    Characters — O(n), it walks the string
+      print(name.unicodeScalars.count)           // → 12   e + U+0301; 👩 ZWJ 👩 ZWJ 👧 is five scalars
+      print(name.utf16.count)                    // → 15
+      print(name.utf8.count)                     // → 26
+      print("Chloé" == "Chloe\u{301}")           // → true  canonical equivalence: same Character
+
+      // name[0]
+      // error: 'subscript(_:)' is unavailable: cannot subscript String with an Int,
+      //        use a String.Index instead.
+
+      let fifth = name.index(name.startIndex, offsetBy: 4)   // O(n) walk over grapheme boundaries
+      print(name[fifth])                         // → é
+      print(name[..<fifth])                      // → Chlo
+
+      extension StringProtocol {
+        /// The Character `offset` places in, or nil. Never traps on a short string.
+        func character(at offset: Int) -> Character? {
+          guard offset >= 0,
+                let i = index(startIndex, offsetBy: offset, limitedBy: endIndex),
+                i < endIndex else { return nil }
+          return self[i]
+        }
+      }
+
+      print(name.character(at: 6) ?? "?")        // → 👩‍👩‍👧
+      print(name.character(at: 7) ?? "?")        // → ?
+
+      // Looping over offsets with character(at:) is O(n²). Iterate, or walk indices once:
+      for (offset, character) in name.enumerated() where character.isUppercase {
+        print(offset, character)                 // → 0 C
+      }
+  - id: i-want-to
+    kind: table
+    title: I want to…
+    note: "Most \"missing\" String APIs exist — in the standard library since Swift 5.7, or in Foundation."
+    headers:
+      - I want to…
+      - Write
+      - Watch out
+    rows:
+      - - know if it is empty
+        - "`s.isEmpty`"
+        - "`s.count == 0` walks the whole string"
+      - - count what the user sees
+        - "`s.count`"
+        - "O(n); cache it in a loop"
+      - - fit a byte limit
+        - "`s.utf8.count <= 280`"
+        - "then cut with `prefix` on Characters, not on bytes"
+      - - find a substring
+        - "`s.contains(\"@ana\")`, `s.firstRange(of:)`, `s.ranges(of:)`"
+        - "returns `Range<String.Index>`, not offsets (iOS 16)"
+      - - search like a user expects
+        - "`s.localizedStandardContains(query)`"
+        - "ignores case and diacritics in the current locale"
+      - - test start or end
+        - "`hasPrefix`, `hasSuffix`, `trimmingPrefix(\"Re: \")`"
+        - "exact Unicode match, not locale-aware"
+      - - split
+        - "`s.split(separator: \",\")` → `[Substring]`"
+        - "drops empty pieces unless `omittingEmptySubsequences: false`"
+      - - split into lines
+        - "`s.split(whereSeparator: \\.isNewline)`"
+        - "`\"\\r\\n\"` is ONE Character, so this is correct for Windows files"
+      - - join
+        - "`parts.joined(separator: \", \")`"
+        - "works on `[Substring]` too"
+      - - trim whitespace
+        - "`s.trimmingCharacters(in: .whitespacesAndNewlines)`"
+        - Foundation
+      - - replace
+        - "`s.replacing(\"a\", with: \"b\")` / `replacingOccurrences(of:with:)`"
+        - "the first is stdlib (iOS 16) and also takes a `Regex`"
+      - - take the first n characters
+        - "`String(s.prefix(n))`"
+        - "never traps when the string is shorter"
+      - - reverse
+        - "`String(s.reversed())`"
+        - "grapheme-safe: flags and families stay intact"
+      - - pad to a width
+        - "`s.padding(toLength:withPad:startingAt:)`"
+        - "Foundation; counts UTF-16 units, so pad ASCII only"
+      - - number ↔ text
+        - "`Int(s)`, `Double(s)`, `n.formatted()`"
+        - "`Int(\"1,234\")` is nil — parse with a `FormatStyle`"
+  - id: search-split-join-trim-replace-pad
+    kind: code
+    title: Search, split, join, trim, replace, pad
+    note: The everyday operations on a chat message, each written the way that cannot trap.
+    code: |-
+      let raw = "  Lunch at 12:30? @ana @bo-dev #team \n"
+
+      let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)          // Foundation
+      print(text)                                      // → Lunch at 12:30? @ana @bo-dev #team
+
+      // Search
+      print(text.contains("@ana"))                     // → true
+      print(text.localizedStandardContains("LUNCH"))   // → true
+      if let time = text.firstRange(of: "12:30") {
+        print(text[time.upperBound...])                // → ? @ana @bo-dev #team
+      }
+
+      // Split and join. split returns Substring views — nothing is copied yet.
+      let words = text.split(separator: " ")
+      let handles = words.filter { $0.hasPrefix("@") }.map { $0.dropFirst() }
+      print(handles.joined(separator: ", "))           // → ana, bo-dev
+      print("ana,,bo".split(separator: ",", omittingEmptySubsequences: false))  // → ["ana", "", "bo"]
+      print("Re: Re: Lunch".trimmingPrefix("Re: "))    // → Re: Lunch
+
+      // Replace
+      print(text.replacing("@bo-dev", with: "@bo"))    // → Lunch at 12:30? @ana @bo #team
+
+      // Pad: a fixed-width column of unread counts
+      for (name, unread) in [("Ana", 3), ("Bo", 12)] {
+        let label = name.padding(toLength: 6, withPad: ".", startingAt: 0)
+        let count = String(unread).leftPadded(to: 3)
+        print(label + count)
+      }
+      // → Ana...  3
+      // → Bo.... 12
+
+      extension String {
+        func leftPadded(to width: Int, with pad: Character = " ") -> String {
+          String(repeating: pad, count: Swift.max(0, width - count)) + self
+        }
+      }
+  - id: substring-memory-trap
+    kind: compare
+    title: "Substring: a view that keeps the whole string alive"
+    note: Use Substring inside a function; convert to String before you store it or let it escape.
+    columns:
+      - label: Storing the slice
+        tone: bad
+        code: |-
+          struct Preview {
+            let text: Substring          // shares the original buffer
+          }
+
+          func previews(for bodies: [String]) -> [Preview] {
+            bodies.map { Preview(text: $0.prefix(20)) }
+          }
+
+          let long = String(repeating: "long message ", count: 10_000)
+          let list = previews(for: [long])
+
+          print(list[0].text)                    // → long message long me
+          print(list[0].text.base.utf8.count)    // → 130000
+          // 130 KB stay in memory for a 20-character preview,
+          // for as long as the Preview lives.
+      - label: Copying out
+        tone: good
+        code: |-
+          struct Preview {
+            let text: String             // its own small buffer
+          }
+
+          func previews(for bodies: [String]) -> [Preview] {
+            bodies.map { Preview(text: String($0.prefix(20))) }
+          }
+
+          let long = String(repeating: "long message ", count: 10_000)
+          let list = previews(for: [long])
+
+          print(list[0].text)                    // → long message long me
+          print(list[0].text.utf8.count)         // → 20
+          // The big string is freed as soon as `long` goes away.
+          // Generic helpers take `some StringProtocol` to accept both.
+  - id: compare-sort-fold-normalize
+    kind: code
+    title: Comparison, locale sorting, folding and normalization
+    note: "`==` and `<` follow Unicode rules rather than human ones, so sort anything a person reads with a locale."
+    code: |-
+      let contacts = ["Zoë", "émile", "Ana", "zack", "Émile", "ana"]
+
+      // < compares Unicode scalars: every capital before every lower case, accents last
+      print(contacts.sorted())          // → ["Ana", "Zoë", "ana", "zack", "Émile", "émile"]
+
+      // Finder-style: case-insensitive, accent-aware, numbers by value. Uses the
+      // user's current locale — the output below is en_US.
+      print(contacts.sorted { $0.localizedStandardCompare($1) == .orderedAscending })
+      // → ["ana", "Ana", "émile", "Émile", "zack", "Zoë"]
+      print(["photo10", "photo2"].sorted { $0.localizedStandardCompare($1) == .orderedAscending })
+                                        // → ["photo2", "photo10"]
+
+      // The same names sort differently by language: Ö is a letter after Z in Swedish
+      func sorted(_ names: [String], in locale: Locale) -> [String] {
+        names.sorted { $0.compare($1, options: .caseInsensitive, range: nil, locale: locale) == .orderedAscending }
+      }
+      print(sorted(["Örjan", "Olof", "Zelda"], in: Locale(identifier: "de_DE")))  // → ["Olof", "Örjan", "Zelda"]
+      print(sorted(["Örjan", "Olof", "Zelda"], in: Locale(identifier: "sv_SE")))  // → ["Olof", "Zelda", "Örjan"]
+
+      // Case mapping is language-specific too: Turkish has a dotted capital İ
+      let turkish = Locale(identifier: "tr_TR")
+      print("istanbul".uppercased(), "istanbul".uppercased(with: turkish))   // → ISTANBUL İSTANBUL
+
+      // Folding: one search key for "Émile", "emile" and "EMILE"
+      print("Émile".folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil))  // → emile
+
+      // Normalization: Swift already treats both spellings of é as equal...
+      let typed = "Chloé", pasted = "Chloe\u{301}"
+      print(typed == pasted, Set([typed, pasted]).count)        // → true 1
+      // ...but their bytes differ. Normalize to NFC before bytes leave Swift
+      // (a database key, a file name, a hash, a server comparison).
+      print(typed.utf8.count, pasted.utf8.count)                // → 6 7
+      print(pasted.precomposedStringWithCanonicalMapping.utf8.count)  // → 6
+  - id: build-and-interpolate
+    kind: code
+    title: Building strings, and custom string interpolation
+    note: "Give interpolation a type of its own when the pieces must not be pasted in raw, such as SQL, HTML or log fields."
+    code: |-
+      // Building (more in the Collections sheet): one buffer, never `result = result + x` in a loop
+      let csv = [("Ana", 3), ("Bo", 12)].map { "\($0.0),\($0.1)" }.joined(separator: "\n")
+      print(csv.split(separator: "\n"))                 // → ["Ana,3", "Bo,12"]
+
+      // A query whose interpolations become bound parameters, never SQL text
+      struct SQLQuery: ExpressibleByStringInterpolation {
+        var sql: String
+        var bindings: [String] = []
+
+        init(stringLiteral value: String) {
+          sql = value
+        }
+
+        init(stringInterpolation: Interpolation) {
+          sql = stringInterpolation.sql
+          bindings = stringInterpolation.bindings
+        }
+
+        struct Interpolation: StringInterpolationProtocol {
+          var sql = ""
+          var bindings: [String] = []
+
+          init(literalCapacity: Int, interpolationCount: Int) {
+            sql.reserveCapacity(literalCapacity + interpolationCount)
+          }
+
+          mutating func appendLiteral(_ literal: String) {
+            sql += literal
+          }
+
+          mutating func appendInterpolation(_ value: String) {
+            sql += "?"                                  // the value never becomes SQL text
+            bindings.append(value)
+          }
+        }
+      }
+
+      let author = "Robert'); DROP TABLE messages;--"
+      let query: SQLQuery = "SELECT body FROM messages WHERE author = \(author)"
+      print(query.sql)                                  // → SELECT body FROM messages WHERE author = ?
+      print(query.bindings[0])                          // → Robert'); DROP TABLE messages;--
+
+      // Or add a labelled interpolation to every String
+      extension DefaultStringInterpolation {
+        mutating func appendInterpolation(masked email: String) {
+          appendLiteral(email.prefix(1) + "***" + email.drop { $0 != "@" })
+        }
+      }
+      print("Invite sent to \(masked: "ana@example.com")")   // → Invite sent to a***@example.com
+  - id: formatting-with-formatstyle
+    kind: code
+    title: Formatting with FormatStyle
+    note: "`.formatted(_:)` replaces most Formatter subclasses (iOS 15, Duration styles iOS 16), and tests should pin the locale."
+    code: |-
+      let us = Locale(identifier: "en_US")
+
+      print(1_234_567.formatted(.number.locale(us)))                          // → 1,234,567
+      print(0.256.formatted(.percent.precision(.fractionLength(1)).locale(us)))  // → 25.6%
+      print(19.99.formatted(.currency(code: "EUR").locale(us)))                // → €19.99
+      print(19.99.formatted(.currency(code: "EUR").locale(Locale(identifier: "fr_FR"))))  // → 19,99 €
+      print(["Ana", "Bo", "Chloé"].formatted(.list(type: .and).locale(us)))    // → Ana, Bo, and Chloé
+      let spain = Locale(identifier: "es_ES")
+      print(["Ana", "Bo", "Chloé"].formatted(.list(type: .and).locale(spain)))  // → Ana, Bo y Chloé
+      print(Int64(5_300_000).formatted(.byteCount(style: .file).locale(us)))  // → 5.3 MB
+      print(Duration.seconds(95).formatted(.time(pattern: .minuteSecond)))    // → 1:35
+
+      let sent = Date(timeIntervalSince1970: 1_700_000_000)
+      print(sent.formatted(.iso8601))                                         // → 2023-11-14T22:13:20Z
+      let utc = TimeZone(identifier: "UTC")!
+      print(sent.formatted(Date.FormatStyle(date: .abbreviated, time: .shortened, locale: us, timeZone: utc)))
+                                                                              // → Nov 14, 2023 at 10:13 PM
+
+      // Parsing goes back through the same style — Int("1,234") is nil
+      let typed = try Int("1,234", format: .number.locale(us))
+      print(typed)                                                            // → 1234
+
+      // Formatted text often contains NO-BREAK SPACE (U+00A0) or NARROW NO-BREAK
+      // SPACE (U+202F): "19,99 €" and "10:13 PM" above do. Never compare it with a
+      // literal typed using a normal space.
+  - id: regex-vs-nsregularexpression
+    kind: compare
+    title: Swift Regex vs NSRegularExpression
+    note: "Regex literals are checked at compile time and return typed captures (iOS 16); NSRegularExpression speaks NSRange."
+    columns:
+      - label: NSRegularExpression
+        tone: legacy
+        code: |-
+          let message = "Ping @ana and @bo-dev about #release-42"
+
+          // Pattern errors surface at run time
+          let mention = try NSRegularExpression(pattern: "@([a-z0-9-]+)")
+
+          // Everything is UTF-16 NSRange: convert in, and back out
+          let whole = NSRange(message.startIndex..., in: message)
+          let handles = mention.matches(in: message, range: whole).compactMap { match in
+            Range(match.range(at: 1), in: message).map { String(message[$0]) }
+          }
+          print(handles)               // → ["ana", "bo-dev"]
+
+          let linked = mention.stringByReplacingMatches(
+            in: message, range: whole, withTemplate: "<$1>")
+          print(linked)                // → Ping <ana> and <bo-dev> about #release-42
+      - label: Swift Regex
+        tone: modern
+        code: |-
+          let message = "Ping @ana and @bo-dev about #release-42"
+
+          // A typo in the literal is a compile error; captures are named and typed
+          let mention = /@(?<handle>[a-z0-9-]+)/
+
+          let handles = message.matches(of: mention).map { String($0.handle) }
+          print(handles)               // → ["ana", "bo-dev"]
+
+          let linked = message.replacing(mention) { "<\($0.handle)>" }
+          print(linked)                // → Ping <ana> and <bo-dev> about #release-42
+
+          if let tag = message.firstMatch(of: /#([a-z]+)-(\d+)/), let build = Int(tag.2) {
+            print(tag.1, build + 1)    // → release 43
+          }
+          print("bo-dev".wholeMatch(of: /[a-z0-9-]+/) != nil)   // → true
+  - id: regexbuilder-typed-parsing
+    kind: code
+    title: RegexBuilder — readable patterns with typed captures
+    note: Reach for the builder when a pattern needs transforms, Foundation parsers or a name per piece (iOS 16).
+    code: |-
+      import RegexBuilder
+
+      let timestamp = Reference(Date.self)
+      let author = Reference(Substring.self)
+      let photos = Reference(Int.self)
+
+      // "2024-03-05T14:02:00Z ana sent 3 photos" — one line of a chat export
+      let exportLine = Regex {
+        Anchor.startOfLine                                         // a whole line, not a fragment
+        Capture(as: timestamp) { Date.ISO8601FormatStyle() }   // a Foundation parser as a component
+        " "
+        Capture(as: author) { OneOrMore(.word) }
+        " sent "
+        TryCapture(as: photos) {
+          OneOrMore(.digit)
+        } transform: { Int($0) }                                // no match if the transform returns nil
+        " photo"
+        Optionally("s")
+        Anchor.endOfLine
+      }
+      .anchorsMatchLineEndings()                                   // ^ and $ at every line, not the text
+
+      let export = """
+        2024-03-05T14:02:00Z ana sent 3 photos
+        2024-03-05T14:05:10Z bo sent 1 photo
+        """
+      for match in export.matches(of: exportLine) {
+        print(match[author], match[photos], match[timestamp].formatted(.iso8601))
+      }
+      // → ana 3 2024-03-05T14:02:00Z
+      // → bo 1 2024-03-05T14:05:10Z
+
+      let total = export.matches(of: exportLine).reduce(0) { $0 + $1[photos] }
+      print(total)                                              // → 4
+  - id: bridging-to-nsstring
+    kind: code
+    title: Bridging to NSString, and what it costs
+    note: "UIKit and Foundation APIs count UTF-16 units, so convert ranges, never offsets, at the boundary."
+    code: |-
+      let preview = "Chloé 👩‍👩‍👧 sent a photo"
+
+      // A native String becomes an NSString without copying, but NSString measures in
+      // UTF-16: for non-ASCII text the first offset-based call builds an index (O(n), once).
+      let ns = preview as NSString
+      print(ns.length, preview.count)            // → 27 20
+
+      // Truncating by UTF-16 length cuts the emoji in half: the stray surrogate becomes �
+      print(ns.substring(to: 7))                 // → Chloé �
+      print(String(preview.prefix(7)))           // → Chloé 👩‍👩‍👧
+
+      // Range <-> NSRange: the only safe way across (attributed text, UITextView, regex)
+      let sent = preview.range(of: "sent")!
+      let nsSent = NSRange(sent, in: preview)
+      print(nsSent.location, nsSent.length)      // → 15 4
+      print(preview[Range(nsSent, in: preview)!])  // → sent
+
+      // The other way: a String made from an NSString keeps the NSString as its storage, and
+      // native operations go through it — it stays that way after count, utf8 or hasPrefix.
+      let fromObjC = NSString(format: "%@ sent a photo", "Chloé")   // as an Objective-C API returns
+      var name = String(fromObjC)
+      print(name.isContiguousUTF8)               // → false
+      name.makeContiguousUTF8()                  // before a hot loop: one O(n) copy into native UTF-8
+      print(name.isContiguousUTF8)               // → true
+  - id: string-pitfalls
+    kind: rules
+    title: Pitfalls worth saying out loud
+    note: ""
+    items:
+      - tone: bad
+        text: "Truncating by `utf16.count`, `NSString.length` or bytes — it splits emoji and flags. Truncate with `prefix(_:)` on Characters."
+      - tone: bad
+        text: "Calling `s.count` (or `index(_:offsetBy:)`) inside a loop over offsets: each is O(n), so the loop is O(n²). Iterate, or keep the index you already have."
+      - tone: bad
+        text: "Using a `String.Index` from one string on another, or after mutating it — indices are only valid for the string that produced them."
+      - tone: bad
+        text: "Storing a `Substring` in a model or cache: it keeps the entire original string alive. `String(slice)` before it escapes."
+      - tone: bad
+        text: "Sorting user-visible names with `<` — capitals first, accents last. Use `localizedStandardCompare` or a `Locale`."
+      - tone: bad
+        text: "Comparing formatted output with literals in tests: locales insert U+00A0 and U+202F. Pin `.locale(_:)` and compare with what the style produced."
+      - tone: bad
+        text: "Pasting values into SQL, HTML or a URL with plain interpolation. Use bound parameters, a typed interpolation, or `URLComponents`."
+      - tone: good
+        text: "Normalize to NFC (`precomposedStringWithCanonicalMapping`) before text becomes bytes that another system compares: keys, file names, hashes."
+      - tone: good
+        text: "Measure a limit in the unit the limit is defined in: Characters for UI, `utf8.count` for bytes on the wire or in a column."
+      - tone: good
+        text: "Prefer Swift `Regex` for new code: compile-time checked, typed captures, no `NSRange`. But measure hot loops: for bulk scanning `NSRegularExpression` is still several times faster."
+      - tone: neutral
+        text: "`String` is a value type with copy-on-write: passing it around is cheap until someone mutates a shared copy."

@@ -1,0 +1,41 @@
+id: nl-serialization
+concept: serialization.codecs
+scope: shared
+title: Serialization — JSON & Friends
+group: Shared concepts
+subtitle: "TODO: one line saying what this sheet answers."
+applies:
+  platforms:
+    - todo
+  runtime: "TODO: the runtime in words"
+  versions:
+    todo: ">=0"
+sources:
+  - title: "TODO: the primary documentation"
+    url: https://example.com/
+cards:
+  - id: must-cover
+    kind: rules
+    title: What this sheet must cover
+    note: Required by content/aspects.yaml (serialization / serialization). Replace this card with real ones that answer every point.
+    items:
+      - tone: neutral
+        text: encode and decode a typed model to and from JSON with the standard codec
+      - tone: neutral
+        text: key naming, optional and missing fields, defaults, unknown keys
+      - tone: neutral
+        text: dates, enums, nested and polymorphic types; a custom codec
+      - tone: neutral
+        text: validating untrusted input, and a binary or schema-first format where the stack has one
+  - id: example
+    kind: code
+    title: "TODO: a practical example"
+    note: "TODO: one line on when a reader reaches for this."
+    prerequisites:
+      - "TODO: the toolchain and version"
+      - "TODO: where to save the snippet and the command that runs it"
+    code: "// TODO: the whole program — what is on the page is what runs"
+    expected: "TODO: the output it prints, or the effect in words"
+    validation:
+      status: excerpt
+      host: "TODO: replace with 'ran' or 'compiled' plus toolchain and date once it is proved"

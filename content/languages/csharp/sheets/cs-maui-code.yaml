@@ -1,0 +1,612 @@
+id: cs-maui-code
+concept: ui.programmatic
+scope: platform
+title: "UI in C# Code — MAUI, WPF & WinUI without XAML"
+group: UI
+subtitle: The XAML sheet's orders list built in C#, with typed bindings, C# Markup, syncing by hand, commands versus events, in-place list updates, WPF and WinUI code-behind, the UI-thread rule, and handlers.
+applies:
+  platforms: [dotnet, android, ios, maccatalyst, windows]
+  runtime: .NET MAUI app (the `maui` workload); WPF and WinUI cards on Windows
+  requires: [.NET MAUI]
+  versions: { csharp: ">=13", dotnet: ">=9", maui: ">=9" }
+sources:
+  - title: .NET MAUI documentation
+    url: https://learn.microsoft.com/en-us/dotnet/maui/?view=net-maui-9.0
+  - title: Compiled bindings in code — .NET MAUI
+    url: https://learn.microsoft.com/en-us/dotnet/maui/fundamentals/data-binding/compiled-bindings?view=net-maui-9.0
+  - title: Run code on the main UI thread — .NET MAUI
+    url: https://learn.microsoft.com/en-us/dotnet/maui/platform-integration/appmodel/main-thread?view=net-maui-9.0
+  - title: Handlers — .NET MAUI
+    url: https://learn.microsoft.com/en-us/dotnet/maui/user-interface/handlers/?view=net-maui-9.0
+cards:
+  - id: xaml-to-code
+    kind: table
+    title: XAML → C#
+    note: "XAML is an object initialiser with a compiler on top, so every element and attribute has a C# equivalent."
+    headers: [XAML, C#]
+    rows:
+      - ["`<Label Text=\"Orders\" FontSize=\"20\" />`", "`new Label { Text = \"Orders\", FontSize = 20 }`"]
+      - ["`x:Name=\"Banner\"`", "a field holding the instance"]
+      - ["`InitializeComponent()`", "nothing: the constructor builds the tree and assigns `Content`"]
+      - ["`Grid.Row=\"1\"` (attached property)", "`Grid.SetRow(view, 1)`, or `grid.Add(view, column: 0, row: 1)`"]
+      - ["`RowDefinitions=\"Auto,*\"`", "`grid.RowDefinitions = [new RowDefinition(GridLength.Auto), new RowDefinition(GridLength.Star)]`; the `RowDefinitions = { … }` form compiles only inside `new Grid { … }`"]
+      - ["`Text=\"{Binding Customer}\"` + `x:DataType`", "`label.SetBinding(Label.TextProperty, static (Order o) => o.Customer)` (MAUI 9; not for members another source generator writes)"]
+      - ["`Clicked=\"OnSave\"`", "`button.Clicked += OnSave;`"]
+      - ["`Command=\"{Binding SaveCommand}\"`", "`button.SetBinding(Button.CommandProperty, static (OrdersViewModel vm) => vm.SaveCommand)` with `SaveCommand` declared by hand (a `[RelayCommand]` one gives BSG0006: bind it with `new Binding(\"SaveCommand\")`)"]
+      - ["`<DataTemplate>…</DataTemplate>`", "`new DataTemplate(() => new OrderRow())`; the factory runs once per realized row"]
+      - ["`{StaticResource Accent}`", "`(Color)Application.Current!.Resources[\"Accent\"]` reads app-level resources only; `{StaticResource}` searches the element's ancestors first"]
+      - ["`<Style TargetType=\"Label\">`", "`new Style(typeof(Label)) { Setters = { new Setter { Property = Label.FontSizeProperty, Value = 14 } } }`"]
+
+  - id: page-in-code
+    kind: code
+    title: The orders page in C#
+    note: "This is the screen the XAML sheet builds, with the same bindings written as typed lambdas and no XAML file."
+    prerequisites: &maui
+      - "The .NET 9 SDK with the MAUI workload: `dotnet workload install maui`, then `dotnet new maui -o Shop`"
+      - "Save as `Views/OrdersPage.cs`; register `OrdersPage` and `OrdersViewModel` in `MauiProgram.cs` with `builder.Services.AddTransient<…>()`"
+      - "`OrdersViewModel` declares `Query`, `SelectedOrder` and `OpenSelectedCommand` by hand, not with MVVM Toolkit generators (see the next card)"
+    code: |-
+      public class OrdersPage : ContentPage
+      {
+          public OrdersPage(OrdersViewModel viewModel)
+          {
+              Title = "Orders";
+              BindingContext = viewModel;
+
+              var search = new SearchBar { Placeholder = "Search by customer" };
+              search.SetBinding(SearchBar.TextProperty, static (OrdersViewModel vm) => vm.Query);  // TwoWay
+
+              var list = new CollectionView
+              {
+                  SelectionMode = SelectionMode.Single,
+                  EmptyView = "No orders match your search.",
+                  ItemTemplate = new DataTemplate(() => new OrderRow()),
+              };
+              list.SetBinding(ItemsView.ItemsSourceProperty, static (OrdersViewModel vm) => vm.Orders);
+              list.SetBinding(SelectableItemsView.SelectedItemProperty,
+                  static (OrdersViewModel vm) => vm.SelectedOrder);
+              list.SetBinding(SelectableItemsView.SelectionChangedCommandProperty,
+                  static (OrdersViewModel vm) => vm.OpenSelectedCommand);
+
+              var grid = new Grid { Padding = 16, RowSpacing = 8 };
+              grid.RowDefinitions = [new RowDefinition(GridLength.Auto), new RowDefinition(GridLength.Star)];
+              grid.Add(search);
+              grid.Add(list, column: 0, row: 1);
+              Content = grid;
+          }
+      }
+
+      class OrderRow : Grid                                   // the row template, built once per realized row
+      {
+          public OrderRow()
+          {
+              Padding = 12;
+              ColumnDefinitions = [new ColumnDefinition(GridLength.Star), new ColumnDefinition(GridLength.Auto)];
+
+              var customer = new Label();
+              customer.SetBinding(Label.TextProperty, static (Order o) => o.Customer);
+              this.Add(customer);
+
+              var total = new Label();
+              total.SetBinding(Label.TextProperty, static (Order o) => o.Total, stringFormat: "{0:C}");
+              this.Add(total, column: 1);
+          }
+      }
+    expected: "The same page as the XAML version: a search bar over a selectable, virtualized list of customers and totals, bound to the same `OrdersViewModel`."
+    sources:
+      - title: CollectionView data — .NET MAUI
+        url: https://learn.microsoft.com/en-us/dotnet/maui/user-interface/controls/collectionview/populate-data?view=net-maui-9.0
+    validation:
+      status: excerpt
+      host: a .NET MAUI 9 app project (compiled against Microsoft.Maui.Controls 9.0.120 with the binding source generator running)
+
+  - id: string-vs-typed-binding
+    kind: compare
+    title: String-path binding versus a typed lambda
+    note: "In MAUI 9, `SetBinding` takes a `Func` that the compiler checks and a source generator turns into binding code with no reflection, which is also what trimming and NativeAOT need."
+    prerequisites:
+      - "A .NET MAUI 9 app project (`dotnet new maui -o Shop`); the lines run in a page's constructor that has created `customer`, `total`, `note` and `cancel`"
+      - "`OrdersViewModel` declares `public IRelayCommand<Order> CancelCommand { get; }` by hand and assigns it in its constructor, because a typed lambda can't see what `[RelayCommand]` generates (BSG0006)"
+    columns:
+      - label: String path (reflection)
+        tone: legacy
+        code: |-
+          // Resolved by name at run time: a typo is a silent blank label,
+          // and full trimming / NativeAOT can remove the property it reads
+          customer.SetBinding(Label.TextProperty, new Binding(nameof(Order.Customer)));
+          total.SetBinding(Label.TextProperty, new Binding("Total", stringFormat: "{0:C}"));
+          note.SetBinding(Entry.TextProperty, new Binding("DeliveryNote", BindingMode.TwoWay));
+
+          // A binding to the view model from inside a row
+          var ancestor = new RelativeBindingSource(RelativeBindingSourceMode.FindAncestorBindingContext,
+                                                   typeof(OrdersViewModel));
+          cancel.SetBinding(Button.CommandProperty, new Binding("CancelCommand", source: ancestor));
+
+          // Only this column could also bind a command that [RelayCommand] generates
+          // (the string is resolved at run time, after every generator has run)
+      - label: Typed lambda (MAUI 9)
+        tone: modern
+        code: |-
+          // Only simple member access: no method calls or string interpolation
+          customer.SetBinding(Label.TextProperty, static (Order o) => o.Customer);
+          total.SetBinding(Label.TextProperty, static (Order o) => o.Total, stringFormat: "{0:C}");
+          note.SetBinding(Entry.TextProperty, static (OrderDraft d) => d.DeliveryNote, mode: BindingMode.TwoWay);
+
+          // A Binding object, for a MultiBinding, a Style setter or a source of your own.
+          // CancelCommand is declared by hand: a lambda can't see members another source
+          // generator writes ([ObservableProperty], [RelayCommand]) and fails with BSG0006
+          var ancestor = new RelativeBindingSource(RelativeBindingSourceMode.FindAncestorBindingContext,
+                                                   typeof(OrdersViewModel));
+          var commandBinding = Binding.Create(static (OrdersViewModel vm) => vm.CancelCommand, source: ancestor);
+          cancel.SetBinding(Button.CommandProperty, commandBinding);
+
+          // XAML x:DataType bindings and Markup's .Bind() do see generated members
+    expected: "Both columns display the same values, but on the typed side a renamed property is a compile error and the binding code is generated at build time."
+    sources:
+      - title: BindableObjectExtensions.SetBinding — .NET MAUI API
+        url: https://learn.microsoft.com/en-us/dotnet/api/microsoft.maui.controls.bindableobjectextensions.setbinding?view=net-maui-9.0
+    validation:
+      status: excerpt
+      host: a .NET MAUI 9 app project (both columns compiled against Microsoft.Maui.Controls 9.0.120; BSG0006 reproduced with a Toolkit view model)
+
+  - id: csharp-markup
+    kind: code
+    title: The fluent style — CommunityToolkit.Maui.Markup
+    note: "Markup builds the same tree with extension methods, where `Bind` takes a getter (plus a setter for `TwoWay`) and `Row`/`Column` replace the attached-property calls."
+    prerequisites:
+      - "A .NET MAUI 9 app with `dotnet add package CommunityToolkit.Maui.Markup --version 6.0.1` (7.x and later target .NET 10)"
+      - "Call `builder.UseMauiCommunityToolkitMarkup()` in `MauiProgram.cs`"
+    code: |-
+      using CommunityToolkit.Maui.Markup;
+      using static CommunityToolkit.Maui.Markup.GridRowsColumns;
+
+      public class OrdersPage : ContentPage
+      {
+          public OrdersPage(OrdersViewModel viewModel)
+          {
+              BindingContext = viewModel;
+
+              Content = new Grid
+              {
+                  RowDefinitions = Rows.Define(Auto, Star),
+                  Padding = 16,
+                  Children =
+                  {
+                      new SearchBar { Placeholder = "Search by customer" }
+                          .Bind(SearchBar.TextProperty,
+                                getter: static (OrdersViewModel vm) => vm.Query,
+                                setter: static (OrdersViewModel vm, string? text) => vm.Query = text ?? "")
+                          .Row(0),
+
+                      new CollectionView { ItemTemplate = new DataTemplate(() => new OrderRow()) }
+                          .Bind(ItemsView.ItemsSourceProperty, getter: static (OrdersViewModel vm) => vm.Orders)
+                          .Row(1),
+                  },
+              };
+          }
+      }
+
+      class OrderRow : Grid
+      {
+          public OrderRow()
+          {
+              ColumnDefinitions = Columns.Define(Star, Auto);
+              Padding = 12;
+
+              Children.Add(new Label()
+                  .Bind(Label.TextProperty, getter: static (Order o) => o.Customer)
+                  .Column(0));
+
+              Children.Add(new Label()
+                  .Font(bold: true)
+                  .Bind(Label.TextProperty, getter: static (Order o) => o.Total, stringFormat: "{0:C}")
+                  .Column(1));
+          }
+      }
+    expected: "The search and list part of the orders screen, each control one chained expression close to the shape of the XAML; selection binds the same way with `.Bind(SelectableItemsView.SelectedItemProperty, getter: …, setter: …)`."
+    applies:
+      requires: [.NET MAUI, CommunityToolkit.Maui.Markup]
+      versions: { csharp: ">=13", dotnet: ">=9", maui: ">=9", communitytoolkit-maui-markup: "6.0.x" }
+    sources:
+      - title: C# Markup — .NET MAUI Community Toolkit
+        url: https://learn.microsoft.com/en-us/dotnet/communitytoolkit/maui/markup/markup
+      - title: BindableObject extensions — .NET MAUI Community Toolkit Markup
+        url: https://learn.microsoft.com/en-us/dotnet/communitytoolkit/maui/markup/extensions/bindable-object-extensions
+    validation:
+      status: excerpt
+      host: a .NET MAUI 9 app project referencing CommunityToolkit.Maui.Markup 6.0.1 (compiled against Microsoft.Maui.Controls 9.0.120)
+
+  - id: sync-by-hand
+    kind: code
+    title: Keeping the screen in sync by hand
+    note: "Without bindings every handler that changes the data must also repaint what depends on it, so funnel all of it through one `Render()` method (the bound version is the page-in-code card)."
+    prerequisites: *maui
+    code: |-
+      public class OrdersByHandPage : ContentPage
+      {
+          private readonly List<Order> all;
+          private readonly SearchBar search = new() { Placeholder = "Search by customer" };
+          private readonly Label count = new();
+          private readonly CollectionView list = new()
+          {
+              SelectionMode = SelectionMode.Single,
+              ItemTemplate = new DataTemplate(() => new OrderRow()),
+          };
+
+          public OrdersByHandPage(IEnumerable<Order> orders)
+          {
+              all = [.. orders];
+              var cancel = new Button { Text = "Cancel selected order" };
+
+              search.TextChanged += (_, _) => Render();
+              cancel.Clicked += (_, _) =>
+              {
+                  if (list.SelectedItem is not Order order) return;
+                  all.Remove(order);
+                  Render();                          // forget this and the list and the count go stale
+              };
+
+              var header = new VerticalStackLayout { Spacing = 8, Children = { search, count, cancel } };
+              var grid = new Grid { Padding = 16, RowSpacing = 8 };
+              grid.RowDefinitions = [new RowDefinition(GridLength.Auto), new RowDefinition(GridLength.Star)];
+              grid.Add(header);
+              grid.Add(list, column: 0, row: 1);
+              Content = grid;
+
+              Render();
+          }
+
+          // The one method that turns the data into screen state
+          private void Render()
+          {
+              var query = search.Text ?? "";
+              var visible = all.Where(o => o.Customer.Contains(query, StringComparison.OrdinalIgnoreCase)).ToList();
+              count.Text = $"{visible.Count} orders";
+              list.ItemsSource = visible;            // a new list: the CollectionView rebuilds every row
+          }
+      }
+    expected: "Typing filters the list and updates the count, and cancelling removes the order from both, because each handler ends in `Render()`; every new feature has to remember that call."
+    validation:
+      status: excerpt
+      host: a .NET MAUI 9 app project (compiled against Microsoft.Maui.Controls 9.0.120)
+
+  - id: events-vs-commands
+    kind: code
+    title: An event handler versus a command
+    note: "A `Clicked` handler runs on every tap, but an `AsyncRelayCommand` reports `CanExecute` false while it runs, so the bound button disables itself and a double tap places one order."
+    prerequisites: &run-mvvm
+      - .NET 8 SDK or later
+      - "`dotnet new console -o Demo`, `dotnet add Demo package CommunityToolkit.Mvvm`, replace `Demo/Program.cs` with the example, then `dotnet run --project Demo`"
+    code: |-
+      using CommunityToolkit.Mvvm.Input;
+
+      // Event style: button.Clicked += async (_, _) => await api.PlaceAsync();
+      var eventApi = new CountingOrderApi();
+      async Task OnPlaceOrderClicked() => await eventApi.PlaceAsync();
+      await Task.WhenAll(OnPlaceOrderClicked(), OnPlaceOrderClicked());     // a double tap
+      Console.WriteLine($"event handler, double tap: {eventApi.Placed} placed");
+
+      // Command style: Button.Command asks CanExecute before every tap;
+      // the command raises CanExecuteChanged as it starts and as it ends
+      var commandApi = new CountingOrderApi();
+      var placeOrder = new AsyncRelayCommand(commandApi.PlaceAsync);
+
+      var firstTap = placeOrder.ExecuteAsync(null);
+      Console.WriteLine($"  button enabled while placing: {placeOrder.CanExecute(null)}");
+      if (placeOrder.CanExecute(null))
+          await placeOrder.ExecuteAsync(null);                           // the second tap is refused
+      await firstTap;
+      Console.WriteLine($"  button enabled afterwards: {placeOrder.CanExecute(null)}");
+      Console.WriteLine($"command, double tap: {commandApi.Placed} placed");
+
+      class CountingOrderApi
+      {
+          private int placed;
+          public int Placed => placed;
+
+          public async Task PlaceAsync()
+          {
+              await Task.Delay(50);                     // the network call
+              Interlocked.Increment(ref placed);
+          }
+      }
+    expected: |-
+      event handler, double tap: 2 placed
+        button enabled while placing: False
+        button enabled afterwards: True
+      command, double tap: 1 placed
+    applies:
+      platforms: [dotnet]
+      runtime: .NET console app (no UI); the same command binds to `Button.Command` in MAUI, WPF and WinUI
+      requires: [CommunityToolkit.Mvvm]
+      versions: { csharp: ">=12", dotnet: ">=8", communitytoolkit-mvvm: ">=8.0" }
+    sources:
+      - title: AsyncRelayCommand — MVVM Toolkit
+        url: https://learn.microsoft.com/en-us/dotnet/communitytoolkit/mvvm/asyncrelaycommand
+    validation:
+      status: ran
+      toolchain: .NET SDK 9.0.304 (net9.0, C# 13), CommunityToolkit.Mvvm 8.4.2
+      date: "2026-11-16"
+
+  - id: list-sync-in-place
+    kind: code
+    title: Keeping a list in sync in place
+    note: "Clearing and re-adding raises `Reset`, which rebuilds every row and loses the scroll position, while applying the new snapshot as removes, inserts, moves and replaces touches only the rows that changed."
+    prerequisites: &run
+      - .NET 8 SDK or later
+      - "`dotnet new console -o Demo`, replace `Demo/Program.cs` with the example, then `dotnet run --project Demo` (a bound `CollectionView`, `ListBox` or `ListView` reacts to exactly these events)"
+    code: |-
+      using System.Collections.ObjectModel;
+
+      Order[] initial = [new(1, "Ada", "Pending"), new(2, "Grace", "Pending"), new(3, "Linus", "Shipped")];
+      Order[] latest = [new(1, "Ada", "Pending"), new(2, "Grace", "Shipped"), new(4, "Ken", "Pending")];
+
+      var rebuilt = Watch(new ObservableCollection<Order>(initial), out var rebuiltEvents);
+      rebuilt.Clear();
+      foreach (var order in latest) rebuilt.Add(order);
+      Console.WriteLine($"clear and re-add: {string.Join(", ", rebuiltEvents)}");
+
+      var synced = Watch(new ObservableCollection<Order>(initial), out var syncedEvents);
+      Sync(synced, latest);
+      Console.WriteLine($"sync in place:    {string.Join(", ", syncedEvents)}");
+      Console.WriteLine(string.Join(" | ", synced.Select(o => $"{o.Id} {o.Customer} {o.Status}")));
+
+      static ObservableCollection<Order> Watch(ObservableCollection<Order> list, out List<string> events)
+      {
+          var log = events = [];
+          list.CollectionChanged += (_, e) => log.Add(e.Action.ToString());
+          return list;
+      }
+
+      static void Sync(ObservableCollection<Order> shown, IReadOnlyList<Order> latest)
+      {
+          var ids = latest.Select(o => o.Id).ToHashSet();
+          for (var i = shown.Count - 1; i >= 0; i--)
+              if (!ids.Contains(shown[i].Id)) shown.RemoveAt(i);
+
+          for (var i = 0; i < latest.Count; i++)
+          {
+              var at = IndexOfId(shown, latest[i].Id, from: i);     // rows before i are already in place
+              if (at < 0) shown.Insert(i, latest[i]);
+              else if (at != i) shown.Move(at, i);
+
+              if (shown[i] != latest[i]) shown[i] = latest[i];       // records compare by value
+          }
+      }
+
+      static int IndexOfId(IList<Order> list, int id, int from)
+      {
+          for (var j = from; j < list.Count; j++)
+              if (list[j].Id == id) return j;
+          return -1;
+      }
+
+      record Order(int Id, string Customer, string Status);
+    expected: |-
+      clear and re-add: Reset, Add, Add, Add
+      sync in place:    Remove, Replace, Add
+      1 Ada Pending | 2 Grace Shipped | 4 Ken Pending
+    applies:
+      platforms: [dotnet]
+      runtime: .NET console app (no UI)
+      versions: { csharp: ">=12", dotnet: ">=8" }
+    sources:
+      - title: ObservableCollection<T> — .NET API
+        url: https://learn.microsoft.com/en-us/dotnet/api/system.collections.objectmodel.observablecollection-1
+    validation:
+      status: ran
+      toolchain: .NET SDK 9.0.304 (net9.0, C# 13)
+      date: "2026-11-16"
+
+  - id: wpf-window-in-code
+    kind: code
+    title: A WPF Window in code-behind, and the Dispatcher
+    note: "WPF controls and the collections bound to them belong to the thread that created them, so a socket callback or a timer reaches them through `Dispatcher.InvokeAsync`."
+    prerequisites:
+      - "Windows with the .NET 9 SDK: `dotnet new wpf -o ShopDesk`"
+      - "Save as `OrdersWindow.cs`; show it from `App.OnStartup` with `new OrdersWindow(viewModel).Show()`"
+    code: |-
+      using System.Windows;
+      using System.Windows.Controls;
+      using System.Windows.Data;
+
+      public class OrdersWindow : Window
+      {
+          private readonly OrdersViewModel viewModel;
+
+          public OrdersWindow(OrdersViewModel viewModel)
+          {
+              this.viewModel = viewModel;
+              Title = "Orders";
+              Width = 480;
+              Height = 640;
+              DataContext = viewModel;
+
+              var search = new TextBox { Margin = new Thickness(0, 0, 0, 8) };
+              var query = new Binding(nameof(OrdersViewModel.Query))
+              {
+                  UpdateSourceTrigger = UpdateSourceTrigger.PropertyChanged,    // TextBox defaults to LostFocus
+              };
+              search.SetBinding(TextBox.TextProperty, query);
+              DockPanel.SetDock(search, Dock.Top);
+
+              var list = new ListBox { DisplayMemberPath = nameof(Order.Customer) };   // virtualizes by default
+              list.SetBinding(ItemsControl.ItemsSourceProperty, new Binding(nameof(OrdersViewModel.Orders)));
+              list.MouseDoubleClick += (_, _) =>
+              {
+                  if (list.SelectedItem is Order order) OpenDetail(order);
+              };
+
+              var dock = new DockPanel { Margin = new Thickness(16) };      // the last child fills the rest
+              dock.Children.Add(search);
+              dock.Children.Add(list);
+              Content = dock;
+              Loaded += async (_, _) => await viewModel.LoadAsync();
+          }
+
+          private void OpenDetail(Order order) => new OrderDetailWindow(order) { Owner = this }.ShowDialog();
+
+          // Called by the push-notification client on a background thread; InvokeAsync queues
+          // the work and returns, where Invoke would block (and deadlock if the UI waits on the client)
+          public void OnOrderPushed(Order order) => Dispatcher.InvokeAsync(() => viewModel.Orders.Add(order));
+      }
+    expected: "A window with a live-filtering search box over the orders list, where double-clicking an order opens its detail as a modal dialog and pushed orders appear without a cross-thread exception."
+    applies:
+      platforms: [windows]
+      runtime: WPF on .NET 9 (`net9.0-windows`)
+      requires: [WPF]
+      versions: { csharp: ">=13", dotnet: ">=9" }
+    sources:
+      - title: Windows Presentation Foundation documentation
+        url: https://learn.microsoft.com/en-us/dotnet/desktop/wpf/
+      - title: Threading model — WPF
+        url: https://learn.microsoft.com/en-us/dotnet/desktop/wpf/advanced/threading-model
+    validation:
+      status: excerpt
+      host: a WPF app on Windows (`dotnet new wpf`); compiled for `net9.0-windows` with `EnableWindowsTargeting`
+
+  - id: winui-page-in-code
+    kind: code
+    title: A WinUI Page in code-behind, and DispatcherQueue.TryEnqueue
+    note: "WinUI cannot build a `DataTemplate` from a lambda (it needs `XamlReader.Load`), so a code-only list uses `DisplayMemberPath`, and background work reaches the UI through `DispatcherQueue`."
+    prerequisites:
+      - "Windows with the Windows App SDK (1.6 or later): the \"WinUI Blank App (Packaged)\" template in Visual Studio"
+      - "Save as `OrdersPage.cs`; navigate with `rootFrame.Navigate(typeof(OrdersPage), viewModel)`"
+    code: |-
+      using Microsoft.UI.Xaml;
+      using Microsoft.UI.Xaml.Controls;
+      using Microsoft.UI.Xaml.Data;
+      using Microsoft.UI.Xaml.Navigation;
+
+      public sealed class OrdersPage : Page
+      {
+          private readonly TextBlock status = new() { Opacity = 0.7 };
+
+          public OrdersPage()
+          {
+              var search = new TextBox { PlaceholderText = "Search by customer" };
+              search.SetBinding(TextBox.TextProperty, new Binding
+              {
+                  Path = new PropertyPath(nameof(OrdersViewModel.Query)),
+                  Mode = BindingMode.TwoWay,                    // WinUI {Binding} defaults to OneWay
+                  UpdateSourceTrigger = UpdateSourceTrigger.PropertyChanged,
+              });
+
+              var list = new ListView { DisplayMemberPath = nameof(Order.Customer), IsItemClickEnabled = true };
+              var orders = new Binding { Path = new PropertyPath(nameof(OrdersViewModel.Orders)) };
+              list.SetBinding(ItemsControl.ItemsSourceProperty, orders);
+              list.ItemClick += (_, e) => Frame.Navigate(typeof(OrderDetailPage), e.ClickedItem);
+
+              var root = new Grid { Padding = new Thickness(16), RowSpacing = 8 };
+              foreach (var unit in new[] { GridUnitType.Auto, GridUnitType.Star, GridUnitType.Auto })
+                  root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, unit) });
+              Grid.SetRow(list, 1);
+              Grid.SetRow(status, 2);
+              root.Children.Add(search);
+              root.Children.Add(list);
+              root.Children.Add(status);
+              Content = root;
+          }
+
+          protected override void OnNavigatedTo(NavigationEventArgs e) => DataContext = e.Parameter;
+
+          // Called when a background sync finishes (a thread-pool thread)
+          public void OnSyncFinished(int count) =>
+              DispatcherQueue.TryEnqueue(() => status.Text = $"{count} orders synced");
+      }
+    expected: "The same list screen in a WinUI page, where the search box filters as you type, clicking an order navigates the frame to its detail, and the status line updates safely from the sync thread."
+    applies:
+      platforms: [windows]
+      runtime: WinUI 3 (Windows App SDK) on .NET 9
+      requires: [Windows App SDK]
+      versions: { csharp: ">=13", dotnet: ">=9", windowsappsdk: ">=1.6" }
+    sources:
+      - title: WinUI 3 — Windows App SDK
+        url: https://learn.microsoft.com/en-us/windows/apps/winui/winui3/
+      - title: DispatcherQueue.TryEnqueue — Windows App SDK API
+        url: https://learn.microsoft.com/en-us/windows/windows-app-sdk/api/winrt/microsoft.ui.dispatching.dispatcherqueue.tryenqueue?view=windows-app-sdk-1.6
+    validation:
+      status: excerpt
+      host: a WinUI 3 app on Windows (Windows App SDK); the C# compiled against Microsoft.WindowsAppSDK 1.6
+
+  - id: handlers-custom-controls
+    kind: code
+    title: Handlers and custom controls, in brief
+    note: "A handler maps a cross-platform control onto a native view: append to a mapper to tweak every instance, or write a handler for a control of your own."
+    prerequisites:
+      - "A .NET MAUI app project (`dotnet new maui -o Shop`)"
+      - "The mapper call goes in `MauiProgram.CreateMauiApp`; a custom handler has a shared `BarcodeHandler.cs` plus one partial per platform under `Platforms/`"
+    code: |-
+      // Tweak an existing control everywhere, no subclass of the handler needed (MauiProgram.cs)
+      Microsoft.Maui.Handlers.EntryHandler.Mapper.AppendToMapping("NoUnderline", (handler, view) =>
+      {
+          if (view is not SearchField) return;                  // scope it to your own Entry subclass
+      #if ANDROID
+          handler.PlatformView.BackgroundTintList =
+              Android.Content.Res.ColorStateList.ValueOf(Android.Graphics.Color.Transparent);
+      #elif IOS || MACCATALYST
+          handler.PlatformView.BorderStyle = UIKit.UITextBorderStyle.None;
+      #endif
+      });
+
+      // A control of your own: a View with bindable properties…
+      public class Barcode : View
+      {
+          public static readonly BindableProperty ValueProperty =
+              BindableProperty.Create(nameof(Value), typeof(string), typeof(Barcode), string.Empty);
+
+          public string Value
+          {
+              get => (string)GetValue(ValueProperty);
+              set => SetValue(ValueProperty, value);
+          }
+      }
+
+      // …and a handler: each Platforms/<os>/BarcodeHandler.cs declares
+      // `partial class BarcodeHandler : ViewHandler<Barcode, NativeBarcodeView>`, CreatePlatformView and MapValue
+      public partial class BarcodeHandler
+      {
+          public static IPropertyMapper<Barcode, BarcodeHandler> PropertyMapper =
+              new PropertyMapper<Barcode, BarcodeHandler>(ViewHandler.ViewMapper)
+              {
+                  [nameof(Barcode.Value)] = MapValue,
+              };
+
+          public BarcodeHandler() : base(PropertyMapper) { }
+      }
+
+      // MauiProgram.cs
+      builder.ConfigureMauiHandlers(handlers => handlers.AddHandler(typeof(Barcode), typeof(BarcodeHandler)));
+    expected: "Every `SearchField` drops the platform underline, and `<local:Barcode Value=\"{Binding TrackingCode}\" />` renders through the native view each platform's handler creates."
+    sources:
+      - title: Customize controls with handlers — .NET MAUI
+        url: https://learn.microsoft.com/en-us/dotnet/maui/user-interface/handlers/customize?view=net-maui-9.0
+      - title: Create custom controls with handlers — .NET MAUI
+        url: https://learn.microsoft.com/en-us/dotnet/maui/user-interface/handlers/create?view=net-maui-9.0
+    validation:
+      status: excerpt
+      host: a .NET MAUI app targeting Android and iOS; the shared code compiled against Microsoft.Maui.Controls 9.0.120, the `#if ANDROID`/`IOS` bodies need those workloads
+
+  - id: code-ui-traps
+    kind: rules
+    title: Traps
+    note: "UI built in code gets no help from the XAML compiler, so these slip through."
+    items:
+      - tone: bad
+        text: "**Leaked subscriptions**: `service.OrdersChanged += OnOrdersChanged` in a page constructor keeps the page alive as long as the service, so subscribe in `OnAppearing` and unsubscribe in `OnDisappearing` (or `Unloaded`)."
+      - tone: bad
+        text: "**Bindings on a plain class**: a property without `INotifyPropertyChanged` is read once and later changes never reach the screen; a `List<T>` behaves the same way, so use `ObservableCollection<T>`."
+      - tone: bad
+        text: "**Touching UI off the UI thread** after `ConfigureAwait(false)` or on a timer callback: marshal with `MainThread.BeginInvokeOnMainThread` (MAUI), `Dispatcher.InvokeAsync` (WPF) or `DispatcherQueue.TryEnqueue` (WinUI)."
+      - tone: bad
+        text: "**Assigning `ItemsSource = newList` on every refresh** raises a `Reset` that rebuilds every row; keep one collection and sync it in place."
+      - tone: bad
+        text: "**Mixing bindings and direct assignment**: `label.Text = \"…\"` on a bound property replaces a `OneWay` binding."
+      - tone: bad
+        text: "**Typed `SetBinding` lambdas on MVVM Toolkit members**: `[ObservableProperty]` and `[RelayCommand]` output is invisible to the binding generator (BSG0006), so declare those members by hand or use a string path."
+      - tone: good
+        text: "**Typed bindings** (`SetBinding` with a `static` lambda) give C# the build-time checks XAML gets from `x:DataType`, for every member the C# compiler can see without another generator."
+      - tone: good
+        text: "Build one small class per row (`OrderRow`) and pass a factory to `DataTemplate`, so the list creates rows only as they scroll into view."
+      - tone: neutral
+        text: "Keep constructors to building the tree: data loaded there arrives before the page is on screen and can't be retried, so load in `OnAppearing`, `Loaded` or `OnNavigatedTo`."

@@ -7,7 +7,7 @@ import { parseInline, plainInline } from "../src/content/inline";
 import { CatalogError, diagramProblems, exampleProblems, loadCatalog, loadCatalogs } from "../src/content/load";
 import { codeCard, compareCard, sheet as sheetSchema } from "../src/content/schema";
 import { buildIndex, cardText, hitsLabel, search } from "../src/content/search";
-import { FIXTURE_DIR, FIXTURE_ROOT, ROOT, swiftCatalog } from "./helpers";
+import { FIXTURE_DIR, FIXTURE_ROOT, legacySwiftCatalog, ROOT, swiftCatalog } from "./helpers";
 
 /** The pre-migration browser highlighter (src/render.py at 1093188), verbatim, as the reference. */
 function legacyHighlight(src: string): { cls: string | null; text: string }[] {
@@ -49,7 +49,7 @@ describe("highlighter", () => {
           blocks++;
         }
       }
-    expect(blocks).toBe(256);
+    expect(blocks).toBeGreaterThanOrEqual(256); // the legacy page's 256, plus every block added since
   });
 
   it("is driven by data: another language's keywords and markers", () => {
@@ -80,7 +80,8 @@ describe("search parity with the pre-migration page (AC-3)", () => {
   const legacy = JSON.parse(fs.readFileSync(path.join(ROOT, "test/fixtures/legacy-search.json"), "utf8")) as {
     queries: Record<string, { hits: string; sheets: string[]; cards: number }>;
   };
-  const index = buildIndex(swiftCatalog());
+  // The fixture counts hits on the legacy page, so the index is built over the sheets it had.
+  const index = buildIndex(legacySwiftCatalog());
 
   for (const [query, expected] of Object.entries(legacy.queries)) {
     it(`matches the legacy page for ${JSON.stringify(query)}`, () => {
@@ -110,7 +111,7 @@ describe("loader", () => {
 
   it("accepts every committed diagram under the allowlist", () => {
     const diagrams = swiftCatalog().sheets.flatMap((s) => s.cards).filter((c) => c.kind === "diagram");
-    expect(diagrams).toHaveLength(17);
+    expect(diagrams.length).toBeGreaterThanOrEqual(17); // the legacy page's 17, plus any added since
     for (const d of diagrams) expect(diagramProblems(d.kind === "diagram" ? d.svg : ""), d.id).toEqual([]);
   });
 

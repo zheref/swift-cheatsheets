@@ -1,0 +1,621 @@
+id: cs-serialization
+concept: serialization.codecs
+scope: shared
+title: "Serialization — System.Text.Json & Friends"
+group: Shared concepts
+subtitle: "Records to JSON and back with System.Text.Json: options you reuse, required and missing members, nulls, unknown keys, dates, enums, custom converters, polymorphism, source generation for AOT, JsonNode, streaming, errors with their path — plus XML, and where Protobuf fits."
+applies:
+  platforms: [dotnet]
+  runtime: .NET (System.Text.Json, System.Xml); the same in MAUI, WPF, WinUI and Blazor
+  versions: { csharp: ">=12", dotnet: ">=9" }
+sources:
+  - title: JSON serialization and deserialization in .NET
+    url: https://learn.microsoft.com/en-us/dotnet/standard/serialization/system-text-json/overview
+  - title: Migrate from Newtonsoft.Json to System.Text.Json
+    url: https://learn.microsoft.com/en-us/dotnet/standard/serialization/system-text-json/migrate-from-newtonsoft
+  - title: What's new in System.Text.Json in .NET 9
+    url: https://learn.microsoft.com/en-us/dotnet/core/whats-new/dotnet-9/libraries#serialization-systemtextjson
+cards:
+  - id: stj-vs-newtonsoft
+    kind: table
+    title: System.Text.Json's defaults, against Newtonsoft.Json
+    note: "System.Text.Json is built in and strict by default, so most migration surprises are a row of this table, and `JsonSerializerDefaults.Web` (what ASP.NET Core and `HttpClient`'s JSON helpers use) relaxes the first three: names, casing and numbers in strings."
+    headers: [Behaviour, System.Text.Json, Newtonsoft.Json]
+    rows:
+      - - property names
+        - "as declared; `Web`: camelCase; `JsonNamingPolicy.SnakeCaseLower` and kebab built in"
+        - "as declared; `CamelCasePropertyNamesContractResolver`"
+      - - reading names
+        - "**case-sensitive**; `Web`: case-insensitive"
+        - "case-insensitive"
+      - - "`\"42\"` into an `int`, comments, trailing commas"
+        - "rejected unless `NumberHandling`, `ReadCommentHandling`, `AllowTrailingCommas`"
+        - "accepted"
+      - - members
+        - "public properties; fields with `IncludeFields` or `[JsonInclude]`; `required` and `init` honoured"
+        - "public properties and fields, private with `[JsonProperty]`"
+      - - polymorphism
+        - "`[JsonPolymorphic]` with an allow-list of `[JsonDerivedType]`"
+        - "`TypeNameHandling` — `$type` names any type: a known remote-code-execution risk"
+      - - dynamic documents
+        - "`JsonNode` (mutable), `JsonDocument` / `JsonElement` (read-only, pooled)"
+        - "`JObject`, `JToken`, `dynamic`"
+      - - reference cycles
+        - "throws; `ReferenceHandler.IgnoreCycles` or `Preserve`"
+        - "`ReferenceLoopHandling`"
+      - - trimming and Native AOT
+        - "**source generation** (`JsonSerializerContext`): no reflection"
+        - "reflection only: not AOT-safe"
+      - - "where it ships"
+        - "in the box, UTF-8 throughout"
+        - "a NuGet package; still right for code that already depends on its features"
+  - id: round-trip-and-options
+    kind: code
+    title: A record to JSON and back, with options you reuse
+    note: "Create `JsonSerializerOptions` once and keep it, rename one member with `[JsonPropertyName]` when the policy would get it wrong, and keep one off the wire with `[JsonIgnore]`."
+    prerequisites: &run
+      - .NET 9 SDK or later
+      - "`dotnet new console -o Demo`, replace `Demo/Program.cs` with the example, then `dotnet run --project Demo`"
+    code: |-
+      using System.Text.Json;
+      using System.Text.Json.Serialization;
+
+      var order = new Order("o-1", "u-42", 59.90m, [new LineItem("sku-7", 2)]) { InternalNote = "VIP: call first" };
+      Console.WriteLine(JsonSerializer.Serialize(order, Api.Json));
+
+      // The server sent different casing: the Web defaults read names case-insensitively.
+      const string Reply = """
+          {"ID":"o-1","Customer_Id":"u-42","total":59.90,"lines":[{"sku":"sku-7","quantity":2}]}
+          """;
+      var back = JsonSerializer.Deserialize<Order>(Reply, Api.Json)!;
+      var note = back.InternalNote ?? "none";
+      Console.WriteLine($"{back.OrderId} for {back.CustomerId}: {back.Lines.Count} line(s), note: {note}");
+
+      static class Api
+      {
+          // Created once: every new options instance rebuilds its metadata cache.
+          public static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web)   // case-insensitive
+          {
+              PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower,
+          };
+      }
+
+      record Order(
+          [property: JsonPropertyName("id")] string OrderId,                // the one name the policy must not make
+          string CustomerId,
+          decimal Total,
+          List<LineItem> Lines)
+      {
+          [JsonIgnore] public string? InternalNote { get; init; }            // never leaves the process
+      }
+
+      record LineItem(string Sku, int Quantity);
+    expected: |-
+      {"id":"o-1","customer_id":"u-42","total":59.90,"lines":[{"sku":"sku-7","quantity":2}]}
+      o-1 for u-42: 1 line(s), note: none
+    sources:
+      - title: Customize property names and values with System.Text.Json
+        url: https://learn.microsoft.com/en-us/dotnet/standard/serialization/system-text-json/customize-properties
+      - title: Instantiate JsonSerializerOptions instances
+        url: https://learn.microsoft.com/en-us/dotnet/standard/serialization/system-text-json/configure-options
+    validation: &ran
+      status: ran
+      toolchain: .NET SDK 9.0.304 (net9.0, C# 13)
+      date: "2026-11-16"
+  - id: required-missing-null
+    kind: code
+    title: Required, missing, null and defaults — and unknown members kept
+    note: "A missing member keeps its default, `required` or `[JsonRequired]` makes absence an error, a `null` reaches a non-nullable `string` unless you opt into `RespectNullableAnnotations` (.NET 9), and a relay keeps unknown members in `[JsonExtensionData]`."
+    prerequisites: *run
+    code: |-
+      using System.Text.Json;
+      using System.Text.Json.Serialization;
+
+      var lenient = new JsonSerializerOptions(JsonSerializerDefaults.Web);
+      var strict = new JsonSerializerOptions(JsonSerializerDefaults.Web) { RespectNullableAnnotations = true };
+      var compact = new JsonSerializerOptions(JsonSerializerDefaults.Web)
+      {
+          DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
+      };
+
+      Show("""{"id":"u-1","email":"ada@shop.example"}""", lenient);              // missing: defaults
+      Show("""{"email":"ada@shop.example"}""", lenient);                           // required id is missing
+      Show("""{"id":"u-1","email":"ada@shop.example","displayName":null}""", lenient);
+      Show("""{"id":"u-1","email":"ada@shop.example","displayName":null}""", strict);
+      Console.WriteLine(JsonSerializer.Serialize(new Customer { Id = "u-1", Email = "ada@shop.example" }, compact));
+
+      // Unknown members, when you relay rather than validate: [JsonExtensionData] keeps them and writes them back.
+      var relayed = JsonSerializer.Deserialize<Envelope>("""{"type":"order.paid","orderId":"o-1"}""", lenient)!;
+      Console.WriteLine($"{relayed.Extra!.Count} kept -> {JsonSerializer.Serialize(relayed, lenient)}");
+
+      static void Show(string json, JsonSerializerOptions options)
+      {
+          try
+          {
+              var c = JsonSerializer.Deserialize<Customer>(json, options)!;
+              Console.WriteLine($"name={c.DisplayName ?? "(null!)"} phone={c.Phone ?? "-"} points={c.Points}");
+          }
+          catch (JsonException e) { Console.WriteLine($"rejected: {e.Message}"); }
+      }
+
+      record Customer
+      {
+          public required string Id { get; init; }                 // C# required: honoured by the serializer
+          [JsonRequired] public string Email { get; init; } = "";  // must be in the JSON, even with a default
+          public string DisplayName { get; init; } = "Guest";      // missing: keeps the initializer
+          public string? Phone { get; init; }                      // missing or null: null
+          public int Points { get; init; }                         // missing: 0
+      }
+
+      record Envelope(string Type)
+      {
+          [JsonExtensionData] public Dictionary<string, JsonElement>? Extra { get; set; }
+      }
+    expected: |-
+      name=Guest phone=- points=0
+      rejected: JSON deserialization for type 'Customer' was missing required properties including: 'id'.
+      name=(null!) phone=- points=0
+      rejected: The property or field 'displayName' on type 'Customer' doesn't allow setting null values. Consider updating its nullability annotation. Path: $.displayName | LineNumber: 0 | BytePositionInLine: 57.
+      {"id":"u-1","email":"ada@shop.example","displayName":"Guest","points":0}
+      1 kept -> {"type":"order.paid","orderId":"o-1"}
+    sources:
+      - title: Required properties — System.Text.Json
+        url: https://learn.microsoft.com/en-us/dotnet/standard/serialization/system-text-json/required-properties
+      - title: Respect nullable annotations — System.Text.Json
+        url: https://learn.microsoft.com/en-us/dotnet/standard/serialization/system-text-json/nullable-annotations
+    validation: *ran
+  - id: dates-enums-converter
+    kind: code
+    title: Dates, and enums through a strict custom JsonConverter
+    note: "Dates are ISO 8601 by default, and enums from untrusted input go through a small `JsonConverter<T>` with an exact allow-list of names, because `JsonStringEnumConverter` still accepts comma lists and C# names even with integers refused."
+    prerequisites: *run
+    code: |-
+      using System.Text.Json;
+      using System.Text.Json.Serialization;
+
+      var options = new JsonSerializerOptions(JsonSerializerDefaults.Web);
+      options.Converters.Add(new ExactNames<Status>());
+      var shipment = new Shipment("o-1", Status.InTransit,
+          PlacedAt: new DateTimeOffset(2026, 11, 16, 9, 30, 0, TimeSpan.FromHours(1)),   // ISO 8601, offset kept
+          DeliverBy: new DateOnly(2026, 11, 20));                                     // no time zone to get wrong
+      var json = JsonSerializer.Serialize(shipment, options);
+      Console.WriteLine(json);
+      Console.WriteLine(JsonSerializer.Deserialize<Shipment>(json, options) == shipment);
+
+      // JsonStringEnumConverter, even with allowIntegerValues: false, still reads "pending, delivered" as Delivered
+      // and accepts the C# name "InTransit"; ExactNames takes the wire names and nothing else.
+      foreach (var wrong in new[] { "\"teleported\"", "7", "\"7\"", "\"pending, delivered\"", "\"InTransit\"" })
+      {
+          try { JsonSerializer.Deserialize<Shipment>(json.Replace("\"in_transit\"", wrong), options); }
+          catch (JsonException e) { Console.WriteLine($"status {wrong}: rejected at {e.Path}"); }
+      }
+
+      enum Status { Pending, InTransit, Delivered }
+
+      record Shipment(string OrderId, Status Status, DateTimeOffset PlacedAt, DateOnly DeliverBy);
+
+      // A custom converter: an exact allow-list of snake_case names (Unix-seconds dates are written the same way).
+      sealed class ExactNames<T> : JsonConverter<T> where T : struct, Enum
+      {
+          static readonly Dictionary<string, T> ByName =
+              Enum.GetValues<T>().ToDictionary(v => JsonNamingPolicy.SnakeCaseLower.ConvertName(v.ToString()));
+
+          public override T Read(ref Utf8JsonReader reader, Type type, JsonSerializerOptions options) =>
+              reader.TokenType == JsonTokenType.String && ByName.TryGetValue(reader.GetString()!, out var value)
+                  ? value
+                  : throw new JsonException($"not a {typeof(T).Name}");
+
+          public override void Write(Utf8JsonWriter writer, T value, JsonSerializerOptions options) =>
+              writer.WriteStringValue(JsonNamingPolicy.SnakeCaseLower.ConvertName(value.ToString()));
+      }
+    expected: |-
+      {"orderId":"o-1","status":"in_transit","placedAt":"2026-11-16T09:30:00+01:00","deliverBy":"2026-11-20"}
+      True
+      status "teleported": rejected at $.status
+      status 7: rejected at $.status
+      status "7": rejected at $.status
+      status "pending, delivered": rejected at $.status
+      status "InTransit": rejected at $.status
+    sources:
+      - title: Custom converters for JSON serialization
+        url: https://learn.microsoft.com/en-us/dotnet/standard/serialization/system-text-json/converters-how-to
+      - title: JsonStringEnumConverter<TEnum> — .NET API
+        url: https://learn.microsoft.com/en-us/dotnet/api/system.text.json.serialization.jsonstringenumconverter-1
+    validation: *ran
+  - id: polymorphism
+    kind: code
+    title: "Polymorphic payloads with [JsonPolymorphic] and [JsonDerivedType]"
+    note: "Only the derived types you list can be created (an allow-list, unlike `$type`), and the discriminator must come first unless you set `AllowOutOfOrderMetadataProperties` (.NET 9)."
+    prerequisites: *run
+    code: |-
+      using System.Text.Json;
+      using System.Text.Json.Serialization;
+
+      var web = JsonSerializerOptions.Web;
+      List<Payment> payments = [new CardPayment(59.90m, "4242"), new PayPalPayment(12.00m, "ada@shop.example")];
+      Console.WriteLine(JsonSerializer.Serialize(payments, web));
+
+      const string Received = """
+          [{"method":"card","amount":5,"last4":"0005"},{"method":"paypal","amount":7,"email":"bob@shop.example"}]
+          """;
+      foreach (var payment in JsonSerializer.Deserialize<List<Payment>>(Received, web)!)
+          Console.WriteLine(payment switch
+          {
+              CardPayment card => $"card ending {card.Last4}: {card.Amount}",
+              PayPalPayment paypal => $"PayPal {paypal.Email}: {paypal.Amount}",
+              _ => "unknown",
+          });
+
+      // What many other serializers write. An abstract base throws NotSupportedException here, a concrete one
+      // JsonException: catch both at an API boundary, or allow the order.
+      const string Reordered = """{"amount":5,"method":"card","last4":"0005"}""";
+      try { JsonSerializer.Deserialize<Payment>(Reordered, web); }
+      catch (NotSupportedException) { Console.WriteLine("discriminator not first: rejected"); }
+      var tolerant = new JsonSerializerOptions(web) { AllowOutOfOrderMetadataProperties = true };      // .NET 9
+      Console.WriteLine(JsonSerializer.Deserialize<Payment>(Reordered, tolerant) is CardPayment);
+
+      try { JsonSerializer.Deserialize<Payment>("""{"method":"crypto","amount":1}""", web); }
+      catch (JsonException) { Console.WriteLine("unlisted type: rejected"); }
+
+      [JsonPolymorphic(TypeDiscriminatorPropertyName = "method")]
+      [JsonDerivedType(typeof(CardPayment), "card")]
+      [JsonDerivedType(typeof(PayPalPayment), "paypal")]
+      abstract record Payment(decimal Amount);
+
+      record CardPayment(decimal Amount, string Last4) : Payment(Amount);
+
+      record PayPalPayment(decimal Amount, string Email) : Payment(Amount);
+    expected: |-
+      [{"method":"card","last4":"4242","amount":59.90},{"method":"paypal","email":"ada@shop.example","amount":12.00}]
+      card ending 0005: 5
+      PayPal bob@shop.example: 7
+      discriminator not first: rejected
+      True
+      unlisted type: rejected
+    sources:
+      - title: Serialize properties of derived classes — System.Text.Json
+        url: https://learn.microsoft.com/en-us/dotnet/standard/serialization/system-text-json/polymorphism
+    validation: *ran
+  - id: source-generation
+    kind: code
+    title: Source generation with JsonSerializerContext, for trimming and Native AOT
+    note: "The generator writes the metadata and a fast serializer at build time, so nothing is reflected at run time and the code trims and runs under Native AOT; pass `Context.Default.Options` where an API takes options."
+    prerequisites:
+      - .NET 9 SDK or later; the generator ships with the SDK, nothing to install
+      - "`dotnet new console -o Demo`, replace `Demo/Program.cs` with the example, then `dotnet run --project Demo`"
+      - "For AOT, add `<PublishAot>true</PublishAot>` to the `.csproj` — reflection-based serialization is then switched off and every type must be in a context"
+    code: |-
+      using System.Text.Json;
+      using System.Text.Json.Serialization;
+
+      List<Order> orders = [new("o-1", OrderStatus.Paid, 59.90m), new("o-2", OrderStatus.Pending, 12.00m)];
+
+      var json = JsonSerializer.Serialize(orders, ShopJsonContext.Default.ListOrder);   // generated JsonTypeInfo
+      Console.WriteLine(json);
+      var back = JsonSerializer.Deserialize(json, ShopJsonContext.Default.ListOrder)!;
+      Console.WriteLine($"{back.Count} orders, first {back[0].Status}");
+
+      // Proof the generator ran: the fast-path serializer is generated code, not reflection.
+      Console.WriteLine($"generated fast path: {ShopJsonContext.Default.Order.SerializeHandler is not null}");
+
+      // Code that takes options (HttpClient's JSON helpers, ASP.NET Core): pass the context's own options.
+      Console.WriteLine(JsonSerializer.Serialize(back[1], ShopJsonContext.Default.Options));
+      // Other options that merely use the context keep their own naming; the enum converter, baked into
+      // the generated metadata, still applies. Or add the context to the app's options' TypeInfoResolverChain.
+      var other = new JsonSerializerOptions { TypeInfoResolver = ShopJsonContext.Default };
+      Console.WriteLine(JsonSerializer.Serialize(back[1], other));
+
+      enum OrderStatus { Pending, Paid, Shipped }
+      record Order(string Id, OrderStatus Status, decimal Total);
+
+      [JsonSourceGenerationOptions(
+          PropertyNamingPolicy = JsonKnownNamingPolicy.SnakeCaseLower, UseStringEnumConverter = true)]
+      [JsonSerializable(typeof(List<Order>))]
+      partial class ShopJsonContext : JsonSerializerContext { }
+    expected: |-
+      [{"id":"o-1","status":"Paid","total":59.90},{"id":"o-2","status":"Pending","total":12.00}]
+      2 orders, first Paid
+      generated fast path: True
+      {"id":"o-2","status":"Pending","total":12.00}
+      {"Id":"o-2","Status":"Pending","Total":12.00}
+    sources:
+      - title: How to use source generation in System.Text.Json
+        url: https://learn.microsoft.com/en-us/dotnet/standard/serialization/system-text-json/source-generation
+    validation: *ran
+  - id: dynamic-and-streaming
+    kind: code
+    title: "Without a model: JsonNode and JsonDocument — and streaming a big array"
+    note: "`JsonNode` to patch a document you do not own, `JsonDocument` to read a few values cheaply (dispose it), `DeserializeAsyncEnumerable` to process a large array one element at a time."
+    prerequisites: *run
+    code: |-
+      using System.Text;
+      using System.Text.Json;
+      using System.Text.Json.Nodes;
+
+      const string Webhook = """
+          {"event":"order.updated","meta":{"v":3},
+           "order":{"id":"o-1","status":"pending","lines":[{"sku":"sku-7","qty":2}]}}
+          """;
+
+      var node = JsonNode.Parse(Webhook)!;                                         // mutable tree
+      node["order"]!["status"] = "paid";
+      node["order"]!["lines"]!.AsArray().Add(new JsonObject { ["sku"] = "sku-9", ["qty"] = 1 });
+      Console.WriteLine(node["order"]!.ToJsonString());
+
+      using (var doc = JsonDocument.Parse(Webhook))                         // read-only, from pooled buffers
+      {
+          var root = doc.RootElement;
+          var version = root.TryGetProperty("meta", out var meta) && meta.TryGetProperty("v", out var v)
+              ? v.GetInt32()
+              : 1;
+          Console.WriteLine($"{root.GetProperty("event").GetString()} v{version}");
+      }
+
+      // A 10,000-order export: only one element is materialised at a time.
+      var export = new StringBuilder("[");
+      for (var i = 1; i <= 10_000; i++)
+          export.Append(i > 1 ? "," : "").Append($$"""{"id":"o-{{i}}","totalCents":{{i % 100 * 10}}}""");
+      var bytes = Encoding.UTF8.GetBytes(export.Append(']').ToString());
+      await using var stream = new MemoryStream(bytes);                     // a response or file stream in the app
+
+      long count = 0, cents = 0;
+      var rows = JsonSerializer.DeserializeAsyncEnumerable<ExportRow>(stream, JsonSerializerOptions.Web);
+      await foreach (var row in rows)
+      {
+          count++;
+          cents += row!.TotalCents;
+      }
+      Console.WriteLine($"{count} orders, {cents / 100} total");
+
+      record ExportRow(string Id, int TotalCents);
+    expected: |-
+      {"id":"o-1","status":"paid","lines":[{"sku":"sku-7","qty":2},{"sku":"sku-9","qty":1}]}
+      order.updated v3
+      10000 orders, 49500 total
+    sources:
+      - title: Use a JSON DOM — System.Text.Json
+        url: https://learn.microsoft.com/en-us/dotnet/standard/serialization/system-text-json/use-dom
+      - title: JsonSerializer.DeserializeAsyncEnumerable — .NET API
+        url: https://learn.microsoft.com/en-us/dotnet/api/system.text.json.jsonserializer.deserializeasyncenumerable
+    validation: *ran
+  - id: untrusted-input
+    kind: code
+    title: "Untrusted input: refuse unknown members, report the path, then validate"
+    note: "Deserializing proves the shape, not the meaning, so refuse a `null` body and unknown, missing, null and string-typed numeric members, tell the client where with `JsonException.Path`, and then validate the values."
+    prerequisites: *run
+    code: |-
+      using System.ComponentModel.DataAnnotations;
+      using System.Text.Json;
+      using System.Text.Json.Serialization;
+
+      var strict = new JsonSerializerOptions(JsonSerializerDefaults.Web)
+      {
+          UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow,   // "isAdmin": true is refused, not ignored
+          RespectRequiredConstructorParameters = true,                    // a missing "email" is refused, not null
+          RespectNullableAnnotations = true,                              // "email": null is refused too
+          NumberHandling = JsonNumberHandling.Strict,                     // "36" is not 36 (Web defaults allow it)
+          MaxDepth = 16,
+      };
+
+      foreach (var body in new[]
+      {
+          """{"email":"ada@shop.example","displayName":"Ada","age":36}""",
+          """{"age":36}""",
+          "null",
+          """{"email":"ada@shop.example","displayName":"Ada","age":36,"isAdmin":true}""",
+          """{"email":"ada@shop.example","displayName":"Ada","age":"36"}""",
+          """{"email":"not-an-email","displayName":"","age":7}""",
+      })
+          Console.WriteLine(Accept(body, strict));
+
+      static string Accept(string body, JsonSerializerOptions options)
+      {
+          SignUp? request;
+          try { request = JsonSerializer.Deserialize<SignUp>(body, options); }
+          catch (JsonException e) { return $"400 at {e.Path}"; }              // its message can echo the input
+          if (request is null) return "400 at $";                               // the body "null" is valid JSON
+          var problems = new List<ValidationResult>();
+          if (Validator.TryValidateObject(request, new(request), problems, validateAllProperties: true))
+              return $"201 {request.DisplayName}";
+          return $"422 {string.Join("; ", problems.Select(p => p.ErrorMessage))}";
+      }
+
+      record SignUp(
+          [property: Required, EmailAddress] string Email,
+          [property: Required, StringLength(40, MinimumLength = 1)] string DisplayName,
+          [property: Range(13, 120)] int Age);
+    expected: |-
+      201 Ada
+      400 at $
+      400 at $
+      400 at $.isAdmin
+      400 at $.age
+      422 The Email field is not a valid e-mail address.; The DisplayName field is required.; The field Age must be between 13 and 120.
+    sources:
+      - title: Handle overflow JSON or use JsonElement or JsonNode
+        url: https://learn.microsoft.com/en-us/dotnet/standard/serialization/system-text-json/handle-overflow
+      - title: Handle unmapped members during deserialization
+        url: https://learn.microsoft.com/en-us/dotnet/standard/serialization/system-text-json/missing-members
+    validation: *ran
+  - id: xml-serializer-xdocument
+    kind: code
+    title: "XML: XmlSerializer for a typed model, XDocument for a quick read"
+    note: "`XmlSerializer` maps public classes with a parameterless constructor, LINQ to XML is shorter for a value or two, and untrusted XML goes through an `XmlReader` (DTDs prohibited), since `XDocument.Parse` and a `TextReader` accept a DTD and only cap its expansion and skip external entities."
+    prerequisites: *run
+    code: |-
+      using System.Xml;
+      using System.Xml.Linq;
+      using System.Xml.Serialization;
+
+      var order = new OrderXml { Id = "o-1", Status = "paid", Lines = [new() { Sku = "sku-7", Quantity = 2 }] };
+      var serializer = new XmlSerializer(typeof(OrderXml));                 // cache it: building one is expensive
+
+      using var writer = new StringWriter();
+      using (var xml = XmlWriter.Create(writer, new XmlWriterSettings { OmitXmlDeclaration = true }))
+          serializer.Serialize(xml, order, new XmlSerializerNamespaces([XmlQualifiedName.Empty]));   // no xsi, xsd
+      Console.WriteLine(writer);
+
+      // Untrusted XML goes through an XmlReader: its default DtdProcessing.Prohibit refuses any DTD.
+      using var reader = XmlReader.Create(new StringReader(writer.ToString()));
+      var back = (OrderXml)serializer.Deserialize(reader)!;
+      Console.WriteLine($"{back.Id}: {back.Lines.Sum(l => l.Quantity)} item(s)");
+
+      var status = (string?)XDocument.Parse(writer.ToString()).Root!.Element("status");
+      Console.WriteLine($"status via XDocument: {status}");
+
+      [XmlRoot("order")]
+      public class OrderXml
+      {
+          [XmlAttribute("id")] public string Id { get; set; } = "";
+          [XmlElement("status")] public string Status { get; set; } = "";
+          [XmlArray("lines"), XmlArrayItem("line")] public List<LineXml> Lines { get; set; } = [];
+      }
+
+      public class LineXml
+      {
+          [XmlAttribute("sku")] public string Sku { get; set; } = "";
+          [XmlAttribute("qty")] public int Quantity { get; set; }
+      }
+    expected: |-
+      <order id="o-1"><status>paid</status><lines><line sku="sku-7" qty="2" /></lines></order>
+      o-1: 2 item(s)
+      status via XDocument: paid
+    sources:
+      - title: XML serialization — .NET
+        url: https://learn.microsoft.com/en-us/dotnet/standard/serialization/introducing-xml-serialization
+      - title: LINQ to XML overview — .NET
+        url: https://learn.microsoft.com/en-us/dotnet/standard/linq/linq-xml-overview
+    validation: *ran
+  - id: binary-fixed-layout
+    kind: code
+    title: "Binary: a fixed layout with BinaryPrimitives"
+    note: "When size or speed matters (device sync, a cache, a socket protocol), a versioned fixed layout in network byte order with money as integer cents is a few lines, and the writer refuses what the reader would reject."
+    prerequisites: *run
+    code: |-
+      using System.Buffers.Binary;
+      using System.Text;
+
+      // An offline-sync record for a handheld scanner: 33 bytes instead of ~90 of JSON.
+      var line = new OrderLine(1042, Cents: 5990, DateTimeOffset.FromUnixTimeSeconds(1_795_000_000), "sku-7");
+      var bytes = OrderLineCodec.Write(line);
+      Console.WriteLine($"{bytes.Length} bytes: {Convert.ToHexString(bytes)}");     // read it as the next card does
+
+      try { OrderLineCodec.Write(line with { Cents = -1 }); }
+      catch (ArgumentException e) { Console.WriteLine($"not written: {e.Message}"); }
+
+      record OrderLine(int OrderNumber, long Cents, DateTimeOffset PlacedAt, string Sku);   // money in cents
+
+      static class OrderLineCodec
+      {
+          public const byte Version = 1;
+          public const int Size = 1 + 4 + 8 + 8 + 12;                           // version, number, cents, time, SKU
+
+          public static byte[] Write(OrderLine line)
+          {
+              if (line.Cents < 0) throw new ArgumentException("a negative amount");
+              if (line.Sku.Length > 12 || !Ascii.IsValid(line.Sku))
+                  throw new ArgumentException("a SKU is at most 12 ASCII characters");
+              var buffer = new byte[Size];
+              buffer[0] = Version;                                               // bump it when the layout changes
+              BinaryPrimitives.WriteInt32BigEndian(buffer.AsSpan(1), line.OrderNumber);   // network byte order
+              BinaryPrimitives.WriteInt64BigEndian(buffer.AsSpan(5), line.Cents);
+              BinaryPrimitives.WriteInt64BigEndian(buffer.AsSpan(13), line.PlacedAt.ToUnixTimeSeconds());
+              Encoding.ASCII.GetBytes(line.Sku, buffer.AsSpan(21));                // the rest stays zero padding
+              return buffer;
+          }
+      }
+    expected: |-
+      33 bytes: 01000004120000000000001766000000006AFD86C0736B752D3700000000000000
+      not written: a negative amount
+    sources:
+      - title: BinaryPrimitives — .NET API
+        url: https://learn.microsoft.com/en-us/dotnet/api/system.buffers.binary.binaryprimitives
+    validation: *ran
+  - id: binary-reading
+    kind: code
+    title: "Binary: reading an untrusted record"
+    note: "Check the length, the version and every field before trusting it, and fail with one exception type, `InvalidDataException`, for any corrupt input."
+    prerequisites: *run
+    code: |-
+      using System.Buffers.Binary;
+      using System.Text;
+
+      var bytes = Convert.FromHexString("01000004120000000000001766000000006AFD86C0736B752D3700000000000000");
+      var line = OrderLineReader.Read(bytes);                                 // the previous card's record
+      Console.WriteLine($"#{line.OrderNumber} {line.Sku} {line.Cents} cents at {line.PlacedAt:u}");
+
+      byte[] Patched(int at, long value)
+      {
+          var copy = bytes.ToArray();
+          BinaryPrimitives.WriteInt64BigEndian(copy.AsSpan(at), value);
+          return copy;
+      }
+
+      byte[][] damagedRecords =
+      [
+          bytes[..10], [2, .. bytes[1..]],                                     // truncated, an unknown version
+          Patched(5, -1), Patched(13, long.MaxValue),                          // negative cents, an impossible time
+          [.. bytes[..21], 0xFF, .. bytes[22..]],                              // a non-ASCII byte in the SKU
+      ];
+      foreach (var damaged in damagedRecords)
+      {
+          try { OrderLineReader.Read(damaged); }
+          catch (InvalidDataException e) { Console.WriteLine($"rejected: {e.Message}"); }   // the only type thrown
+      }
+
+      record OrderLine(int OrderNumber, long Cents, DateTimeOffset PlacedAt, string Sku);
+
+      static class OrderLineReader
+      {
+          static readonly long MaxSeconds = DateTimeOffset.MaxValue.ToUnixTimeSeconds();
+
+          public static OrderLine Read(ReadOnlySpan<byte> data)
+          {
+              if (data.Length != 33) throw new InvalidDataException($"expected 33 bytes, got {data.Length}");
+              if (data[0] != 1) throw new InvalidDataException($"unknown version {data[0]}");
+              var cents = BinaryPrimitives.ReadInt64BigEndian(data[5..]);
+              if (cents < 0) throw new InvalidDataException("a negative amount");
+              var seconds = BinaryPrimitives.ReadInt64BigEndian(data[13..]);
+              if (seconds < 0 || seconds > MaxSeconds) throw new InvalidDataException("a time out of range");
+              if (!Ascii.IsValid(data[21..])) throw new InvalidDataException("a SKU that is not ASCII");
+              var sku = Encoding.ASCII.GetString(data[21..]).TrimEnd('\0');
+              var placedAt = DateTimeOffset.FromUnixTimeSeconds(seconds);
+              return new(BinaryPrimitives.ReadInt32BigEndian(data[1..]), cents, placedAt, sku);
+          }
+      }
+    expected: |-
+      #1042 sku-7 5990 cents at 2026-11-18 11:06:40Z
+      rejected: expected 33 bytes, got 10
+      rejected: unknown version 2
+      rejected: a negative amount
+      rejected: a time out of range
+      rejected: a SKU that is not ASCII
+    sources:
+      - title: BinaryPrimitives — .NET API
+        url: https://learn.microsoft.com/en-us/dotnet/api/system.buffers.binary.binaryprimitives
+      - title: Ascii.IsValid — .NET API
+        url: https://learn.microsoft.com/en-us/dotnet/api/system.text.ascii.isvalid
+    validation: *ran
+  - id: serialization-pitfalls
+    kind: rules
+    title: Pitfalls worth saying out loud
+    note: And where a schema-first format fits.
+    items:
+      - tone: bad
+        text: "`new JsonSerializerOptions()` inside a method called per request: every instance rebuilds its cache. Keep one `static readonly` instance (or `JsonSerializerOptions.Web`)."
+      - tone: bad
+        text: "Trusting that a non-nullable `string` is never null after deserializing: it is not enforced unless `RespectNullableAnnotations` (an explicit `null`) and `RespectRequiredConstructorParameters` (a missing member) are both on (.NET 9) — or you validate."
+      - tone: bad
+        text: "Assuming .NET 9 refuses a duplicate key or a huge body: the last of two `email` members wins (.NET 10 adds `AllowDuplicateProperties = false`), and the whole body is parsed before validation, so cap it first (Kestrel `MaxRequestBodySize`, `[RequestSizeLimit]`)."
+      - tone: bad
+        text: "`TypeNameHandling` in Newtonsoft.Json or `BinaryFormatter` on untrusted data: both can instantiate arbitrary types. `BinaryFormatter` is removed from .NET 9; use `[JsonPolymorphic]` with an allow-list."
+      - tone: bad
+        text: "`DateTime` without a kind on the wire: send `DateTimeOffset` (or UTC), and `DateOnly` for calendar dates."
+      - tone: bad
+        text: "Returning `JsonException.Message` to a client: it can quote the input. Return the `Path` and a fixed message."
+      - tone: good
+        text: "Use source generation (`JsonSerializerContext`) in MAUI, Blazor WebAssembly and anything trimmed or AOT-compiled: reflection-based metadata may be trimmed away."
+      - tone: good
+        text: "Treat the JSON shape as a contract: add members as optional, never repurpose a name, and version the payload when meaning changes."
+      - tone: neutral
+        text: "**Schema-first binary**: Protobuf (`Google.Protobuf`, generated from `.proto` by `Grpc.Tools`) or MessagePack (`MessagePack-CSharp`, `[MessagePackObject]` with `[Key(n)]`) are smaller and faster; numbered fields make old and new versions compatible. Reach for them for gRPC, caches and device sync — keep JSON for public APIs."

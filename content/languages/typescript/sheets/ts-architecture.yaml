@@ -1,0 +1,449 @@
+id: ts-architecture
+concept: architecture.approaches
+scope: shared
+title: "Architectural Approaches"
+group: "Design & practice"
+subtitle: "MVC, MVVM, Flux and clean/hexagonal layering for web and Node apps — compared, then built without a framework so the shape is visible."
+applies:
+  platforms: [node, browser]
+  runtime: any ES2023 engine; the examples run on Node.js
+  versions: { typescript: ">=5.5", node: ">=22.18" }
+sources:
+  - title: The Clean Architecture — Robert C. Martin
+    url: https://blog.cleancoder.com/uncle-bob/2012/08/13/the-clean-architecture.html
+  - title: Hexagonal Architecture — Alistair Cockburn
+    url: https://alistair.cockburn.us/hexagonal-architecture/
+  - title: Redux
+    url: https://redux.js.org/
+  - title: Feature-Sliced Design
+    url: https://feature-sliced.design/
+cards:
+  - id: comparison
+    kind: table
+    title: The common approaches compared
+    note: The question is always the same three things — which way data flows, where the logic lives, and what you can test without a browser or a server.
+    headers: [Approach, Data flow, Where logic lives, Testability, Best for]
+    rows:
+      - ["MVC (server)", "request → controller → model → view template", "controllers and models; controllers grow fat", "medium: controllers need HTTP fakes", "server-rendered apps, small APIs"]
+      - ["MVVM", "view ⇄ view model (observable state) → model", "view models: hooks, composables, Angular services, signal stores", "high: a view model is plain code", "component UIs in React, Vue, Angular, Solid"]
+      - ["Flux / Redux", "action → reducer → one store → view → action", "pure reducers; thunks or middleware for effects", "very high: reducers are pure functions", "state shared by many screens; undo, devtools, replay"]
+      - ["Clean / hexagonal", "adapters → use cases → domain; dependencies point inward", "domain and use cases, free of frameworks", "very high: swap adapters for in-memory ones", "long-lived business rules, Node services, several front ends over one core"]
+      - ["Route loaders and actions", "the route loads on the server, the component renders, a form posts back", "route modules (React Router, Remix, Next.js server code)", "medium: needs a request to test", "data-heavy web apps where the server owns the data"]
+      - ["By feature: Feature-Sliced Design, vertical slices", "each feature (front end) or each request handler (back end) owns its UI, state and data access", "inside the feature or the slice", "high: one feature's tests at a time", "growing teams; combines with any row above"]
+  - id: mvvm-done-properly
+    kind: code
+    title: MVVM done properly
+    note: "The view model owns state and logic, takes its repository and error reporter as parameters, and knows nothing about the DOM — bind it in React with `useSyncExternalStore(vm.subscribe, vm.getState)`."
+    prerequisites: &run
+      - Node.js 22.18 or later (it runs `.mts` files directly by stripping the types)
+      - "Save as `main.mts` and run `node main.mts` (top-level `await` needs a module: the `.mts` extension makes it one)"
+      - "Optional type-check: `npm i -D typescript @types/node`, then `npx tsc --noEmit --strict --target esnext --module nodenext main.mts`"
+    code: |-
+      type Order = { id: string; totalCents: number };
+      type OrdersViewState = { status: "loading" } | { status: "failed"; message: string }
+        | { status: "loaded"; rows: string[]; total: string };
+
+      const eur = (cents: number) => `€${(cents / 100).toFixed(2)}`;   // Intl.NumberFormat in a real app
+
+      function createOrdersViewModel(repository: { list(): Promise<Order[]> }, report: (error: unknown) => void) {
+        let state: OrdersViewState = { status: "loading" };
+        let latest = 0;                                    // only the newest load may write (next card)
+        const listeners = new Set<() => void>();
+
+        const set = (next: OrdersViewState) => {
+          state = next;
+          listeners.forEach((notify) => notify());
+        };
+
+        return {
+          getState: () => state,
+          subscribe(notify: () => void) {
+            listeners.add(notify);
+            return () => listeners.delete(notify);
+          },
+          async load() {
+            const request = ++latest;
+            set({ status: "loading" });
+            try {
+              const orders = await repository.list();
+              if (request !== latest) return;
+              const total = eur(orders.reduce((sum, order) => sum + order.totalCents, 0));
+              set({ status: "loaded", rows: orders.map((o) => `${o.id} ${eur(o.totalCents)}`), total });
+            } catch (error) {
+              report(error);                               // the cause, for diagnostics
+              if (request === latest) set({ status: "failed", message: "Could not load your orders." });
+            }
+          },
+        };
+      }
+
+      const replies = [() => Promise.resolve([{ id: "A-1", totalCents: 4250 }, { id: "A-2", totalCents: 1500 }]),
+        () => Promise.reject<Order[]>(new Error("503 Service Unavailable"))];
+      const vm = createOrdersViewModel({ list: () => replies.shift()!() },
+        (error) => console.log("reported:", String(error)));
+
+      vm.subscribe(() => console.log(JSON.stringify(vm.getState())));   // the view: renders on each change
+      await vm.load();
+      await vm.load();                                     // the refresh fails
+    expected: |-
+      {"status":"loading"}
+      {"status":"loaded","rows":["A-1 €42.50","A-2 €15.00"],"total":"€57.50"}
+      {"status":"loading"}
+      reported: Error: 503 Service Unavailable
+      {"status":"failed","message":"Could not load your orders."}
+    validation: &ran
+      status: ran
+      toolchain: Node 24.16.0, TypeScript 5.9.3
+      date: "2026-11-16"
+  - id: stale-responses
+    kind: code
+    title: "Stale responses: only the newest request may write"
+    note: "Requests overlap whenever the user is faster than the network, so a view model numbers each one and drops any answer that is no longer the newest (aborting the superseded `fetch` as well saves the bandwidth)."
+    prerequisites: *run
+    code: |-
+      // A search box's view model: one request per keystroke, and the answers can arrive in any order.
+      function createSearchViewModel(search: (query: string) => Promise<string[]>, show: (text: string) => void) {
+        let latest = 0;
+        return {
+          async onInput(query: string) {
+            const request = ++latest;
+            const results = await search(query);
+            if (request !== latest) return;                // a newer query was typed: this answer is stale
+            show(`${query} → ${results.join(", ")}`);
+          },
+        };
+      }
+
+      // A fake backend whose replies the demo releases by hand, newest first.
+      const pending = new Map<string, PromiseWithResolvers<string[]>>();
+      function search(query: string): Promise<string[]> {
+        const reply = Promise.withResolvers<string[]>();
+        pending.set(query, reply);
+        return reply.promise;
+      }
+
+      const vm = createSearchViewModel(search, (text) => console.log("shown:", text));
+      const typing = [vm.onInput("mu"), vm.onInput("mug")];
+
+      pending.get("mug")!.resolve(["mug", "travel mug"]);              // the newer query answers first…
+      pending.get("mu")!.resolve(["mug", "muffin tin", "mustard"]);    // …the older one lands late: dropped
+      await Promise.all(typing);
+      console.log("rendered once, for the newest query");
+    expected: |-
+      shown: mug → mug, travel mug
+      rendered once, for the newest query
+    validation: *ran
+  - id: repository-and-use-case
+    kind: code
+    title: "The clean core: a repository and a use case"
+    note: "The domain declares the repository type it needs and adapters outside implement it, so dependencies point inward and the core runs with an in-memory adapter."
+    prerequisites: *run
+    code: |-
+      // ---- domain: no fetch, no SQL, no framework ----
+      type OrderState = { kind: "placed" } | { kind: "shipped" } | { kind: "cancelled"; at: string };
+      type Order = { id: string; totalCents: number; state: OrderState };
+      type OrderRepository = {                          // declared BY the domain, implemented outside it
+        byId(id: string): Promise<Order | undefined>;
+        save(order: Order): Promise<void>;
+      };
+
+      type CancelResult = { ok: true; order: Order } | { ok: false; reason: "not-found" | "not-cancellable" };
+
+      // A use case is one verb, with its dependencies passed in.
+      function makeCancelOrder(deps: { orders: OrderRepository; now: () => Date }) {
+        return async function cancelOrder(id: string): Promise<CancelResult> {
+          const order = await deps.orders.byId(id);
+          if (!order) return { ok: false, reason: "not-found" };
+          if (order.state.kind !== "placed") return { ok: false, reason: "not-cancellable" };
+          const cancelled: Order = { ...order, state: { kind: "cancelled", at: deps.now().toISOString() } };
+          await deps.orders.save(cancelled);
+          return { ok: true, order: cancelled };
+        };
+      }
+
+      // ---- data layer: one adapter per technology (SQL, REST, and in-memory for tests) ----
+      function inMemoryOrders(seed: Order[]): OrderRepository {
+        const rows = new Map(seed.map((order) => [order.id, order]));
+        return {
+          byId: async (id) => rows.get(id),
+          save: async (order) => {
+            rows.set(order.id, order);
+          },
+        };
+      }
+
+      // ---- composition root: the only place that knows both sides ----
+      const orders = inMemoryOrders([
+        { id: "A-1", totalCents: 4250, state: { kind: "placed" } },
+        { id: "A-2", totalCents: 1500, state: { kind: "shipped" } },
+      ]);
+
+      const cancelOrder = makeCancelOrder({ orders, now: () => new Date("2026-11-16T09:30:00Z") });
+
+      for (const id of ["A-1", "A-2", "A-9"]) {
+        const result = await cancelOrder(id);
+        if (result.ok) console.log(id, "cancelled at", JSON.stringify(result.order.state));
+        else console.log(id, "refused:", result.reason);
+      }
+    expected: |-
+      A-1 cancelled at {"kind":"cancelled","at":"2026-11-16T09:30:00.000Z"}
+      A-2 refused: not-cancellable
+      A-9 refused: not-found
+    validation: *ran
+  - id: driving-adapter
+    kind: code
+    title: "Hexagonal in Node: HTTP is just an adapter"
+    note: "The HTTP handler translates a request into a use-case call and the result into a status code; swap it for a CLI or a queue consumer and the core does not change."
+    prerequisites: *run
+    code: |-
+      import { once } from "node:events";
+      import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+      import type { AddressInfo } from "node:net";
+
+      // The core (from the use-case card), reduced to its signature and an in-memory store.
+      type CancelResult = { ok: true; id: string } | { ok: false; reason: "not-found" | "not-cancellable" };
+      const states = new Map([["A-1", "placed"], ["A-2", "shipped"]]);
+
+      async function cancelOrder(id: string): Promise<CancelResult> {
+        const state = states.get(id);
+        if (state !== "placed") return { ok: false, reason: state === undefined ? "not-found" : "not-cancellable" };
+        states.set(id, "cancelled");
+        return { ok: true, id };
+      }
+
+      // The driving adapter owns everything HTTP: routes, methods, status codes, JSON.
+      const STATUS = { "not-found": 404, "not-cancellable": 409 } as const;
+
+      async function handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
+        const match = /^\/orders\/([\w-]+)\/cancel$/.exec(request.url ?? "");
+        if (request.method !== "POST" || !match) {
+          response.writeHead(404).end();
+          return;
+        }
+        const result = await cancelOrder(match[1]!);
+        response.writeHead(result.ok ? 200 : STATUS[result.reason], { "content-type": "application/json" });
+        response.end(JSON.stringify(result.ok ? { id: result.id, state: "cancelled" } : { error: result.reason }));
+      }
+
+      // A throw in the core becomes a 500, not an unhandled rejection that kills the process.
+      const server = createServer((request, response) => {
+        handle(request, response).catch((error: unknown) => {
+          console.error(error);
+          if (!response.headersSent) response.writeHead(500);
+          response.end();
+        });
+      });
+
+      await once(server.listen(0, "127.0.0.1"), "listening");
+      const { port } = server.address() as AddressInfo;
+
+      for (const id of ["A-1", "A-1", "A-9"]) {
+        const response = await fetch(`http://127.0.0.1:${port}/orders/${id}/cancel`, { method: "POST" });
+        console.log(response.status, await response.text());
+      }
+
+      server.close();
+      server.closeAllConnections();   // fetch keeps connections alive; let the process exit now
+    expected: |-
+      200 {"id":"A-1","state":"cancelled"}
+      409 {"error":"not-cancellable"}
+      404 {"error":"not-found"}
+    sources:
+      - title: HTTP — Node.js
+        url: https://nodejs.org/api/http.html
+    validation: *ran
+  - id: routing-as-a-concern
+    kind: code
+    title: Routing as its own concern
+    note: "Routes are a union of values: views ask to go to `{ name: \"order\", id }`, and only the router knows URLs, encoding, guards and history."
+    prerequisites: *run
+    code: |-
+      type Route =
+        | { name: "orders" }
+        | { name: "order"; id: string }
+        | { name: "checkout" }
+        | { name: "sign-in"; returnTo: string }
+        | { name: "not-found"; path: string };
+
+      function hrefFor(route: Route): string {
+        switch (route.name) {
+          case "orders": return "/orders";
+          case "order": return `/orders/${encodeURIComponent(route.id)}`;
+          case "checkout": return "/checkout";
+          case "sign-in": return `/sign-in?returnTo=${encodeURIComponent(route.returnTo)}`;
+          case "not-found": return route.path;
+        }
+      }
+
+      // A guard is a pure function of the route and the session.
+      function guard(to: Route, session: { signedIn: boolean }): Route {
+        if (to.name === "checkout" && !session.signedIn) return { name: "sign-in", returnTo: hrefFor(to) };
+        return to;
+      }
+
+      // Views call navigate({ name: "order", id }); only the router knows URLs, guards and history.
+      // In a browser, `push` is history.pushState, and a popstate listener parses location.href.
+      function createRouter(session: { signedIn: boolean }, push: (href: string) => void) {
+        return {
+          navigate(to: Route) {
+            push(hrefFor(guard(to, session)));
+          },
+        };
+      }
+
+      const session = { signedIn: false };
+      const router = createRouter(session, (href) => console.log("pushState", href));
+
+      router.navigate({ name: "order", id: "A/1 é" });     // encoded once, here
+      router.navigate({ name: "checkout" });               // guarded: sign in first, then come back
+      session.signedIn = true;
+      router.navigate({ name: "checkout" });
+    expected: |-
+      pushState /orders/A%2F1%20%C3%A9
+      pushState /sign-in?returnTo=%2Fcheckout
+      pushState /checkout
+    validation: *ran
+  - id: parsing-untrusted-links
+    kind: code
+    title: Parsing links you did not write
+    note: "Every URL a user can paste is hostile input, so parsing never throws — a malformed link becomes not-found — and `returnTo` can only point back at this site."
+    prerequisites: *run
+    code: |-
+      type Route =
+        | { name: "orders" }
+        | { name: "order"; id: string }
+        | { name: "checkout" }
+        | { name: "sign-in"; returnTo: string }
+        | { name: "not-found"; path: string };
+
+      const SITE = "https://shop.example";                // in a browser: location.origin
+
+      // Only a same-origin path may come back, or sign-in becomes an open redirect; comparing origins
+      // also catches "//evil.example" and "/\evil.example".
+      function safeReturnTo(target: string | null): string {
+        if (target === null || !URL.canParse(target, SITE)) return "/orders";
+        const url = new URL(target, SITE);
+        return url.origin === SITE ? url.pathname + url.search : "/orders";
+      }
+
+      // Links come from anywhere, so nothing here may throw: a malformed one is simply "not found".
+      function parseRoute(url: string): Route {
+        if (!URL.canParse(url, SITE)) return { name: "not-found", path: url };
+        const { pathname, searchParams } = new URL(url, SITE);
+        const [section, id, ...rest] = pathname.split("/").filter(Boolean);
+        if (section === "orders" && rest.length === 0) {
+          if (id === undefined) return { name: "orders" };
+          try {
+            return { name: "order", id: decodeURIComponent(id) };
+          } catch {
+            return { name: "not-found", path: pathname };    // a broken %-escape
+          }
+        }
+        if (section === "checkout" && id === undefined) return { name: "checkout" };
+        if (section === "sign-in") return { name: "sign-in", returnTo: safeReturnTo(searchParams.get("returnTo")) };
+        return { name: "not-found", path: pathname };
+      }
+
+      console.log(parseRoute("/orders/A%2F1%20%C3%A9"), parseRoute("/orders/%E0%A4%A"));
+
+      const targets = ["/checkout", "https://evil.example/phish", "//evil.example", "/\\evil.example", "http://["];
+      for (const target of targets) {
+        const route = parseRoute(`/sign-in?returnTo=${encodeURIComponent(target)}`);
+        console.log(target, "→", route.name === "sign-in" ? route.returnTo : route.name);
+      }
+    expected: |-
+      { name: 'order', id: 'A/1 é' } { name: 'not-found', path: '/orders/%E0%A4%A' }
+      /checkout → /checkout
+      https://evil.example/phish → /orders
+      //evil.example → /orders
+      /\evil.example → /orders
+      http://[ → /orders
+    sources:
+      - title: Unvalidated redirects and forwards — OWASP Cheat Sheet Series
+        url: https://cheatsheetseries.owasp.org/cheatsheets/Unvalidated_Redirects_and_Forwards_Cheat_Sheet.html
+    validation: *ran
+  - id: unidirectional-flow
+    kind: code
+    title: Unidirectional flow without a library
+    note: "A pure reducer returns the next state and a description of the effect; the store runs it and feeds the result back as an action, which says what it was computed for so a late answer cannot overwrite newer state."
+    prerequisites: *run
+    code: |-
+      type State = { items: string[]; quoteCents?: number; pending: boolean };
+      type Action =
+        | { type: "itemAdded"; sku: string }
+        | { type: "quoteRequested" }
+        | { type: "quoteReceived"; skus: string[]; cents: number };   // says which cart it priced
+      type Effect = { type: "fetchQuote"; skus: string[] };            // a description, not a promise
+
+      function reduce(state: State, action: Action): [State, Effect?] {
+        switch (action.type) {
+          case "itemAdded":                                    // any quote, even one in flight, is now stale
+            return [{ items: [...state.items, action.sku], pending: false }];
+          case "quoteRequested":
+            return [{ ...state, pending: true }, { type: "fetchQuote", skus: state.items }];
+          case "quoteReceived":
+            if (action.skus.join() !== state.items.join()) return [state];   // a late answer for an old cart
+            return [{ ...state, pending: false, quoteCents: action.cents }];
+        }
+      }
+
+      type Listener = (action: Action, state: State) => void;
+
+      function createStore(initial: State, runEffect: (effect: Effect) => Promise<Action>) {
+        let state = initial;
+        const listeners = new Set<Listener>();
+        async function dispatch(action: Action): Promise<void> {
+          const [next, effect] = reduce(state, action);
+          state = next;
+          listeners.forEach((listener) => listener(action, state));
+          if (effect) await dispatch(await runEffect(effect));        // effects re-enter as actions
+        }
+        return { dispatch, subscribe: (listener: Listener) => { listeners.add(listener); } };
+      }
+
+      const quoteApi = async ({ skus }: Effect): Promise<Action> =>
+        ({ type: "quoteReceived", skus, cents: skus.length * 499 });
+      const store = createStore({ items: ["mug"], pending: false }, quoteApi);
+      store.subscribe((action, state) => console.log(action.type.padEnd(14), JSON.stringify(state)));
+      const firstQuote = store.dispatch({ type: "quoteRequested" });
+      await store.dispatch({ type: "itemAdded", sku: "lamp" });        // the user keeps shopping meanwhile
+      await firstQuote;                                                 // its answer arrives late: ignored
+      await store.dispatch({ type: "quoteRequested" });
+    expected: |-
+      quoteRequested {"items":["mug"],"pending":true}
+      itemAdded      {"items":["mug","lamp"],"pending":false}
+      quoteReceived  {"items":["mug","lamp"],"pending":false}
+      quoteRequested {"items":["mug","lamp"],"pending":true}
+      quoteReceived  {"items":["mug","lamp"],"pending":false,"quoteCents":998}
+    validation: *ran
+  - id: feature-sliced-structure
+    kind: table
+    title: Feature-Sliced Design structure
+    note: "Organise by what the product does, not by file type; each layer imports only the layers below it, and a change to checkout should touch one folder."
+    headers: [Folder, Holds, May import]
+    rows:
+      - ["`app/`", "the composition root: providers, router, store setup, validated config", "everything"]
+      - ["`pages/` (or `routes/`)", "one module per route, composing widgets and features", "`widgets`, `features`, `entities`, `shared`"]
+      - ["`widgets/`", "composite UI blocks reused across pages: a header, an order summary panel", "`features`, `entities`, `shared`"]
+      - ["`features/checkout/`", "one user-facing capability: its components, view model, use cases, API calls and tests", "`entities`, `shared` — never another feature"]
+      - ["`features/checkout/index.ts`", "the feature's public surface; everything else in the folder is private", "—"]
+      - ["`entities/order/`", "domain types and pure rules several features share", "`shared`"]
+      - ["`shared/`", "design system, HTTP client, formatting — no business words", "nothing above it"]
+      - ["enforcement", "Steiger (the FSD linter), `import/no-restricted-paths` or `eslint-plugin-boundaries`; package `exports` once features become packages", "—"]
+  - id: which-architecture
+    kind: rules
+    title: How to answer "which architecture would you use?"
+    note: Constraints first, then the lightest structure that protects them.
+    items:
+      - tone: good
+        text: "Start with the **constraints**: team size, app lifetime, how much state is shared between screens, server- or client-rendered, how strict the testing bar is."
+      - tone: good
+        text: "Name the invariants: one owner per piece of state, no business logic in components, routes as data, a domain that imports no framework."
+      - tone: good
+        text: "Then pick the lightest fit — usually components with hooks or view models plus a repository per backend; a store (Redux Toolkit, Zustand) when many screens share state; a hexagonal core when the rules outlive the UI."
+      - tone: neutral
+        text: "Say what you would **not** do: no clean-architecture layers on a three-screen app, no global store for state one component owns."
+      - tone: neutral
+        text: "The seams matter more than the acronym: dependencies passed in, server state cached in one place (TanStack Query, RTK Query), navigation owned by the router."
+      - tone: bad
+        text: "Answering with one acronym and no trade-off is the actual failure mode — so is choosing by framework fashion rather than by the data flow."

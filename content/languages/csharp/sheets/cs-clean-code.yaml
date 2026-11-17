@@ -1,0 +1,607 @@
+id: cs-clean-code
+concept: practice.clean-code
+scope: shared
+title: "Clean Code in C#"
+group: "Design & practice"
+subtitle: "Names that follow the .NET guidelines, small methods, option records over flags, XML docs, exceptions versus Try and result types, guard clauses, strongly typed ids and clean tests — each before/after proved to behave the same."
+applies:
+  platforms: [dotnet]
+  runtime: .NET (any app model; the examples are console apps)
+  versions: { csharp: ">=12", dotnet: ">=8" }
+sources:
+  - title: Naming guidelines — Framework design guidelines
+    url: https://learn.microsoft.com/en-us/dotnet/standard/design-guidelines/naming-guidelines
+  - title: C# identifier naming rules and conventions
+    url: https://learn.microsoft.com/en-us/dotnet/csharp/fundamentals/coding-style/identifier-names
+  - title: Best practices for exceptions — .NET
+    url: https://learn.microsoft.com/en-us/dotnet/standard/exceptions/best-practices-for-exceptions
+  - title: Unit testing best practices — .NET
+    url: https://learn.microsoft.com/en-us/dotnet/core/testing/unit-testing-best-practices
+cards:
+  - id: rule-to-idiom
+    kind: table
+    title: "Uncle Bob rule → C# idiom"
+    note: The classic rules still hold; the compiler and the BCL already enforce or encode most of them.
+    headers: [Clean Code rule, The C# way to satisfy it]
+    rows:
+      - ["Avoid `null`", "`<Nullable>enable</Nullable>`; `?` only where absence is real; `??`, `?.`, `is not null`; return `[]`, never a `null` list"]
+      - ["Don't return error codes", "exceptions for the exceptional; the `TryX(…, out T)` pattern when failing is ordinary; a small result record when the caller needs the reason"]
+      - ["Prefer polymorphism to `switch`", "an interface or virtual method when the set of kinds is open; a `switch` expression over a closed record hierarchy when it is not"]
+      - ["Encapsulate conditionals", "a named property or method: `order.IsRefundable`"]
+      - ["Avoid output arguments", "return a value, a record or a tuple; `out` only for the Try-pattern"]
+      - ["No flag arguments", "an `enum`, named arguments, or an options record with defaults"]
+      - ["Avoid primitive obsession", "`readonly record struct OrderId`, created by one parser at the boundary"]
+      - ["Validate arguments", "`ArgumentNullException.ThrowIfNull(x)`, `ArgumentException.ThrowIfNullOrWhiteSpace(s)`, `ArgumentOutOfRangeException.ThrowIfNegative(n)`"]
+      - ["Separate construction from use", "constructor injection; the composition root (`Program.cs`) registers the services"]
+      - ["Comments explain why", "`///` XML docs on public API (IntelliSense shows them); `// why` beside surprising code; never `// what`"]
+  - id: naming
+    kind: compare
+    title: Naming
+    note: "Follow the .NET guidelines — `PascalCase` types, members and constants, `camelCase` locals and parameters, `I` on interfaces, `Async` on awaitable methods, `Is`/`Has`/`Can` on booleans, no abbreviations or Hungarian prefixes."
+    prerequisites: &run
+      - .NET 8 SDK or later
+      - "`dotnet new console -o Demo`, replace `Demo/Program.cs` with the example, then `dotnet run --project Demo`"
+    columns:
+      - label: Don't
+        tone: bad
+        code: |-
+          var list1 = new List<O>
+          {
+              new("A-1", 42.00m, 2, 3),
+              new("A-2", 15.00m, 1, 12),
+              new("A-3", 99.00m, 2, 45),
+          };
+
+          var flag = Proc(list1).Count > 0;
+          Console.WriteLine($"{string.Join(",", Proc(list1))} {flag}");
+
+          static List<string> Proc(List<O> a)
+          {
+              var r = new List<string>();
+              foreach (var o in a)
+                  if (o.s == 2 && o.d < 30) r.Add(o.i);   // 2? 30?
+              return r;
+          }
+
+          record O(string i, decimal t, int s, int d);
+      - label: Do
+        tone: good
+        code: |-
+          Order[] orders =
+          [
+              new("A-1", 42.00m, OrderStatus.Delivered, AgeInDays: 3),
+              new("A-2", 15.00m, OrderStatus.Placed, AgeInDays: 12),
+              new("A-3", 99.00m, OrderStatus.Delivered, AgeInDays: 45),
+          ];
+
+          var refundableIds = RefundPolicy.RefundableOrderIds(orders);
+          var hasRefundableOrders = refundableIds.Count > 0;
+          Console.WriteLine($"{string.Join(",", refundableIds)} {hasRefundableOrders}");
+
+          enum OrderStatus { Placed, Delivered }
+
+          record Order(string Id, decimal Total, OrderStatus Status, int AgeInDays);
+
+          static class RefundPolicy
+          {
+              public const int RefundWindowDays = 30;        // PascalCase, not REFUND_WINDOW_DAYS
+
+              public static IReadOnlyList<string> RefundableOrderIds(IEnumerable<Order> orders) =>
+                  orders.Where(order => order.Status == OrderStatus.Delivered && order.AgeInDays < RefundWindowDays)
+                        .Select(order => order.Id)
+                        .ToList();
+          }
+    expected: |-
+      A-1 True
+    validation: &ran
+      status: ran
+      toolchain: .NET SDK 9.0.304 (net9.0, C# 13)
+      date: "2026-11-16"
+  - id: small-methods
+    kind: compare
+    title: "Small methods, one level of abstraction"
+    note: When a method needs blank lines or comments to separate its steps, each step wants to be a method with that name.
+    prerequisites: *run
+    columns:
+      - label: Before
+        tone: bad
+        code: |-
+          using System.Globalization;
+
+          var cart = new Cart(CustomerTier.Pro,
+          [
+              new CartItem("mug", 12.00m, Quantity: 2, OnSale: true),
+              new CartItem("lamp", 99.00m, Quantity: 1, OnSale: false),
+          ]);
+          var receipt = Checkout(cart);
+          Console.WriteLine(string.Create(CultureInfo.InvariantCulture,
+              $"total {receipt.Total:0.00}, tax {receipt.Tax:0.00}"));
+
+          static Receipt Checkout(Cart cart)
+          {
+              var total = 0m;
+              foreach (var item in cart.Items)
+              {
+                  var price = item.UnitPrice;
+                  if (item.OnSale) price *= 0.8m;
+                  if (cart.Tier == CustomerTier.Pro) price *= 0.9m;
+                  total += price * item.Quantity;
+              }
+              if (total > 100m) total -= 5m;
+              var tax = Math.Round(total * 0.21m, 2, MidpointRounding.AwayFromZero);
+              return new Receipt(total + tax, tax);
+          }
+
+          enum CustomerTier { Free, Pro }
+          record CartItem(string Sku, decimal UnitPrice, int Quantity, bool OnSale);
+          record Cart(CustomerTier Tier, IReadOnlyList<CartItem> Items);
+          record Receipt(decimal Total, decimal Tax);
+      - label: After
+        tone: good
+        code: |-
+          using System.Globalization;
+
+          var cart = new Cart(CustomerTier.Pro,
+          [
+              new CartItem("mug", 12.00m, Quantity: 2, OnSale: true),
+              new CartItem("lamp", 99.00m, Quantity: 1, OnSale: false),
+          ]);
+          var receipt = Pricing.Checkout(cart);
+          Console.WriteLine(string.Create(CultureInfo.InvariantCulture,
+              $"total {receipt.Total:0.00}, tax {receipt.Tax:0.00}"));
+
+          static class Pricing
+          {
+              private const decimal SaleMultiplier = 0.8m, ProMultiplier = 0.9m;
+              private const decimal BulkThreshold = 100m, BulkDiscount = 5m, TaxRate = 0.21m;
+
+              public static Receipt Checkout(Cart cart)                // reads like the spec
+              {
+                  var subtotal = cart.Items.Sum(item => LinePrice(item, cart.Tier));
+                  var discounted = ApplyBulkDiscount(subtotal);
+                  var tax = TaxOn(discounted);
+                  return new Receipt(discounted + tax, tax);
+              }
+
+              private static decimal LinePrice(CartItem item, CustomerTier tier) =>
+                  item.UnitPrice
+                  * (item.OnSale ? SaleMultiplier : 1m)
+                  * (tier == CustomerTier.Pro ? ProMultiplier : 1m)
+                  * item.Quantity;
+
+              private static decimal ApplyBulkDiscount(decimal subtotal) =>
+                  subtotal > BulkThreshold ? subtotal - BulkDiscount : subtotal;
+
+              // Tax law rounds half-cents up; Math.Round alone would round 0.125 to even (0.12)
+              private static decimal TaxOn(decimal amount) =>
+                  Math.Round(amount * TaxRate, 2, MidpointRounding.AwayFromZero);
+          }
+
+          enum CustomerTier { Free, Pro }
+          record CartItem(string Sku, decimal UnitPrice, int Quantity, bool OnSale);
+          record Cart(CustomerTier Tier, IReadOnlyList<CartItem> Items);
+          record Receipt(decimal Total, decimal Tax);
+    expected: |-
+      total 122.67, tax 21.29
+    validation: *ran
+  - id: options-over-flags
+    kind: compare
+    title: "Arguments: an enum and an options record over bool flags"
+    note: "`Describe(order, true, false)` says nothing at the call site; an enum names the choice, and an options record with `init` properties can gain settings without breaking compiled callers."
+    prerequisites: *run
+    columns:
+      - label: Flags
+        tone: bad
+        code: |-
+          using System.Globalization;
+
+          var order = new Order("A-1", 42.50m, "shipped");
+          Console.WriteLine(OrderText.Describe(order, true, false));     // which bool is which?
+          Console.WriteLine(OrderText.Describe(order, false, true));
+
+          record Order(string Id, decimal Total, string Status);
+
+          static class OrderText
+          {
+              public static string Describe(Order order, bool compact, bool includeTotal)
+              {
+                  if (compact) return order.Id;
+                  var text = $"Order {order.Id} is {order.Status}";
+                  return includeTotal
+                      ? text + string.Create(CultureInfo.InvariantCulture, $" ({order.Total:0.00} EUR)")
+                      : text;
+              }
+          }
+      - label: Named options
+        tone: good
+        code: |-
+          using System.Globalization;
+
+          var order = new Order("A-1", 42.50m, "shipped");
+          Console.WriteLine(OrderText.Describe(order, new() { Style = OrderTextStyle.Compact }));
+          Console.WriteLine(OrderText.Describe(order, new() { IncludeTotal = true }));
+          // Two settings? Named optional parameters read the same: Describe(order, includeTotal: true)
+
+          record Order(string Id, decimal Total, string Status);
+
+          enum OrderTextStyle { Sentence, Compact }
+
+          // init properties, not positional parameters: a new setting does not change the constructor,
+          // so callers compiled against the old package keep working
+          sealed record DescribeOptions
+          {
+              public OrderTextStyle Style { get; init; } = OrderTextStyle.Sentence;
+              public bool IncludeTotal { get; init; }
+          }
+
+          static class OrderText
+          {
+              public static string Describe(Order order, DescribeOptions options) => options switch
+              {
+                  { Style: OrderTextStyle.Compact } => order.Id,
+                  { IncludeTotal: true } => $"{Sentence(order)} {Total(order)}",
+                  _ => Sentence(order),
+              };
+
+              private static string Sentence(Order order) => $"Order {order.Id} is {order.Status}";
+              private static string Total(Order order) =>
+                  string.Create(CultureInfo.InvariantCulture, $"({order.Total:0.00} EUR)");
+          }
+    expected: |-
+      A-1
+      Order A-1 is shipped (42.50 EUR)
+    validation: *ran
+  - id: comments-and-xml-docs
+    kind: compare
+    title: "Comments that earn their place, and XML docs"
+    note: "Delete comments that repeat the code and code that is commented out; keep the one that explains a surprise, and document public API with `///`."
+    prerequisites: *run
+    columns:
+      - label: Noise
+        tone: bad
+        code: |-
+          Console.WriteLine(Session.IsSignedIn(new ApiResponse(200, """{"user":"ada"}""")));
+          Console.WriteLine(Session.IsSignedIn(new ApiResponse(200, "")));
+          Console.WriteLine(Session.IsSignedIn(new ApiResponse(401, "")));
+
+          record ApiResponse(int Status, string Body);
+
+          static class Session
+          {
+              // checks if signed in
+              public static bool IsSignedIn(ApiResponse response)
+              {
+                  // if the status is 200
+                  if (response.Status == 200)
+                  {
+                      // and the body is not empty
+                      return response.Body.Length > 0;
+                  }
+                  // otherwise return false
+                  return false;
+
+                  // old version, kept just in case
+                  // return response.Status == 200;
+              }
+          }
+      - label: Useful
+        tone: good
+        code: |-
+          Console.WriteLine(Session.IsSignedIn(new ApiResponse(200, """{"user":"ada"}""")));
+          Console.WriteLine(Session.IsSignedIn(new ApiResponse(200, "")));
+          Console.WriteLine(Session.IsSignedIn(new ApiResponse(401, "")));
+
+          record ApiResponse(int Status, string Body);
+
+          static class Session
+          {
+              /// <summary>Whether a <c>GET /session</c> response means the user is still signed in.</summary>
+              /// <param name="response">The session endpoint's response.</param>
+              /// <returns><see langword="true"/> only for a 200 that carries a session body.</returns>
+              public static bool IsSignedIn(ApiResponse response)
+              {
+                  // The gateway answers an expired token with an empty 200 instead of a 401
+                  // (ticket OPS-4821), so the status code alone cannot be trusted.
+                  var hasSessionBody = response.Body.Length > 0;
+                  return response.Status == 200 && hasSessionBody;
+              }
+          }
+    expected: |-
+      True
+      False
+      False
+    sources:
+      - title: Documentation comments — C# language reference
+        url: https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/xmldoc/
+    validation: *ran
+  - id: errors-over-sentinels
+    kind: compare
+    title: "Exceptions, Try-pattern and result types over sentinel values"
+    note: "Throw for the exceptional (a bug, a missing config file); use `TryParse` when failure is ordinary; return a small result hierarchy when the caller must know why."
+    prerequisites: *run
+    columns:
+      - label: Sentinels
+        tone: bad
+        code: |-
+          using System.Globalization;
+
+          foreach (var input in new[] { "3", "three", "250" })
+          {
+              var quantity = ParseQuantity(input);
+              if (quantity == -1) Console.WriteLine($"{input}: not a whole number");
+              else if (quantity == -2) Console.WriteLine($"{input}: must be 1 to 99");
+              else Console.WriteLine($"{input}: ok, {quantity}");
+              // Forget one check and -1 flows into the cart total.
+          }
+
+          // -1 = not a number, -2 = out of range. Every caller has to remember.
+          static int ParseQuantity(string input)
+          {
+              try
+              {
+                  var n = int.Parse(input, CultureInfo.InvariantCulture);
+                  return n is >= 1 and <= 99 ? n : -2;
+              }
+              catch (FormatException)
+              {
+                  return -1;                     // an exception used as control flow
+              }
+          }
+      - label: Result type
+        tone: good
+        code: |-
+          using System.Diagnostics;
+          using System.Globalization;
+
+          foreach (var input in new[] { "3", "three", "250" })
+          {
+              var message = QuantityResult.Parse(input) switch
+              {
+                  QuantityResult.Ok(var quantity) => $"ok, {quantity}",
+                  QuantityResult.NotAWholeNumber => "not a whole number",
+                  QuantityResult.OutOfRange(_, var min, var max) => $"must be {min} to {max}",
+                  _ => throw new UnreachableException(),
+              };
+              Console.WriteLine($"{input}: {message}");
+          }
+
+          abstract record QuantityResult
+          {
+              public sealed record Ok(int Quantity) : QuantityResult;
+              public sealed record NotAWholeNumber(string Input) : QuantityResult;
+              public sealed record OutOfRange(int Value, int Min, int Max) : QuantityResult;
+
+              private QuantityResult() { }                         // closed: only the three above
+
+              public static QuantityResult Parse(string input)
+              {
+                  if (!int.TryParse(input, NumberStyles.Integer, CultureInfo.InvariantCulture, out var n))
+                      return new NotAWholeNumber(input);           // the Try-pattern: no exception thrown
+                  return n is >= 1 and <= 99 ? new Ok(n) : new OutOfRange(n, 1, 99);
+              }
+          }
+    expected: |-
+      3: ok, 3
+      three: not a whole number
+      250: must be 1 to 99
+    validation: *ran
+  - id: guard-clauses
+    kind: compare
+    title: "Guard clauses and early return"
+    note: "Throw on a caller's bug with `ArgumentNullException.ThrowIfNull`, return early on the expected edge cases, and keep the happy path at the left margin."
+    prerequisites: *run
+    columns:
+      - label: Nested
+        tone: bad
+        code: |-
+          var payment = new Payment("pay_1", 42.50m);
+          Console.WriteLine(Webhooks.Handle(new WebhookEvent("payment.succeeded", SignatureValid: true, payment)));
+          Console.WriteLine(Webhooks.Handle(new WebhookEvent("payment.succeeded", SignatureValid: false, payment)));
+          Console.WriteLine(Webhooks.Handle(new WebhookEvent("refund.created", SignatureValid: true, null)));
+          try { Webhooks.Handle(null!); }
+          catch (ArgumentNullException e) { Console.WriteLine($"bug: {e.ParamName} was null"); }
+
+          record Payment(string Id, decimal Amount);
+          record WebhookEvent(string Type, bool SignatureValid, Payment? Payment);
+
+          static class Webhooks
+          {
+              public static string Handle(WebhookEvent webhookEvent)
+              {
+                  if (webhookEvent != null)
+                  {
+                      if (webhookEvent.SignatureValid)
+                      {
+                          if (webhookEvent.Type == "payment.succeeded" && webhookEvent.Payment != null)
+                          {
+                              return $"fulfil {webhookEvent.Payment.Id}";
+                          }
+                          else
+                          {
+                              return $"ignored: {webhookEvent.Type}";
+                          }
+                      }
+                      else
+                      {
+                          return "rejected: bad signature";
+                      }
+                  }
+                  throw new ArgumentNullException(nameof(webhookEvent));
+              }
+          }
+      - label: Flat
+        tone: good
+        code: |-
+          var payment = new Payment("pay_1", 42.50m);
+          Console.WriteLine(Webhooks.Handle(new WebhookEvent("payment.succeeded", SignatureValid: true, payment)));
+          Console.WriteLine(Webhooks.Handle(new WebhookEvent("payment.succeeded", SignatureValid: false, payment)));
+          Console.WriteLine(Webhooks.Handle(new WebhookEvent("refund.created", SignatureValid: true, null)));
+          try { Webhooks.Handle(null!); }
+          catch (ArgumentNullException e) { Console.WriteLine($"bug: {e.ParamName} was null"); }
+
+          record Payment(string Id, decimal Amount);
+          record WebhookEvent(string Type, bool SignatureValid, Payment? Payment);
+
+          static class Webhooks
+          {
+              public static string Handle(WebhookEvent webhookEvent)
+              {
+                  ArgumentNullException.ThrowIfNull(webhookEvent);      // names the parameter for you
+
+                  if (!webhookEvent.SignatureValid) return "rejected: bad signature";
+                  if (webhookEvent is not { Type: "payment.succeeded", Payment: { } paid })
+                      return $"ignored: {webhookEvent.Type}";
+
+                  return $"fulfil {paid.Id}";
+              }
+          }
+    expected: |-
+      fulfil pay_1
+      rejected: bad signature
+      ignored: refund.created
+      bug: webhookEvent was null
+    sources:
+      - title: ArgumentNullException.ThrowIfNull — .NET API
+        url: https://learn.microsoft.com/en-us/dotnet/api/system.argumentnullexception.throwifnull
+    validation: *ran
+  - id: strongly-typed-ids
+    kind: code
+    title: "Strongly typed ids over primitives"
+    note: "Two `string` ids are interchangeable to the compiler; a `readonly record struct` makes swapping them a compile error, with value equality and no allocation."
+    prerequisites: *run
+    code: |-
+      var order = OrderId.Parse("ord_42");
+      var customer = new CustomerId(7);
+
+      Console.WriteLine(Receipts.Describe(order, customer));
+      // Receipts.Describe(customer, order);   // error CS1503: cannot convert from 'CustomerId' to 'OrderId'
+      Console.WriteLine(order == OrderId.Parse("ord_42"));
+      Console.WriteLine(OrderId.TryParse("42", out _));
+      Console.WriteLine(new OrderId().IsValid);           // compiles, so validity is checked at the edges
+
+      static class Receipts
+      {
+          public static string Describe(OrderId order, CustomerId customer) => $"receipt for {order} to {customer}";
+      }
+
+      readonly record struct CustomerId(int Value)
+      {
+          public override string ToString() => $"cus_{Value}";
+      }
+
+      // Parse once at the boundary; everything downstream can trust the type.
+      readonly record struct OrderId
+      {
+          public string Value { get; }
+          private OrderId(string value) => Value = value;
+
+          public static OrderId Parse(string raw) =>
+              TryParse(raw, out var id) ? id : throw new FormatException($"'{raw}' is not an order id");
+
+          public static bool TryParse(string? raw, out OrderId id)
+          {
+              if (raw is not { Length: > 4 } || !raw.StartsWith("ord_", StringComparison.Ordinal))
+              {
+                  id = default;
+                  return false;
+              }
+              id = new OrderId(raw);
+              return true;
+          }
+
+          // default(OrderId) and new OrderId() skip Parse: a struct always has a parameterless constructor.
+          // Check IsValid where one can arrive (a default field, deserialization — which needs a JsonConverter).
+          public bool IsValid => Value is not null;
+
+          public override string ToString() => Value;
+      }
+    expected: |-
+      receipt for ord_42 to cus_7
+      True
+      False
+      False
+    validation: *ran
+  - id: clean-test
+    kind: code
+    title: "A clean test: arrange, act, assert"
+    note: "Name the behaviour, build inputs with a factory and inject a `FakeTimeProvider`, so the test is fast, independent and repeatable."
+    prerequisites:
+      - .NET 8 SDK or later
+      - "`dotnet new xunit -o Shop.Tests`, then `dotnet add Shop.Tests package Microsoft.Extensions.TimeProvider.Testing`"
+      - "Add the file and run `dotnet test Shop.Tests` (with `latest-recommended` analyzers, silence CA1707 for test projects — see the Modularization sheet)"
+    code: |-
+      using Microsoft.Extensions.Time.Testing;
+      using Xunit;
+
+      namespace Shop.Tests;
+
+      // Production code, shown for context
+      public enum RefundDecision { Eligible, NotDelivered, WindowClosed }
+
+      public sealed record Order(string Id, DateTimeOffset? DeliveredAt);
+
+      public sealed class RefundPolicy(TimeProvider clock)
+      {
+          public RefundDecision Check(Order order) => order.DeliveredAt switch
+          {
+              null => RefundDecision.NotDelivered,
+              DateTimeOffset at when clock.GetUtcNow() - at <= TimeSpan.FromDays(30) => RefundDecision.Eligible,
+              _ => RefundDecision.WindowClosed,
+          };
+      }
+
+      public class RefundPolicyTests
+      {
+          private static readonly DateTimeOffset Now = new(2026, 11, 16, 9, 0, 0, TimeSpan.Zero);
+          private readonly RefundPolicy policy = new(new FakeTimeProvider(Now));   // xUnit: a new instance per test
+
+          private static Order DeliveredDaysAgo(int days) => new("ord_1", Now.AddDays(-days));
+
+          [Fact]
+          public void Rejects_an_order_delivered_more_than_30_days_ago()
+          {
+              var order = DeliveredDaysAgo(31);                      // Arrange
+
+              var decision = policy.Check(order);                    // Act
+
+              Assert.Equal(RefundDecision.WindowClosed, decision);   // Assert
+          }
+
+          [Theory]
+          [InlineData(0)]
+          [InlineData(30)]
+          public void Accepts_an_order_inside_the_window(int days) =>
+              Assert.Equal(RefundDecision.Eligible, policy.Check(DeliveredDaysAgo(days)));
+      }
+    expected: "`dotnet test` reports three passing tests (one fact, two theory cases) and exits with status 0."
+    applies:
+      requires: [xUnit, Microsoft.Extensions.TimeProvider.Testing]
+      versions: { csharp: ">=12", dotnet: ">=8", xunit: ">=2.4", microsoft-extensions-timeprovider-testing: ">=8.0" }
+    validation:
+      status: excerpt
+      host: an xUnit test project (`dotnet new xunit`)
+  - id: smells-and-first
+    kind: rules
+    title: "Smell checklist, and F.I.R.S.T. tests"
+    note: Name the smell out loud in review; it turns a taste argument into a shared vocabulary.
+    items:
+      - tone: bad
+        text: "**Long method / god class** — many reasons to change and no honest name; a `partial` class or a `#region` hides it, it does not fix it."
+      - tone: bad
+        text: "**Deep nesting** — invert the condition, return early, and let a `switch` expression replace the `if`/`else` ladder."
+      - tone: bad
+        text: "**Duplicated logic** — the third copy is when you extract; two copies may still be a coincidence."
+      - tone: bad
+        text: "**Primitive obsession** — `string` for an id, an email or a currency; give it a `readonly record struct`."
+      - tone: bad
+        text: "**Boolean blindness** — `IsLoading`, `HasError`, `IsEmpty` encoding one state; use an `enum` or a record hierarchy."
+      - tone: bad
+        text: "**Null-forgiving `!` and `catch (Exception) { }`** — each one silences the compiler or the failure instead of handling it."
+      - tone: bad
+        text: "**Feature envy** — a method that mostly reads another class's properties belongs on that class."
+      - tone: bad
+        text: "**Temporal coupling** — `Initialize()` must run before `Start()`; make the constructor or a factory return a ready object."
+      - tone: good
+        text: "**F.I.R.S.T.** tests are **Fast** (no network, no `Task.Delay`), **Independent** (no shared mutable statics, any order), **Repeatable** (inject `TimeProvider`, ids and randomness), **Self-validating** (an `Assert`, never a log to eyeball) and **Timely** (written with the change)."
+      - tone: neutral
+        text: "**The boy scout rule** — leave the file cleaner than you found it, in small commits that keep the tests green."

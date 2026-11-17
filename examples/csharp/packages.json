@@ -1,0 +1,13 @@
+{
+  "$comment": "The NuGet packages a C# example may reference, pinned exactly. scripts/run-examples.mts adds a package (and nuget.org as the only source) to an example whose code matches `when`; every other example builds with the SDK alone and no package source. Adding a library is adding an entry here.",
+  "packages": [
+    { "id": "System.Reactive", "version": "6.1.0", "when": "using System\\.Reactive" },
+    { "id": "Microsoft.Reactive.Testing", "version": "6.1.0", "when": "using Microsoft\\.Reactive\\.Testing" },
+    { "id": "CommunityToolkit.Mvvm", "version": "8.4.2", "when": "using CommunityToolkit\\.Mvvm" },
+    { "id": "Microsoft.Extensions.DependencyInjection", "version": "10.0.15", "when": "using Microsoft\\.Extensions\\.DependencyInjection" },
+    { "id": "Microsoft.Extensions.Logging.Console", "version": "10.0.15", "when": "using Microsoft\\.Extensions\\.Logging" },
+    { "id": "Microsoft.Extensions.TimeProvider.Testing", "version": "9.10.0", "when": "using Microsoft\\.Extensions\\.Time\\.Testing" },
+    { "id": "Microsoft.AspNetCore.TestHost", "version": "9.0.23", "when": "using Microsoft\\.AspNetCore\\.TestHost" },
+    { "id": "xunit.v3", "version": "3.2.2", "when": "using Xunit" }
+  ]
+}

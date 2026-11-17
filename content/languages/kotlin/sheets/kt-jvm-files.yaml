@@ -128,6 +128,611 @@ cards:
       }
     expected: "[src/main/App.kt]"
     validation: *ran
+  - id: where-things-belong
+    kind: table
+    title: Where things belong
+    note: The JVM gives you a temp directory and a home directory; everything else is a convention you resolve once, at startup.
+    headers: [Location, How to get it, Survives, Use for]
+    rows:
+      - ["Temporary", "`createTempDirectory(\"app\")` (under `java.io.tmpdir`)", "until you delete it — or the OS cleans `/tmp`", "scratch files for one operation; delete in `finally`"]
+      - ["User home", "`Path(System.getProperty(\"user.home\"))`", "yes", "the root to build the per-OS data directory from — never write straight into it"]
+      - ["Per-user app data", "no JDK API: `$XDG_DATA_HOME` (default `~/.local/share/<app>`) on Linux, `~/Library/Application Support/<app>` on macOS, `%LOCALAPPDATA%` on Windows (`%APPDATA%` only for small settings that should roam)", "yes", "settings, databases, state you must keep"]
+      - ["Per-user caches", "`~/.cache/<app>` (`$XDG_CACHE_HOME`), `~/Library/Caches/<app>`, `%LOCALAPPDATA%`", "until the user or a cleaner removes it", "re-creatable data: thumbnails, downloads you can fetch again"]
+      - ["Working directory", "`Path(\"\").toAbsolutePath()` (`user.dir`)", "—", "**never assume it**: it is wherever the process was started. Resolve against an explicit root"]
+      - ["Classpath resources", "`javaClass.getResourceAsStream(\"/seed.json\")`", "read-only, inside the jar", "shipped defaults; not a `Path` — it may live inside a zip"]
+      - ["Android", "`context.filesDir` / `context.cacheDir` (and `noBackupFilesDir`)", "`filesDir` until uninstall (and in Auto Backup unless excluded); `cacheDir` may be cleared by the system when storage is low", "app-private data / re-creatable caches; no permission needed"]
+  - id: read-strategy-by-size
+    kind: table
+    title: Read strategy by file size
+    note: The API you choose is a memory decision — pick it from the size and the access pattern, not from habit.
+    headers: [The file, API, What sits in memory]
+    rows:
+      - ["small (up to a few MB), needed whole", "`readText()` / `readLines()` / `readBytes()`", "the whole file"]
+      - ["any size, read once in order", "`useLines { }` / `bufferedReader()` / `inputStream().buffered()`", "one line or one buffer at a time"]
+      - ["any size, a record by number", "an offset index + `RandomAccessFile.seek` or `FileChannel.read(buffer, position)`", "8 bytes of index per record"]
+      - ["huge and read-mostly, random access", "`FileChannel.map(MapMode.READ_ONLY, position, size)`", "pages the OS faults in on demand; one `MappedByteBuffer` covers at most 2 GB, so map in slices"]
+  - id: path-not-string
+    kind: code
+    title: Path over String
+    note: "Build paths with `resolve` (`/`) and `normalize`, never concatenation — and refuse a user-supplied name that escapes its directory."
+    prerequisites: *run
+    code: |-
+      import java.nio.file.Path
+      import kotlin.io.path.*
+
+      /** Resolves an untrusted file name inside `root`, refusing blanks, `../` and absolute paths. */
+      fun safeChild(root: Path, untrustedName: String): Path {
+          require(untrustedName.isNotBlank()) { "empty file name" }
+          val candidate = root.resolve(untrustedName).normalize()
+          // A lexical check: when entries can be symlinks (an unpacked zip), also require
+          // candidate.parent.toRealPath().startsWith(root.toRealPath()).
+          require(candidate.startsWith(root.normalize())) { "outside the export directory: $untrustedName" }
+          return candidate
+      }
+
+      fun main() {
+          val root = Path("exports")                          // relative here only so the output is portable
+          val report = root / "2026" / "orders report.csv"    // `/` is resolve(): one separator, spaces kept
+          println(report.invariantSeparatorsPathString)
+          println("${report.name} | ${report.nameWithoutExtension} | ${report.extension} | ${report.parent?.name}")
+          println(Path("exports/2026/../2025/./q4.csv").normalize().invariantSeparatorsPathString)
+          println(root.relativize(report).invariantSeparatorsPathString)
+
+          println(safeChild(root, "q4.csv").invariantSeparatorsPathString)
+          for (attack in listOf("../../etc/passwd", "/etc/passwd", "")) {
+              println(runCatching { safeChild(root, attack) }.exceptionOrNull()?.message)
+          }
+          // "exports" + "/" + name breaks on Windows separators, doubled slashes and names containing "/".
+      }
+    expected: |-
+      exports/2026/orders report.csv
+      orders report.csv | orders report | csv | 2026
+      exports/2025/q4.csv
+      2026/orders report.csv
+      exports/q4.csv
+      outside the export directory: ../../etc/passwd
+      outside the export directory: /etc/passwd
+      empty file name
+    sources:
+      - title: Path — Java SE 17 API
+        url: https://docs.oracle.com/en/java/javase/17/docs/api/java.base/java/nio/file/Path.html
+    validation: &ran21
+      status: ran
+      toolchain: kotlinc 2.4.21, JVM 21.0.12.1
+      date: "2026-11-16"
+  - id: real-durability
+    kind: code
+    title: "Real durability: force, and syncing the directory"
+    note: "A payments ledger that must survive a power cut the moment `append` returns: force the file, and fsync the directory when the name is new."
+    prerequisites: *run
+    code: |-
+      import java.io.IOException
+      import java.nio.ByteBuffer
+      import java.nio.channels.FileChannel
+      import java.nio.file.Path
+      import java.nio.file.StandardOpenOption.*
+      import kotlin.io.path.*
+
+      // flush()          -> the OS page cache: survives the process crashing, not the machine
+      // force(false)     -> the file's content on the device
+      // force(true)      -> content and metadata (size, timestamps) — an append changes the size
+      // directory force  -> the directory entry itself: a new file's name, or a rename
+      // macOS: the JDK's force() issues F_FULLFSYNC, so it reaches the medium, not just the drive cache.
+
+      fun syncDirectory(dir: Path) {
+          val channel = try {
+              FileChannel.open(dir, READ)
+          } catch (e: IOException) {
+              return                                            // Windows cannot open a directory as a channel
+          }
+          channel.use { it.force(true) }                        // a failure here is real: let it reach the caller
+      }
+
+      fun appendDurably(ledger: Path, line: String) {
+          val isNew = ledger.notExists()
+          FileChannel.open(ledger, CREATE, WRITE, APPEND).use { channel ->
+              val bytes = ByteBuffer.wrap("$line\n".encodeToByteArray())
+              while (bytes.hasRemaining()) channel.write(bytes)
+              channel.force(true)
+          }
+          if (isNew) syncDirectory(ledger.parent)               // same after an ATOMIC_MOVE into the directory
+      }
+
+      fun main() {
+          val dir = createTempDirectory("ledger")
+          try {
+              val ledger = dir / "payments.log"
+              appendDurably(ledger, "pay-1 captured 42.00")
+              appendDurably(ledger, "pay-2 captured 9.99")
+              println(ledger.readLines())
+          } finally {
+              dir.toFile().deleteRecursively()
+          }
+      }
+    expected: |-
+      [pay-1 captured 42.00, pay-2 captured 9.99]
+    sources:
+      - title: FileChannel.force — Java SE 17 API
+        url: https://docs.oracle.com/en/java/javase/17/docs/api/java.base/java/nio/channels/FileChannel.html#force(boolean)
+      - title: fsync — The Open Group Base Specifications
+        url: https://pubs.opengroup.org/onlinepubs/9799919799/functions/fsync.html
+    validation: *ran21
+  - id: streaming-a-large-write
+    kind: code
+    title: Streaming a large write
+    note: "Export 200 000 orders without holding them: a lazy Sequence through a 256 KB buffer, forced to the device and published atomically when complete."
+    prerequisites: *run
+    code: |-
+      import java.nio.channels.FileChannel
+      import java.nio.file.Files
+      import java.nio.file.Path
+      import java.nio.file.StandardCopyOption
+      import java.nio.file.StandardOpenOption
+      import kotlin.io.path.*
+
+      data class OrderRow(val id: Int, val customer: String, val cents: Long)
+
+      fun exportCsv(rows: Sequence<OrderRow>, target: Path) {
+          val temp = Files.createTempFile(target.parent, ".${target.name}", ".tmp")
+          try {
+              // The 256 KB buffer sits below the text encoder, so the file sees one write per ~256 KB, not per row.
+              Files.newOutputStream(temp).buffered(256 * 1024).bufferedWriter().use { out ->
+                  out.appendLine("id,customer,cents")
+                  for (row in rows) out.appendLine("${row.id},${row.customer},${row.cents}")
+              }
+              FileChannel.open(temp, StandardOpenOption.WRITE).use { it.force(true) }   // on the device first
+              Files.move(temp, target, StandardCopyOption.ATOMIC_MOVE)
+          } finally {
+              temp.deleteIfExists()                                         // still there only if something failed
+          }
+      }
+
+      fun main() {
+          val dir = createTempDirectory("export")
+          try {
+              val target = dir / "orders.csv"
+              val rows = generateSequence(1) { it + 1 }.take(200_000)
+                  .map { OrderRow(it, "customer-${it % 1000}", it * 125L) }
+              exportCsv(rows, target)
+              println("${target.useLines { it.count() }} lines")
+              println("directory holds ${dir.listDirectoryEntries().map { it.name }}")              // no temp left
+              println(target.useLines { it.drop(1).first() })
+          } finally {
+              dir.toFile().deleteRecursively()
+          }
+      }
+    expected: |-
+      200001 lines
+      directory holds [orders.csv]
+      1,customer-1,125
+    validation: *ran21
+  - id: external-merge-sort
+    kind: code
+    title: Algorithm — external merge sort
+    note: "Sort a file bigger than memory: sorted runs of a chunk each, then a k-way merge through a heap — O(n log n) time, O(chunk + k) memory."
+    prerequisites: *run
+    code: |-
+      import java.io.BufferedReader
+      import java.nio.file.Path
+      import java.util.PriorityQueue
+      import kotlin.io.path.*
+      import kotlin.random.Random
+
+      fun makeRuns(input: Path, size: Int, dir: Path): List<Path> = input.useLines { lines ->
+          lines.chunked(size).mapIndexed { i, chunk -> (dir / "run-$i.txt").apply { writeLines(chunk.sorted()) } }
+              .toList()
+      }
+
+      fun mergeRuns(runs: List<Path>, output: Path) {         // thousands of runs: merge ~100 per pass
+          val readers = ArrayList<BufferedReader>()
+          try {
+              runs.mapTo(readers) { it.bufferedReader() }            // in the try: a failed open closes the rest
+              val heads = PriorityQueue<Pair<String, BufferedReader>>(compareBy { it.first })
+              for (reader in readers) reader.readLine()?.let { heads += it to reader }
+              output.bufferedWriter().use { out ->
+                  while (heads.isNotEmpty()) {
+                      val (line, reader) = heads.poll()                      // the smallest line of all runs
+                      out.appendLine(line)
+                      reader.readLine()?.let { heads += it to reader }
+                  }
+              }
+          } finally {
+              readers.forEach { it.close() }
+          }
+      }
+
+      fun main() {
+          val dir = createTempDirectory("sort")
+          try {
+              val input = dir / "order-ids.txt"
+              input.writeLines((1..10_000).shuffled(Random(7)).map { "order-" + it.toString().padStart(5, '0') })
+              val runs = makeRuns(input, size = 1_000, dir = dir)
+              val output = dir / "sorted.txt"
+              mergeRuns(runs, output)
+              val sorted = output.useLines { lines -> lines.zipWithNext().all { (a, b) -> a <= b } }
+              println("${runs.size} runs, sorted=$sorted")
+          } finally {
+              dir.toFile().deleteRecursively()                               // the runs too
+          }
+      }
+    expected: |-
+      10 runs, sorted=true
+    validation: *ran21
+  - id: offset-index
+    kind: code
+    title: Algorithm — an offset index for random access
+    note: "Jump to line n of a 100 000-line export without reading what precedes it: index the line starts once, then seek."
+    prerequisites: *run
+    code: |-
+      import java.io.RandomAccessFile
+      import java.nio.file.Path
+      import kotlin.io.path.*
+
+      /** Line-start offsets in one buffered pass: 8 bytes per line once built (a boxed list while building). */
+      fun buildIndex(file: Path): LongArray {
+          val starts = mutableListOf(0L)
+          file.inputStream().use { input ->
+              val chunk = ByteArray(64 * 1024)
+              var position = 0L
+              while (true) {
+                  val n = input.read(chunk)
+                  if (n == -1) break
+                  for (i in 0 until n) if (chunk[i] == '\n'.code.toByte()) starts += position + i + 1
+                  position += n
+              }
+          }
+          if (starts.last() == file.fileSize()) starts.removeAt(starts.lastIndex)   // no line after a final \n
+          return starts.toLongArray()
+      }
+
+      fun RandomAccessFile.lineAt(index: LongArray, n: Int): String {      // fixed-width: offset = n × size
+          val end = if (n + 1 < index.size) index[n + 1] else length()
+          val bytes = ByteArray((end - index[n]).toInt())
+          seek(index[n])
+          readFully(bytes)
+          return bytes.decodeToString().removeSuffix("\n").removeSuffix("\r")    // LF or CRLF
+      }
+
+      fun main() {
+          val dir = createTempDirectory("index")
+          try {
+              val export = dir / "orders.csv"
+              export.writeLines((0 until 100_000).map { "order-$it,${if (it % 3 == 0) "shipped" else "open"}" })
+              val index = buildIndex(export)
+              RandomAccessFile(export.toFile(), "r").use { file ->         // keep it open across lookups
+                  val lines = listOf(0, 41_999, 99_999).map { file.lineAt(index, it) }
+                  println("${index.size} lines: ${lines.joinToString(" | ")}")
+              }
+          } finally {
+              dir.toFile().deleteRecursively()
+          }
+      }
+    expected: |-
+      100000 lines: order-0,shipped | order-41999,open | order-99999,shipped
+    validation: *ran21
+  - id: tail-last-lines
+    kind: code
+    title: Algorithm — tail, the last n lines
+    note: "The last lines of a multi-gigabyte log by reading 8 KB blocks backwards — the same answer as `tail -n` for LF, CRLF, blank lines and empty files."
+    prerequisites: *run
+    code: |-
+      import java.io.RandomAccessFile
+      import java.nio.file.Path
+      import kotlin.io.path.*
+
+      /** Reads backwards until more than `count` newlines are in hand. Cost O(tail), not O(file). */
+      fun lastLines(file: Path, count: Int): List<String> {
+          if (count <= 0) return emptyList()
+          return RandomAccessFile(file.toFile(), "r").use { raf ->
+              if (raf.length() == 0L) return emptyList()
+              var offset = raf.length()
+              val blocks = ArrayDeque<ByteArray>()                     // prepend without re-copying the tail
+              var newlines = 0
+              while (offset > 0 && newlines <= count) {
+                  val block = ByteArray(minOf(8192L, offset).toInt())
+                  offset -= block.size
+                  raf.seek(offset)
+                  raf.readFully(block)
+                  newlines += block.count { it == '\n'.code.toByte() }
+                  blocks.addFirst(block)
+              }
+              val text = blocks.fold(ByteArray(0)) { acc, block -> acc + block }.decodeToString()
+              // Only the final terminator ends a line; earlier blank lines are lines too.
+              text.removeSuffix("\n").removeSuffix("\r").split("\r\n", "\n").takeLast(count)
+          }
+      }
+
+      fun main() {
+          val dir = createTempDirectory("tail")
+          try {
+              val log = dir / "access.log"
+              log.writeText((1..5_000).joinToString("") { "GET /orders/$it\r\n" })     // CRLF, as on Windows
+              val notes = (dir / "notes.txt").apply { writeText("first\nsecond\n\n") }
+              val empty = (dir / "empty.txt").apply { writeText("") }
+              println(lastLines(log, 2))                                   // across many 8 KB blocks
+              // `tail -n 2` of notes.txt is "second" and the blank line, so an empty string comes last.
+              println("${lastLines(notes, 2)} ${lastLines(notes, 0)} ${lastLines(empty, 3)}")
+          } finally {
+              dir.toFile().deleteRecursively()
+          }
+      }
+    expected: |-
+      [GET /orders/4999, GET /orders/5000]
+      [second, ] [] []
+    validation: *ran21
+  - id: dedupe-and-checksum
+    kind: code
+    title: Algorithm — dedupe and checksum
+    note: "Two one-pass utilities for an access log: keep the first occurrence of each line, and a streaming SHA-256 that never loads the file."
+    prerequisites: *run
+    code: |-
+      import java.nio.file.Path
+      import java.security.MessageDigest
+      import java.util.HexFormat
+      import kotlin.io.path.*
+
+      /** Copies the first occurrence of each line. Memory O(distinct lines): beyond that, external-sort first. */
+      fun dedupe(input: Path, output: Path): Int {
+          val seen = HashSet<String>()
+          output.bufferedWriter().use { out ->
+              input.useLines { lines -> lines.filter(seen::add).forEach { out.appendLine(it) } }
+          }
+          return seen.size
+      }
+
+      /** Constant memory however big the file: feed the digest one buffer at a time. */
+      fun sha256(file: Path): String {
+          val digest = MessageDigest.getInstance("SHA-256")
+          file.inputStream().use { input ->
+              val buffer = ByteArray(64 * 1024)
+              while (true) {
+                  val n = input.read(buffer)
+                  if (n == -1) break
+                  digest.update(buffer, 0, n)
+              }
+          }
+          return HexFormat.of().formatHex(digest.digest())
+      }
+
+      fun main() {
+          val dir = createTempDirectory("log")
+          try {
+              val log = dir / "access.log"
+              log.writeText((1..5_000).joinToString("") { "GET /orders/${it % 300} 200\n" })
+              println("${dedupe(log, dir / "unique.log")} distinct lines of 5000")
+              println(sha256(log))
+          } finally {
+              dir.toFile().deleteRecursively()
+          }
+      }
+    expected: |-
+      300 distinct lines of 5000
+      6d417695b11eb31c29bb3a1b676dac5cbe66142419226cc511f0f3e7bb83e3ca
+    sources:
+      - title: MessageDigest — Java SE 17 API
+        url: https://docs.oracle.com/en/java/javase/17/docs/api/java.base/java/security/MessageDigest.html
+    validation: *ran21
+  - id: attributes-and-permissions
+    kind: code
+    title: Attributes & permissions
+    note: "Read size and type in one call, and create a token file owner-only from the first byte — chmod after writing leaves a window."
+    prerequisites: *run
+    code: |-
+      import java.nio.file.Files
+      import java.nio.file.LinkOption.NOFOLLOW_LINKS
+      import java.nio.file.attribute.BasicFileAttributes
+      import java.nio.file.attribute.PosixFilePermissions
+      import kotlin.io.path.*
+
+      fun main() {
+          val dir = createTempDirectory("attrs")
+          try {
+              val report = (dir / "report.csv").apply { writeText("id,total\n1,42\n") }
+
+              // One call, one stat: size, type and times together. NOFOLLOW_LINKS, or a link reports its target.
+              val attrs = report.readAttributes<BasicFileAttributes>(NOFOLLOW_LINKS)
+              println("${attrs.size()} bytes, regular=${attrs.isRegularFile}, symlink=${attrs.isSymbolicLink}")
+
+              if ("posix" in dir.fileSystem.supportedFileAttributeViews()) {
+                  // The mode is set by the create itself, so no other user can ever open the token.
+                  val ownerOnly = PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rw-------"))
+                  val token = Files.createFile(dir / "refresh.token", ownerOnly)
+                  token.writeText("placeholder-not-a-real-token")
+                  println("token ${PosixFilePermissions.toString(token.getPosixFilePermissions())}")
+
+                  report.setPosixFilePermissions(PosixFilePermissions.fromString("rw-r--r--"))
+                  println("report ${PosixFilePermissions.toString(report.getPosixFilePermissions())}")
+              } else {
+                  println("no POSIX permissions here (Windows): use AclFileAttributeView")
+              }
+          } finally {
+              dir.toFile().deleteRecursively()
+          }
+      }
+    expected: |-
+      14 bytes, regular=true, symlink=false
+      token rw-------
+      report rw-r--r--
+    applies:
+      platforms: [jvm]
+      runtime: Kotlin/JVM (POSIX permissions on Linux and macOS; ACLs on Windows)
+    sources:
+      - title: PosixFilePermissions — Java SE 17 API
+        url: https://docs.oracle.com/en/java/javase/17/docs/api/java.base/java/nio/file/attribute/PosixFilePermissions.html
+    validation: *ran21
+  - id: file-locking
+    kind: code
+    title: File locking
+    note: "A single-instance guard for a sync job — and why a file lock is no help between threads of the same JVM."
+    prerequisites: *run
+    code: |-
+      import java.nio.channels.FileChannel
+      import java.nio.channels.OverlappingFileLockException
+      import java.nio.file.Path
+      import java.nio.file.StandardOpenOption.*
+      import kotlin.io.path.*
+
+      /** Runs `block` only if no other PROCESS holds the lock; returns null when one does. */
+      fun <T> withInstanceLock(lockFile: Path, block: () -> T): T? =
+          FileChannel.open(lockFile, CREATE, WRITE).use { channel ->
+              val lock = channel.tryLock() ?: return null
+              lock.use { block() }
+          }
+
+      fun main() {
+          val dir = createTempDirectory("lock")
+          try {
+              val lockFile = dir / "sync.lock"
+              println(withInstanceLock(lockFile) { "synced 12 orders" })
+
+              // The lock belongs to the whole JVM: a second attempt from this JVM throws instead of waiting.
+              withInstanceLock(lockFile) {
+                  try {
+                      withInstanceLock(lockFile) { "never runs" }
+                  } catch (e: OverlappingFileLockException) {
+                      println("same JVM: ${e::class.simpleName}")
+                  }
+              }
+          } finally {
+              dir.toFile().deleteRecursively()
+          }
+      }
+      // Locks are advisory on most Unix systems and unreliable on network file systems. Closing ANY channel to
+      // the file may release this JVM's lock: one channel per file, and a Mutex between threads. Never delete
+      // the lock file — a waiter may already hold a channel to it and would lock a file nobody else can see.
+    expected: |-
+      synced 12 orders
+      same JVM: OverlappingFileLockException
+    sources:
+      - title: FileLock — Java SE 17 API
+        url: https://docs.oracle.com/en/java/javase/17/docs/api/java.base/java/nio/channels/FileLock.html
+    validation: *ran21
+  - id: files-are-blocking-work
+    kind: code
+    title: "Concurrency: files are blocking work"
+    note: "Load a week of order files in parallel without blocking the caller: blocking I/O on Dispatchers.IO, with the parallelism bounded."
+    applies:
+      runtime: Kotlin/JVM with kotlinx.coroutines
+      requires: [kotlinx-coroutines-core]
+      versions: { kotlin: ">=2.0", kotlinx-coroutines: ">=1.10", jvm: ">=17" }
+    prerequisites:
+      - A Kotlin 2.x compiler (`kotlinc`), JDK 17 or later, and `kotlinx-coroutines-core-jvm-1.10.2.jar`
+      - "Save as `main.kt`; run `kotlinc -cp kotlinx-coroutines-core-jvm-1.10.2.jar main.kt -d out && kotlin -cp out:kotlinx-coroutines-core-jvm-1.10.2.jar MainKt`"
+      - "Or, in a Gradle project: `implementation(\"org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.2\")`"
+    code: |-
+      import kotlinx.coroutines.*
+      import java.nio.file.Path
+      import kotlin.io.path.*
+
+      /** Main-safe: the function moves its own blocking work, and takes the dispatcher so tests can swap it. */
+      suspend fun totalCents(file: Path, io: CoroutineDispatcher = Dispatchers.IO): Long = withContext(io) {
+          file.useLines { lines -> lines.drop(1).sumOf { it.substringAfterLast(',').toLong() } }
+      }
+
+      fun main() = runBlocking<Unit> {
+          val dir = withContext(Dispatchers.IO) { createTempDirectory("io") }
+          try {
+              val files = withContext(Dispatchers.IO) {
+                  (1..7).map { day ->
+                      val rows = (1..100).joinToString("\n") { "$it,${it * day}" }
+                      (dir / "orders-$day.csv").apply { writeText("id,cents\n$rows") }
+                  }
+              }
+              val disk = Dispatchers.IO.limitedParallelism(4)                 // at most 4 files open at once
+              println(files.map { async { totalCents(it, disk) } }.awaitAll())
+              val worker = withContext(disk) { Thread.currentThread().name }
+              println("read on a worker thread: ${worker.startsWith("DefaultDispatcher-worker")}")
+          } finally {
+              withContext(Dispatchers.IO + NonCancellable) { dir.toFile().deleteRecursively() }
+          }
+      }
+      // On Android the caller is usually Dispatchers.Main (the UI thread): StrictMode flags disk reads there.
+    expected: |-
+      [5050, 10100, 15150, 20200, 25250, 30300, 35350]
+      read on a worker thread: true
+    sources:
+      - title: Coroutine context and dispatchers — Kotlin docs
+        url: https://kotlinlang.org/docs/coroutine-context-and-dispatchers.html
+    validation:
+      status: ran
+      toolchain: kotlinc 2.4.21, JVM 21.0.12.1, kotlinx-coroutines-core 1.10.2
+      date: "2026-11-16"
+  - id: error-handling
+    kind: table
+    title: Error handling
+    note: "Catch the specific `java.nio.file` exception instead of checking first — the check is stale before you act on it."
+    headers: [Situation, Exception, Note]
+    rows:
+      - ["File or parent missing", "`NoSuchFileException`", "`.file` names the path; legacy `java.io` streams throw `FileNotFoundException` instead"]
+      - ["Target already exists", "`FileAlreadyExistsException`", "from `createFile`, `createDirectory`, `CREATE_NEW`, and `move` / `copy` without `REPLACE_EXISTING`"]
+      - ["No permission", "`AccessDeniedException`", "also a read-only file or directory"]
+      - ["Deleting a non-empty directory", "`DirectoryNotEmptyException`", "walk and delete children first, or `deleteRecursively()`"]
+      - ["Listing a file as a directory", "`NotDirectoryException`", "from `listDirectoryEntries` / `newDirectoryStream`"]
+      - ["`ATOMIC_MOVE` impossible", "`AtomicMoveNotSupportedException`", "the temp file is on another file store — create it beside the target"]
+      - ["Bytes are not valid UTF-8", "`MalformedInputException`", "`Files.readString`, `Files.readAllLines`, `Path.readLines()` and `Path.useLines` throw; `Path.readText()` and the `java.io.File` helpers (`File.readText`, `File.readLines`) silently substitute `U+FFFD`"]
+      - ["Disk full, I/O error", "`IOException` / `FileSystemException`", "no dedicated type: log `.reason` and the path"]
+      - ["Any of the above", "`FileSystemException`", "the parent of every `java.nio.file` case above: `.file`, `.otherFile`, `.reason`"]
+      - ["Legacy `java.io.File`", "none — returns `false`", "`delete()`, `mkdirs()`, `renameTo()` hide the reason; prefer `Files` / `kotlin.io.path`"]
+  - id: testing-file-code
+    kind: code
+    title: Testing file code
+    note: "JUnit's `@TempDir` gives each test a fresh directory and deletes it afterwards, so file tests can run in parallel."
+    applies:
+      runtime: Kotlin/JVM with JUnit 5
+      requires: [junit-jupiter]
+      versions: { kotlin: ">=2.0", junit: ">=5.10", jvm: ">=17" }
+    prerequisites:
+      - "A Gradle JVM project with `testImplementation(platform(\"org.junit:junit-bom:5.10.5\"))`, `testImplementation(\"org.junit.jupiter:junit-jupiter\")` and `tasks.test { useJUnitPlatform() }`"
+      - "Put the class under `src/test/kotlin` and run `./gradlew test`"
+    code: |-
+      import org.junit.jupiter.api.Assertions.assertEquals
+      import org.junit.jupiter.api.Test
+      import org.junit.jupiter.api.assertThrows
+      import org.junit.jupiter.api.io.TempDir
+      import java.nio.file.Files
+      import java.nio.file.NoSuchFileException
+      import java.nio.file.Path
+      import java.nio.file.StandardCopyOption
+      import kotlin.io.path.*
+
+      /** The code under test: a temp sibling, then an atomic rename; the temp never outlives a failure. */
+      fun writeAtomically(target: Path, text: String) {
+          val temp = Files.createTempFile(target.parent, ".${target.name}", ".tmp")
+          try {
+              temp.writeText(text)
+              Files.move(temp, target, StandardCopyOption.ATOMIC_MOVE)
+          } finally {
+              temp.deleteIfExists()
+          }
+      }
+
+      class SettingsStoreTest {
+          @TempDir
+          lateinit var dir: Path
+
+          @Test
+          fun `atomic write replaces the file and leaves no temp files`() {
+              val settings = dir / "settings.json"
+              writeAtomically(settings, """{"theme":"dark"}""")
+              writeAtomically(settings, """{"theme":"light"}""")
+              assertEquals("""{"theme":"light"}""", settings.readText())
+              assertEquals(listOf("settings.json"), dir.listDirectoryEntries().map { it.name })
+          }
+
+          @Test
+          fun `reading a missing file throws NoSuchFileException`() {
+              assertThrows<NoSuchFileException> { (dir / "missing.json").readText() }
+          }
+      }
+    expected: "Both tests pass; JUnit creates and deletes a separate directory for each."
+    sources:
+      - title: JUnit 5.10.5 User Guide — temporary directories
+        url: https://docs.junit.org/5.10.5/user-guide/#writing-tests-built-in-extensions-TempDirectory
+    validation:
+      status: compiled
+      toolchain: kotlinc 2.4.21, JVM 21.0.12.1, junit-jupiter-api 5.10.5
+      date: "2026-11-16"
+      host: a JUnit Platform launcher (Gradle `test`) to run the tests
   - id: data-loss-rules
     kind: rules
     title: Rules that prevent data loss

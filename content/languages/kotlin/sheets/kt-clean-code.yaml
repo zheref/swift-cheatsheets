@@ -1,0 +1,551 @@
+id: kt-clean-code
+concept: practice.clean-code
+scope: shared
+title: "Clean Code in Kotlin"
+group: Design & practice
+subtitle: "Names, small functions, named arguments over flags, KDoc that earns its place, sealed results over sentinels, guard clauses, value classes and clean tests — every before/after proved to print the same."
+applies:
+  platforms: [jvm, android]
+  runtime: Kotlin/JVM (the standard library and java.time); the same code runs on Android
+  versions: { kotlin: ">=2.0", jvm: ">=17" }
+sources:
+  - title: Coding conventions — Kotlin docs
+    url: https://kotlinlang.org/docs/coding-conventions.html
+  - title: Scope functions — Kotlin docs
+    url: https://kotlinlang.org/docs/scope-functions.html
+  - title: Inline value classes — Kotlin docs
+    url: https://kotlinlang.org/docs/inline-classes.html
+  - title: Document Kotlin code — KDoc
+    url: https://kotlinlang.org/docs/kotlin-doc.html
+cards:
+  - id: rule-to-idiom
+    kind: table
+    title: Uncle Bob rule → Kotlin idiom
+    note: The classic rules still hold; Kotlin's type system and syntax enforce most of them for you.
+    headers: [Clean Code rule, The Kotlin way to satisfy it]
+    rows:
+      - ["Avoid `null`", "nullable types with `?.` and `?:`; return `emptyList()`, not `null`; a nullable lookup says so in its name (`findOrNull`)"]
+      - ["Don't return error codes", "a `sealed interface` result for expected outcomes; `require` / `check` / `error()` for a broken contract"]
+      - ["Prefer polymorphism to `switch`", "a sealed hierarchy with an exhaustive `when` (no `else`) when the set is closed; an interface when it is open"]
+      - ["Encapsulate conditionals", "an extension property or function: `val Order.isRefundable: Boolean`"]
+      - ["Avoid output arguments", "return a new value (`copy(...)`); take read-only `List` parameters"]
+      - ["No flag arguments", "name every `Boolean` argument at the call site; when two flags encode one choice, an `enum class`"]
+      - ["Avoid primitive obsession", "`@JvmInline value class` with a validating factory, created once at the boundary"]
+      - ["Keep classes small", "top-level functions and extensions; a class when it owns state or injected dependencies"]
+      - ["Separate construction from use", "constructor injection; one composition root (`Application.onCreate`, `main`) wires the graph"]
+      - ["Comments explain why", "KDoc on public API, with `[name]` links; `// why` beside surprising code; never `// what`"]
+  - id: naming
+    kind: compare
+    title: Naming
+    note: Intention-revealing and searchable — `camelCase` values, `PascalCase` types, `SCREAMING_CASE` constants, `is`/`has` booleans, properties instead of `get` functions.
+    prerequisites: &run
+      - A Kotlin 2.x compiler (`kotlinc`) and JDK 17 or later
+      - "Save as `main.kt`; run `kotlinc main.kt -include-runtime -d main.jar && java -jar main.jar`"
+    columns:
+      - label: Don't
+        tone: bad
+        code: |-
+          data class O(val i: String, val t: Int, val s: Int, val d: Int)
+
+          val list1 = listOf(
+              O("A-1", 4200, 2, 3),
+              O("A-2", 1500, 1, 12),
+              O("A-3", 9900, 2, 45),
+              O("A-4", 2500, 2, 30),
+          )
+
+          fun proc(a: List<O>): List<String> {
+              val r = mutableListOf<String>()
+              for (o in a) if (o.s == 2 && o.d <= 30) r.add(o.i)   // 2? 30?
+              return r
+          }
+
+          fun main() {
+              val flag = proc(list1).isNotEmpty()
+              println("${proc(list1)} $flag")
+          }
+      - label: Do
+        tone: good
+        code: |-
+          enum class OrderStatus { PLACED, DELIVERED }
+
+          data class Order(val id: String, val totalCents: Int, val status: OrderStatus, val ageInDays: Int)
+
+          const val REFUND_WINDOW_DAYS = 30
+
+          val Order.isRefundable: Boolean
+              get() = status == OrderStatus.DELIVERED && ageInDays <= REFUND_WINDOW_DAYS
+
+          fun List<Order>.refundableIds(): List<String> = filter { it.isRefundable }.map { it.id }
+
+          fun main() {
+              val orders = listOf(
+                  Order("A-1", 4200, OrderStatus.DELIVERED, ageInDays = 3),
+                  Order("A-2", 1500, OrderStatus.PLACED, ageInDays = 12),
+                  Order("A-3", 9900, OrderStatus.DELIVERED, ageInDays = 45),
+                  Order("A-4", 2500, OrderStatus.DELIVERED, ageInDays = 30),   // the last day still counts
+              )
+              val refundableIds = orders.refundableIds()
+              val hasRefundableOrders = refundableIds.isNotEmpty()
+              println("$refundableIds $hasRefundableOrders")
+          }
+    expected: |-
+      [A-1, A-4] true
+    validation: &ran
+      status: ran
+      toolchain: kotlinc 2.4.21, JVM 21.0.12.1
+      date: "2026-11-16"
+  - id: small-functions
+    kind: compare
+    title: "Small functions, one level of abstraction"
+    note: When a function needs blank lines or comments to separate its steps, each step wants to be a private function with that name.
+    prerequisites: *run
+    columns:
+      - label: Before
+        tone: bad
+        code: |-
+          data class Item(val sku: String, val priceCents: Long, val quantity: Int, val onSale: Boolean)
+          data class Cart(val tier: String, val items: List<Item>)
+
+          fun checkout(cart: Cart): String {
+              var total = 0L
+              for (item in cart.items) {
+                  require(item.quantity > 0) { "bad quantity for ${item.sku}" }
+                  var price = item.priceCents
+                  if (item.onSale) price = price * 80 / 100
+                  if (cart.tier == "pro") price = price * 90 / 100
+                  total += price * item.quantity
+              }
+              if (total > 10_000) total -= 500
+              val tax = total * 21 / 100
+              return "total=${total + tax} tax=$tax"
+          }
+
+          fun main() {
+              val items = listOf(Item("mug", 1200, 2, onSale = true), Item("lamp", 9900, 1, onSale = false))
+              println(checkout(Cart("pro", items)))
+          }
+      - label: After
+        tone: good
+        code: |-
+          enum class Tier(val percentPaid: Long) { FREE(100), PRO(90) }
+          data class Item(val sku: String, val priceCents: Long, val quantity: Int, val onSale: Boolean)
+          data class Cart(val tier: Tier, val items: List<Item>)
+          data class Receipt(val totalCents: Long, val taxCents: Long)
+
+          private const val SALE_PERCENT_PAID = 80L
+          private const val BULK_THRESHOLD_CENTS = 10_000L
+          private const val BULK_DISCOUNT_CENTS = 500L
+          private const val TAX_PERCENT = 21L
+
+          fun checkout(cart: Cart): Receipt {
+              val subtotal = cart.items.sumOf { lineTotalCents(it, cart.tier) }
+              val discounted = applyBulkDiscount(subtotal)
+              val tax = taxCents(discounted)
+              return Receipt(totalCents = discounted + tax, taxCents = tax)
+          }
+
+          private fun lineTotalCents(item: Item, tier: Tier): Long {
+              require(item.quantity > 0) { "bad quantity for ${item.sku}" }
+              val unitPrice = if (item.onSale) item.priceCents * SALE_PERCENT_PAID / 100 else item.priceCents
+              return unitPrice * tier.percentPaid / 100 * item.quantity
+          }
+
+          private fun applyBulkDiscount(cents: Long): Long =
+              if (cents > BULK_THRESHOLD_CENTS) cents - BULK_DISCOUNT_CENTS else cents
+
+          private fun taxCents(cents: Long): Long = cents * TAX_PERCENT / 100
+
+          fun main() {
+              val items = listOf(Item("mug", 1200, 2, onSale = true), Item("lamp", 9900, 1, onSale = false))
+              val receipt = checkout(Cart(Tier.PRO, items))
+              println("total=${receipt.totalCents} tax=${receipt.taxCents}")
+          }
+    expected: |-
+      total=12266 tax=2128
+    validation: *ran
+  - id: named-and-default-arguments
+    kind: compare
+    title: Named and default arguments over flags and builders
+    note: "A positional `true` is unreadable, so name Boolean arguments, turn two flags that encode one choice into an `enum`, and let default arguments plus `copy` replace a hand-written builder."
+    prerequisites: *run
+    columns:
+      - label: Don't
+        tone: bad
+        code: |-
+          class Notification(val orderId: String) {
+              var channel: String = "email"
+              var urgent: Boolean = false
+              var retries: Int = 3
+          }
+
+          class NotificationBuilder(orderId: String) {           // a Java habit
+              private val notification = Notification(orderId)
+              fun channel(value: String) = apply { notification.channel = value }
+              fun urgent(value: Boolean) = apply { notification.urgent = value }
+              fun build() = notification
+          }
+
+          fun render(orderId: String, compact: Boolean, includePrices: Boolean): String {
+              if (compact) return "Order $orderId"
+              return if (includePrices) "Order $orderId (with prices)" else "Order $orderId"
+          }
+
+          fun main() {
+              val n = NotificationBuilder("A-1").channel("sms").urgent(true).build()
+              println("${n.orderId} ${n.channel} urgent=${n.urgent} retries=${n.retries}")
+              println(render("A-1", false, true))                 // which flag was which?
+          }
+      - label: Do
+        tone: good
+        code: |-
+          enum class Channel { EMAIL, SMS }
+          enum class Detail { SUMMARY, WITH_PRICES }
+
+          data class Notification(                                 // immutable; defaults replace the builder
+              val orderId: String,
+              val channel: Channel = Channel.EMAIL,
+              val urgent: Boolean = false,
+              val retries: Int = 3,
+          )
+
+          fun render(orderId: String, detail: Detail = Detail.SUMMARY): String = when (detail) {
+              Detail.SUMMARY -> "Order $orderId"
+              Detail.WITH_PRICES -> "Order $orderId (with prices)"
+          }
+
+          fun main() {
+              val n = Notification("A-1", channel = Channel.SMS, urgent = true)
+              println("${n.orderId} ${n.channel.name.lowercase()} urgent=${n.urgent} retries=${n.retries}")
+              println(render("A-1", Detail.WITH_PRICES))
+              // A variant is a copy, not a mutation: n.copy(retries = 0)
+          }
+    expected: |-
+      A-1 sms urgent=true retries=3
+      Order A-1 (with prices)
+    validation: *ran
+  - id: comments-and-kdoc
+    kind: compare
+    title: Comments that earn their place
+    note: KDoc says what a caller needs to know; an inline comment says why the code is surprising — never what it does.
+    prerequisites: *run
+    columns:
+      - label: Noise
+        tone: bad
+        code: |-
+          import java.time.LocalDate
+          import java.time.temporal.ChronoUnit
+
+          data class Order(val id: String, val totalCents: Long, val shippingCents: Long, val deliveredOn: LocalDate?)
+
+          // refund function
+          fun refund(o: Order, today: LocalDate): Long {
+              // check delivered
+              require(o.deliveredOn != null) { "order ${o.id} is not delivered" }
+              // get the days
+              val d = ChronoUnit.DAYS.between(o.deliveredOn, today)
+              // if d <= 30 return total else total minus shipping
+              return if (d <= 30) o.totalCents else o.totalCents - o.shippingCents
+              // return (o.totalCents * 0.9).toLong()   old logic, keep just in case
+          }
+
+          // TODO fix
+          fun main() {
+              val today = LocalDate.of(2026, 11, 16)
+              val recent = Order("A-1", 4200, 500, LocalDate.of(2026, 11, 1))
+              val old = Order("A-2", 4200, 500, LocalDate.of(2026, 9, 1))
+              println("${refund(recent, today)} ${refund(old, today)}")
+          }
+      - label: Useful
+        tone: good
+        code: |-
+          import java.time.LocalDate
+          import java.time.temporal.ChronoUnit
+
+          data class Order(val id: String, val totalCents: Long, val shippingCents: Long, val deliveredOn: LocalDate?)
+
+          const val REFUND_WINDOW_DAYS = 30
+
+          /**
+           * Returns how much of [order] to refund, in cents.
+           *
+           * Inside [REFUND_WINDOW_DAYS] the refund is the full total; after it the
+           * shipping fee is kept back, never the item price.
+           *
+           * @param today the current date, passed in so callers and tests control it.
+           * @throws IllegalArgumentException if the order has not been delivered.
+           */
+          fun refundCents(order: Order, today: LocalDate): Long {
+              val deliveredOn = requireNotNull(order.deliveredOn) { "order ${order.id} is not delivered" }
+              val daysSinceDelivery = ChronoUnit.DAYS.between(deliveredOn, today)
+              if (daysSinceDelivery <= REFUND_WINDOW_DAYS) return order.totalCents
+              // The carrier bills late returns to us (contract §4.2), so the fee covers it.
+              return order.totalCents - order.shippingCents
+          }
+
+          fun main() {
+              val today = LocalDate.of(2026, 11, 16)
+              val recent = Order("A-1", 4200, 500, LocalDate.of(2026, 11, 1))
+              val old = Order("A-2", 4200, 500, LocalDate.of(2026, 9, 1))
+              println("${refundCents(recent, today)} ${refundCents(old, today)}")
+          }
+    expected: |-
+      4200 3700
+    validation: *ran
+  - id: errors-over-sentinels
+    kind: compare
+    title: Sealed results over sentinel values
+    note: "Expected outcomes are a `sealed interface` the caller must `when` over, and a broken contract (a caller bug) is `require`."
+    prerequisites: *run
+    columns:
+      - label: Sentinels
+        tone: bad
+        code: |-
+          val stock = mapOf("mug" to 3, "lamp" to 0)
+
+          fun reserve(sku: String, quantity: Int): Int {        // remaining stock, or a code
+              if (quantity <= 0) return -2                      // bad quantity
+              val available = stock[sku] ?: return -1           // unknown product
+              if (quantity > available) return -3               // not enough
+              return available - quantity
+          }
+
+          fun main() {
+              for ((sku, qty) in listOf("mug" to 2, "lamp" to 1, "desk" to 1, "mug" to 0)) {
+                  val result = reserve(sku, qty)
+                  println(
+                      when (result) {
+                          -1 -> "$sku: unknown product"
+                          -2 -> "$sku: quantity must be positive"
+                          -3 -> "$sku: only ${stock[sku]} left"
+                          else -> "$sku: reserved, $result left"   // and -4 next year?
+                      }
+                  )
+              }
+          }
+      - label: Sealed result
+        tone: good
+        code: |-
+          sealed interface Reservation {
+              data class Reserved(val remaining: Int) : Reservation
+              data class OutOfStock(val available: Int) : Reservation
+              data object UnknownProduct : Reservation
+          }
+
+          val stock = mapOf("mug" to 3, "lamp" to 0)
+
+          fun stockLevelOrNull(sku: String): Int? = stock[sku]   // null means one thing: no such product
+
+          fun reserve(sku: String, quantity: Int): Reservation {
+              require(quantity > 0) { "quantity must be positive, was $quantity" }
+              val available = stockLevelOrNull(sku) ?: return Reservation.UnknownProduct
+              if (quantity > available) return Reservation.OutOfStock(available)
+              return Reservation.Reserved(available - quantity)
+          }
+
+          fun main() {
+              for ((sku, qty) in listOf("mug" to 2, "lamp" to 1, "desk" to 1, "mug" to 0)) {
+                  if (qty <= 0) {                                                          // validate at the edge
+                      println("$sku: quantity must be positive")
+                      continue
+                  }
+                  val message = when (val result = reserve(sku, qty)) {                    // exhaustive: no else
+                      is Reservation.Reserved -> "$sku: reserved, ${result.remaining} left"
+                      is Reservation.OutOfStock -> "$sku: only ${result.available} left"
+                      Reservation.UnknownProduct -> "$sku: unknown product"
+                  }
+                  println(message)
+              }
+          }
+    expected: |-
+      mug: reserved, 1 left
+      lamp: only 0 left
+      desk: unknown product
+      mug: quantity must be positive
+    validation: *ran
+  - id: guard-clauses
+    kind: compare
+    title: "Guard clauses, not `?.let` pyramids"
+    note: "`val x = y ?: return …` keeps the happy path at the left margin; nested scope functions are Kotlin's arrow anti-pattern."
+    prerequisites: *run
+    columns:
+      - label: Nested
+        tone: bad
+        code: |-
+          data class Address(val city: String?, val postcode: String?)
+          data class Customer(val name: String, val address: Address?)
+
+          fun shippingLabel(customer: Customer?): String {
+              customer?.let { c ->
+                  c.address?.let { a ->
+                      a.city?.let { city ->
+                          a.postcode?.let {
+                              if (it.length == 5) {
+                                  return "${c.name}, $it $city"
+                              }
+                          }
+                      }
+                  }
+              }
+              return "address incomplete"
+          }
+
+          fun main() {
+              println(shippingLabel(Customer("Ada", Address("Lyon", "69001"))))
+              println(shippingLabel(Customer("Linus", Address(null, "00100"))))
+              println(shippingLabel(null))
+          }
+      - label: Flat
+        tone: good
+        code: |-
+          data class Address(val city: String?, val postcode: String?)
+          data class Customer(val name: String, val address: Address?)
+
+          fun shippingLabel(customer: Customer?): String {
+              val address = customer?.address ?: return "address incomplete"
+              val city = address.city ?: return "address incomplete"
+              val postcode = address.postcode?.takeIf { it.length == 5 } ?: return "address incomplete"
+              return "${customer.name}, $postcode $city"            // customer is smart-cast to non-null
+          }
+
+          fun main() {
+              println(shippingLabel(Customer("Ada", Address("Lyon", "69001"))))
+              println(shippingLabel(Customer("Linus", Address(null, "00100"))))
+              println(shippingLabel(null))
+          }
+    expected: |-
+      Ada, 69001 Lyon
+      address incomplete
+      address incomplete
+    validation: *ran
+  - id: value-classes
+    kind: code
+    title: Value classes beat primitives
+    note: "A `@JvmInline value class` turns a swapped `String` argument into a compile error and costs nothing when used as itself (it is boxed when nullable, generic or behind an interface); parse once, at the boundary."
+    prerequisites: *run
+    code: |-
+      import kotlin.math.abs
+      import java.util.Locale
+
+      @JvmInline
+      value class OrderId(val value: String) {
+          init { require(value.matches(Regex("[A-Z]-\\d+"))) { "not an order id: $value" } }
+      }
+
+      @JvmInline
+      value class Email private constructor(val value: String) {
+          companion object {
+              fun parseOrNull(raw: String): Email? {
+                  val normalized = raw.trim().lowercase()
+                  val domain = normalized.substringAfter('@', missingDelimiterValue = "")
+                  return if ('.' in domain && normalized.count { it == '@' } == 1) Email(normalized) else null
+              }
+          }
+      }
+
+      @JvmInline
+      value class Cents(val amount: Long) {
+          operator fun plus(other: Cents) = Cents(amount + other.amount)
+          override fun toString(): String {
+              val sign = if (amount < 0) "-" else ""
+              return "%s%d.%02d".format(Locale.ROOT, sign, abs(amount) / 100, abs(amount) % 100)
+          }
+      }
+
+      fun sendReceipt(to: Email, order: OrderId, total: Cents) =
+          println("receipt for ${order.value} to ${to.value}: $total")
+
+      fun main() {
+          val email = Email.parseOrNull("  Ada@Example.com ") ?: error("invalid email")
+          sendReceipt(email, OrderId("A-1"), Cents(4200) + Cents(550))
+          // sendReceipt(OrderId("A-1"), email, Cents(1))   -> does not compile: argument types differ
+          println("refund ${Cents(-550)}")
+          println(Email.parseOrNull("ada@localhost"))
+          println(runCatching { OrderId("42") }.exceptionOrNull()?.message)
+      }
+    expected: |-
+      receipt for A-1 to ada@example.com: 47.50
+      refund -5.50
+      null
+      not an order id: 42
+    validation: *ran
+  - id: clean-tests
+    kind: code
+    title: "Clean tests: arrange, act, assert"
+    note: "F.I.R.S.T. — fast, independent, repeatable, self-validating, timely: inject the clock, name the test as a sentence, assert one behaviour."
+    prerequisites:
+      - "A Gradle JVM project with `testImplementation(platform(\"org.junit:junit-bom:5.10.5\"))`, `testImplementation(\"org.junit.jupiter:junit-jupiter\")` and `tasks.test { useJUnitPlatform() }`"
+      - "Put the class under `src/test/kotlin` and run `./gradlew test`"
+    code: |-
+      import org.junit.jupiter.api.Assertions.assertEquals
+      import org.junit.jupiter.api.Test
+      import java.time.Clock
+      import java.time.Instant
+      import java.time.LocalDate
+      import java.time.ZoneOffset
+
+      class RefundPolicy(private val clock: Clock) {
+          fun refundCents(totalCents: Long, shippingCents: Long, deliveredOn: LocalDate): Long {
+              val windowEnds = deliveredOn.plusDays(30)
+              return if (LocalDate.now(clock) <= windowEnds) totalCents else totalCents - shippingCents
+          }
+      }
+
+      class RefundPolicyTest {
+          private val clock = Clock.fixed(Instant.parse("2026-11-16T10:00:00Z"), ZoneOffset.UTC)
+          private val policy = RefundPolicy(clock)      // a new instance per test: no shared state
+
+          @Test
+          fun `refunds the full total inside the 30-day window`() {
+              // Arrange
+              val deliveredOn = LocalDate.of(2026, 11, 1)
+              // Act
+              val refund = policy.refundCents(totalCents = 4200, shippingCents = 500, deliveredOn = deliveredOn)
+              // Assert
+              assertEquals(4200L, refund)
+          }
+
+          @Test
+          fun `keeps the shipping fee after the window`() {
+              val deliveredOn = LocalDate.of(2026, 9, 1)
+              val refund = policy.refundCents(totalCents = 4200, shippingCents = 500, deliveredOn = deliveredOn)
+              assertEquals(3700L, refund)
+          }
+      }
+    expected: "`./gradlew test` reports both tests passed, on any day: the clock is fixed."
+    applies:
+      requires: [JUnit 5]
+      versions: { kotlin: ">=2.0", junit-jupiter: ">=5.10", jvm: ">=17" }
+    sources:
+      - title: JUnit 5.10.5 User Guide
+        url: https://docs.junit.org/5.10.5/user-guide/
+    validation:
+      status: compiled
+      toolchain: kotlinc 2.4.21, JVM 21.0.12.1, junit-jupiter-api 5.10.5
+      date: "2026-11-16"
+      host: a JUnit Platform launcher (Gradle `test`) to run the tests
+  - id: smell-checklist
+    kind: rules
+    title: Code smells to name in review
+    note: Say the name out loud; it turns taste into an argument.
+    items:
+      - tone: bad
+        text: "**Long function / god class** — many reasons to change and no honest name. Extract until each piece has one."
+      - tone: bad
+        text: "**Scope-function soup** — `?.let { … }.also { … }.apply { … }` chains, nested `it`, a `run` that hides a `return`. One scope function per expression, for its documented purpose."
+      - tone: bad
+        text: "**`!!`** — a crash with a worse message. Use `?: return`, `requireNotNull(x) { \"why\" }` or a non-null type."
+      - tone: bad
+        text: "**Boolean blindness** — two `Boolean`s that encode one state, or a positional `render(id, true)`. Use an `enum class` or a sealed type, and name the Booleans that remain."
+      - tone: bad
+        text: "**Primitive obsession** — `String` ids and `Double` money. Use value classes and `Long` cents or `BigDecimal`."
+      - tone: bad
+        text: "**Sentinels and swallowed errors** — `-1`, `\"\"`, `catch (e: Exception) {}`. The caller loses the reason."
+      - tone: bad
+        text: "**Temporal coupling** — a `lateinit var` that `init()` must fill before `start()`. Take it in the constructor."
+      - tone: bad
+        text: "**Feature envy / shotgun surgery** — a function that mostly reads another type's data; one change that edits ten files."
+      - tone: good
+        text: "**Clean tests** — one behaviour per test, a sentence for a name, no sleeps or real clocks, and a test that fails for the right reason before it passes."
+      - tone: neutral
+        text: "**The boy scout rule** — leave each file a little cleaner, in small refactors that keep the tests green."

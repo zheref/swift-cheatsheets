@@ -64,6 +64,9 @@ describe("verify: built-page checks", () => {
     expect(checkPage(split, ["a", "b", "c"], true).problems.join()).toMatch(/group 'g' is split/);
     expect(checkPage(page("").replace("<span class=\"t-kw\">let</span>", "<b>let</b>"), ["a"], true).problems.join()).toMatch(/raw markup/);
     expect(checkPage(page("<p>[object Object]</p>"), ["a"], true).problems.join()).toMatch(/artefact/);
+    // A double brace is a leaked template in prose, and ordinary code in a snippet or an inline code span.
+    expect(checkPage(page("<p>Hello {{name}}</p>"), ["a"], true).problems.join()).toMatch(/artefact in output: \{\{/);
+    expect(checkPage(page("<p>Write <code>{{count}}</code> in the message.</p>"), ["a"], true).problems.join()).not.toMatch(/artefact/);
     expect(checkPage(page('<details id="a"></details>'), ["a"], true).problems.join()).toMatch(/duplicate element ids: a/);
     const twoDiagrams = '<svg class="dg"><marker id="m"></marker></svg><svg class="dg"><marker id="m"></marker></svg>';
     expect(checkPage(page(twoDiagrams), ["a"], true).problems).toEqual([]);

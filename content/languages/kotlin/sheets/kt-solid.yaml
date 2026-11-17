@@ -1,0 +1,438 @@
+id: kt-solid
+concept: principles.solid
+scope: shared
+title: "SOLID in Kotlin"
+group: Design & practice
+subtitle: "Five principles in Kotlin's own idiom — final-by-default classes, small and functional interfaces, sealed outcomes, class delegation and constructor injection — each before/after proved to print the same."
+applies:
+  platforms: [jvm, android]
+  runtime: Kotlin/JVM (the standard library); the same code runs on Android
+  versions: { kotlin: ">=2.0", jvm: ">=17" }
+sources:
+  - title: Interfaces — Kotlin docs
+    url: https://kotlinlang.org/docs/interfaces.html
+  - title: Functional (SAM) interfaces — Kotlin docs
+    url: https://kotlinlang.org/docs/fun-interfaces.html
+  - title: Delegation — Kotlin docs
+    url: https://kotlinlang.org/docs/delegation.html
+  - title: Sealed classes and interfaces — Kotlin docs
+    url: https://kotlinlang.org/docs/sealed-classes.html
+cards:
+  - id: one-line-versions
+    kind: rules
+    title: The one-line versions
+    note: Say the name, then the smell it prevents.
+    items:
+      - tone: modern
+        text: "**S**ingle Responsibility — a class has one reason to change: one actor, one kind of change."
+      - tone: modern
+        text: "**O**pen/Closed — add behaviour by adding a type or a value, not by editing a shipped `when`."
+      - tone: modern
+        text: "**L**iskov Substitution — any implementation works wherever its supertype is expected, with no `is` checks and no surprise exceptions."
+      - tone: modern
+        text: "**I**nterface Segregation — clients depend on the slice they use; a one-method `fun interface` is often the right size."
+      - tone: modern
+        text: "**D**ependency Inversion — policy declares the interface it needs; the composition root hands it an implementation through the constructor."
+      - tone: neutral
+        text: "Kotlin tilts the field: classes are `final` unless `open`, `by` makes composition as cheap as inheritance, and function types are interfaces with no ceremony."
+  - id: s-single-responsibility
+    kind: compare
+    title: S — Single Responsibility
+    note: "Smell: one class that parses, prices, persists and formats — four teams' changes collide in one file."
+    prerequisites: &run
+      - A Kotlin 2.x compiler (`kotlinc`) and JDK 17 or later
+      - "Save as `main.kt`; run `kotlinc main.kt -include-runtime -d main.jar && java -jar main.jar`"
+    columns:
+      - label: Violates
+        tone: bad
+        code: |-
+          class OrderManager {
+              private val saved = mutableMapOf<String, String>()
+
+              fun handle(line: String): String {
+                  val parts = line.split(",")                         // parsing
+                  val id = parts[0].trim()
+                  val quantity = parts[1].trim().toInt()
+                  val unitCents = parts[2].trim().toLong()
+                  val total = quantity * unitCents                    // pricing
+                  saved[id] = "$quantity x $unitCents"                // persistence
+                  return "Order $id: ${total / 100}.${(total % 100).toString().padStart(2, '0')}"   // formatting
+              }
+
+              fun savedCount() = saved.size
+          }
+
+          fun main() {
+              val manager = OrderManager()
+              println(manager.handle("A-1, 2, 1250"))
+              println(manager.handle("A-2, 1, 999"))
+              println("saved ${manager.savedCount()}")
+          }
+      - label: Respects
+        tone: good
+        code: |-
+          import java.util.Locale
+
+          data class Order(val id: String, val quantity: Int, val unitCents: Long) {
+              val totalCents: Long get() = quantity * unitCents
+          }
+
+          fun parseOrder(line: String): Order {                       // changes with the file format
+              val (id, quantity, unitCents) = line.split(",").map(String::trim)
+              return Order(id, quantity.toInt(), unitCents.toLong())
+          }
+
+          interface OrderRepository {                                 // changes with storage
+              fun save(order: Order)
+              fun count(): Int
+          }
+
+          class InMemoryOrderRepository : OrderRepository {
+              private val orders = mutableMapOf<String, Order>()
+              override fun save(order: Order) { orders[order.id] = order }
+              override fun count() = orders.size
+          }
+
+          fun formatReceipt(order: Order): String =                   // changes with the UI copy
+              "Order ${order.id}: %d.%02d".format(Locale.ROOT, order.totalCents / 100, order.totalCents % 100)
+
+          class PlaceOrder(private val repository: OrderRepository) {  // a thin coordinator
+              fun place(line: String): String {
+                  val order = parseOrder(line)
+                  repository.save(order)
+                  return formatReceipt(order)
+              }
+          }
+
+          fun main() {
+              val repository = InMemoryOrderRepository()
+              val placeOrder = PlaceOrder(repository)
+              println(placeOrder.place("A-1, 2, 1250"))
+              println(placeOrder.place("A-2, 1, 999"))
+              println("saved ${repository.count()}")
+          }
+    expected: |-
+      Order A-1: 25.00
+      Order A-2: 9.99
+      saved 2
+    validation: &ran
+      status: ran
+      toolchain: kotlinc 2.4.21, JVM 21.0.12.1
+      date: "2026-11-16"
+  - id: o-open-closed
+    kind: compare
+    title: O — Open/Closed
+    note: "Open set (promotions) → a `fun interface` and a list of values; closed set (payment states) → a sealed type, where an exhaustive `when` is the better tool."
+    prerequisites: *run
+    columns:
+      - label: Violates
+        tone: bad
+        code: |-
+          data class Order(val subtotalCents: Long, val isStudent: Boolean, val coupon: String?)
+
+          fun discountCents(order: Order): Long {
+              var discount = 0L
+              if (order.isStudent) discount += order.subtotalCents * 10 / 100
+              if (order.coupon == "WELCOME5") discount += 500
+              // Black Friday: shipped, tested code edited again, and every promotion retested with it
+              if (order.coupon == "BLACKFRIDAY") discount += order.subtotalCents * 20 / 100
+              return discount.coerceAtMost(order.subtotalCents)
+          }
+
+          fun main() {
+              val orders = listOf(
+                  Order(4000, isStudent = true, coupon = null),
+                  Order(4000, isStudent = true, coupon = "WELCOME5"),
+                  Order(300, isStudent = false, coupon = "WELCOME5"),
+                  Order(5000, isStudent = false, coupon = "BLACKFRIDAY"),
+              )
+              println(orders.map(::discountCents))
+          }
+      - label: Respects
+        tone: good
+        code: |-
+          data class Order(val subtotalCents: Long, val isStudent: Boolean, val coupon: String?)
+
+          fun interface DiscountRule { fun discountCents(order: Order): Long }
+
+          val studentDiscount = DiscountRule { if (it.isStudent) it.subtotalCents * 10 / 100 else 0 }
+          val welcomeCoupon = DiscountRule { if (it.coupon == "WELCOME5") 500 else 0 }
+
+          class Pricing(private val rules: List<DiscountRule>) {       // closed: never edited for a promotion
+              fun discountCents(order: Order): Long =
+                  rules.sumOf { it.discountCents(order) }.coerceAtMost(order.subtotalCents)
+          }
+
+          // Black Friday arrives as a new value; Pricing and the two older rules are untouched.
+          val blackFriday = DiscountRule { if (it.coupon == "BLACKFRIDAY") it.subtotalCents * 20 / 100 else 0 }
+
+          fun main() {
+              val pricing = Pricing(listOf(studentDiscount, welcomeCoupon, blackFriday))
+              val orders = listOf(
+                  Order(4000, isStudent = true, coupon = null),
+                  Order(4000, isStudent = true, coupon = "WELCOME5"),
+                  Order(300, isStudent = false, coupon = "WELCOME5"),
+                  Order(5000, isStudent = false, coupon = "BLACKFRIDAY"),
+              )
+              println(orders.map(pricing::discountCents))
+          }
+    expected: |-
+      [400, 900, 300, 1000]
+    validation: *ran
+  - id: l-liskov-substitution
+    kind: compare
+    title: L — Liskov Substitution
+    note: "If the caller must ask `is GiftCard`, substitution is broken; put every outcome in the contract as a sealed type instead of throwing."
+    prerequisites: *run
+    columns:
+      - label: Violates
+        tone: bad
+        code: |-
+          open class PaymentMethod {
+              open fun refund(cents: Long): String = "refunded $cents to the original method"
+          }
+
+          class Card(private val last4: String) : PaymentMethod() {
+              override fun refund(cents: Long) = "refunded $cents to card ending $last4"
+          }
+
+          class GiftCard : PaymentMethod() {
+              override fun refund(cents: Long): String =
+                  throw UnsupportedOperationException("gift cards cannot be refunded")   // breaks the promise
+          }
+
+          fun refundOrder(method: PaymentMethod, cents: Long): String {
+              if (method is GiftCard) return "issued $cents as store credit"    // the caller knows the subtype
+              return method.refund(cents)
+          }
+
+          fun main() {
+              println(refundOrder(Card("4242"), 4250))
+              println(refundOrder(GiftCard(), 4250))
+          }
+      - label: Respects
+        tone: good
+        code: |-
+          sealed interface RefundOutcome {
+              data class Returned(val description: String) : RefundOutcome
+              data class StoreCredit(val cents: Long) : RefundOutcome
+          }
+
+          // The only change: the contract has a type for every outcome, so no subclass throws.
+          open class PaymentMethod {
+              open fun refund(cents: Long): RefundOutcome =
+                  RefundOutcome.Returned("refunded $cents to the original method")
+          }
+
+          class Card(private val last4: String) : PaymentMethod() {
+              override fun refund(cents: Long) = RefundOutcome.Returned("refunded $cents to card ending $last4")
+          }
+
+          class GiftCard : PaymentMethod() {
+              override fun refund(cents: Long) = RefundOutcome.StoreCredit(cents)
+          }
+
+          fun refundOrder(method: PaymentMethod, cents: Long): String = when (val outcome = method.refund(cents)) {
+              is RefundOutcome.Returned -> outcome.description
+              is RefundOutcome.StoreCredit -> "issued ${outcome.cents} as store credit"
+          }
+
+          fun main() {
+              println(refundOrder(Card("4242"), 4250))
+              println(refundOrder(GiftCard(), 4250))
+          }
+    expected: |-
+      refunded 4250 to card ending 4242
+      issued 4250 as store credit
+    validation: *ran
+  - id: i-interface-segregation
+    kind: compare
+    title: I — Interface Segregation
+    note: "Smell: fakes full of `TODO()`; a screen that reads one order should depend on a one-method `fun interface`, which a lambda can satisfy."
+    prerequisites: *run
+    columns:
+      - label: Violates
+        tone: bad
+        code: |-
+          interface OrderStore {
+              fun orderById(id: String): String?
+              fun save(id: String, summary: String)
+              fun deleteAll()
+              fun exportCsv(): String
+          }
+
+          class ReceiptScreen(private val store: OrderStore) {
+              fun title(id: String): String = store.orderById(id)?.let { "Receipt: $it" } ?: "Order not found"
+          }
+
+          class FakeStore : OrderStore {                            // a test fake must stub everything
+              override fun orderById(id: String) = if (id == "A-1") "2 mugs" else null
+              override fun save(id: String, summary: String) = TODO("not needed")
+              override fun deleteAll() = TODO("not needed")
+              override fun exportCsv() = TODO("not needed")
+          }
+
+          fun main() {
+              val screen = ReceiptScreen(FakeStore())
+              println(screen.title("A-1"))
+              println(screen.title("Z-9"))
+          }
+      - label: Respects
+        tone: good
+        code: |-
+          fun interface OrderLookup { fun orderById(id: String): String? }
+
+          interface OrderWriter {
+              fun save(id: String, summary: String)
+              fun saveAll(orders: Map<String, String>) {                // a default method: implementers get it free
+                  orders.forEach { (id, summary) -> save(id, summary) }
+              }
+          }
+
+          class OrderDatabase : OrderLookup, OrderWriter {          // the real store implements both slices
+              private val rows = mutableMapOf<String, String>()
+              override fun orderById(id: String) = rows[id]
+              override fun save(id: String, summary: String) { rows[id] = summary }
+          }
+
+          class ReceiptScreen(private val orders: OrderLookup) {     // asks for the slice it uses
+              fun title(id: String): String = orders.orderById(id)?.let { "Receipt: $it" } ?: "Order not found"
+          }
+
+          fun main() {
+              val database = OrderDatabase().apply { saveAll(mapOf("A-1" to "2 mugs")) }
+              val screen = ReceiptScreen(database)
+              println(screen.title("A-1"))
+              println(ReceiptScreen { null }.title("Z-9"))           // a one-lambda fake in a test
+          }
+    expected: |-
+      Receipt: 2 mugs
+      Order not found
+    validation: *ran
+  - id: d-dependency-inversion
+    kind: compare
+    title: D — Dependency Inversion
+    note: "Smell: a concrete SDK client or a singleton `object` created inside the logic; invert it with constructor injection and wire it once."
+    prerequisites: *run
+    columns:
+      - label: Violates
+        tone: bad
+        code: |-
+          class StripeGateway {
+              fun charge(orderId: String, cents: Long): String = "ch_$orderId"   // stands in for a network call
+          }
+
+          object Analytics {
+              fun track(event: String) = println("track: $event")
+          }
+
+          class CheckoutService {
+              private val gateway = StripeGateway()                // hard-wired: every test charges a card
+              fun pay(orderId: String, cents: Long): String {
+                  val chargeId = gateway.charge(orderId, cents)
+                  Analytics.track("paid $orderId")
+                  return chargeId
+              }
+          }
+
+          fun main() {
+              println(CheckoutService().pay("A-1", 4250))
+          }
+      - label: Respects
+        tone: good
+        code: |-
+          fun interface PaymentGateway {                           // declared by checkout, the policy
+              fun charge(orderId: String, cents: Long): String
+          }
+
+          class StripeGateway : PaymentGateway {                   // a detail that depends on the policy's interface
+              override fun charge(orderId: String, cents: Long) = "ch_$orderId"
+          }
+
+          class CheckoutService(
+              private val gateway: PaymentGateway,
+              private val track: (event: String) -> Unit,          // a function type is the smallest interface
+          ) {
+              fun pay(orderId: String, cents: Long): String {
+                  val chargeId = gateway.charge(orderId, cents)
+                  track("paid $orderId")
+                  return chargeId
+              }
+          }
+
+          fun main() {
+              // The composition root: the only place that names concrete types.
+              val checkout = CheckoutService(StripeGateway()) { event -> println("track: $event") }
+              println(checkout.pay("A-1", 4250))
+              // In a test: CheckoutService({ id, _ -> "ch_test_$id" }, recordedEvents::add)
+          }
+    expected: |-
+      track: paid A-1
+      ch_A-1
+    validation: *ran
+  - id: composition-with-by
+    kind: code
+    title: "Composition over inheritance, with `by`"
+    note: "Overriding a collection couples you to its internals; class delegation forwards everything to a wrapped instance and overrides only what you change."
+    prerequisites: *run
+    code: |-
+      // Recently viewed product ids, counting every add for analytics.
+
+      class InheritedViews : HashSet<String>() {             // inheritance: depends on HashSet's internals
+          var adds = 0
+          override fun add(element: String): Boolean {
+              adds++
+              return super.add(element)
+          }
+          override fun addAll(elements: Collection<String>): Boolean {
+              adds += elements.size
+              return super.addAll(elements)                  // HashSet.addAll calls add(): counted twice
+          }
+      }
+
+      class DelegatedViews(
+          private val ids: MutableSet<String> = HashSet(),
+      ) : MutableSet<String> by ids {                        // every other member is forwarded to ids
+          var adds = 0
+          override fun add(element: String): Boolean {
+              adds++
+              return ids.add(element)
+          }
+          override fun addAll(elements: Collection<String>): Boolean {
+              adds += elements.size
+              return ids.addAll(elements)                    // ids.add is not ours: counted once
+          }
+      }
+
+      fun main() {
+          val viewed = listOf("mug", "lamp", "desk")
+          val inherited = InheritedViews().apply { addAll(viewed) }
+          val delegated = DelegatedViews().apply { addAll(viewed) }
+          println("inheritance counted ${inherited.adds}, delegation counted ${delegated.adds}")
+          println(delegated.size)
+      }
+    expected: |-
+      inheritance counted 6, delegation counted 3
+      3
+    validation: *ran
+  - id: related-principles
+    kind: rules
+    title: Related principles an interviewer may also ask
+    note: Name the principle, then the trade-off.
+    items:
+      - tone: neutral
+        text: "**DRY** — one source for each piece of knowledge; but two similar-looking `when`s that change for different reasons are not duplication. Prefer duplication over the wrong abstraction."
+      - tone: neutral
+        text: "**KISS** — a top-level function beats a class with one method; a `data class` beats a hierarchy."
+      - tone: neutral
+        text: "**YAGNI** — no interface until there is a second implementation or a test that needs a fake."
+      - tone: neutral
+        text: "**Composition over inheritance** — Kotlin makes it the default: `final` classes, `by` delegation, and interfaces with default methods instead of abstract base classes."
+      - tone: neutral
+        text: "**Law of Demeter** — `order.customer.address.city` couples you to three types; ask `order.shippingCity` — a member that hides the structure, or at least an extension that keeps the chain in one place."
+      - tone: neutral
+        text: "**Tell, don't ask** — `cart.applyCoupon(code)` rather than reading `cart.items` and deciding outside."
+      - tone: bad
+        text: "Applying SOLID to a 50-line script: interfaces with one implementation and factories for data classes are the cost, not the benefit."
+      - tone: good
+        text: "Android angle: a `ViewModel` (SRP for screen state) takes a repository interface (DIP) through its constructor, and a sealed `UiState` makes the screen's `when` exhaustive — the closed-set alternative to OCP."

@@ -144,7 +144,7 @@ const config = definePrimitivesConfig({
       background: "var(--bg2)", border: "1px solid var(--line)", borderRadius: pageRadius.inline,
       paddingInline: "1", fontSize: textSize.small, color: "var(--typ)",
     },
-    ".cols": { display: "grid", gridTemplateColumns: `repeat(auto-fit,minmax(${pageSize.columnMin},1fr))`, gap: "2" },
+    ".cols": { display: "grid", gridTemplateColumns: `repeat(auto-fit,minmax(min(${pageSize.columnMin},100%),1fr))`, gap: "2" },
     ".col": { minWidth: 0 },
     ".collabel": {
       display: "inline-block", fontSize: textSize.label, fontWeight: 800, letterSpacing: pageText.labelTracking, textTransform: "uppercase",

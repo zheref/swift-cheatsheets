@@ -1,0 +1,604 @@
+id: video-streaming
+concept: media.video-streaming
+scope: platform
+title: "Video Streaming — HLS & AVPlayer"
+group: iOS Platform
+subtitle: "HLS is the native adaptive format: play it, steer its bitrate, observe and recover the player, go live, keep audio in the background, PiP, download, protect."
+applies:
+  platforms:
+    - ios
+    - ipados
+    - tvos
+    - visionos
+  runtime: Swift toolchain
+  requires:
+    - AVFoundation
+    - AVKit
+  versions:
+    swift: ">=6.0"
+    ios: ">=17"
+sources:
+  - title: HTTP Live Streaming — Apple Developer Documentation
+    url: https://developer.apple.com/documentation/http-live-streaming
+  - title: AVFoundation — Apple Developer Documentation
+    url: https://developer.apple.com/documentation/avfoundation
+  - title: AVKit — Apple Developer Documentation
+    url: https://developer.apple.com/documentation/avkit
+  - title: AVAssetDownloadURLSession — Apple Developer Documentation
+    url: https://developer.apple.com/documentation/avfoundation/avassetdownloadurlsession
+  - title: AVContentKeySession — Apple Developer Documentation
+    url: https://developer.apple.com/documentation/avfoundation/avcontentkeysession
+cards:
+  - id: protocol-versus-platform
+    kind: table
+    title: Protocol versus platform
+    note: "On Apple platforms the answer is almost always HLS, and everything else needs a server-side repackage or a third-party player."
+    headers:
+      - Format
+      - Apple players (AVPlayer, AVKit, Safari)
+      - What it takes
+    rows:
+      - - HLS (MPEG-TS or fMP4/CMAF segments)
+        - "**native**, adaptive"
+        - "an `.m3u8` URL into `AVPlayer` — nothing else"
+      - - Low-Latency HLS
+        - native (iOS 14+)
+        - partial segments and blocking playlist reloads on the server
+      - - MPEG-DASH (`.mpd`)
+        - "**not supported**"
+        - "a third-party player SDK (commercial players, VLCKit), or package the same CMAF segments with an HLS playlist too"
+      - - Progressive MP4 / MOV
+        - native, no adaptation
+        - fine for short clips; one bitrate for every network
+      - - FairPlay Streaming DRM
+        - "native, via `AVContentKeySession`"
+        - "HLS only; a key server that talks to Apple's FairPlay key module"
+      - - Widevine / PlayReady DRM
+        - not on Apple players
+        - "a third-party SDK — or serve FairPlay to Apple devices from the same catalog"
+      - - RTMP / RTSP / SRT
+        - not supported
+        - ingest protocols; transcode to HLS on the server
+      - - WebRTC
+        - "not via `AVPlayer`"
+        - "the WebRTC framework, for sub-second interactive video"
+  - id: play-hls-in-swiftui
+    kind: code
+    title: Playing HLS in SwiftUI with VideoPlayer
+    note: "VideoPlayer gives you the system controls in one line, and when you need PiP control, custom chrome or delegate callbacks you wrap AVPlayerViewController instead."
+    code: |-
+      import AVKit
+      import SwiftUI
+
+      struct Lesson: Identifiable, Hashable {
+        let id: String
+        let title: String
+        let streamURL: URL                 // https://cdn.example.com/lessons/42/master.m3u8
+      }
+
+      struct LessonPlayerView: View {
+        let lesson: Lesson
+        // Optional and created in .task: `= AVPlayer()` here would build a throwaway
+        // player every time SwiftUI re-creates this struct.
+        @State private var player: AVPlayer?
+
+        var body: some View {
+          VideoPlayer(player: player) {
+            // Overlay: above the video, below the system controls; not interactive
+            Text(lesson.title)
+              .font(.caption.bold())
+              .padding(8)
+              .background(.thinMaterial, in: .capsule)
+              .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+              .padding()
+          }
+          .aspectRatio(16 / 9, contentMode: .fit)
+          .task(id: lesson.id) {                       // a new lesson replaces the item, not the player
+            let player = self.player ?? AVPlayer()
+            player.replaceCurrentItem(with: AVPlayerItem(url: lesson.streamURL))
+            self.player = player
+            player.play()
+          }
+          .onDisappear { player?.pause() }
+        }
+      }
+  - id: play-hls-in-uikit
+    kind: code
+    title: Playing HLS in UIKit — AVPlayerViewController and AVPlayerLayer
+    note: "AVPlayerViewController is the full system player (controls, PiP, AirPlay, Now Playing), while AVPlayerLayer is a bare surface for your own UI."
+    code: |-
+      import AVKit
+      import UIKit
+
+      // 1. The system player: full screen or embedded as a child view controller
+      @MainActor func presentLesson(_ url: URL, from presenter: UIViewController) {
+        let controller = AVPlayerViewController()
+        controller.player = AVPlayer(url: url)
+        controller.allowsPictureInPicturePlayback = true
+        controller.canStartPictureInPictureAutomaticallyFromInline = true
+        presenter.present(controller, animated: true) {
+          controller.player?.play()
+        }
+      }
+
+      // 2. Your own chrome: a view whose backing layer IS the player layer,
+      //    so it resizes with Auto Layout and rotation for free
+      final class PlayerView: UIView {
+        override class var layerClass: AnyClass { AVPlayerLayer.self }
+        var playerLayer: AVPlayerLayer { layer as! AVPlayerLayer }
+
+        var player: AVPlayer? {
+          get { playerLayer.player }
+          set { playerLayer.player = newValue }
+        }
+      }
+
+      final class LessonViewController: UIViewController {
+        private let playerView = PlayerView()
+        private let player = AVPlayer()
+
+        override func viewDidLoad() {
+          super.viewDidLoad()
+          playerView.playerLayer.videoGravity = .resizeAspect   // letterbox; .resizeAspectFill crops
+          playerView.player = player
+          view.addSubview(playerView)
+          playerView.frame = view.bounds
+          playerView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        }
+
+        func play(_ url: URL) {
+          player.replaceCurrentItem(with: AVPlayerItem(url: url))
+          player.play()
+        }
+      }
+  - id: multivariant-playlist-and-abr
+    kind: code
+    title: What a multivariant playlist holds, and steering adaptive bitrate
+    note: "The player picks a variant from measured throughput and buffer health, so you set caps and buffer targets instead of choosing renditions."
+    code: |-
+      // master.m3u8 — the multivariant playlist (each tag below is ONE line in the file):
+      //   #EXT-X-STREAM-INF:BANDWIDTH=2200000,AVERAGE-BANDWIDTH=2000000,RESOLUTION=1280x720,
+      //       CODECS="avc1.4d401f,mp4a.40.2"
+      //   720p/index.m3u8
+      //   #EXT-X-STREAM-INF:BANDWIDTH=900000,AVERAGE-BANDWIDTH=750000,RESOLUTION=640x360,
+      //       CODECS="avc1.4d401e,mp4a.40.2"
+      //   360p/index.m3u8
+      //   #EXT-X-I-FRAME-STREAM-INF:BANDWIDTH=200000,CODECS="avc1.4d401f",RESOLUTION=1280x720,
+      //       URI="720p/iframes.m3u8"                                  ← scrubbing and trick play
+      //
+      // The player starts with the FIRST variant listed (put a ~2 Mbps one first), measures
+      // each ~6 s segment's download, and switches variant at segment boundaries.
+
+      let item = AVPlayerItem(url: lesson.streamURL)
+
+      // Caps: never pick a variant above these (0 / .zero = no limit)
+      item.preferredPeakBitRate = 2_000_000                          // bits per second
+      item.preferredPeakBitRateForExpensiveNetworks = 900_000        // cellular, hotspot
+      item.preferredMaximumResolution = CGSize(width: 1280, height: 720)
+
+      // Buffer target: 0 lets the system decide; larger survives dips but costs data if they quit
+      item.preferredForwardBufferDuration = 0
+
+      // Start fast versus never stall: true (default) waits to build a buffer first
+      player.automaticallyWaitsToMinimizeStalling = true
+      player.replaceCurrentItem(with: item)
+
+      /// What the player actually did, read as log entries land — off the main thread, because
+      /// accessLog() may block (iOS 27: `await item.accessLog`) — and stopped with its owner.
+      @MainActor final class AccessLogWatcher {
+        private var watching: Task<Void, Never>?
+
+        func watch(_ item: AVPlayerItem) {
+          watching?.cancel()                                     // a new item replaces the old watch
+          watching = Task.detached {
+            let entries = NotificationCenter.default.notifications(
+              named: AVPlayerItem.newAccessLogEntryNotification, object: item)
+            for await _ in entries {
+              guard let event = item.accessLog()?.events.last else { continue }
+              print("variant \(event.indicatedBitrate) bps, measured \(event.observedBitrate) bps")
+            }
+          }
+        }
+
+        deinit { watching?.cancel() }                            // the screen goes, the watch stops
+      }
+  - id: observing-player-state
+    kind: compare
+    title: Observing player state — KVO as async sequences vs Swift Observation
+    note: "timeControlStatus tells playing, buffering or paused and item.status tells loadable or failed, while observing AVPlayer itself needs iOS 26."
+    columns:
+      - label: KVO publishers + periodic observer (iOS 17)
+        tone: legacy
+        code: |-
+          import AVFoundation
+          import Combine
+
+          @MainActor @Observable final class PlaybackModel {
+            let player = AVPlayer()
+            private(set) var isPlaying = false
+            private(set) var isBuffering = false
+            private(set) var position: Double = 0
+
+            /// Call from .task { await model.observe() }; cancelling the task stops it.
+            func observe() async {
+              let token = player.addPeriodicTimeObserver(
+                forInterval: CMTime(value: 1, timescale: 2), queue: .main) { [weak self] time in
+                MainActor.assumeIsolated { self?.position = time.seconds }
+              }
+              defer { player.removeTimeObserver(token) }      // or it keeps firing
+
+              for await status in player.publisher(for: \.timeControlStatus).values {
+                isPlaying = status == .playing
+                isBuffering = status == .waitingToPlayAtSpecifiedRate   // see reasonForWaitingToPlay
+              }
+            }
+          }
+      - label: Swift Observation (iOS 26)
+        tone: modern
+        code: |-
+          import AVFoundation
+          import Observation
+
+          // Once, at launch, before ANY AVPlayer or AVPlayerItem exists:
+          //   AVPlayer.isObservationEnabled = true
+          @MainActor @Observable final class PlaybackModel {
+            let player = AVPlayer()                 // now @Observable itself
+
+            // SwiftUI views reading these re-render when the player changes
+            var isPlaying: Bool { player.timeControlStatus == .playing }
+            var isBuffering: Bool { player.timeControlStatus == .waitingToPlayAtSpecifiedRate }
+            var isReady: Bool { player.currentItem?.status == .readyToPlay }
+
+            /// Non-UI reactions: Observations is an AsyncSequence of changes
+            func logStalls() async {
+              for await buffering in Observations({ self.isBuffering }) where buffering {
+                print("stalled at \(self.player.currentTime().seconds)s")
+              }
+            }
+
+            // Time is not observable: use the timeline's async sequence (iOS 18)
+            func trackPosition(_ update: (Double) -> Void) async {
+              guard let timeline = player.currentItem?.integratedTimeline else { return }
+              for await time in timeline.periodicTimes(forInterval: CMTime(value: 1, timescale: 2)) {
+                update(time.seconds)
+              }
+            }
+          }
+  - id: errors-and-recovery
+    kind: code
+    title: Errors and recovery
+    note: "A failed AVPlayerItem is finished, so build a new one from the same URL, seek back, and log the HLS error log that names the failing segment."
+    code: |-
+      @MainActor final class ResilientPlayback {
+        let player = AVPlayer()
+        private let url: URL
+
+        init(url: URL) { self.url = url }
+
+        /// Plays, and rebuilds the item up to three times when it fails for good.
+        func run() async {
+          var resumeAt = CMTime.zero
+          for attempt in 0...3 {
+            if attempt > 0 {
+              try? await Task.sleep(for: .seconds(1 << attempt))     // 2 s, 4 s, 8 s
+              guard !Task.isCancelled else { return }
+            }
+            let item = AVPlayerItem(url: url)                        // a failed item can't be reused
+            player.replaceCurrentItem(with: item)
+            if resumeAt > .zero { _ = await player.seek(to: resumeAt) }
+            player.play()
+
+            let error = await failure(of: item)                      // returns only when it failed
+            resumeAt = player.currentTime()
+            print("attempt \(attempt) failed:", error?.localizedDescription ?? "unknown")
+          }
+          // Out of attempts: show the error and a retry button.
+        }
+
+        /// Logs non-fatal HLS errors (a 404 segment, a variant switch) until the item fails for
+        /// good (playlist, DRM, decoder), then hands back item.error.
+        private func failure(of item: AVPlayerItem) async -> (any Error)? {
+          await withDiscardingTaskGroup { group in
+            group.addTask {                          // not on the main actor: errorLog() may block
+              let entries = NotificationCenter.default.notifications(
+                named: AVPlayerItem.newErrorLogEntryNotification, object: item)
+              for await _ in entries {
+                guard let event = item.errorLog()?.events.last else { continue }  // iOS 27: await
+                print("HLS \(event.errorStatusCode) \(event.errorDomain): \(event.uri ?? "")")
+              }
+            }
+            for await status in item.publisher(for: \.status).values where status == .failed { break }
+            group.cancelAll()                        // stop logging this item
+          }
+          return item.error
+        }
+      }
+  - id: live-versus-vod-and-seeking
+    kind: code
+    title: Live versus VOD, and seeking
+    note: "A live item has an indefinite duration and a moving seekable window, so seek inside that window and coalesce seeks while scrubbing."
+    code: |-
+      extension AVPlayerItem {
+        /// Live and EVENT playlists (no #EXT-X-ENDLIST) report an indefinite duration.
+        var isLive: Bool { duration.isIndefinite }
+        var seekWindow: CMTimeRange? { seekableTimeRanges.last?.timeRangeValue }
+      }
+
+      @MainActor final class Seeker {
+        let player: AVPlayer
+        private var target: CMTime?
+        private var isSeeking = false
+        init(player: AVPlayer) { self.player = player }
+
+        /// "Back to live": the end of the window, minus the offset the stream recommends
+        func goLive() async {
+          guard let item = player.currentItem, item.isLive, let window = item.seekWindow else { return }
+          _ = await player.seek(to: window.end - item.recommendedTimeOffsetFromLive)
+        }
+
+        func skip(by seconds: Double) {
+          scrub(to: player.currentTime() + CMTime(seconds: seconds, preferredTimescale: 600))
+        }
+
+        /// Scrubbing fires dozens of times a second: keep ONE seek in flight, chase the latest.
+        func scrub(to time: CMTime) {
+          target = time
+          guard !isSeeking else { return }
+          isSeeking = true
+          Task {
+            while let next = target {
+              target = nil
+              // .zero tolerance is frame-accurate but slower; default tolerance snaps to a keyframe
+              _ = await player.seek(to: next, toleranceBefore: .zero, toleranceAfter: .zero)
+            }
+            isSeeking = false
+          }
+        }
+      }
+      // VOD: item.duration is valid once status == .readyToPlay; clamp seeks to 0...duration.
+  - id: audio-session-and-background
+    kind: code
+    title: Audio session and background playback
+    note: "Without the .playback category, video is silent with the ring switch off and stops in the background."
+    code: |-
+      import AVFoundation
+
+      // Also: Capabilities → Background Modes → "Audio, AirPlay, and Picture in Picture"
+      func configureAudioSession() throws {
+        let session = AVAudioSession.sharedInstance()
+        try session.setCategory(.playback, mode: .moviePlayback)
+        try session.setActive(true)
+      }
+
+      // iOS 15+: the audio of a video keeps playing when the app goes to the background, with
+      // no detaching of the AVPlayerLayer — so automatic Picture in Picture still has its layer.
+      @MainActor func enableBackgroundPlayback(_ player: AVPlayer) {
+        player.audiovisualBackgroundPlaybackPolicy = .continuesIfPossible
+      }
+
+      // A call or Siri interrupts the session: resume only when the system says you should.
+      // (iOS 27 deprecates this for didBecomeInactiveNotification + resumptionRecommendationNotification.)
+      @MainActor func resumeAfterInterruptions(_ player: AVPlayer) async {
+        let interruptions = NotificationCenter.default.notifications(
+          named: AVAudioSession.interruptionNotification)
+        for await notification in interruptions {
+          let info = notification.userInfo ?? [:]
+          guard let type = info[AVAudioSessionInterruptionTypeKey] as? UInt,
+                AVAudioSession.InterruptionType(rawValue: type) == .ended,
+                let options = info[AVAudioSessionInterruptionOptionKey] as? UInt,
+                AVAudioSession.InterruptionOptions(rawValue: options).contains(.shouldResume)
+          else { continue }
+          player.play()
+        }
+      }
+  - id: now-playing-and-remote-commands
+    kind: code
+    title: Now Playing and remote commands with MPNowPlayingSession
+    note: "An MPNowPlayingSession (iOS 16) publishes time, rate and duration from the player itself and scopes its commands to that player."
+    code: |-
+      import AVFoundation
+      import MediaPlayer
+
+      @MainActor final class LessonNowPlaying {
+        private let session: MPNowPlayingSession
+
+        /// Create ONE per player and keep it as long as the player: targets are added once,
+        /// so they never pile up lesson after lesson.
+        init(player: AVPlayer) {
+          session = MPNowPlayingSession(players: [player])
+          session.automaticallyPublishesNowPlayingInfo = true      // elapsed time and rate stay current
+
+          let commands = session.remoteCommandCenter
+          commands.playCommand.addTarget { _ in
+            player.play()
+            return .success
+          }
+          commands.pauseCommand.addTarget { _ in
+            player.pause()
+            return .success
+          }
+        }
+
+        /// Per item: only what the system cannot read from the player.
+        func show(_ lesson: Lesson, item: AVPlayerItem) {
+          item.nowPlayingInfo = [MPMediaItemPropertyTitle: lesson.title]
+          session.becomeActiveIfPossible()
+        }
+      }
+      // AVPlayerViewController does all of this for you (updatesNowPlayingInfoCenter). Before
+      // iOS 16, fill MPNowPlayingInfoCenter.default() yourself and add command targets once.
+  - id: picture-in-picture-and-airplay
+    kind: code
+    title: Picture in Picture and AirPlay
+    note: "PiP needs the .playback audio session and the background mode, and a custom layer needs the AVPictureInPictureController that AVPlayerViewController hides."
+    code: |-
+      import AVKit
+      import SwiftUI
+
+      // Custom player UI: drive PiP yourself
+      @MainActor final class LessonPictureInPicture: NSObject, AVPictureInPictureControllerDelegate {
+        private let controller: AVPictureInPictureController?
+        var restoreUI: (() -> Void)?
+
+        init(playerLayer: AVPlayerLayer) {
+          controller = AVPictureInPictureController.isPictureInPictureSupported()
+            ? AVPictureInPictureController(playerLayer: playerLayer) : nil
+          super.init()
+          controller?.delegate = self
+          controller?.canStartPictureInPictureAutomaticallyFromInline = true   // swipe home → PiP
+        }
+
+        func toggle() {
+          guard let controller, controller.isPictureInPicturePossible else { return }
+          if controller.isPictureInPictureActive { controller.stopPictureInPicture() }
+          else { controller.startPictureInPicture() }
+        }
+
+        // The user tapped "return to app": put the full player back BEFORE calling the handler
+        nonisolated func pictureInPictureController(
+          _ controller: AVPictureInPictureController,
+          restoreUserInterfaceForPictureInPictureStopWithCompletionHandler
+            completionHandler: @escaping (Bool) -> Void) {
+          MainActor.assumeIsolated { restoreUI?() }
+          completionHandler(true)
+        }
+      }
+
+      // AirPlay: the system route picker. AVPlayer sends the HLS URL to the receiver,
+      // which streams it directly (allowsExternalPlayback is true by default).
+      struct AirPlayButton: UIViewRepresentable {
+        func makeUIView(context: Context) -> AVRoutePickerView {
+          let picker = AVRoutePickerView()
+          picker.prioritizesVideoDevices = true
+          return picker
+        }
+        func updateUIView(_ picker: AVRoutePickerView, context: Context) {}
+      }
+  - id: offline-hls-download
+    kind: code
+    title: Offline HLS with AVAssetDownloadURLSession
+    note: "Downloads run in a background session and land where the system chooses, so store the relative path and play it back with AVURLAsset (willDownloadTo needs iOS 18)."
+    applies:
+      platforms:
+        - ios
+        - ipados
+        - visionos
+      versions:
+        ios: ">=18"
+    code: |-
+      final class LessonDownloads: NSObject, AVAssetDownloadDelegate, Sendable {
+        static let shared = LessonDownloads()
+        /// Touch it at launch: downloads that ran while the app was gone report to this delegate.
+        static let session = AVAssetDownloadURLSession(
+          configuration: .background(withIdentifier: "com.example.lessons.downloads"),
+          assetDownloadDelegate: shared, delegateQueue: .main)
+        @MainActor var onFailure: ((_ lessonID: String, any Error) -> Void)?    // shown by the UI
+
+        func download(_ lesson: Lesson) -> Progress {
+          let asset = AVURLAsset(url: lesson.streamURL)
+          let configuration = AVAssetDownloadConfiguration(asset: asset, title: lesson.title)
+          let upTo720p = AVAssetVariantQualifier.predicate(forPresentationHeight: 720,
+                                                           operatorType: .lessThanOrEqualTo)
+          configuration.primaryContentConfiguration.variantQualifiers = [
+            AVAssetVariantQualifier(predicate: upTo720p)
+          ]
+          let task = Self.session.makeAssetDownloadTask(downloadConfiguration: configuration)
+          task.taskDescription = lesson.id
+          task.resume()
+          return task.progress                                       // bind a ProgressView to it
+        }
+
+        func urlSession(_ session: URLSession, assetDownloadTask: AVAssetDownloadTask,
+                        willDownloadTo location: URL) {
+          // The container path changes between installs: persist it relative to home.
+          let home = URL.homeDirectory.path(percentEncoded: false)
+          let relative = location.path(percentEncoded: false).replacingOccurrences(of: home, with: "")
+          UserDefaults.standard.set(relative, forKey: "download.\(assetDownloadTask.taskDescription ?? "")")
+        }
+
+        func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: (any Error)?) {
+          guard let error, let lessonID = task.taskDescription else { return }
+          MainActor.assumeIsolated { onFailure?(lessonID, error) }   // delegateQueue is .main
+        }
+
+        func offlineAsset(for lessonID: String) -> AVURLAsset? {
+          guard let relative = UserDefaults.standard.string(forKey: "download.\(lessonID)") else { return nil }
+          let asset = AVURLAsset(url: URL.homeDirectory.appending(path: relative))
+          return asset.assetCache?.isPlayableOffline == true ? asset : nil
+        }
+      }
+  - id: fairplay-drm-outline
+    kind: code
+    title: FairPlay DRM in outline — AVContentKeySession
+    note: "The player asks for a key, you turn the request into an SPC, your key server returns a CKC, and the system decrypts without your code ever seeing the content key."
+    code: |-
+      /// Immutable after init, and the delegate runs on one serial queue.
+      final class FairPlayKeys: NSObject, AVContentKeySessionDelegate, @unchecked Sendable {
+        private let session = AVContentKeySession(keySystem: .fairPlayStreaming)
+        private let certificate: Data                    // fetched once at start-up, not per request
+        private let licenseURL = URL(string: "https://drm.example.com/fairplay/license")!
+
+        init(certificate: Data) {
+          self.certificate = certificate
+          super.init()
+          session.setDelegate(self, queue: DispatchQueue(label: "fairplay-keys"))
+        }
+
+        /// Attach before the item loads so its key requests come to this session. To fetch keys
+        /// before playback starts, call session.processContentKeyRequest(withIdentifier:…).
+        func protect(_ asset: AVURLAsset) {
+          session.addContentKeyRecipient(asset)
+        }
+
+        func contentKeySession(_ session: AVContentKeySession, didProvide keyRequest: AVContentKeyRequest) {
+          // The identifier is the key URI from the media playlist's tag:
+          //   #EXT-X-KEY:METHOD=SAMPLE-AES,URI="skd://lesson-42",KEYFORMAT="com.apple.streamingkeydelivery"
+          guard let uri = keyRequest.identifier as? String,
+                let contentID = uri.replacingOccurrences(of: "skd://", with: "").data(using: .utf8) else {
+            return keyRequest.processContentKeyResponseError(URLError(.badURL))
+          }
+          keyRequest.makeStreamingContentKeyRequestData(forApp: certificate, contentIdentifier: contentID,
+                                                        options: nil) { spc, error in
+            guard let spc else { return keyRequest.processContentKeyResponseError(error ?? URLError(.unknown)) }
+            var request = URLRequest(url: self.licenseURL)
+            request.httpMethod = "POST"
+            request.httpBody = spc                                   // Server Playback Context
+            URLSession.shared.dataTask(with: request) { ckc, response, error in
+              guard let ckc, (response as? HTTPURLResponse)?.statusCode == 200 else {
+                return keyRequest.processContentKeyResponseError(error ?? URLError(.badServerResponse))
+              }
+              keyRequest.processContentKeyResponse(AVContentKeyResponse(fairPlayStreamingKeyResponseData: ckc))
+            }.resume()
+          }
+        }
+      }
+      // Offline playback: in didProvide, call
+      //   try keyRequest.respondByRequestingPersistableContentKeyRequestAndReturnError()
+      // and implement contentKeySession(_:didProvide: AVPersistableContentKeyRequest) to store the key.
+  - id: video-pitfalls
+    kind: rules
+    title: Pitfalls worth saying out loud
+    note: ""
+    items:
+      - tone: bad
+        text: "Creating a new `AVPlayer` per item or per cell. Keep one player and `replaceCurrentItem(with:)`; for feeds, a small pool."
+      - tone: bad
+        text: "Forgetting `removeTimeObserver(_:)` — the periodic observer keeps firing after the screen is gone, and keeps alive whatever its closure captures."
+      - tone: bad
+        text: "Reusing a failed `AVPlayerItem`. Once `status == .failed` it never recovers: build a new item and seek back."
+      - tone: good
+        text: "Watch `failedToPlayToEndTimeNotification` (a mid-stream failure) as well as `status`; `playbackStalledNotification` only means the buffer ran dry, and the player resumes by itself."
+      - tone: bad
+        text: "Seeking on every scrub event: seeks queue up and the image lags. Keep one seek in flight and chase the latest target."
+      - tone: bad
+        text: "Shipping DASH-only content to iOS, or Widevine-only DRM: AVPlayer plays neither. Package HLS (with CMAF the segments can be shared) and FairPlay."
+      - tone: bad
+        text: "Storing the absolute path of an offline download — the container moves between installs. Store it relative to the home directory."
+      - tone: good
+        text: "Set the audio session to `.playback` before playing, and add the background mode — PiP, background audio and AirPlay all depend on it."
+      - tone: good
+        text: "Cap bitrate on expensive networks (`preferredPeakBitRateForExpensiveNetworks`) instead of picking renditions by hand; ABR knows the network better."
+      - tone: good
+        text: "Log the access log and error log events: indicated vs observed bitrate and stall counts are the numbers a video team asks for."
+      - tone: neutral
+        text: "Test on a real device with Network Link Conditioner (3G, lossy, 100% loss) — the simulator's network never stalls the way a train tunnel does."

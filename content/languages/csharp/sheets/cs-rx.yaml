@@ -1,0 +1,465 @@
+id: cs-rx
+concept: reactive.streams-core
+scope: platform
+title: "Rx.NET — Core"
+group: .NET
+subtitle: "IObservable → operators → IDisposable. Cold until subscribed, push-only, and an error ends the stream — in a shop app's searches, carts and order feeds."
+applies:
+  platforms: [dotnet]
+  runtime: .NET (System.Reactive)
+  requires: [System.Reactive]
+  versions: { csharp: ">=12", dotnet: ">=8", system-reactive: ">=6.0" }
+sources:
+  - title: Reactive Extensions for .NET — dotnet/reactive
+    url: https://github.com/dotnet/reactive
+  - title: Introduction to Rx.NET
+    url: https://introtorx.com/
+  - title: Introduction to Rx.NET — Key types
+    url: https://introtorx.com/chapters/key-types
+cards:
+  - id: combine-to-rx
+    kind: table
+    title: "Mental model and operators: Combine → Rx.NET"
+    note: "Rx.NET is the same push model with LINQ names; the grammar is `OnNext* (OnError | OnCompleted)?` and nothing after the terminal call."
+    headers: [Combine, Rx.NET, Difference]
+    rows:
+      - ["`Publisher<Output, Failure>`", "`IObservable<T>`", "no typed failure: any `Exception` arrives through `OnError`"]
+      - ["`Subscriber`", "`IObserver<T>`: `OnNext`, `OnError`, `OnCompleted`", "usually a lambda: `Subscribe(onNext, onError, onCompleted)`"]
+      - ["`AnyCancellable`, `Set<AnyCancellable>`", "`IDisposable`, `CompositeDisposable`", "losing the reference does **not** cancel: call `Dispose()`"]
+      - ["`Just`, `Empty`, `Fail`", "`Observable.Return`, `Empty`, `Throw`", "—"]
+      - ["`Deferred { Future { … } }`", "`Observable.FromAsync(ct => …)`", "lazy, once per subscriber, the token cancels on `Dispose()`"]
+      - ["`PassthroughSubject`, `CurrentValueSubject`", "`Subject<T>`, `BehaviorSubject<T>`", "`ReplaySubject<T>` replays the last N"]
+      - ["`map`, `filter`, `scan`, `removeDuplicates`", "`Select`, `Where`, `Scan`, `DistinctUntilChanged`", "`Distinct` remembers **every** value ever seen"]
+      - ["`flatMap`, `switchToLatest`", "`SelectMany`, `Select(…).Switch()`", "`Select(…).Concat()` runs one inner at a time"]
+      - ["`combineLatest`, `zip`, `merge`", "`CombineLatest`, `Zip`, `Merge`", "plus `WithLatestFrom` (sample without triggering)"]
+      - ["`catch`, `retry`, `replaceError`", "`Catch`, `Retry(n)`, `Catch(Observable.Return(x))`", "`Retry(3)` is three attempts in total"]
+      - ["`debounce`, `throttle`", "`Throttle`, `Sample`", "**Rx.NET's `Throttle` is a debounce**"]
+      - ["`receive(on:)`, `subscribe(on:)`", "`ObserveOn`, `SubscribeOn`", "pass a `SynchronizationContext` for the UI thread"]
+      - ["`share()`, `multicast`", "`Publish().RefCount()`, `Publish()` + `Connect()`", "`Publish().RefCount()` gives a subscriber nothing after completion; `Replay(1).RefCount()` replays"]
+      - ["`publisher.values`", "`await observable` (its last value), `ToTask()`", "`IAsyncEnumerable<T>` needs System.Interactive.Async (7.x) or a `Channel<T>`"]
+      - ["`Demand` (backpressure)", "none", "a fast source floods a slow observer: sample, buffer or use a `Channel<T>`"]
+  - id: cold-sources
+    kind: code
+    title: "Cold sources: Return, Range, Create, FromAsync"
+    note: "A cold observable is a recipe: nothing runs until a subscription, and every subscriber gets its own run."
+    prerequisites: &run
+      - .NET 8 SDK or later
+      - "`dotnet new console -o Demo`, then `dotnet add Demo package System.Reactive --version 6.1.0`"
+      - "Replace `Demo/Program.cs` with the example, then `dotnet run --project Demo`"
+    code: |-
+      using System.Reactive.Linq;
+      using System.Reactive.Threading.Tasks;
+
+      var calls = 0;
+      var latestOrder = Observable.FromAsync(async ct =>
+      {
+          calls++;                                     // runs per subscription, not at creation
+          await Task.Delay(10, ct);
+          return $"order #{1040 + calls}";
+      });
+      Console.WriteLine($"calls before subscribing: {calls}");
+      Console.WriteLine(await latestOrder);           // awaiting subscribes and yields the last value
+      Console.WriteLine(await latestOrder);
+
+      var statuses = Observable.Create<string>(observer =>
+      {
+          observer.OnNext("placed");
+          observer.OnNext("packed");
+          observer.OnCompleted();
+          return () => Console.WriteLine("status feed closed");   // teardown: completion or Dispose
+      });
+      Console.WriteLine(string.Join(" > ", await statuses.ToList()));
+
+      var pages = Observable.Range(1, 3).Select(page => $"page {page}").Concat(Observable.Return("end"));
+      Console.WriteLine(string.Join(", ", await pages.ToArray()));
+
+      // A Task is already running: ToObservable wraps it, it does not start or restart it
+      var warmCache = Task.FromResult("cache warmed");
+      Console.WriteLine(await warmCache.ToObservable());
+    expected: |-
+      calls before subscribing: 0
+      order #1041
+      order #1042
+      status feed closed
+      placed > packed
+      page 1, page 2, page 3, end
+      cache warmed
+    validation: &ran
+      status: ran
+      toolchain: .NET SDK 9.0.304 (net9.0, C# 13), System.Reactive 6.1.0
+      date: "2026-11-16"
+  - id: hot-sources
+    kind: code
+    title: "Hot sources: events and subjects"
+    note: "A hot source emits whether or not anyone listens; a late subscriber sees only what a subject chooses to replay."
+    prerequisites: *run
+    code: |-
+      using System.Reactive;
+      using System.Reactive.Linq;
+      using System.Reactive.Subjects;
+
+      var tracker = new OrderTracker();
+      var statusChanges = Observable
+          .FromEventPattern<string>(h => tracker.StatusChanged += h, h => tracker.StatusChanged -= h)
+          .Select(e => e.EventArgs);
+      tracker.Report("shipped");                         // nobody subscribed: lost
+      using (statusChanges.Subscribe(s => Console.WriteLine($"event: {s}")))
+          tracker.Report("delivered");                   // Dispose removed the handler again
+
+      var refreshTapped = new Subject<Unit>();             // an event stream: no memory
+      var cart = new CartStore();                          // state: always has a current value
+      var recentSearches = new ReplaySubject<string>(bufferSize: 2);
+
+      refreshTapped.OnNext(Unit.Default);                  // lost, like the event above
+      cart.Add();
+      foreach (var term in new[] { "laptop", "monitor", "keyboard" }) recentSearches.OnNext(term);
+
+      using var a = refreshTapped.Subscribe(_ => Console.WriteLine("refresh"));
+      using var b = cart.Count.Subscribe(n => Console.WriteLine($"badge: {n}"));
+      using var c = recentSearches.Subscribe(s => Console.WriteLine($"recent: {s}"));
+      refreshTapped.OnNext(Unit.Default);
+      cart.Add();
+
+      class OrderTracker
+      {
+          public event EventHandler<string>? StatusChanged;
+          public void Report(string status) => StatusChanged?.Invoke(this, status);
+      }
+
+      class CartStore
+      {
+          private readonly BehaviorSubject<int> count = new(0);
+          public IObservable<int> Count => count.AsObservable();   // callers cannot push into it
+          public void Add() => count.OnNext(count.Value + 1);       // Value: the current state, synchronously
+      }
+    expected: |-
+      event: delivered
+      badge: 1
+      recent: monitor
+      recent: keyboard
+      refresh
+      badge: 2
+    validation: *ran
+  - id: flattening
+    kind: code
+    title: SelectMany vs Switch vs Concat
+    note: "Search-as-you-type is `Select(Search).Switch()`: a new query disposes the request in flight, so a slow stale answer never lands."
+    prerequisites: &run-testing
+      - .NET 8 SDK or later
+      - "`dotnet new console -o Demo`, then `dotnet add Demo package System.Reactive --version 6.1.0` and `dotnet add Demo package Microsoft.Reactive.Testing --version 6.1.0`"
+      - "Replace `Demo/Program.cs` with the example, then `dotnet run --project Demo`"
+    code: |-
+      using System.Reactive.Linq;
+      using Microsoft.Reactive.Testing;
+
+      var scheduler = new TestScheduler();                 // virtual time: runs instantly
+      var queries = scheduler.CreateHotObservable(
+          ReactiveTest.OnNext(Ms(10), "lap"),
+          ReactiveTest.OnNext(Ms(100), "laptop"));
+
+      // The server is slow for the short query
+      IObservable<string> Search(string query) =>
+          Observable.Timer(TimeSpan.FromMilliseconds(query == "lap" ? 250 : 50), scheduler)
+                    .Select(_ => query);
+
+      var runs = new (string Name, IObservable<string> Results)[]
+      {
+          ("SelectMany", queries.SelectMany(Search)),      // every inner stays alive: a stale answer lands last
+          ("Switch", queries.Select(Search).Switch()),     // a new query disposes the one in flight
+          ("Concat", queries.Select(Search).Concat()),     // queued: one inner at a time, in order
+      };
+      var logs = new List<(string Name, List<string> Seen)>();
+      foreach (var (name, results) in runs)
+      {
+          var seen = new List<string>();
+          results.Subscribe(q => seen.Add($"{q}@{scheduler.Clock / TimeSpan.TicksPerMillisecond}ms"));
+          logs.Add((name, seen));
+      }
+
+      scheduler.Start();
+      foreach (var (name, seen) in logs) Console.WriteLine($"{name,-10} {string.Join("  ", seen)}");
+
+      static long Ms(int milliseconds) => TimeSpan.FromMilliseconds(milliseconds).Ticks;
+    expected: |-
+      SelectMany laptop@150ms  lap@260ms
+      Switch     laptop@150ms
+      Concat     lap@260ms  laptop@310ms
+    validation: &ran-testing
+      status: ran
+      toolchain: .NET SDK 9.0.304 (net9.0, C# 13), System.Reactive 6.1.0, Microsoft.Reactive.Testing 6.1.0
+      date: "2026-11-16"
+  - id: combining
+    kind: code
+    title: CombineLatest vs Zip vs Merge vs WithLatestFrom, and Scan
+    note: "CombineLatest for derived form state, WithLatestFrom for 'on tap, read the form', Zip to pair by position, Merge to interleave, Scan for a running total."
+    prerequisites: *run
+    code: |-
+      using System.Reactive;
+      using System.Reactive.Linq;
+      using System.Reactive.Subjects;
+
+      var email = new BehaviorSubject<string>("");
+      var password = new BehaviorSubject<string>("");
+      var signInTapped = new Subject<Unit>();
+
+      // CombineLatest: re-evaluates when ANY input changes; completes when ALL inputs have completed
+      email.CombineLatest(password, (e, p) => e.Contains('@') && p.Length >= 8)
+           .DistinctUntilChanged()
+           .Subscribe(ok => Console.WriteLine($"sign-in enabled: {ok}"));
+
+      // WithLatestFrom: only the tap triggers, typing does not; completes when the taps complete
+      signInTapped.WithLatestFrom(email, (_, e) => e)
+                  .Subscribe(e => Console.WriteLine($"signing in {e}"));
+
+      email.OnNext("ana@shop.example");                // still False: DistinctUntilChanged stays quiet
+      password.OnNext("correct-horse");
+      signInTapped.OnNext(Unit.Default);
+
+      var placed = new Subject<string>();
+      var receipts = new Subject<string>();
+      // Zip: pairs by position; once a finished input has nothing queued, the next value completes it
+      placed.Zip(receipts, (order, receipt) => $"{order}={receipt}")
+            .Subscribe(pair => Console.WriteLine($"zip {pair}"), () => Console.WriteLine("zip completed"));
+      // Merge: as they arrive; completes when ALL inputs complete (an error in any input ends all of these)
+      placed.Merge(receipts).Subscribe(x => Console.WriteLine($"merge {x}"));
+      // Scan: a running fold that emits every intermediate result
+      placed.Scan(0, (count, _) => count + 1).Subscribe(n => Console.WriteLine($"orders today: {n}"));
+
+      placed.OnNext("order-1");
+      placed.OnNext("order-2");
+      receipts.OnNext("R-1");
+      placed.OnCompleted();                            // order-2 still waits for its receipt
+      receipts.OnNext("R-2");
+      receipts.OnNext("R-3");                          // no order left to pair with: Zip completes
+    expected: |-
+      sign-in enabled: False
+      sign-in enabled: True
+      signing in ana@shop.example
+      merge order-1
+      orders today: 1
+      merge order-2
+      orders today: 2
+      zip order-1=R-1
+      merge R-1
+      zip order-2=R-2
+      merge R-2
+      zip completed
+      merge R-3
+    validation: *ran
+  - id: errors-and-retry
+    kind: code
+    title: A pipeline with Retry and Catch
+    note: "Retry and Catch go INSIDE the per-query observable, because an error that reaches the outer stream ends it for good."
+    prerequisites: *run
+    code: |-
+      using System.Reactive.Linq;
+
+      var api = new FlakyCatalogApi();
+      var results = new[] { "laptop", "broken-category" }.ToObservable()
+          .Select(query => Observable
+              .FromAsync(ct => api.SearchAsync(query, ct))   // each subscription is a new request
+              .Retry(3)                                       // 3 attempts in total, resubscribing at once
+              .Catch((HttpRequestException e) => Observable.Return($"'{query}' unavailable: {e.Message}")))
+          .Concat();                                          // Switch() for live typing; Concat keeps order
+
+      // Retry has no delay: for backoff wrap the attempt in Observable.Defer with a Delay, use RetryWhen,
+      // or put a policy (Polly) around the Task — the timers sheet shows exponential backoff
+      await results.ForEachAsync(result => Console.WriteLine(result));
+      Console.WriteLine("stream still completed normally");
+
+      class FlakyCatalogApi
+      {
+          private readonly Dictionary<string, int> attempts = [];
+
+          public async Task<string> SearchAsync(string query, CancellationToken token)
+          {
+              await Task.Delay(5, token);
+              var attempt = attempts[query] = attempts.GetValueOrDefault(query) + 1;
+              Console.WriteLine($"attempt {attempt}: {query}");
+              if (query.StartsWith("broken") || attempt < 3) throw new HttpRequestException("503");
+              return $"3 results for {query}";
+          }
+      }
+    expected: |-
+      attempt 1: laptop
+      attempt 2: laptop
+      attempt 3: laptop
+      3 results for laptop
+      attempt 1: broken-category
+      attempt 2: broken-category
+      attempt 3: broken-category
+      'broken-category' unavailable: 503
+      stream still completed normally
+    validation: *ran
+  - id: lifetime-and-threads
+    kind: code
+    title: "Subscription lifetime and threads: Dispose, TakeUntil, ObserveOn"
+    note: "A screen owns a CompositeDisposable and disposes it on close; SubscribeOn moves the subscribing work, ObserveOn moves delivery."
+    prerequisites: *run
+    code: |-
+      using System.Reactive;
+      using System.Reactive.Concurrency;
+      using System.Reactive.Disposables;
+      using System.Reactive.Disposables.Fluent;          // DisposeWith, new in Rx 6.1
+      using System.Reactive.Linq;
+      using System.Reactive.Subjects;
+
+      var orderUpdates = new Subject<string>();
+      var screenClosed = new Subject<Unit>();
+      var subscriptions = new CompositeDisposable();
+
+      orderUpdates.Subscribe(u => Console.WriteLine($"list: {u}")).DisposeWith(subscriptions);
+      orderUpdates.TakeUntil(screenClosed)                 // ends itself: no handle to keep
+                  .Finally(() => Console.WriteLine("banner detached"))
+                  .Subscribe(u => Console.WriteLine($"banner: {u}"));
+
+      orderUpdates.OnNext("packed");
+      screenClosed.OnNext(Unit.Default);
+      orderUpdates.OnNext("shipped");                       // the list still listens
+      subscriptions.Dispose();                              // the screen closes
+      orderUpdates.OnNext("delivered");                     // nobody prints this
+
+      using var io = new EventLoopScheduler(start => new Thread(start) { Name = "io", IsBackground = true });
+      using var ui = new EventLoopScheduler(start => new Thread(start) { Name = "ui", IsBackground = true });
+      var load = Observable.Create<string>(observer =>
+      {
+          Console.WriteLine($"loading on {Thread.CurrentThread.Name}");
+          observer.OnNext("3 orders");
+          observer.OnCompleted();
+          return Disposable.Empty;
+      });
+      // In WPF, WinUI or MAUI: .ObserveOn(SynchronizationContext.Current!) captured on the UI thread
+      await load.SubscribeOn(io)
+                .ObserveOn(ui)
+                .Do(v => Console.WriteLine($"rendering '{v}' on {Thread.CurrentThread.Name}"));
+    expected: |-
+      list: packed
+      banner: packed
+      banner detached
+      list: shipped
+      loading on io
+      rendering '3 orders' on ui
+    applies:
+      versions: { csharp: ">=12", dotnet: ">=8", system-reactive: ">=6.1" }
+    validation: *ran
+  - id: sharing
+    kind: code
+    title: "Sharing one subscription: Publish, RefCount, Replay"
+    note: "For a request that completes, Publish().RefCount() gives a later screen nothing and Replay(1).RefCount() replays the answer, but that replay buffer also survives everyone leaving, so a live feed's next subscriber first sees a stale value."
+    prerequisites: *run
+    code: |-
+      using System.Globalization;
+      using System.Reactive.Linq;
+      using System.Reactive.Subjects;
+      using System.Reactive.Threading.Tasks;
+
+      CultureInfo.CurrentCulture = CultureInfo.InvariantCulture;
+      var requests = 0;
+      var profile = Observable.FromAsync(async ct =>         // cold: one HTTP call per subscription
+      {
+          requests++;
+          await Task.Delay(10, ct);
+          return "Ada";
+      });
+
+      Console.WriteLine("variant              requests  a later screen gets");
+      foreach (var (name, shared) in new (string, IObservable<string>)[]
+      {
+          ("cold", profile),
+          ("Publish().RefCount()", profile.Publish().RefCount()),   // shares while subscribed, keeps nothing
+          ("Replay(1).RefCount()", profile.Replay(1).RefCount()),   // shares, and keeps the last value
+      })
+      {
+          requests = 0;
+          await Task.WhenAll(shared.ToTask(), shared.ToTask());      // header and sidebar, at the same time
+          var later = await shared.FirstOrDefaultAsync() ?? "nothing (completed)";   // settings, afterwards
+          Console.WriteLine($"{name,-20} {requests,8}  {later}");
+      }
+
+      // A live feed: the replay buffer outlives the disconnect
+      var socket = new Subject<decimal>();
+      var prices = Observable.Create<decimal>(observer =>
+      {
+          Console.WriteLine("socket open");
+          return socket.Subscribe(observer);
+      }).Replay(1).RefCount();
+      using (prices.Subscribe()) socket.OnNext(101.5m);       // a chart, then the user leaves
+      socket.OnNext(103m);                                    // nobody listens: missed
+      using (prices.Subscribe(p => Console.WriteLine($"next screen sees {p}"))) socket.OnNext(104m);
+    expected: |-
+      variant              requests  a later screen gets
+      cold                        3  Ada
+      Publish().RefCount()        1  nothing (completed)
+      Replay(1).RefCount()        1  Ada
+      socket open
+      next screen sees 101.5
+      socket open
+      next screen sees 104
+    validation: *ran
+  - id: bridging-to-async
+    kind: code
+    title: Bridging to Task and IAsyncEnumerable
+    note: "FirstAsync, LastAsync and ToTask ship in System.Reactive, but ToAsyncEnumerable does not: it is `AsyncEnumerableEx.ToAsyncEnumerable` in System.Interactive.Async 7.x (System.Linq.Async up to 6.x), so here it is written with a Channel."
+    prerequisites: *run
+    code: |-
+      using System.Reactive.Linq;
+      using System.Reactive.Threading.Tasks;
+      using System.Runtime.CompilerServices;
+      using System.Threading.Channels;
+
+      var statuses = new[] { "placed", "packed", "shipped" }.ToObservable();
+
+      Console.WriteLine(await statuses.FirstAsync());        // the first value, then it unsubscribes
+      Console.WriteLine(await statuses);                     // awaiting an observable: its LAST value
+      Task<string> asTask = statuses.LastAsync().ToTask();   // for APIs that want a Task
+      Console.WriteLine(await asTask);
+
+      await foreach (var status in ToAsyncEnumerable(statuses))
+          Console.WriteLine($"pulled {status}");
+
+      // Push to pull: buffer pushed values until the consumer asks for them
+      static async IAsyncEnumerable<T> ToAsyncEnumerable<T>(
+          IObservable<T> source, [EnumeratorCancellation] CancellationToken token = default)
+      {
+          var buffer = Channel.CreateUnbounded<T>();         // bound it if the source can outrun the reader
+          using var subscription = source.Subscribe(
+              value => buffer.Writer.TryWrite(value),
+              error => buffer.Writer.TryComplete(error),
+              () => buffer.Writer.TryComplete());
+          await foreach (var value in buffer.Reader.ReadAllAsync(token))
+              yield return value;
+      }
+    expected: |-
+      placed
+      shipped
+      shipped
+      pulled placed
+      pulled packed
+      pulled shipped
+    sources:
+      - title: System.Interactive.Async — NuGet
+        url: https://www.nuget.org/packages/System.Interactive.Async
+    validation: *ran
+  - id: rx-gotchas
+    kind: rules
+    title: Gotchas, and when not to use Rx
+    note: Most Rx bugs are lifetime or error-placement bugs.
+    items:
+      - tone: bad
+        text: "Discarding the `IDisposable` from `Subscribe` on a long-lived source: the subscription (and the screen it captures) lives as long as the source."
+      - tone: bad
+        text: "`Retry`/`Catch` on the outer stream: the first failure ends search for the rest of the session. Put them inside the `Select` before `Switch`."
+      - tone: bad
+        text: "`SelectMany` for search-as-you-type: stale answers can overwrite fresh ones. Use `Select(…).Switch()`."
+      - tone: bad
+        text: "`task.ToObservable()` when you meant laziness: the task is already running. `Observable.FromAsync(ct => …)` starts per subscriber and cancels on dispose."
+      - tone: bad
+        text: "Calling `OnNext` on a subject from several threads at once breaks the grammar; serialise with `Subject.Synchronize(subject)` or one producer."
+      - tone: neutral
+        text: "`await observable` returns the **last** value and throws `InvalidOperationException` on an empty sequence; use `FirstAsync()` or `FirstOrDefaultAsync()` for the first."
+      - tone: neutral
+        text: "Subscribing to a cold source twice runs it twice (two HTTP calls). Screens subscribing **at the same time**: `Publish().RefCount()`. A result later screens should reuse: `Replay(1).RefCount()`, or cache the `Task` (`Lazy<Task<T>>`) — `Publish().RefCount()` gives a late subscriber nothing once the source has completed."
+      - tone: bad
+        text: "`Replay(1).RefCount()` on a live feed keeps its buffer after everyone leaves: the next subscriber gets the old value first, then the source reconnects. Check freshness (`Timestamp()`) or build a new `Replay` per session."
+      - tone: good
+        text: "One request/response: a plain `Task`. A pull-based sequence (pages, a file): `IAsyncEnumerable<T>`. One producer handing work to a consumer with backpressure: `Channel<T>`. Reach for Rx when you **compose** several push sources over time."

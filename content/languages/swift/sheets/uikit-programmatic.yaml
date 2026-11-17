@@ -1,0 +1,571 @@
+id: uikit-programmatic
+concept: ui.programmatic
+scope: platform
+title: "UIKit — Programmatic UI"
+group: SwiftUI
+subtitle: No storyboards — build the hierarchy, the constraints and the list in code, and keep the screen in sync with the data yourself.
+applies:
+  platforms:
+    - ios
+    - ipados
+    - visionos
+  requires:
+    - UIKit
+  versions:
+    swift: ">=6.0"
+    ios: ">=17"
+sources:
+  - title: UIKit — Apple Developer Documentation
+    url: https://developer.apple.com/documentation/uikit
+  - title: UIViewController — Apple Developer Documentation
+    url: https://developer.apple.com/documentation/uikit/uiviewcontroller
+  - title: NSLayoutConstraint — Apple Developer Documentation
+    url: https://developer.apple.com/documentation/uikit/nslayoutconstraint
+  - title: UICollectionViewDiffableDataSource — Apple Developer Documentation
+    url: https://developer.apple.com/documentation/uikit/uicollectionviewdiffabledatasource
+  - title: UIContentConfiguration — Apple Developer Documentation
+    url: https://developer.apple.com/documentation/uikit/uicontentconfiguration
+cards:
+  - id: view-controller-lifecycle
+    kind: table
+    title: View-controller lifecycle — what goes where
+    note: "`viewDidLoad` runs once; everything after it can run many times."
+    headers:
+      - Method
+      - Do this here
+      - Not this
+    rows:
+      - - "`init(api:)`"
+        - store dependencies; set `title` and `navigationItem`
+        - "touch `view` — it forces `loadView` early"
+      - - "`loadView()`"
+        - "`view = ItemDetailView()` when the whole screen is one custom view"
+        - "call `super.loadView()` — it goes looking for a nib"
+      - - "`viewDidLoad()`"
+        - add subviews, activate constraints, build the data source, start the first load
+        - "read `view.bounds` — the final size is not known yet"
+      - - "`viewWillAppear(_:)`"
+        - refresh data that may have changed while the screen was hidden
+        - geometry — traits and size are not updated yet
+      - - "`viewIsAppearing(_:)`"
+        - "work that needs the real size and traits before the first frame (scroll to the selection); back-deploys to iOS 13"
+        - expensive work — it runs on every appearance
+      - - "`viewDidLayoutSubviews()`"
+        - "frame-based tweaks that depend on `view.bounds`"
+        - "add subviews or constraints — it runs on every layout pass"
+      - - "`viewDidAppear(_:)`"
+        - "`becomeFirstResponder()`, analytics, start animations"
+        - first load — the user already sees an empty screen
+      - - "`viewWillDisappear(_:)` / `viewDidDisappear(_:)`"
+        - cancel work tied to visibility, end editing
+        - "assume the controller is going away — it may just be covered"
+      - - "`deinit`"
+        - proves there is no leak (set a breakpoint or log)
+        - "rely on it to cancel a `Task` that captured `self` — it never runs"
+  - id: no-storyboard-scene-setup
+    kind: code
+    title: Starting an app with no storyboard
+    note: Delete the storyboard keys from Info.plist first, or UIKit loads Main.storyboard before this code runs.
+    code: |-
+      // Info.plist: remove "Main storyboard file base name" (UIMainStoryboardFile)
+      // and the scene configuration's "Storyboard Name" (UISceneStoryboardFile).
+      final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
+        var window: UIWindow?
+        private var coordinator: ItemsCoordinator?
+
+        func scene(_ scene: UIScene, willConnectTo session: UISceneSession,
+                   options connectionOptions: UIScene.ConnectionOptions) {
+          guard let windowScene = scene as? UIWindowScene else { return }
+
+          let navigation = UINavigationController()
+          navigation.navigationBar.prefersLargeTitles = true
+
+          let coordinator = ItemsCoordinator(navigation: navigation, api: LiveItemsAPI())
+          coordinator.start()
+          self.coordinator = coordinator        // something must own it, or it deallocates
+
+          let window = UIWindow(windowScene: windowScene)
+          window.rootViewController = navigation
+          window.makeKeyAndVisible()
+          self.window = window                  // UIKit does not retain the window for you
+        }
+      }
+  - id: a-view-built-in-code
+    kind: code
+    title: A view built in code
+    note: Build the hierarchy once in `init`; the controller assigns it in `loadView()` and only fills in values.
+    code: |-
+      final class ItemDetailView: UIView {
+        let nameLabel = UILabel()
+        let priceLabel = UILabel()
+        let favoriteButton = UIButton(configuration: .tinted())
+
+        override init(frame: CGRect) {
+          super.init(frame: frame)
+          backgroundColor = .systemBackground
+
+          nameLabel.font = .preferredFont(forTextStyle: .title2)
+          nameLabel.adjustsFontForContentSizeCategory = true   // follows Dynamic Type live
+          nameLabel.numberOfLines = 0
+          priceLabel.font = .preferredFont(forTextStyle: .body)
+          priceLabel.textColor = .secondaryLabel
+          favoriteButton.configuration?.image = UIImage(systemName: "star")
+          favoriteButton.accessibilityLabel = "Favorite"            // image-only: VoiceOver needs a name
+
+          let stack = UIStackView(arrangedSubviews: [nameLabel, priceLabel, favoriteButton])
+          stack.axis = .vertical
+          stack.alignment = .leading
+          stack.spacing = 12
+          stack.translatesAutoresizingMaskIntoConstraints = false
+          addSubview(stack)
+
+          NSLayoutConstraint.activate([
+            stack.topAnchor.constraint(equalTo: safeAreaLayoutGuide.topAnchor, constant: 24),
+            stack.leadingAnchor.constraint(equalTo: layoutMarginsGuide.leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: layoutMarginsGuide.trailingAnchor),
+          ])
+        }
+
+        @available(*, unavailable, message: "Built in code; there is no storyboard")
+        required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
+      }
+  - id: auto-layout-toolkit
+    kind: code
+    title: Auto Layout in code — the toolkit
+    note: "`keyboardLayoutGuide` (iOS 15+) replaces the keyboard-notification dance."
+    code: |-
+      final class ItemEditorViewController: UIViewController {
+        private let nameField = UITextField()
+        private let priceField = UITextField()
+        private let currencyLabel = UILabel()
+        private let saveButton = UIButton(configuration: .filled())
+
+        override func viewDidLoad() {
+          super.viewDidLoad()
+          view.backgroundColor = .systemBackground
+          nameField.placeholder = "Name"
+          priceField.placeholder = "Price"
+          [nameField, priceField].forEach { $0.borderStyle = .roundedRect }   // the default draws nothing
+          currencyLabel.text = "USD"
+          saveButton.configuration?.title = "Save"
+
+          // Hug: the label keeps its natural width, the field takes the rest of the row.
+          currencyLabel.setContentHuggingPriority(.required, for: .horizontal)
+          let priceRow = UIStackView(arrangedSubviews: [priceField, currencyLabel])
+          priceRow.spacing = 8
+          let form = UIStackView(arrangedSubviews: [nameField, priceRow])
+          form.axis = .vertical
+          form.spacing = 16
+
+          for subview in [form, saveButton] {
+            subview.translatesAutoresizingMaskIntoConstraints = false
+            view.addSubview(subview)
+          }
+          let margins = view.layoutMarginsGuide
+          let preferredHeight = saveButton.heightAnchor.constraint(equalToConstant: 50)
+          preferredHeight.priority = .defaultHigh     // breakable: large text may need more
+
+          NSLayoutConstraint.activate([
+            form.topAnchor.constraint(equalToSystemSpacingBelow: view.safeAreaLayoutGuide.topAnchor, multiplier: 2),
+            form.leadingAnchor.constraint(equalTo: margins.leadingAnchor),
+            form.trailingAnchor.constraint(equalTo: margins.trailingAnchor),
+            saveButton.leadingAnchor.constraint(equalTo: margins.leadingAnchor),
+            saveButton.trailingAnchor.constraint(equalTo: margins.trailingAnchor),
+            saveButton.bottomAnchor.constraint(equalTo: view.keyboardLayoutGuide.topAnchor, constant: -12),
+            preferredHeight,
+          ])
+        }
+      }
+  - id: layout-before-bounds-are-known
+    kind: compare
+    title: Layout before the bounds are known
+    note: In `viewDidLoad` the view has not been sized for the device, the rotation, split view or a sheet yet.
+    columns:
+      - label: Frames from viewDidLoad
+        tone: bad
+        code: |-
+          final class ItemHeaderViewController: UIViewController {
+            private let banner = UIImageView(image: UIImage(named: "banner"))
+
+            override func viewDidLoad() {
+              super.viewDidLoad()
+              view.addSubview(banner)
+              // A snapshot of a size that is about to change — and never recomputed.
+              banner.frame = CGRect(
+                x: 0, y: 0,
+                width: view.bounds.width,
+                height: view.bounds.width * 9 / 16
+              )
+            }
+          }
+      - label: Relations the engine re-solves
+        tone: good
+        code: |-
+          final class ItemHeaderViewController: UIViewController {
+            private let banner = UIImageView(image: UIImage(named: "banner"))
+
+            override func viewDidLoad() {
+              super.viewDidLoad()
+              banner.translatesAutoresizingMaskIntoConstraints = false
+              view.addSubview(banner)
+              NSLayoutConstraint.activate([
+                banner.topAnchor.constraint(equalTo: view.topAnchor),
+                banner.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+                banner.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+                banner.heightAnchor.constraint(equalTo: banner.widthAnchor, multiplier: 9.0 / 16.0),
+              ])
+            }
+
+            // Frame code, when you truly need it, belongs where the size is final:
+            override func viewDidLayoutSubviews() {
+              super.viewDidLayoutSubviews()
+              banner.layer.shadowPath = UIBezierPath(rect: banner.bounds).cgPath  // needs the real size
+            }
+          }
+  - id: target-action-vs-uiaction
+    kind: compare
+    title: Target-action vs UIAction
+    note: "`UIAction` closures (iOS 14+) keep the handler next to the control — and need `[weak self]`."
+    columns:
+      - label: Target-action
+        tone: legacy
+        code: |-
+          final class ItemDetailViewController: UIViewController {
+            private let item: Item
+            private let detailView = ItemDetailView()
+            var onToggleFavorite: (() -> Void)?
+            var onEdit: (() -> Void)?
+
+            init(item: Item) {
+              self.item = item
+              super.init(nibName: nil, bundle: nil)
+            }
+            required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
+
+            override func loadView() { view = detailView }
+
+            override func viewDidLoad() {
+              super.viewDidLoad()
+              detailView.nameLabel.text = item.name
+              detailView.favoriteButton.addTarget(
+                self, action: #selector(favoriteTapped), for: .primaryActionTriggered)
+              navigationItem.rightBarButtonItem = UIBarButtonItem(
+                barButtonSystemItem: .edit, target: self, action: #selector(editTapped))
+            }
+
+            // Selectors need @objc, are checked late, and scatter the handlers.
+            @objc private func favoriteTapped() { onToggleFavorite?() }
+            @objc private func editTapped() { onEdit?() }
+          }
+      - label: UIAction
+        tone: modern
+        code: |-
+          final class ItemDetailViewController: UIViewController {
+            private let item: Item
+            private let detailView = ItemDetailView()
+            var onToggleFavorite: (() -> Void)?
+            var onEdit: (() -> Void)?
+
+            init(item: Item) {
+              self.item = item
+              super.init(nibName: nil, bundle: nil)
+            }
+            required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
+
+            override func loadView() { view = detailView }
+
+            override func viewDidLoad() {
+              super.viewDidLoad()
+              detailView.nameLabel.text = item.name
+              // controller -> view -> button -> action -> closure: [weak self] breaks the cycle
+              detailView.favoriteButton.addAction(UIAction { [weak self] _ in
+                self?.onToggleFavorite?()
+              }, for: .primaryActionTriggered)
+
+              navigationItem.rightBarButtonItem = UIBarButtonItem(
+                systemItem: .edit,
+                primaryAction: UIAction { [weak self] _ in self?.onEdit?() }
+              )
+            }
+          }
+  - id: the-list-screen
+    kind: code
+    title: "The list screen: diffable data source + cell registration"
+    note: The UIKit twin of SwiftUI's `List` of `NavigationLink`s, chevron included — the snapshot is the state, and `apply` does the diff.
+    code: |-
+      final class ItemsViewController: UICollectionViewController {
+        private let api: any ItemsAPI
+        private var itemsByID: [Item.ID: Item] = [:]
+        private var dataSource: UICollectionViewDiffableDataSource<Int, Item.ID>!
+        var onSelect: ((Item) -> Void)?
+
+        init(api: any ItemsAPI) {
+          self.api = api
+          let list = UICollectionLayoutListConfiguration(appearance: .insetGrouped)
+          super.init(collectionViewLayout: UICollectionViewCompositionalLayout.list(using: list))
+        }
+
+        @available(*, unavailable) required init?(coder: NSCoder) { fatalError() }
+
+        override func viewDidLoad() {
+          super.viewDidLoad()
+          let row = UICollectionView.CellRegistration<UICollectionViewListCell, Item> { cell, _, item in
+            var content = cell.defaultContentConfiguration()
+            content.text = item.name
+            content.secondaryText = item.price.formatted(.currency(code: "USD"))
+            cell.contentConfiguration = content
+            cell.accessories = [.disclosureIndicator()]   // what NavigationLink draws for free
+          }
+
+          dataSource = .init(collectionView: collectionView) { [unowned self] view, indexPath, id in
+            view.dequeueConfiguredReusableCell(using: row, for: indexPath, item: itemsByID[id])
+          }
+          Task { await load() }                            // next card
+        }
+
+        override func collectionView(_ collectionView: UICollectionView, didSelectItemAt indexPath: IndexPath) {
+          guard let id = dataSource.itemIdentifier(for: indexPath), let item = itemsByID[id] else { return }
+          onSelect?(item)
+        }
+      }
+  - id: loading-the-list
+    kind: code
+    title: Loading the list — apply a snapshot, or show the failure
+    note: A failed load must never look like an empty list, so it gets the same overlay the full state machine uses.
+    code: |-
+      // Same file as ItemsViewController: an extension there can use its private members.
+      extension ItemsViewController {
+        func load() async {
+          do {
+            let items = try await api.items()
+            itemsByID = Dictionary(uniqueKeysWithValues: items.map { ($0.id, $0) })
+
+            var snapshot = NSDiffableDataSourceSnapshot<Int, Item.ID>()
+            snapshot.appendSections([0])
+            snapshot.appendItems(items.map(\.id))
+            await dataSource.apply(snapshot)                 // animated diff; never reloadData()
+            contentUnavailableConfiguration = nil
+          } catch {
+            // Copy only the `.failure(_:)` extension from keeping-the-screen-in-sync, not its controller.
+            contentUnavailableConfiguration = UIContentUnavailableConfiguration.failure(error.localizedDescription)
+          }
+        }
+      }
+  - id: compositional-layout
+    kind: code
+    title: Compositional layout — a carousel above a list
+    note: One layout object per screen; each section picks its own shape and can adapt to the size class.
+    code: |-
+      enum ItemsSection: Int { case featured, all }
+
+      @MainActor
+      func makeItemsLayout() -> UICollectionViewCompositionalLayout {
+        UICollectionViewCompositionalLayout { sectionIndex, environment in
+          switch ItemsSection(rawValue: sectionIndex) {
+          case .featured:
+            let isWide = environment.traitCollection.horizontalSizeClass == .regular
+            let item = NSCollectionLayoutItem(layoutSize: .init(
+              widthDimension: .fractionalWidth(1), heightDimension: .fractionalHeight(1)))
+            let group = NSCollectionLayoutGroup.horizontal(
+              layoutSize: .init(widthDimension: .fractionalWidth(isWide ? 0.4 : 0.85),
+                                heightDimension: .absolute(160)),
+              subitems: [item])
+
+            let section = NSCollectionLayoutSection(group: group)
+            section.orthogonalScrollingBehavior = .groupPagingCentered   // horizontal inside vertical
+            section.interGroupSpacing = 12
+            section.boundarySupplementaryItems = [
+              NSCollectionLayoutBoundarySupplementaryItem(
+                layoutSize: .init(widthDimension: .fractionalWidth(1), heightDimension: .estimated(44)),
+                elementKind: UICollectionView.elementKindSectionHeader,
+                alignment: .top)
+            ]
+            return section
+
+          case .all, nil:
+            var list = UICollectionLayoutListConfiguration(appearance: .insetGrouped)
+            list.headerMode = .supplementary
+            return .list(using: list, layoutEnvironment: environment)
+          }
+        }
+      }
+  - id: custom-content-configuration
+    kind: code
+    title: A custom row with UIContentConfiguration
+    note: The configuration is a value the cell re-applies on reuse and on every state change.
+    code: |-
+      struct ItemRowConfiguration: UIContentConfiguration, Hashable {
+        var name = ""
+        var isFavorite = false
+        var isSelected = false
+
+        func makeContentView() -> any UIView & UIContentView { ItemRowContentView(self) }
+
+        // Called with the cell's state (selected, highlighted, editing…) — return the look for it.
+        func updated(for state: any UIConfigurationState) -> ItemRowConfiguration {
+          var updated = self
+          updated.isSelected = (state as? UICellConfigurationState)?.isSelected ?? false
+          return updated
+        }
+      }
+
+      final class ItemRowContentView: UIStackView, UIContentView {
+        private let nameLabel = UILabel()
+        private let star = UIImageView(image: UIImage(systemName: "star.fill"))
+
+        var configuration: any UIContentConfiguration {
+          didSet { if let row = configuration as? ItemRowConfiguration { apply(row) } }
+        }
+
+        init(_ configuration: ItemRowConfiguration) {
+          self.configuration = configuration
+          super.init(frame: .zero)
+          [nameLabel, star].forEach(addArrangedSubview)
+          spacing = 8
+          isLayoutMarginsRelativeArrangement = true   // the stack is the row: no constraints to write
+          apply(configuration)
+        }
+        required init(coder: NSCoder) { fatalError("init(coder:) is not used") }
+
+        private func apply(_ row: ItemRowConfiguration) {
+          nameLabel.text = row.name
+          star.isHidden = !row.isFavorite             // set EVERY property: views are reused
+          backgroundColor = row.isSelected ? .systemFill : .clear
+        }
+      }
+      // In the cell registration: cell.contentConfiguration = ItemRowConfiguration(name: item.name)
+  - id: navigation-coordinator
+    kind: code
+    title: "Navigation in code: push, present, a coordinator"
+    note: "The pattern itself is on the architecture sheet; new here are push and a sheet with detents that the coordinator presents and dismisses."
+    code: |-
+      // Assumed: ItemEditorViewController (auto-layout-toolkit) also takes an `item`
+      // and calls `onFinish` from its Save button.
+      @MainActor
+      final class ItemsCoordinator {
+        private let navigation: UINavigationController
+        private let api: any ItemsAPI
+
+        init(navigation: UINavigationController, api: any ItemsAPI) {
+          self.navigation = navigation
+          self.api = api
+        }
+
+        func start() {
+          let list = ItemsViewController(api: api)
+          list.onSelect = { [weak self] item in self?.showDetail(for: item) }
+          navigation.setViewControllers([list], animated: false)
+        }
+
+        private func showDetail(for item: Item) {
+          let detail = ItemDetailViewController(item: item)
+          detail.onEdit = { [weak self] in self?.presentEditor(for: item) }
+          navigation.pushViewController(detail, animated: true)            // push
+        }
+
+        private func presentEditor(for item: Item) {
+          let editor = ItemEditorViewController(item: item)
+          editor.onFinish = { [weak self] in self?.navigation.dismiss(animated: true) }  // presenter dismisses
+          let sheet = UINavigationController(rootViewController: editor)   // a bar for Cancel / Save
+          sheet.sheetPresentationController?.detents = [.medium(), .large()]
+          sheet.sheetPresentationController?.prefersGrabberVisible = true
+          navigation.present(sheet, animated: true)                        // modal
+        }
+      }
+  - id: keeping-the-screen-in-sync
+    kind: compare
+    title: Keeping the screen in sync by hand
+    note: "One state value and one `render` path; on iOS 26 UIKit can re-run it for you from `@Observable` state (see the mvvm-state sheet's UIKit card)."
+    columns:
+      - label: Each callback patches some views
+        tone: bad
+        code: |-
+          final class ItemsViewController: UICollectionViewController {
+            private let spinner = UIActivityIndicatorView(style: .large)
+            private let errorLabel = UILabel()
+            private var items: [Item] = []
+
+            func loadFinished(_ result: Result<[Item], any Error>) {
+              spinner.stopAnimating()
+              switch result {
+              case .success(let loaded):
+                items = loaded
+                collectionView.reloadData()  // errorLabel from the last failure stays on screen
+              case .failure(let error):
+                errorLabel.text = error.localizedDescription
+                errorLabel.isHidden = false  // ...over stale rows that were never cleared
+              }
+            }
+          }
+      - label: State drives one render path
+        tone: good
+        code: |-
+          // contentUnavailableConfiguration and its siblings need iOS 17.
+          enum ItemsViewState { case loading, loaded([Item]), failed(String) }
+
+          extension UIContentUnavailableConfiguration {
+            static func failure(_ message: String) -> UIContentUnavailableConfiguration {
+              var failed = UIContentUnavailableConfiguration.empty()
+              failed.image = UIImage(systemName: "wifi.exclamationmark")
+              failed.text = message
+              return failed
+            }
+          }
+
+          final class ItemsViewController: UICollectionViewController {
+            // Built in viewDidLoad, as in the-list-screen.
+            private var dataSource: UICollectionViewDiffableDataSource<Int, Item.ID>!
+            private var state = ItemsViewState.loading {
+              didSet { render() }            // the only road from data to pixels
+            }
+
+            private func render() {
+              var snapshot = NSDiffableDataSourceSnapshot<Int, Item.ID>()
+              snapshot.appendSections([0])
+              if case .loaded(let items) = state { snapshot.appendItems(items.map(\.id)) }
+              dataSource.apply(snapshot)
+              setNeedsUpdateContentUnavailableConfiguration()
+            }
+
+            override func updateContentUnavailableConfiguration(
+              using _: UIContentUnavailableConfigurationState
+            ) {
+              switch state {
+              case .loading:
+                contentUnavailableConfiguration = UIContentUnavailableConfiguration.loading()
+              case .failed(let message):
+                contentUnavailableConfiguration = UIContentUnavailableConfiguration.failure(message)
+              case .loaded(let items):
+                var empty = UIContentUnavailableConfiguration.empty()
+                empty.text = "No items yet"
+                contentUnavailableConfiguration = items.isEmpty ? empty : nil
+              }
+            }
+          }
+  - id: uikit-traps
+    kind: rules
+    title: Traps worth saying out loud
+    note: The bugs a reviewer looks for first in programmatic UIKit.
+    items:
+      - tone: bad
+        text: "**Retain cycles in closures.** Controller → view → button → `UIAction` → closure → controller. The same with a data source's cell provider or a stored `onSelect`. Capture `[weak self]`, or `[unowned self]` when the closure is owned by `self`."
+      - tone: bad
+        text: "**A `Task` that outlives the screen.** `Task { for await … }` started in `viewDidLoad` holds `self` forever, so `deinit` never runs. Store the task and cancel it in `viewDidDisappear`."
+      - tone: bad
+        text: "**Layout before bounds are known.** `view.bounds` in `viewDidLoad` is a placeholder. Use constraints; frame code goes in `viewDidLayoutSubviews` / `layoutSubviews`."
+      - tone: bad
+        text: "Forgetting `translatesAutoresizingMaskIntoConstraints = false` → \"Unable to simultaneously satisfy constraints\" with `NSAutoresizingMaskLayoutConstraint` in the log. Stack views set it on their arranged subviews."
+      - tone: bad
+        text: "**Cell reuse leaks state.** Set every property in the registration handler or configuration — a star shown only `if item.isFavorite` stays on the next row."
+      - tone: neutral
+        text: "**Main-actor rules.** `UIViewController` and `UIView` are `@MainActor`, so your subclasses are too, and a `Task { }` started inside them stays on the main actor. `Task.detached` and completion handlers from other frameworks run wherever they are called."
+      - tone: neutral
+        text: "Hopping back: from async code, `await MainActor.run { }`; from a synchronous completion handler, `Task { @MainActor in … }` or `DispatchQueue.main.async { }` — `await` does not compile there."
+      - tone: bad
+        text: "In Swift 6, a non-`@Sendable` completion handler from an Objective-C or Swift 5 library, written inside a controller, is treated as `@MainActor` — and **traps at runtime** if the library calls it off main."
+      - tone: bad
+        text: "**Scroll views in code.** Pin the content's edges to `scrollView.contentLayoutGuide` (that defines the scrollable size) and its width to `frameLayoutGuide.widthAnchor` for vertical-only scrolling. Edges pinned to the scroll view itself leave the content size ambiguous."
+      - tone: good
+        text: "Put **identifiers** in the snapshot (`Item.ID`) and call `reconfigureItems(_:)` when a row's content changes — whole models make every edit a delete + insert."
+      - tone: good
+        text: "Child controllers: `addChild(_:)`, add its view, then `didMove(toParent:)` — skip a step and appearance callbacks and trait updates stop reaching it."

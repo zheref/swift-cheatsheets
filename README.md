@@ -1,8 +1,10 @@
 # Swift Interview Cheat Sheets
 
-29 dense cheat sheets — SwiftUI, TCA, Swift concurrency, Combine, timing operators,
-collections, SOLID, functional Swift, Clean Code, engineering practices, iOS architecture,
-modularization, testing, algorithms and complexity, streaming/time-series patterns,
+42 dense cheat sheets — SwiftUI, UIKit, styling and design tokens, MVVM, TCA, Swift
+concurrency, Combine, RxSwift, timing operators, collections, strings, serialization, SOLID,
+functional Swift, Clean Code, engineering practices, iOS architecture, modularization,
+testing, UI testing, security, accessibility, localization, networking (REST, SOAP, gRPC,
+GraphQL), HLS video streaming, algorithms and complexity, streaming/time-series patterns,
 AI-assisted workflows, atomic file I/O, and Core Bluetooth — including seventeen
 hand-laid-out SVG infographics.
 
@@ -183,11 +185,23 @@ width — fails the build with the file named.
 
 ### Adding a language
 
-See [docs/CONTENT-MODEL.md](docs/CONTENT-MODEL.md). In short: a new folder
-`content/languages/<id>/` with a `language.yaml` (route, highlighter keywords, sheet order)
-and its sheets, listed in `content/registry.yaml` — the selector's languages, in order. Give
-sheets the same `concept` as their equivalents in other languages so switching lands on them.
-No template, component or route code changes.
+```bash
+node scripts/new-language.mts rust Rust --prefix rs
+```
+
+scaffolds `content/languages/rust/`: a draft `language.yaml`, a coverage sheet, and one stub
+sheet for every part of every **required aspect** — the twenty topics each published catalog
+covers, listed with their checklists in [`content/aspects.yaml`](content/aspects.yaml) (UI
+layers, styling, state management, concurrency, async flows, timers, networking, video
+streaming, security, accessibility, localization, serialization, collections and strings,
+testing, architecture, clean code, SOLID, functional programming, modularization). A test
+fails a published catalog that lacks one without a reasoned waiver.
+[`templates/new-language/`](templates/new-language/) is that command's committed output.
+
+[docs/ADDING-A-LANGUAGE.md](docs/ADDING-A-LANGUAGE.md) walks through the rest;
+[docs/CONTENT-MODEL.md](docs/CONTENT-MODEL.md) is the reference. Give sheets the same
+`concept` as their equivalents in other languages so switching lands on them, and list the
+language in `content/registry.yaml`. No page template, component or route code changes.
 
 ### Running the examples
 
@@ -198,16 +212,23 @@ real toolchains, and skips (never passes) a language whose toolchain it cannot f
 
 | Language | Needs | Found through |
 | --- | --- | --- |
-| TypeScript | Node 22.18+ and this repository's `typescript` | `npm ci` |
-| Kotlin | `kotlinc` 2.x, a JDK 17+, and the jars the examples import | `PATH` or `KOTLINC`; jars in `KOTLIN_CLASSPATH` (colon-separated): `kotlinx-coroutines-core-jvm` and `-test-jvm` 1.10.x, `junit-jupiter-api` 5.10.x with `opentest4j` and `apiguardian-api` |
-| C# | the .NET 8+ SDK | `PATH`, `DOTNET`, or `~/.dotnet/dotnet` |
+| TypeScript | Node 22.18+, this repository's `typescript`, and the libraries the examples import | `npm ci`, then `npm run examples:install` (the pinned, example-only `examples/package.json`) |
+| Kotlin | `kotlinc` 2.x, a JDK 21+ to run them all (most cards need only 17; each states its minimum), and the jars the examples import | `PATH` or `KOTLINC`; the jars pinned in `examples/kotlin/jars.txt`, fetched and digest-checked by `npm run examples:install` — or your own in `KOTLIN_CLASSPATH` (colon-separated) |
+| C# | the .NET 9 SDK or later (an example is built for the SDK's own framework; each card states the minimum it needs) | `PATH`, `DOTNET`, or `~/.dotnet/dotnet`; an example naming a package pinned in `examples/csharp/packages.json` restores it from nuget.org, and every package the restore resolves must match its SHA-512 in `examples/csharp/packages.lock.json` (`npm run examples -- --lang csharp --write-nuget-lock` after changing the list) |
+
+The libraries are **example-only**: the site's own `package.json` does not list them, so
+nothing an example imports reaches the built pages. `examples/kotlin/lib/` and
+`examples/node_modules/` are git-ignored.
 
 Running it **executes every `ran` card as a program on your machine**, so review a content
 change that adds or edits one as you would code. Each snippet runs with a scratch `HOME` and
 `TMPDIR` and none of your environment beyond `PATH` and `LANG`; C# builds ignore MSBuild and
 NuGet files above their work folder.
 
-`--lang kotlin,csharp` limits the run; `--require-all` fails it when a toolchain is missing;
+`--lang kotlin,csharp` limits the run, and `--sheets ts-rxjs,ts-timers` limits it to the named
+sheets (read from their files, so a sheet still being written need not be listed yet);
+`--content <dir>` reads a draft content root kept outside `content/`; `--require-all` fails
+the run when a toolchain is missing;
 `--json <file>` writes the report. CI runs the TypeScript and C# examples on every pull
 request; the Kotlin ones run wherever `kotlinc` and their jars are installed.
 
@@ -217,6 +238,7 @@ request; the Kotlin ones run wherever `kotlinc` and their jars are installed.
 swift-cheatsheets/
 ├── index.html                 generated — the offline artifact (committed), one self-contained file
 ├── content/registry.yaml      the languages the selector offers, in order
+├── content/aspects.yaml       the aspects every published catalog covers, with their checklists
 ├── content/languages/swift/   the Swift catalog: language.yaml, sheets/*.yaml, diagrams/*.svg
 ├── content/languages/{typescript,kotlin,csharp}/   the other catalogs, each ending in a coverage matrix
 ├── offline/<id>.html          generated — the other catalogs' offline files (committed)
@@ -230,7 +252,10 @@ swift-cheatsheets/
 │   └── pages/404.tsx
 ├── gatsby-node.ts             one page per published catalog, at its declared route
 ├── gatsby-ssr.tsx / gatsby-browser.tsx   provider wrap and the pre-paint theme script
-├── scripts/                   build-offline.mts, verify.mts, serve.mts, run-examples.mts (+ Hatsu CI scripts)
+├── examples/                  the pinned, example-only libraries the catalogs' examples import
+├── templates/new-language/    generated — the scaffold for a new language, one stub per required aspect
+├── scripts/                   build-offline.mts, verify.mts, serve.mts, run-examples.mts, new-language.mts,
+│                              fetch-example-jars.mts (+ Hatsu CI scripts)
 ├── test/                      vitest suite and fixtures (legacy inventory, a four-language fixture site)
 ├── serve.command              HTTP server for LAN access
 └── serve-https.command        HTTPS server (self-signed) for TLS-forcing browsers

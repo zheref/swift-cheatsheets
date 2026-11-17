@@ -1,0 +1,460 @@
+id: ts-localization
+concept: localization.practices
+scope: platform
+title: "Localization with Intl"
+group: "Quality & reach"
+subtitle: "Messages in catalogs, plurals by rule, every date, number and list formatted by Intl with the locale and time zone pinned — and layouts that survive RTL and long text."
+applies:
+  platforms: [browser, node]
+  runtime: any ES2024+ engine with full ICU data; the examples run on Node.js
+  versions: { typescript: ">=5.5", node: ">=22.18" }
+sources:
+  - title: Intl — MDN
+    url: https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Intl
+  - title: i18next documentation
+    url: https://www.i18next.com/
+  - title: Internationalization — W3C
+    url: https://www.w3.org/International/
+cards:
+  - id: intl-toolbox
+    kind: table
+    title: The toolbox
+    note: "Text comes from a catalog; everything else is formatted by `Intl` — given a locale and, for time, a time zone."
+    headers: [Need, Use, Pin or watch]
+    rows:
+      - ["strings in the user's language", "a catalog per locale, looked up by key: a typed object, i18next, FormatJS", "never build a sentence from fragments"]
+      - ["plurals and agreement", "`Intl.PluralRules`; i18next `_one`/`_other` keys and `context`; ICU `plural` and `select`", "Polish has `few` and `many`, Arabic six forms — `count === 1` is English"]
+      - ["dates and times", "`Intl.DateTimeFormat` with `dateStyle` / `timeStyle`", "`locale` **and** `timeZone`, every time"]
+      - ["\"yesterday\", \"in 3 hours\"", "`Intl.RelativeTimeFormat` with `numeric: \"auto\"`", "it formats; you pick the unit from an injected `now`"]
+      - ["numbers, money, units, percent", "`Intl.NumberFormat` with `style: \"currency\" | \"unit\" | \"percent\"`", "the currency comes from the data, never from the locale"]
+      - ["lists, language and region names", "`Intl.ListFormat`, `Intl.DisplayNames`", "\"a, b, and c\" is English only"]
+      - ["which locale", "`navigator.languages` or `Accept-Language`, negotiated against what you ship", "fall back by language, then to a default"]
+      - ["sorting, searching, word counts", "`Intl.Collator`, `Intl.Segmenter`", "the order of `ä`, `ø` and `aa` changes per language"]
+      - ["right-to-left", "`<html lang dir>`, `<bdi>` around user text, logical CSS (`margin-inline-start`, `inset-inline-end`, `text-align: start`)", "`left` and `right` in CSS are bugs in Arabic and Hebrew"]
+  - id: typed-catalog
+    kind: code
+    title: A typed message catalog with plurals
+    note: "Every locale must have every key — the type says so — and plural forms are chosen by `Intl.PluralRules`, never by `count === 1`."
+    prerequisites: &run
+      - Node.js 22.18 or later (it runs `.mts` files directly by stripping the types)
+      - "Save as `main.mts` and run `node main.mts`"
+      - "Optional type-check: `npm i -D typescript @types/node`, then `npx tsc --noEmit --strict --target es2024 --module nodenext main.mts`"
+    code: |-
+      type Plural = Partial<Record<Intl.LDMLPluralRule, string>> & { other: string };
+
+      const en = {
+        "cart.title": "Your cart",
+        "cart.greeting": "Welcome back, {name}!",
+        "cart.items": { one: "{count} item", other: "{count} items" },
+      } satisfies Record<string, string | Plural>;
+
+      type Key = keyof typeof en;
+      type Catalog = { [K in Key]: (typeof en)[K] extends string ? string : Plural };
+
+      const pl: Catalog = {                      // a missing key here is a compile error
+        "cart.title": "Twój koszyk",
+        "cart.greeting": "Witaj ponownie, {name}!",
+        "cart.items": {
+          one: "{count} produkt", few: "{count} produkty", many: "{count} produktów", other: "{count} produktu",
+        },
+      };
+
+      function translator(locale: string, catalog: Catalog) {
+        const plurals = new Intl.PluralRules(locale);   // built once per locale, reused by every call
+        const numbers = new Intl.NumberFormat(locale);
+        return (key: Key, params: Record<string, string | number> = {}): string => {
+          const message = catalog[key];
+          const forms: Plural = typeof message === "string" ? { other: message } : message;
+          const template = forms[plurals.select(Number(params.count))] ?? forms.other;
+          return template.replace(/\{(\w+)\}/g, (_, name: string) => {
+            const value = params[name];
+            return typeof value === "number" ? numbers.format(value) : (value ?? `{${name}}`);
+          });
+        };
+      }
+
+      const show = (t: ReturnType<typeof translator>, counts: number[]) => {
+        const items = counts.map((count) => t("cart.items", { count })).join(" | ");
+        console.log(t("cart.greeting", { name: "Ada" }), items);
+      };
+      show(translator("en", en), [1, 2, 1500]);
+      show(translator("pl", pl), [1, 2, 5, 22, 1.5]);
+    expected: |-
+      Welcome back, Ada! 1 item | 2 items | 1,500 items
+      Witaj ponownie, Ada! 1 produkt | 2 produkty | 5 produktów | 22 produkty | 1,5 produktu
+    sources:
+      - title: Intl.PluralRules — MDN
+        url: https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Intl/PluralRules
+      - title: Language Plural Rules — Unicode CLDR
+        url: https://www.unicode.org/cldr/charts/latest/supplemental/language_plural_rules.html
+    validation: &ran
+      status: ran
+      toolchain: Node 24.16.0, TypeScript 5.9.3
+      date: "2026-11-16"
+  - id: i18next
+    kind: code
+    title: i18next — lookup, interpolation, plurals, context, fallback
+    note: "Reach for a library once you need lazy-loaded namespaces, fallbacks and tooling; `createInstance` keeps it out of global state."
+    prerequisites:
+      - Node.js 22.18 or later (it runs `.mts` files directly by stripping the types)
+      - "`npm i i18next`"
+      - "Save as `main.mts` and run `node main.mts`"
+    code: |-
+      import i18next from "i18next";
+
+      const i18n = i18next.createInstance();
+      await i18n.init({
+        lng: "en",
+        fallbackLng: "en",
+        interpolation: { escapeValue: false },   // React and textContent escape; keep true when building HTML
+        resources: {
+          en: {
+            translation: {
+              greeting: "Hello, {{name}}!",
+              orders_one: "{{count}} order",
+              orders_other: "{{count}} orders",
+              shipped: "They shipped your order",
+              shipped_female: "She shipped your order",
+              help: "Need help? Call us.",
+            },
+          },
+          pl: {
+            translation: {
+              greeting: "Cześć, {{name}}!",
+              orders_one: "{{count}} zamówienie",
+              orders_few: "{{count}} zamówienia",
+              orders_many: "{{count}} zamówień",
+              orders_other: "{{count}} zamówienia",
+            },
+          },
+        },
+      });
+
+      console.log(i18n.t("greeting", { name: "Ada" }), [1, 5].map((count) => i18n.t("orders", { count })));
+      console.log(i18n.t("shipped", { context: "female" }), "/", i18n.t("shipped", { context: "unknown" }));
+      await i18n.changeLanguage("pl");
+      console.log(i18n.t("greeting", { name: "Ada" }), [1, 2, 5, 22].map((count) => i18n.t("orders", { count })));
+      console.log(i18n.t("help"), i18n.dir("ar"));   // help is missing in pl: falls back to en
+    expected: |-
+      Hello, Ada! [ '1 order', '5 orders' ]
+      She shipped your order / They shipped your order
+      Cześć, Ada! [ '1 zamówienie', '2 zamówienia', '5 zamówień', '22 zamówienia' ]
+      Need help? Call us. rtl
+    sources:
+      - title: Plurals — i18next
+        url: https://www.i18next.com/translation-function/plurals
+      - title: Context — i18next
+        url: https://www.i18next.com/translation-function/context
+    validation: *ran
+  - id: icu-messages
+    kind: code
+    title: ICU messages — plural, select, selectordinal
+    note: "ICU MessageFormat keeps a whole sentence, with its plural and gender branches, in one translatable string — the format translation tools and FormatJS speak."
+    prerequisites:
+      - "`npm i intl-messageformat` (FormatJS); `react-intl` uses the same syntax"
+      - "Save as `main.mts` and run `node main.mts`"
+    code: |-
+      import IntlMessageFormat from "intl-messageformat";
+
+      const shipped = `{courier} shipped {count, plural,
+        =0 {nothing}
+        one {# parcel}
+        other {# parcels}
+      } to {gender, select,
+        female {her}
+        male {his}
+        other {their}
+      } address.`;
+
+      const en = new IntlMessageFormat(shipped, "en");     // parse once, format many times
+      console.log(en.format({ courier: "Ada", count: 1, gender: "female" }));
+      console.log(en.format({ courier: "Sam", count: 3, gender: "other" }));
+
+      const place = new IntlMessageFormat(
+        "You finished {rank, selectordinal, one {#st} two {#nd} few {#rd} other {#th}}.",
+        "en",
+      );
+      console.log([1, 2, 3, 11, 22].map((rank) => place.format({ rank })).join(" "));
+    expected: "Prints `Ada shipped 1 parcel to her address.`, `Sam shipped 3 parcels to their address.`, then `You finished 1st. You finished 2nd. You finished 3rd. You finished 11th. You finished 22nd.`"
+    sources:
+      - title: Intl MessageFormat — FormatJS
+        url: https://formatjs.github.io/docs/intl-messageformat/
+      - title: Message syntax — FormatJS
+        url: https://formatjs.github.io/docs/core-concepts/icu-syntax/
+    validation:
+      status: excerpt
+      host: a Node or browser project with `intl-messageformat` installed (not among this catalog's example libraries)
+  - id: dates-and-relative-time
+    kind: code
+    title: Dates, times and relative time
+    note: "Store instants in UTC; format them with the reader's locale and time zone, both explicit — the server's defaults are nobody's."
+    prerequisites: *run
+    code: |-
+      const placedAt = new Date("2026-03-08T14:30:00Z");   // an instant, stored and sent as UTC
+
+      const readers = [
+        ["en-US", "America/New_York"],                       // DST began that morning: UTC-4, not -5
+        ["de-DE", "Europe/Berlin"],
+        ["ja-JP", "Asia/Tokyo"],
+      ] as const;
+      for (const [locale, timeZone] of readers) {
+        const format = new Intl.DateTimeFormat(locale, { dateStyle: "medium", timeStyle: "short", timeZone });
+        console.log(locale, format.format(placedAt));
+      }
+
+      const delivery = new Intl.DateTimeFormat("en-GB", {
+        weekday: "long", day: "numeric", month: "long", timeZone: "Europe/London",
+      });
+      // the range dash is wrapped in U+2009 THIN SPACE: assert against formatter output, not typed text
+      console.log(delivery.formatRange(new Date("2026-03-10T09:00Z"), new Date("2026-03-12T09:00Z")));
+
+      // RelativeTimeFormat only formats: pick the unit yourself, from an injected "now"
+      const units: [Intl.RelativeTimeFormatUnit, number][] = [["day", 86_400], ["hour", 3_600], ["minute", 60]];
+      function ago(then: Date, now: Date, rtf: Intl.RelativeTimeFormat): string {
+        const seconds = Math.round((then.getTime() - now.getTime()) / 1000);
+        for (const [unit, size] of units) {
+          if (Math.abs(seconds) >= size) return rtf.format(Math.round(seconds / size), unit);
+        }
+        return rtf.format(seconds, "second");
+      }
+      const english = new Intl.RelativeTimeFormat("en", { numeric: "auto" });   // one per locale, reused
+      const spanish = new Intl.RelativeTimeFormat("es", { numeric: "auto" });
+      const now = new Date("2026-03-09T15:00:00Z");
+      const inTwoHours = new Date("2026-03-09T17:00Z");
+      const relative = [ago(placedAt, now, english), ago(placedAt, now, spanish), ago(inTwoHours, now, english)];
+      console.log(relative.join(" | "));
+    expected: |-
+      en-US Mar 8, 2026, 10:30 AM
+      de-DE 08.03.2026, 15:30
+      ja-JP 2026/03/08 23:30
+      Tuesday 10 March – Thursday 12 March
+      yesterday | ayer | in 2 hours
+    sources:
+      - title: Intl.DateTimeFormat — MDN
+        url: https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Intl/DateTimeFormat
+      - title: Intl.RelativeTimeFormat — MDN
+        url: https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Intl/RelativeTimeFormat
+    validation: *ran
+  - id: numbers-money-units-lists
+    kind: code
+    title: Numbers, currencies, units and lists
+    note: "The order says which currency; the reader's locale says how to write it."
+    prerequisites: *run
+    code: |-
+      type Order = { total: number; currency: string; weightKg: number; items: string[] };
+      const order: Order = { total: 1234.5, currency: "EUR", weightKg: 2.5, items: ["coffee", "tea", "cocoa"] };
+
+      // cache formatters per locale and options: building one costs far more than calling format()
+      function formatters(locale: string, currency: string) {
+        return {
+          money: new Intl.NumberFormat(locale, { style: "currency", currency }),
+          weight: new Intl.NumberFormat(locale, { style: "unit", unit: "kilogram", unitDisplay: "long" }),
+          list: new Intl.ListFormat(locale, { type: "conjunction" }),
+        };
+      }
+
+      // de-DE and fr-CH put U+00A0 (no-break space) before €, fr-CH also before "kilogrammes";
+      // fr-CH groups thousands with an apostrophe.
+      // In tests, compare with the formatter's own output, never with a typed literal.
+      for (const locale of ["en-US", "de-DE", "fr-CH"]) {
+        const f = formatters(locale, order.currency);
+        console.log(locale, "|", f.money.format(order.total), "|", f.weight.format(order.weightKg));
+      }
+      console.log(formatters("en", order.currency).list.format(order.items));
+
+      // one-off demonstrations — in an app, these too would be built once and reused
+      const yen = new Intl.NumberFormat("ja-JP", { style: "currency", currency: "JPY" });
+      console.log(yen.format(1234.5), new Intl.NumberFormat("en-IN").format(12_345_678)); // no minor unit; lakh
+      const compact = (locale: string) => new Intl.NumberFormat(locale, { notation: "compact" }).format(1_520_000);
+      console.log(compact("en"), compact("es"));                                  // es: "1,5" + U+00A0 + "M"
+      console.log(new Intl.NumberFormat("en", { style: "percent", maximumFractionDigits: 1 }).format(0.1234));
+      console.log(new Intl.NumberFormat("en", { style: "unit", unit: "kilometer-per-hour" }).format(88));
+      console.log(new Intl.ListFormat("es", { type: "disjunction" }).format(["té", "café"]));
+      const languages = new Intl.DisplayNames(["en"], { type: "language" });
+      const regions = new Intl.DisplayNames(["es"], { type: "region" });
+      console.log(languages.of("pt-BR"), "/", regions.of("DE"));
+    expected: |-
+      en-US | €1,234.50 | 2.5 kilograms
+      de-DE | 1.234,50 € | 2,5 Kilogramm
+      fr-CH | 1'234.50 € | 2,5 kilogrammes
+      coffee, tea, and cocoa
+      ￥1,235 1,23,45,678
+      1.5M 1,5 M
+      12.3%
+      88 km/h
+      té o café
+      Brazilian Portuguese / Alemania
+    sources:
+      - title: Intl.NumberFormat — MDN
+        url: https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Intl/NumberFormat
+      - title: Intl.ListFormat — MDN
+        url: https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Intl/ListFormat
+    validation: *ran
+  - id: negotiate-and-direction
+    kind: code
+    title: Negotiate the locale, then set lang and dir
+    note: "Accept-Language is untrusted input: skip anything malformed, read `q` in any case, count each tag once, then match exact tag, same language, default — and let the script decide `<html lang dir>`."
+    prerequisites:
+      - Node.js 22.18 or later (it runs `.mts` files directly by stripping the types)
+      - "Save as `main.mts` and run `node main.mts`"
+    code: |-
+      const shipped = ["en", "en-GB", "es", "pt-BR", "ar"];
+
+      // Intl throws RangeError on "en_US", "*", "" or "<script>": a bad header must never become a 500
+      const canonical = (tag: string) => {
+        try {
+          return Intl.getCanonicalLocales(tag)[0];
+        } catch {
+          return undefined;
+        }
+      };
+
+      function requestedLocales(header: string): string[] {
+        const weights = new Map<string, number>();                     // first mention of a tag wins
+        for (const part of header.slice(0, 1_000).split(",")) {        // cap the work one header can cause
+          const [rawTag = "", ...params] = part.split(";").map((p) => p.trim());
+          const q = params.find((p) => p.toLowerCase().startsWith("q="));   // parameter names ignore case
+          const weight = q === undefined ? 1 : Number(q.slice(2));     // "q=abc" → NaN → dropped
+          const tag = canonical(rawTag);
+          if (tag && weight > 0 && weight <= 1 && !weights.has(tag)) weights.set(tag, weight);
+        }
+        return [...weights].sort((a, b) => b[1] - a[1]).slice(0, 20).map(([tag]) => tag);
+      }
+
+      function negotiate(requested: string[], available: string[], fallback: string): string {
+        for (const tag of requested) {
+          const language = new Intl.Locale(tag).language;
+          const match = available.find((a) => a.toLowerCase() === tag.toLowerCase())
+            ?? available.find((a) => new Intl.Locale(a).language === language);
+          if (match) return match;
+        }
+        return fallback;
+      }
+
+      const RTL_SCRIPTS = new Set(["Arab", "Hebr", "Thaa", "Syrc", "Nkoo", "Adlm", "Rohg"]);
+      const direction = (tag: string) =>
+        RTL_SCRIPTS.has(new Intl.Locale(tag).maximize().script ?? "") ? "rtl" : "ltr";
+
+      const hostile = ["fr-FR,".repeat(25) + "es", "en_US, *, <script>, fr;q=x, pt-PT;q=0.2"];
+      for (const header of ["ar-EG,ar;Q=0.9", "es;Q=0.1,en;q=0.9", ...hostile]) {
+        const requested = requestedLocales(header);
+        const lang = negotiate(requested, shipped, "en");   // in a page: set <html lang> and dir from these two
+        console.log(header.slice(0, 40).padEnd(40), JSON.stringify(requested), lang, direction(lang));
+      }
+    expected: |-
+      ar-EG,ar;Q=0.9                           ["ar-EG","ar"] ar rtl
+      es;Q=0.1,en;q=0.9                        ["en","es"] en ltr
+      fr-FR,fr-FR,fr-FR,fr-FR,fr-FR,fr-FR,fr-F ["fr-FR","es"] es ltr
+      en_US, *, <script>, fr;q=x, pt-PT;q=0.2  ["pt-PT"] pt-BR ltr
+    sources:
+      - title: Intl.Locale — MDN
+        url: https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Intl/Locale
+      - title: Structural markup and right-to-left text in HTML — W3C
+        url: https://www.w3.org/International/questions/qa-html-dir
+    validation: *ran
+  - id: collate-and-segment
+    kind: code
+    title: Sorting, searching and word breaks per locale
+    note: "The same list sorts three ways in three languages, and searching for \"malmo\" should find Malmö — Collator basics are on the Strings sheet, this is what changes per locale."
+    prerequisites: *run
+    code: |-
+      const cities = ["Zürich", "Örebro", "Aarhus", "Ängelholm", "Zaragoza", "Ølstykke", "Odense"];
+
+      for (const locale of ["de", "sv", "da"]) {               // Danish sorts "Aa" as Å, after Ø
+        console.log(locale, [...cities].sort(new Intl.Collator(locale).compare).join(", "));
+      }
+
+      // search: base sensitivity ignores case and accents; match whole words found by the segmenter
+      const loose = new Intl.Collator("en", { usage: "search", sensitivity: "base" });
+      const words = new Intl.Segmenter("en", { granularity: "word" });
+      function mentions(text: string, query: string): boolean {
+        return Array.from(words.segment(text)).some((s) => s.isWordLike && loose.compare(s.segment, query) === 0);
+      }
+      console.log(mentions("Ships from Malmö and Zürich", "malmo"), mentions("Ships from Malmö", "malm"));
+
+      // Japanese and Thai have no spaces between words: split(" ") finds one "word"
+      const japanese = new Intl.Segmenter("ja", { granularity: "word" });
+      const phrase = "東京駅で待ち合わせ";
+      const jaWords = Array.from(japanese.segment(phrase)).filter((s) => s.isWordLike).map((s) => s.segment);
+      console.log(phrase.split(" ").length, jaWords.join(" | "));
+    expected: |-
+      de Aarhus, Ängelholm, Odense, Ølstykke, Örebro, Zaragoza, Zürich
+      sv Aarhus, Odense, Zaragoza, Zürich, Ängelholm, Ølstykke, Örebro
+      da Odense, Zaragoza, Zürich, Ängelholm, Ølstykke, Örebro, Aarhus
+      true false
+      1 東京 | 駅 | で | 待ち合わせ
+    sources:
+      - title: Intl.Collator — MDN
+        url: https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Intl/Collator
+      - title: Intl.Segmenter — MDN
+        url: https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Intl/Segmenter
+    validation: *ran
+  - id: pseudo-localization
+    kind: code
+    title: Pseudo-localization and testing a locale
+    note: "Run the app in a fake locale before translators start: unbracketed text is hard-coded, clipped brackets are layouts that cannot grow."
+    prerequisites: *run
+    code: |-
+      const accents: Record<string, string> = {
+        a: "á", e: "é", i: "ï", o: "ö", u: "ü", c: "ç", n: "ñ", A: "Å", C: "Ç", E: "É", O: "Ø", S: "Š",
+      };
+
+      // accent every letter, keep {placeholders} intact, and grow ~35% — German and Finnish run long
+      function pseudo(message: string): string {
+        const body = message
+          .split(/(\{\w+\})/)
+          .map((part) => (part.startsWith("{") ? part : Array.from(part, (c) => accents[c] ?? c).join("")))
+          .join("");
+        return `[${body}${"~".repeat(Math.ceil(message.length * 0.35))}]`;
+      }
+
+      const en = {
+        "cart.checkout": "Checkout", "cart.greeting": "Welcome back, {name}!", "order.eta": "Arrives {date}",
+      };
+      console.log(Object.fromEntries(Object.entries(en).map(([key, text]) => [key, pseudo(text)])));
+
+      // testing a locale: every catalog has every key, and no message lost a placeholder
+      const es: Record<string, string> = { "cart.checkout": "Pagar", "cart.greeting": "¡Hola de nuevo!" };
+      const placeholders = (s: string) => (s.match(/\{\w+\}/g) ?? []).sort().join();
+      for (const [key, source] of Object.entries(en)) {
+        const translated = es[key];
+        if (translated === undefined) console.log(`es: missing ${key}`);
+        else if (placeholders(translated) !== placeholders(source)) {
+          console.log(`es: ${key} lost ${placeholders(source)}`);
+        }
+      }
+    expected: |-
+      {
+        'cart.checkout': '[Çhéçköüt~~~]',
+        'cart.greeting': '[Wélçömé báçk, {name}!~~~~~~~~]',
+        'order.eta': '[Årrïvés {date}~~~~~]'
+      }
+      es: cart.greeting lost {name}
+      es: missing order.eta
+    sources:
+      - title: Pseudolocalization — Microsoft Learn
+        url: https://learn.microsoft.com/en-us/globalization/methodology/pseudolocalization
+    validation: *ran
+  - id: localization-rules
+    kind: rules
+    title: Rules and pitfalls
+    note: Most localization bugs are a string built in code or a format someone typed by hand.
+    items:
+      - tone: bad
+        text: "Concatenating fragments: `\"Ordered by \" + name + \" on \" + date` — word order differs per language. Translate the whole sentence with placeholders."
+      - tone: bad
+        text: "Hard-coded formats: `${m}/${d}/${y}`, `toFixed(2) + \" €\"`, `\"s\"` appended for plurals. Use `Intl` and plural rules."
+      - tone: bad
+        text: "`toLocaleString()` with no arguments: the output follows the server's or the test machine's locale and time zone."
+      - tone: bad
+        text: "Calling `Intl` constructors on raw header or query values: they throw `RangeError` on malformed tags. Validate first, as in the negotiation card."
+      - tone: good
+        text: "Pass the locale **and** `timeZone` to every formatter; in tests, pin them the same way (Playwright: `locale` and `timezoneId` options)."
+      - tone: good
+        text: "Lay out with logical CSS (`margin-inline-start`, `padding-inline`, `text-align: start`) and flip directional icons under `[dir=rtl]`; wrap user-supplied names in `<bdi>`."
+      - tone: good
+        text: "Ship a pseudo-locale in development builds and run the UI tests in it: hard-coded text and clipped layouts show up before translation does."
+      - tone: neutral
+        text: "`Intl` output contains invisible no-break and thin spaces (U+00A0, U+202F, U+2009): compare formatted strings with the formatter's own output, not a typed literal."
+      - tone: neutral
+        text: "Node ships full ICU by default since version 13; a browser's data follows its version. A Node built with `small-icu` formats most locales as English."

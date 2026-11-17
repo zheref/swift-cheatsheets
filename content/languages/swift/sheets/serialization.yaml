@@ -1,0 +1,561 @@
+id: serialization
+concept: serialization.codecs
+scope: shared
+title: "Serialization — Codable, JSON & Friends"
+group: Design & Language
+subtitle: "Codable turns types into bytes and back: keys, missing fields, dates, enums, polymorphism, errors with a path, and validating what came in."
+applies:
+  platforms:
+    - ios
+    - ipados
+    - macos
+    - tvos
+    - watchos
+    - visionos
+  runtime: Swift toolchain
+  requires:
+    - Foundation
+  versions:
+    swift: ">=6.0"
+    ios: ">=16"
+    macos: ">=13"
+sources:
+  - title: Encoding and Decoding Custom Types — Apple Developer Documentation
+    url: https://developer.apple.com/documentation/foundation/encoding-and-decoding-custom-types
+  - title: JSONDecoder — Apple Developer Documentation
+    url: https://developer.apple.com/documentation/foundation/jsondecoder
+  - title: PropertyListEncoder — Apple Developer Documentation
+    url: https://developer.apple.com/documentation/foundation/propertylistencoder
+  - title: Swift Protobuf — API documentation
+    url: https://swiftpackageindex.com/apple/swift-protobuf/documentation/swiftprotobuf
+cards:
+  - id: which-tool-for-which-shape
+    kind: table
+    title: Which tool for which shape
+    note: "Synthesized Codable covers most payloads; every row below is where people reach for a custom init too early — or too late."
+    headers:
+      - The payload…
+      - Reach for
+      - Card
+    rows:
+      - - matches your type one to one
+        - "`struct Order: Codable` — synthesized, zero code"
+        - round trip
+      - - uses `snake_case`
+        - "`keyDecodingStrategy = .convertFromSnakeCase`, or `CodingKeys` for odd names"
+        - keys
+      - - has fields that may be missing or `null`
+        - "an `Optional` property; a `@Default` wrapper when absence has a meaning"
+        - missing fields
+      - - carries dates
+        - "`dateDecodingStrategy` — `.iso8601` rejects fractional seconds before iOS 26, use `.custom`"
+        - dates
+      - - has a closed set of strings
+        - "`enum Status: Codable` with a `case unknown(String)` fallback"
+        - enums
+      - - mixes object kinds in one array
+        - "a `type` discriminator decoded into an enum with payloads"
+        - polymorphism
+      - - nests what your model flattens
+        - "custom `init(from:)` with `nestedContainer`"
+        - custom codec
+      - - comes from a user or the network
+        - "decode into a DTO, then a throwing domain initializer that validates"
+        - validation
+      - - is settings or a bundle resource
+        - "`PropertyListEncoder` / `Decoder` — same `Codable` type"
+        - round trip
+      - - is shared by many languages and must stay small and versioned
+        - "a schema-first format: Protocol Buffers with `swift-protobuf`"
+        - protobuf
+      - - is genuinely free-form
+        - "`JSONSerialization` or a small `enum JSONValue: Codable`"
+        - "—"
+  - id: codable-round-trip
+    kind: code
+    title: "One Codable model, any encoder: JSON and property lists"
+    note: "Conform once and let the encoder choose the format, with sorted keys to keep the output stable enough to diff and test."
+    code: |-
+      struct LineItem: Codable, Equatable {
+        let sku: String
+        let quantity: Int
+      }
+
+      struct Order: Codable, Equatable {
+        let id: String
+        let items: [LineItem]
+        let note: String?
+      }
+
+      let order = Order(id: "A-1042", items: [LineItem(sku: "TEA-01", quantity: 2)], note: nil)
+
+      let encoder = JSONEncoder()
+      encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+      let json = try encoder.encode(order)
+      print(String(decoding: json, as: UTF8.self))
+      // → {"id":"A-1042","items":[{"quantity":2,"sku":"TEA-01"}]}
+      // A nil Optional is omitted, not written as null (encodeIfPresent).
+
+      let decoded = try JSONDecoder().decode(Order.self, from: json)
+      print(decoded == order)                                  // → true
+
+      // Same type, property list: settings files, UserDefaults, bundle resources
+      let plist = PropertyListEncoder()
+      plist.outputFormat = .binary
+      let bytes = try plist.encode(order)
+      print(String(decoding: bytes.prefix(8), as: UTF8.self))  // → bplist00
+      print(try PropertyListDecoder().decode(Order.self, from: bytes) == order)  // → true
+
+      // Decode a top-level array or dictionary directly; the missing "note" decodes as nil
+      let list = Data(#"[{"id":"A-1043","items":[]}]"#.utf8)
+      print(try JSONDecoder().decode([Order].self, from: list).count)   // → 1
+  - id: keys-and-unknown-keys
+    kind: code
+    title: Key naming, CodingKeys and unknown keys
+    note: "Unknown keys are ignored by default, so when you need to notice them, read the container with a dynamic key."
+    code: |-
+      let payload = Data(#"{"order_id":"A-1042","total_cents":1999,"promo_code":"SPRING"}"#.utf8)
+
+      // 1. Strategy: snake_case in the JSON, camelCase in Swift
+      struct Receipt: Decodable {
+        let orderId: String
+        let totalCents: Int
+      }
+      let decoder = JSONDecoder()
+      decoder.keyDecodingStrategy = .convertFromSnakeCase
+      print(try decoder.decode(Receipt.self, from: payload).totalCents)   // → 1999
+
+      // Trap: the strategy converts "order_id" to "orderId" BEFORE matching,
+      // so a property spelled orderID never matches. Map it explicitly:
+      struct Invoice: Decodable {
+        let orderID: String
+        enum CodingKeys: String, CodingKey { case orderID = "orderId" }
+      }
+      print(try decoder.decode(Invoice.self, from: payload).orderID)     // → A-1042
+
+      // 2. CodingKeys alone, with no strategy: rename, and leave out what you don't decode
+      struct Summary: Decodable {
+        let id: String
+        enum CodingKeys: String, CodingKey { case id = "order_id" }
+      }
+
+      // 3. Unknown keys: "promo_code" was silently dropped above. To log or reject it:
+      struct AnyKey: CodingKey {
+        let stringValue: String
+        init(stringValue: String) { self.stringValue = stringValue }
+        var intValue: Int? { nil }
+        init?(intValue: Int) { nil }
+      }
+      struct StrictSummary: Decodable {
+        let id: String
+        init(from decoder: any Decoder) throws {
+          let known: Set = ["order_id", "total_cents"]
+          let all = try decoder.container(keyedBy: AnyKey.self).allKeys.map(\.stringValue)
+          let unknown = all.filter { !known.contains($0) }
+          print("unknown keys:", unknown)                      // → unknown keys: ["promo_code"]
+          id = try Summary(from: decoder).id                   // reuse the synthesized decode
+        }
+      }
+      _ = try JSONDecoder().decode(StrictSummary.self, from: payload)
+  - id: optional-missing-and-defaults
+    kind: code
+    title: Optional, missing and null — and a wrapper for defaults
+    note: "A default value on a property is NOT used by synthesized decoding — a missing key still throws."
+    code: |-
+      // Optional: a missing key and an explicit null both decode as nil
+      struct Customer: Decodable {
+        let name: String
+        let phone: String?
+      }
+      let ana = try JSONDecoder().decode(Customer.self, from: Data(#"{"name":"Ana","phone":null}"#.utf8))
+      print(ana.phone as Any)                                  // → nil
+
+      // A default that applies when the key is absent
+      protocol DefaultValue {
+        associatedtype Value: Codable & Sendable
+        static var value: Value { get }
+      }
+
+      enum False: DefaultValue { static let value = false }
+      enum EmptyList: DefaultValue { static let value: [String] = [] }
+
+      @propertyWrapper
+      struct Default<D: DefaultValue>: Codable, Sendable {
+        var wrappedValue: D.Value
+        init(wrappedValue: D.Value = D.value) { self.wrappedValue = wrappedValue }
+        init(from decoder: any Decoder) throws {
+          let container = try decoder.singleValueContainer()
+          wrappedValue = container.decodeNil() ? D.value : try container.decode(D.Value.self)
+        }
+        func encode(to encoder: any Encoder) throws {
+          var container = encoder.singleValueContainer()
+          try container.encode(wrappedValue)
+        }
+      }
+
+      // The synthesized init calls decode(_:forKey:); this more specific overload
+      // turns "key missing" into the default instead of keyNotFound.
+      extension KeyedDecodingContainer {
+        func decode<D>(_ type: Default<D>.Type, forKey key: Key) throws -> Default<D> {
+          try decodeIfPresent(type, forKey: key) ?? Default()
+        }
+      }
+
+      struct CheckoutOptions: Codable {
+        @Default<False> var giftWrap: Bool
+        @Default<EmptyList> var couponCodes: [String]
+      }
+
+      let options = try JSONDecoder().decode(CheckoutOptions.self, from: Data(#"{"couponCodes":null}"#.utf8))
+      print(options.giftWrap, options.couponCodes)             // → false []
+  - id: dates
+    kind: code
+    title: Dates — ISO 8601, fractional seconds and epochs
+    note: "Most APIs send fractional seconds, which `.iso8601` rejects before iOS 26, so decide the strategy once in one configured decoder."
+    code: |-
+      struct Shipment: Codable { let shippedAt: Date }
+      let payload = Data(#"{"shippedAt":"2024-03-05T14:02:00.250Z"}"#.utf8)
+
+      // dateDecodingStrategy = .iso8601 throws dataCorrupted for ".250" on iOS 18 and
+      // earlier, and accepts it on iOS 26. Don't let the OS decide — accept both shapes:
+      extension JSONDecoder {
+        static let api: JSONDecoder = {
+          let decoder = JSONDecoder()
+          decoder.dateDecodingStrategy = .custom { decoder in
+            let text = try decoder.singleValueContainer().decode(String.self)
+            let withFraction = Date.ISO8601FormatStyle(includingFractionalSeconds: true)
+            if let date = try? withFraction.parse(text) { return date }
+            if let date = try? Date.ISO8601FormatStyle().parse(text) { return date }
+            throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath,
+                                                    debugDescription: "Not ISO 8601: \(text)"))
+          }
+          return decoder
+        }()
+      }
+      let shipment = try JSONDecoder.api.decode(Shipment.self, from: payload)
+      print(shipment.shippedAt.timeIntervalSince1970)          // → 1709647320.25
+
+      // Epochs: say which unit the server means
+      let epoch = JSONDecoder()
+      epoch.dateDecodingStrategy = .millisecondsSince1970
+      print(try epoch.decode(Shipment.self, from: Data(#"{"shippedAt":1709647320250}"#.utf8))
+              .shippedAt.formatted(.iso8601))                  // → 2024-03-05T14:02:00Z
+
+      // Encoding: never the default (seconds since 2001). `.iso8601` would drop the .250
+      // it just decoded, so write fractional seconds explicitly to round-trip.
+      let encoder = JSONEncoder()
+      encoder.dateEncodingStrategy = .custom { date, encoder in
+        var container = encoder.singleValueContainer()
+        try container.encode(date.formatted(Date.ISO8601FormatStyle(includingFractionalSeconds: true)))
+      }
+      print(String(decoding: try encoder.encode(shipment), as: UTF8.self))
+      // → {"shippedAt":"2024-03-05T14:02:00.250Z"}
+  - id: enums
+    kind: code
+    title: Enums — raw values, unknown cases and associated values
+    note: "A new server value must not fail the whole response, and associated-value enums have synthesized Codable since Swift 5.5."
+    code: |-
+      // Raw values, with a fallback so "on_hold" next year doesn't break old app versions
+      enum OrderStatus: Codable, Equatable {
+        case placed, shipped, delivered
+        case unknown(String)
+
+        init(from decoder: any Decoder) throws {
+          let raw = try decoder.singleValueContainer().decode(String.self)
+          switch raw {
+          case "placed": self = .placed
+          case "shipped": self = .shipped
+          case "delivered": self = .delivered
+          default: self = .unknown(raw)
+          }
+        }
+        func encode(to encoder: any Encoder) throws {
+          var container = encoder.singleValueContainer()
+          switch self {
+          case .placed: try container.encode("placed")
+          case .shipped: try container.encode("shipped")
+          case .delivered: try container.encode("delivered")
+          case .unknown(let raw): try container.encode(raw)
+          }
+        }
+      }
+      let statuses = try JSONDecoder().decode([OrderStatus].self, from: Data(#"["shipped","on_hold"]"#.utf8))
+      print(statuses == [.shipped, .unknown("on_hold")])       // → true
+
+      // Associated values: the synthesized shape is { "caseName": { "label": value } }
+      enum PaymentMethod: Codable {
+        case card(last4: String)
+        case applePay
+        case voucher(code: String, amountCents: Int)
+      }
+      let encoder = JSONEncoder()
+      encoder.outputFormatting = .sortedKeys
+      let methods: [PaymentMethod] = [.card(last4: "4242"), .applePay, .voucher(code: "GIFT", amountCents: 500)]
+      print(String(decoding: try encoder.encode(methods), as: UTF8.self))
+      // → [{"card":{"last4":"4242"}},{"applePay":{}},{"voucher":{"amountCents":500,"code":"GIFT"}}]
+      // Fine between your own apps; a public API usually wants a "type" field instead.
+  - id: polymorphic-arrays
+    kind: code
+    title: Polymorphic arrays with a type discriminator
+    note: "Read the discriminator first, then decode the payload from the same decoder, and let unknown kinds degrade instead of throwing."
+    code: |-
+      struct Shipped: Codable {
+        let carrier: String
+        let trackingNumber: String
+      }
+      struct Refunded: Codable { let amountCents: Int }
+
+      enum OrderEvent: Decodable {
+        case shipped(Shipped)
+        case refunded(Refunded)
+        case unsupported(type: String)
+
+        private enum CodingKeys: String, CodingKey { case type }
+
+        init(from decoder: any Decoder) throws {
+          let type = try decoder.container(keyedBy: CodingKeys.self).decode(String.self, forKey: .type)
+          switch type {
+          case "shipped": self = .shipped(try Shipped(from: decoder))      // same object, other keys
+          case "refunded": self = .refunded(try Refunded(from: decoder))
+          default: self = .unsupported(type: type)
+          }
+        }
+      }
+
+      let timeline = Data("""
+        [{"type":"shipped","carrier":"UPS","trackingNumber":"1Z999"},
+         {"type":"refunded","amountCents":1500},
+         {"type":"review_requested","channel":"email"}]
+        """.utf8)
+
+      for event in try JSONDecoder().decode([OrderEvent].self, from: timeline) {
+        switch event {
+        case .shipped(let s): print("shipped via \(s.carrier)")
+        case .refunded(let r): print("refunded \(r.amountCents)")
+        case .unsupported(let type): print("skipped \(type)")
+        }
+      }
+      // → shipped via UPS
+      // → refunded 1500
+      // → skipped review_requested
+  - id: custom-codec-nested-containers
+    kind: code
+    title: "A custom init(from:) / encode(to:): flattening nested JSON"
+    note: When the wire shape and the model shape differ, map them in one place instead of mirroring the JSON in types.
+    code: |-
+      // Wire: {"id":"A-1042","customer":{"name":"Ana","address":{"city":"Bogotá"}},"total":{"cents":1999}}
+      struct OrderSummary: Codable, Equatable {
+        let id: String
+        let customerName: String
+        let city: String
+        let totalCents: Int
+
+        private enum Keys: String, CodingKey { case id, customer, total }
+        private enum CustomerKeys: String, CodingKey { case name, address }
+        private enum AddressKeys: String, CodingKey { case city }
+        private enum TotalKeys: String, CodingKey { case cents }
+
+        init(from decoder: any Decoder) throws {
+          let root = try decoder.container(keyedBy: Keys.self)
+          id = try root.decode(String.self, forKey: .id)
+          let customer = try root.nestedContainer(keyedBy: CustomerKeys.self, forKey: .customer)
+          customerName = try customer.decode(String.self, forKey: .name)
+          city = try customer.nestedContainer(keyedBy: AddressKeys.self, forKey: .address)
+            .decode(String.self, forKey: .city)
+          totalCents = try root.nestedContainer(keyedBy: TotalKeys.self, forKey: .total)
+            .decode(Int.self, forKey: .cents)
+        }
+
+        func encode(to encoder: any Encoder) throws {
+          var root = encoder.container(keyedBy: Keys.self)
+          try root.encode(id, forKey: .id)
+          var customer = root.nestedContainer(keyedBy: CustomerKeys.self, forKey: .customer)
+          try customer.encode(customerName, forKey: .name)
+          var address = customer.nestedContainer(keyedBy: AddressKeys.self, forKey: .address)
+          try address.encode(city, forKey: .city)
+          var total = root.nestedContainer(keyedBy: TotalKeys.self, forKey: .total)
+          try total.encode(totalCents, forKey: .cents)
+        }
+      }
+
+      let wire = Data(#"""
+        {"id":"A-1042","customer":{"name":"Ana","address":{"city":"Bogotá"}},"total":{"cents":1999}}
+        """#.utf8)
+      let summary = try JSONDecoder().decode(OrderSummary.self, from: wire)
+      print(summary.customerName, summary.city, summary.totalCents)   // → Ana Bogotá 1999
+
+      let encoder = JSONEncoder()
+      encoder.outputFormatting = .sortedKeys
+      let again = try JSONDecoder().decode(OrderSummary.self, from: encoder.encode(summary))
+      print(again == summary)                                          // → true
+  - id: decoding-errors-with-a-path
+    kind: code
+    title: Decoding errors — report the path, not "data couldn't be read"
+    note: "`localizedDescription` hides everything useful, while the coding path tells the backend team exactly which field broke."
+    code: |-
+      struct LineItem: Decodable {
+        let sku: String
+        let quantity: Int
+      }
+
+      struct Cart: Decodable { let items: [LineItem] }
+
+      extension DecodingError {
+        /// "items[1].quantity: expected Int" — short enough for a log line or a bug report
+        var report: String {
+          func path(_ keys: [any CodingKey]) -> String {
+            keys.reduce("") { path, key in
+              if let index = key.intValue { return path + "[\(index)]" }
+              return path.isEmpty ? key.stringValue : path + "." + key.stringValue
+            }
+          }
+          switch self {
+          case .typeMismatch(let type, let context):
+            return "\(path(context.codingPath)): expected \(type)"
+          case .valueNotFound(let type, let context):
+            return "\(path(context.codingPath)): null where \(type) is required"
+          case .keyNotFound(let key, let context):
+            return "\(path(context.codingPath + [key])): missing"
+          case .dataCorrupted(let context):
+            return "\(path(context.codingPath)): corrupted — \(context.debugDescription)"
+          @unknown default:
+            return "\(self)"
+          }
+        }
+      }
+
+      let samples = [
+        #"{"items":[{"sku":"TEA-01","quantity":2},{"sku":"MUG-02","quantity":"two"}]}"#,
+        #"{"items":[{"quantity":1}]}"#,
+        #"{"items":[{"sku":null,"quantity":1}]}"#,
+      ]
+      for json in samples {
+        do { _ = try JSONDecoder().decode(Cart.self, from: Data(json.utf8)) }
+        catch let error as DecodingError { print(error.report) }
+      }
+      // → items[1].quantity: expected Int
+      // → items[0].sku: missing
+      // → items[0].sku: null where String is required
+  - id: validate-untrusted-input
+    kind: code
+    title: Validating untrusted input after decoding
+    note: "Decoding proves the shape, not the meaning, so parse into a DTO and build the domain type through a throwing initializer."
+    code: |-
+      // 1. The DTO mirrors the wire, and nothing else may use it
+      struct OrderRequestDTO: Decodable {
+        let email: String
+        let currency: String
+        let items: [Item]
+
+        struct Item: Decodable {
+          let sku: String
+          let quantity: Int
+        }
+      }
+
+      // 2. The domain type can only exist in a valid state
+      struct OrderRequest {
+        let email: String
+        let currency: String
+        let items: [(sku: String, quantity: Int)]
+
+        enum Invalid: Error, Equatable {
+          case tooLarge, email, currency, noItems, quantity(sku: String)
+        }
+
+        static func parse(_ data: Data, maxBytes: Int = 64 * 1024) throws -> OrderRequest {
+          guard data.count <= maxBytes else { throw Invalid.tooLarge }   // before any decoding work
+          let dto = try JSONDecoder().decode(OrderRequestDTO.self, from: data)
+          let email = dto.email.trimmingCharacters(in: .whitespaces).lowercased()
+          guard email.wholeMatch(of: /[^@\s]+@[^@\s]+\.[a-z]{2,}/) != nil else { throw Invalid.email }
+          guard dto.currency.wholeMatch(of: /[A-Z]{3}/) != nil else { throw Invalid.currency }
+          guard !dto.items.isEmpty else { throw Invalid.noItems }
+          for item in dto.items where !(1...99).contains(item.quantity) {
+            throw Invalid.quantity(sku: item.sku)
+          }
+          return OrderRequest(email: email, currency: dto.currency,
+                              items: dto.items.map { ($0.sku, $0.quantity) })
+        }
+      }
+
+      let good = Data(#"""
+        {"email":" Ana@Example.com ","currency":"EUR","items":[{"sku":"TEA-01","quantity":2}]}
+        """#.utf8)
+      print(try OrderRequest.parse(good).email)                       // → ana@example.com
+
+      let hostile = Data(#"{"email":"bo@example.com","currency":"EUR","items":[{"sku":"TEA","quantity":-5}]}"#.utf8)
+      do { _ = try OrderRequest.parse(hostile) }
+      catch { print(error) }                                           // → quantity(sku: "TEA")
+  - id: schema-first-protobuf
+    kind: code
+    title: "Schema-first binary: Protocol Buffers with swift-protobuf"
+    note: "When many languages share a contract or payload size matters, the .proto is the source of truth and the Swift is generated from it."
+    applies:
+      requires:
+        - swift-protobuf
+      versions:
+        swift-protobuf: ">=1.27"
+    sources:
+      - title: Swift Protobuf — API documentation
+        url: https://swiftpackageindex.com/apple/swift-protobuf/documentation/swiftprotobuf
+    code: |-
+      // order.proto — compiled by the SwiftProtobufPlugin build plugin (or protoc --swift_out)
+      //   syntax = "proto3";
+      //   package shop.v1;
+      //   message LineItem { string sku = 1; int32 quantity = 2; }
+      //   message Order {
+      //     string id = 1;
+      //     repeated LineItem items = 2;
+      //     int64 total_cents = 3;
+      //     optional string coupon = 4;
+      //   }
+      import SwiftProtobuf
+
+      // Generated types are value types named <Package>_<Message>; build them with .with
+      let order = Shop_V1_Order.with {
+        $0.id = "A-1042"
+        $0.items = [.with {
+          $0.sku = "TEA-01"
+          $0.quantity = 2
+        }]
+        $0.totalCents = 1999
+      }
+
+      let bytes: Data = try order.serializedBytes()                 // compact binary
+      let decoded = try Shop_V1_Order(serializedBytes: bytes)
+      print(bytes.count, decoded == order)                          // → 23 true
+      print(decoded.hasCoupon)                                      // → false  presence, thanks to `optional`
+
+      // The same message as canonical proto3 JSON, for logs and debugging
+      print(try order.jsonString())
+      // → {"id":"A-1042","items":[{"sku":"TEA-01","quantity":2}],"totalCents":"1999"}
+
+      // Evolution rules: never reuse or renumber a field; add new fields with new
+      // numbers; old readers skip fields they don't know, and keep them on re-encode.
+  - id: serialization-pitfalls
+    kind: rules
+    title: Pitfalls and rules worth saying out loud
+    note: ""
+    items:
+      - tone: bad
+        text: "`try?` around a decode in production: the error had the exact path of the broken field. Log `DecodingError` with its coding path."
+      - tone: bad
+        text: "A non-optional property for a field the server can omit — one missing key fails the whole array. Optional, or a default."
+      - tone: bad
+        text: "A raw-value enum for server-owned values: the first new case breaks every installed version. Add an `unknown` fallback."
+      - tone: bad
+        text: "`dateDecodingStrategy = .iso8601` against an API that sends milliseconds (`.250Z`) — it throws `dataCorrupted` on iOS 18 and earlier, so it passes on your new simulator and fails for users."
+      - tone: bad
+        text: "Mixing `.convertFromSnakeCase` with properties like `orderID` or `imageURL`: the converted key is `orderId`, so nothing matches."
+      - tone: bad
+        text: "Using wire DTOs as your domain model: every backend rename ripples through the UI. Map at the boundary."
+      - tone: good
+        text: "One configured `JSONDecoder` per API (strategies set once), injected where it is used — not `JSONDecoder()` sprinkled everywhere."
+      - tone: good
+        text: "Cap the size of untrusted input before decoding, and validate meaning after it: ranges, formats, totals, cross-field rules."
+      - tone: good
+        text: "`.sortedKeys` for anything you diff, hash, cache-key or snapshot-test; without it key order is not guaranteed."
+      - tone: good
+        text: "Test decoding with real captured payloads, including the ugly ones (nulls, extra keys, new enum values)."
+      - tone: neutral
+        text: "`JSONDecoder` and `JSONEncoder` are `Sendable`: configure one per API up front and share it, but never mutate a shared instance."

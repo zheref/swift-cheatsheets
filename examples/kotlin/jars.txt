@@ -1,0 +1,12 @@
+# The jars the Kotlin examples import, as Maven Central coordinates and the SHA-256 of each jar.
+# `node scripts/fetch-example-jars.mts` downloads them into examples/kotlin/lib/ (git-ignored) and
+# refuses a file whose digest differs. scripts/run-examples.mts puts every jar there on the
+# classpath unless $KOTLIN_CLASSPATH is set. Adding a library is adding a line here.
+org.jetbrains.kotlinx:kotlinx-coroutines-core-jvm:1.10.2 5ca175b38df331fd64155b35cd8cae1251fa9ee369709b36d42e0a288ccce3fd
+org.jetbrains.kotlinx:kotlinx-coroutines-test-jvm:1.10.2 590a549f8c1db590c9d98a8a20424a1f581a34162a369e6a6bd884ce7d36d3d7
+org.jetbrains.kotlinx:kotlinx-serialization-core-jvm:1.13.0 db2eb98f585a408970ce726af9dfbaccbdfe5df498ccd9dba9918d208974302d
+org.jetbrains.kotlinx:kotlinx-serialization-json-jvm:1.13.0 389b0dd9b4b952db889c160a2478b1cbe54680804f5315756108389dbe9df251
+org.junit.jupiter:junit-jupiter-api:5.10.5 42251c2f1c29658c156ca0f3d9670588a051e9b6dd04f52a82de19ea32343e4c
+org.junit.platform:junit-platform-commons:1.10.5 abdaeaaf4cebd121ab9a7498ed7861693d2bb0ac5976b26c0060a308922ef49d
+org.opentest4j:opentest4j:1.3.0 48e2df636cab6563ced64dcdff8abb2355627cb236ef0bf37598682ddf742f1b
+org.apiguardian:apiguardian-api:1.1.2 b509448ac506d607319f182537f0b35d71007582ec741832a1f111e5b5b70b38

@@ -11,18 +11,23 @@ import { describe, expect, it } from "vitest";
 import {
   collectExamples,
   csharpRunner,
+  nugetLock,
+  pinnedJars,
   type Example,
   exitStatus,
   findExecutable,
   judge,
   kotlinRunner,
+  missingValue,
   normalizeOutput,
+  nugetPackages,
   type Runner,
   parseLanguages,
   runExamples,
   snippetEnv,
   typescriptRunner,
 } from "../scripts/run-examples.mts";
+import { validation } from "../src/content/schema";
 import { ROOT } from "./helpers";
 
 const tmp = (prefix: string) => fs.mkdtempSync(path.join(os.tmpdir(), prefix));
@@ -59,8 +64,8 @@ describe("collecting examples", () => {
     const count = (lang: string, status: string) => all.filter((e) => e.language === lang && e.status === status).length;
     expect(new Set(all.map((e) => e.language))).toEqual(new Set(["typescript", "kotlin", "csharp"]));
     expect(all.length).toBe(new Set(all.map((e) => e.id)).size);
-    expect(count("typescript", "compiled")).toBe(3);
-    expect(count("kotlin", "compiled")).toBe(1);
+    expect(count("typescript", "compiled")).toBeGreaterThanOrEqual(3);
+    expect(count("kotlin", "compiled")).toBeGreaterThanOrEqual(1);
     expect(all.every((e) => e.code.length > 0)).toBe(true);
   });
 
@@ -82,6 +87,60 @@ describe("collecting examples", () => {
       { id: "kotlin/s--both[new]", check: "stdout", expected: "same" },
       { id: "kotlin/s--tests", check: "exit-code", expected: undefined },
     ]);
+  });
+});
+
+describe("running only some sheets", () => {
+  it("reads the named sheets from their files, listed in language.yaml or not, and nothing else", async () => {
+    const root = contentRoot("kotlin", [{ id: "listed", kind: "code", code: "a", expected: "x", validation: ran }]);
+    const draft = { id: "draft", cards: [{ id: "new", kind: "code", code: "b", expected: "x", validation: ran }] };
+    fs.writeFileSync(path.join(root, "content/languages/kotlin/sheets/draft.yaml"), JSON.stringify(draft));
+    expect(collectExamples(root).map((e) => e.id)).toEqual(["kotlin/s--listed"]);
+    expect(collectExamples(root, ["draft"]).map((e) => e.id)).toEqual(["kotlin/draft--new"]);
+    // A typo must not run nothing and pass: an id no catalog has a file for is refused.
+    expect(() => collectExamples(root, ["draft", "no-such-sheet", "nor-this"])).toThrow("--sheets: no catalog has a sheet file named no-such-sheet, nor-this");
+    expect(missingValue(["--sheets"], ["--sheets", "--content"])).toBe("--sheets");
+    expect(missingValue(["--lang", "kotlin", "--content", "--require-all"], ["--sheets", "--content"])).toBe("--content");
+    expect(missingValue(["--sheets", "draft", "--content", "dir"], ["--sheets", "--content"])).toBeUndefined();
+    const skipped: Runner = { probe: async () => ({ missing: "no kotlinc" }), run: async () => [] };
+    const report = await runExamples(root, { languages: ["kotlin"], sheets: ["draft"], runners: { kotlin: skipped }, log: () => {} });
+    expect(report.outcomes.map((o) => o.id)).toEqual(["kotlin/draft--new"]);
+  });
+
+  it("reads another content root when one is named", async () => {
+    const root = contentRoot("kotlin", [{ id: "here", kind: "code", code: "a", expected: "x", validation: ran }]);
+    const other = contentRoot("kotlin", [{ id: "there", kind: "code", code: "b", expected: "x", validation: ran }]);
+    expect(collectExamples(root, undefined, path.join(other, "content")).map((e) => e.id)).toEqual(["kotlin/s--there"]);
+    const skipped: Runner = { probe: async () => ({ missing: "no kotlinc" }), run: async () => [] };
+    const report = await runExamples(root, { languages: ["kotlin"], content: path.join(other, "content"), runners: { kotlin: skipped }, log: () => {} });
+    expect(report.outcomes.map((o) => o.id)).toEqual(["kotlin/s--there"]);
+  });
+});
+
+describe("an example's TypeScript run options", () => {
+  it("carries the JSX dialect and the run conditions from the card to the runner", () => {
+    const root = contentRoot("typescript", [
+      { id: "a", kind: "code", code: "x", validation: { ...ran, jsx: "react", conditions: ["browser"], resolution: "bundler" } },
+      { id: "b", kind: "code", code: "y", validation: ran },
+    ]);
+    expect(collectExamples(root).map(({ id, jsx, conditions, resolution }) => ({ id, jsx, conditions, resolution }))).toEqual([
+      { id: "typescript/s--a", jsx: "react", conditions: ["browser"], resolution: "bundler" },
+      { id: "typescript/s--b", jsx: undefined, conditions: undefined, resolution: undefined },
+    ]);
+  });
+
+  it("is refused by the schema where it claims more than can be proved", () => {
+    const problems = (v: object) => {
+      const r = validation.safeParse(v);
+      return r.success ? [] : r.error.issues.map((i) => i.message);
+    };
+    expect(problems({ ...ran, jsx: "react", conditions: ["browser"] })).toEqual([]);
+    expect(problems({ ...ran, status: "compiled", jsx: "solid" })).toEqual([]);
+    expect(problems({ ...ran, jsx: "solid" })).toEqual(["Solid JSX needs Solid's own compiler: the example can be `compiled`, not `ran`"]);
+    expect(problems({ status: "excerpt", host: "a browser", jsx: "react" })).toEqual(["an excerpt is not compiled: it has no JSX dialect to compile with"]);
+    expect(problems({ ...ran, status: "compiled", conditions: ["browser"] })).toEqual(["only a 'ran' example has run conditions"]);
+    expect(problems({ ...ran, status: "compiled", resolution: "bundler" })).toEqual([]);
+    expect(problems({ status: "excerpt", host: "a browser", resolution: "bundler" })).toEqual(["an excerpt is not compiled: it has no module resolution to compile with"]);
   });
 });
 
@@ -176,6 +235,66 @@ describe("running examples", () => {
     expect(await typescriptRunner(tmp("no-modules-")).probe()).toEqual({ missing: "typescript is not installed in node_modules (run `npm ci`)" });
   });
 
+  it("reports example libraries that are not installed — a skip, never a pass", async () => {
+    const root = tmp("no-libs-");
+    fs.mkdirSync(path.join(root, "node_modules/typescript/bin"), { recursive: true });
+    fs.writeFileSync(path.join(root, "node_modules/typescript/bin/tsc"), "");
+    fs.mkdirSync(path.join(root, "examples"));
+    fs.writeFileSync(path.join(root, "examples/package.json"), "{}");
+    expect(await typescriptRunner(root).probe()).toEqual({ missing: "the example libraries are not installed (run `npm ci --prefix examples`)" });
+  });
+
+  it("runs an example without an examples/ package in the caller's scratch folder", async () => {
+    // A root with the compiler but no examples/ package: nothing is written outside the scratch folder.
+    const root = tmp("bare-root-");
+    fs.symlinkSync(path.join(ROOT, "node_modules"), path.join(root, "node_modules"));
+    const content = contentRoot("typescript", [{ id: "plain", kind: "code", code: "console.log(6 * 7);", expected: "42", validation: ran }]);
+    const report = await runExamples(content, { languages: ["typescript"], runners: { typescript: typescriptRunner(root) }, log: () => {} });
+    expect(report.outcomes.map((o) => [o.id, o.result, o.detail])).toEqual([["typescript/s--plain", "pass", undefined]]);
+    expect(fs.existsSync(path.join(root, "examples"))).toBe(false);
+  }, 60_000);
+
+  it.skipIf(!fs.existsSync(path.join(ROOT, "examples/node_modules")))(
+    "resolves an example's libraries from examples/, compiles JSX per dialect, and passes run conditions",
+    async () => {
+      const react = 'import { renderToString } from "react-dom/server";\nconst Hi = ({ name }: { name: string }) => <b>Hi {name}</b>;\nconsole.log(renderToString(<Hi name="Ada" />));';
+      const solid = 'import { createSignal } from "solid-js";\nexport function Counter() {\n  const [n, setN] = createSignal(0);\n  return <button onClick={() => setN(n() + 1)}>{n()}</button>;\n}';
+      const signals = 'import { createEffect, createRoot, createSignal } from "solid-js";\ncreateRoot(() => {\n  const [n, setN] = createSignal(1);\n  createEffect(() => console.log(n()));\n  queueMicrotask(() => setN(2));\n});';
+      const chakra =
+        'import { ChakraProvider, Text, defaultSystem } from "@chakra-ui/react";\nimport { renderToStaticMarkup } from "react-dom/server";\n' +
+        'const html = renderToStaticMarkup(<ChakraProvider value={defaultSystem}><Text>hello</Text></ChakraProvider>);\nconsole.log(html.replace(/ class="[^"]*"/g, "").replace(/<style[^]*?<\\/style>/g, ""));';
+      const root = contentRoot("typescript", [
+        { id: "rx", kind: "code", code: 'import { map, of } from "rxjs";\nof(1, 2).pipe(map((n) => n * 10)).subscribe((v) => console.log(v));', expected: "10\n20", validation: ran },
+        { id: "react", kind: "code", code: react, expected: "<b>Hi <!-- -->Ada</b>", validation: { ...ran, jsx: "react" } },
+        { id: "react-typo", kind: "code", code: react.replace('name="Ada"', "name={1}"), expected: "x", validation: { ...ran, jsx: "react" } },
+        { id: "solid", kind: "code", code: solid, validation: { ...ran, status: "compiled", jsx: "solid" } },
+        { id: "solid-ran", kind: "code", code: solid, expected: "x", validation: { ...ran, jsx: "solid" } },
+        { id: "signals", kind: "code", code: signals, expected: "1\n2", validation: { ...ran, conditions: ["browser"] } },
+        { id: "no-such-lib", kind: "code", code: 'import x from "left-pad-not-installed";\nconsole.log(x);', expected: "x", validation: ran },
+        { id: "chakra", kind: "code", code: chakra, expected: "<p>hello</p>", validation: { ...ran, jsx: "react", resolution: "bundler" } },
+        { id: "chakra-node-next", kind: "code", code: chakra, expected: "<p>hello</p>", validation: { ...ran, jsx: "react" } },
+      ]);
+      const report = await runExamples(root, { languages: ["typescript"], runners: { typescript: typescriptRunner(ROOT) }, log: () => {} });
+      expect(report.outcomes.map((o) => [o.id, o.result])).toEqual([
+        ["typescript/s--rx", "pass"],
+        ["typescript/s--react", "pass"],
+        ["typescript/s--react-typo", "fail"],
+        ["typescript/s--solid", "pass"],
+        ["typescript/s--solid-ran", "fail"],
+        ["typescript/s--signals", "pass"],
+        ["typescript/s--no-such-lib", "fail"],
+        ["typescript/s--chakra", "pass"],
+        ["typescript/s--chakra-node-next", "fail"], // its declarations do not resolve without bundler resolution
+      ]);
+      expect(report.outcomes[2]!.detail).toMatch(/^tsc: \S+\.tsx\(\d+,\d+\): error TS2322/);
+      expect(report.outcomes[4]!.detail).toBe("Solid JSX needs Solid's own compiler: mark the example `compiled`, not `ran`");
+      expect(report.outcomes[6]!.detail).toMatch(/error TS2307/);
+      // The work folder under examples/ is removed, whatever happened in it.
+      expect(fs.existsSync(path.join(ROOT, "examples/.work")) ? fs.readdirSync(path.join(ROOT, "examples/.work")) : []).toEqual([]);
+    },
+    120_000,
+  );
+
   it("drives kotlinc and the kotlin runner: classpath, compile failures, run output", async () => {
     const bin = tmp("kbin-");
     const log = path.join(bin, "calls.log");
@@ -203,10 +322,51 @@ describe("running examples", () => {
     expect(calls.match(/^kotlin -cp/gm)).toHaveLength(1); // only the `ran` example that compiled is executed
   });
 
+  it("puts the fetched jars and the serialization plugin on kotlinc's command line when no classpath is named", async () => {
+    const bin = tmp("kbin-");
+    const log = path.join(bin, "calls.log");
+    stub(bin, "kotlinc", `echo "kotlinc $*" >> ${log}\ncase "$1" in -version) echo "info: kotlinc-jvm 9.9.9 (JRE 17.0.42+6-LTS)" >&2;; esac\nexit 0`);
+    stub(bin, "kotlin", `echo ran`);
+    const repo = tmp("krepo-");
+    fs.mkdirSync(path.join(repo, "examples/kotlin/lib"), { recursive: true });
+    // Only a jar jars.txt pins is used: a stray jar and a jar not fetched yet are both left out.
+    for (const f of ["b-1.0.jar", "a-1.0.jar", "stray.jar", "notes.txt"]) fs.writeFileSync(path.join(repo, "examples/kotlin/lib", f), "");
+    const empty = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"; // sha256 of no bytes
+    fs.writeFileSync(path.join(repo, "examples/kotlin/jars.txt"), `# pins\ng:a:1.0 ${empty}\ng:b:1.0 ${empty}\ng:absent:1.0 ${empty}\n`);
+    const plugin = path.join(bin, "plugin.jar");
+    fs.writeFileSync(plugin, "");
+    const root = contentRoot("kotlin", [{ id: "ok", kind: "code", code: "fun main() = println(1)", expected: "ran", validation: ran }]);
+    const runner = kotlinRunner({ PATH: `${bin}:${SYSTEM_PATH}`, KOTLIN_SERIALIZATION_PLUGIN: plugin }, repo);
+    const report = await runExamples(root, { languages: ["kotlin"], runners: { kotlin: runner }, log: () => {} });
+    expect(report.toolchains.kotlin).toBe("kotlinc 9.9.9, JVM 17.0.42, a-1.0, b-1.0");
+    expect(report.outcomes.map((o) => o.result)).toEqual(["pass"]);
+    const lib = path.join(repo, "examples/kotlin/lib");
+    expect(fs.readFileSync(log, "utf8")).toContain(`kotlinc -cp ${lib}/a-1.0.jar:${lib}/b-1.0.jar -Xplugin=${plugin} -nowarn`);
+    // A pinned jar whose bytes are not the pinned ones stops the Kotlin examples; it is never compiled against.
+    fs.writeFileSync(path.join(lib, "b-1.0.jar"), "swapped");
+    expect(pinnedJars(path.join(repo, "examples/kotlin"))).toEqual({ jars: [`${lib}/a-1.0.jar`], tampered: ["b-1.0.jar"] });
+    expect(await kotlinRunner({ PATH: `${bin}:${SYSTEM_PATH}` }, repo).probe()).toEqual({
+      missing: "examples/kotlin/lib/b-1.0.jar is not the jar pinned in jars.txt (run npm run examples:install)",
+    });
+    expect(pinnedJars(tmp("no-jars-"))).toEqual({ jars: [], tampered: [] });
+    fs.writeFileSync(path.join(lib, "b-1.0.jar"), "");
+    // A distribution's own plugin is found beside the compiler: lib/ (a zip install) or libexec/lib/ (Homebrew).
+    fs.mkdirSync(path.join(path.dirname(bin), "lib"), { recursive: true });
+    const shipped = path.join(path.dirname(bin), "lib/kotlinx-serialization-compiler-plugin.jar");
+    fs.writeFileSync(shipped, "");
+    try {
+      fs.rmSync(log);
+      await runExamples(root, { languages: ["kotlin"], runners: { kotlin: kotlinRunner({ PATH: `${bin}:${SYSTEM_PATH}` }) }, log: () => {} });
+      expect(fs.readFileSync(log, "utf8")).toContain(`-Xplugin=${fs.realpathSync(shipped)}`);
+    } finally {
+      fs.rmSync(shipped);
+    }
+  });
+
   it("drives dotnet: one console project per example, build failures, run output", async () => {
     const bin = tmp("dbin-");
     const log = path.join(bin, "calls.log");
-    stub(bin, "dotnet", `echo "dotnet $*" >> ${log}\ncase "$1" in\n--version) echo 9.0.100;;\nbuild) if grep -q BROKEN "$2/Program.cs"; then echo "Program.cs(1,1): error CS0103"; exit 1; fi; grep -q "<TargetFramework>net9.0</TargetFramework>" "$2/Example.csproj" || exit 3; grep -q "<clear />" "$2/nuget.config" || exit 4;;\n*.dll) [ "$HOME" = "$TMPDIR" ] || echo "HOME is not the scratch folder"; echo "hello\${SECRET_TOKEN:+ LEAKED}";;\nesac`);
+    stub(bin, "dotnet", `echo "dotnet $*" >> ${log}\ncase "$1" in\n--version) echo 9.0.100;;\nbuild) [ -z "$SECRET_TOKEN" ] || exit 5; case "$HOME" in */.build-home) [ "$HOME" = "$TMPDIR" ] || exit 6;; *) exit 6;; esac; if grep -q BROKEN "$2/Program.cs"; then echo "Program.cs(1,1): error CS0103"; exit 1; fi; grep -q "<TargetFramework>net9.0</TargetFramework>" "$2/Example.csproj" || exit 3; grep -q "<clear />" "$2/nuget.config" || exit 4;;\n*.dll) [ "$HOME" = "$TMPDIR" ] || echo "HOME is not the scratch folder"; echo "hello\${SECRET_TOKEN:+ LEAKED}";;\nesac`);
     const root = contentRoot("csharp", [
       { id: "ok", kind: "code", code: 'Console.WriteLine("hello");', expected: "hello", validation: ran },
       { id: "broken", kind: "code", code: "BROKEN", expected: "hello", validation: ran },
@@ -225,10 +385,88 @@ describe("running examples", () => {
     ]);
     expect(report.outcomes[1]!.detail).toBe("dotnet build: Program.cs(1,1): error CS0103");
     const calls = fs.readFileSync(log, "utf8");
+    // A build sees the run's scratch HOME and TMPDIR and none of the caller's variables (the stub exits 5 or 6 otherwise):
+    // package code runs inside it. The servers the builds started are shut down once, at the end.
     // Every build ignores MSBuild files above its folder; the run executes the built assembly, not `dotnet run`.
     expect(calls.match(/^dotnet build .* -p:ImportDirectoryBuildProps=false -p:ImportDirectoryBuildTargets=false -p:ImportDirectoryPackagesProps=false -noAutoResponse$/gm)).toHaveLength(3);
     expect(calls).toMatch(/^dotnet \S+\/out\/Example\.dll$/m);
     expect(calls).not.toMatch(/^dotnet run/m);
+    expect(calls.match(/^dotnet build-server shutdown$/gm)).toHaveLength(1);
+  });
+
+  it("gives an example the pinned NuGet packages its code asks for, and nuget.org only then", async () => {
+    const bin = tmp("dbin-");
+    const seen = path.join(bin, "seen");
+    fs.mkdirSync(seen);
+    // Keeps each project's files so the test can read what was generated.
+    const calls = path.join(bin, "calls.log");
+    const assets = JSON.stringify({ libraries: { "System.Reactive/6.1.0": { type: "package", sha512: "RX==" }, "Transitive.Dep/1.2.3": { type: "package", sha512: "DEP==" }, "Example/1.0.0": { type: "project" } } });
+    stub(
+      bin,
+      "dotnet",
+      `echo "dotnet $1 \${NUGET_PACKAGES}\${SECRET_TOKEN:+ LEAKED}" >> ${calls}\ncase "$1" in\n--version) echo 9.0.100;;\nrestore) mkdir -p "$2/obj"; echo '${assets}' > "$2/obj/project.assets.json";;\nbuild) d=$(mktemp -d ${seen}/XXXXXX); cp "$2/Example.csproj" "$2/nuget.config" "$2/Program.cs" "$d/"; echo "$*" > "$d/args";;\nesac`,
+    );
+    const repo = tmp("drepo-");
+    fs.mkdirSync(path.join(repo, "examples/csharp"), { recursive: true });
+    const write = (packages: object[]) => fs.writeFileSync(path.join(repo, "examples/csharp/packages.json"), JSON.stringify({ packages }));
+    write([{ id: "System.Reactive", version: "6.1.0", when: "using System\\.Reactive" }]);
+    const lockFile = path.join(repo, "examples/csharp/packages.lock.json");
+    const pin = (packages: Record<string, string>) => fs.writeFileSync(lockFile, JSON.stringify({ packages }));
+    pin({ "system.reactive/6.1.0": "RX==", "transitive.dep/1.2.3": "DEP==" });
+    const root = contentRoot("csharp", [
+      { id: "rx", kind: "code", code: "using System.Reactive.Linq;", validation: { ...ran, status: "compiled" } },
+      { id: "plain", kind: "code", code: "class A {}", validation: { ...ran, status: "compiled" } },
+    ]);
+    const once = (opts?: { writeLock?: boolean }) =>
+      runExamples(root, { languages: ["csharp"], runners: { csharp: csharpRunner({ PATH: SYSTEM_PATH, DOTNET: path.join(bin, "dotnet"), SECRET_TOKEN: "leak" }, repo, opts) }, log: () => {} });
+    const report = await once();
+    expect(report.outcomes.map((o) => o.result)).toEqual(["pass", "pass"]);
+    // Only the package example restores, into the repository's own cache, and neither step sees the caller's variables.
+    const log = fs.readFileSync(calls, "utf8");
+    expect(log.match(/^dotnet restore /gm)).toHaveLength(1);
+    expect(log).toContain(`dotnet restore ${path.join(repo, "examples/csharp/.nuget")}\n`);
+    expect(log).not.toMatch(/^dotnet (?:restore|build) .*LEAKED/m); // the version probe runs the SDK alone and keeps the caller's environment
+    const projects = fs.readdirSync(seen).map((d) => ({
+      args: fs.readFileSync(path.join(seen, d, "args"), "utf8"),
+      code: fs.readFileSync(path.join(seen, d, "Program.cs"), "utf8"),
+      csproj: fs.readFileSync(path.join(seen, d, "Example.csproj"), "utf8"),
+      nuget: fs.readFileSync(path.join(seen, d, "nuget.config"), "utf8"),
+    }));
+    const rx = projects.find((p) => p.code.includes("Reactive"))!;
+    const plain = projects.find((p) => !p.code.includes("Reactive"))!;
+    expect(rx.csproj).toContain('<PackageReference Include="System.Reactive" Version="[6.1.0]" />');
+    expect(rx.nuget).toContain('<clear /><add key="nuget.org" value="https://api.nuget.org/v3/index.json" protocolVersion="3" />');
+    expect(plain.csproj).not.toContain("PackageReference");
+    expect(plain.nuget).toContain("<packageSources><clear /></packageSources>");
+    expect(rx.args).toContain("--no-restore"); // what was checked is what builds
+    expect(plain.args).not.toContain("--no-restore");
+
+    // A restored package that is not in the lock with that hash fails the example before anything builds.
+    pin({ "system.reactive/6.1.0": "RX==", "transitive.dep/1.2.3": "SOMETHING-ELSE" });
+    fs.rmSync(seen, { recursive: true });
+    fs.mkdirSync(seen);
+    const refused = await once();
+    expect(refused.outcomes.map((o) => o.result)).toEqual(["fail", "pass"]);
+    expect(refused.outcomes[0]!.detail).toBe(
+      "nuget: transitive.dep/1.2.3 is not the content pinned in examples/csharp/packages.lock.json (review it, then npm run examples -- --lang csharp --write-nuget-lock)",
+    );
+    expect(fs.readdirSync(seen)).toHaveLength(1); // only the package-free example was built
+    fs.rmSync(lockFile);
+    expect(nugetLock(repo)).toEqual({});
+    expect((await once()).outcomes.map((o) => o.result)).toEqual(["fail", "pass"]); // no lock pins nothing
+
+    // --write-nuget-lock records what restore resolved instead of checking it, keeping entries it did not see.
+    pin({ "kept.package/9.9.9": "KEPT==" });
+    expect((await once({ writeLock: true })).outcomes.map((o) => o.result)).toEqual(["pass", "pass"]);
+    expect(nugetLock(repo)).toEqual({ "kept.package/9.9.9": "KEPT==", "system.reactive/6.1.0": "RX==", "transitive.dep/1.2.3": "DEP==" });
+    expect((await once()).outcomes.map((o) => o.result)).toEqual(["pass", "pass"]);
+
+    expect(nugetPackages(undefined)).toEqual([]);
+    expect(nugetPackages(tmp("no-packages-"))).toEqual([]);
+    write([{ id: "Evil\" />", version: "1.0.0", when: "x" }]);
+    expect(() => nugetPackages(repo)).toThrow("is not a package id and an exact version");
+    write([{ id: "Fine", version: "1.*", when: "x" }]);
+    expect(() => nugetPackages(repo)).toThrow("is not a package id and an exact version");
   });
 
   it("runs a snippet without the caller's environment, in a scratch HOME", async () => {

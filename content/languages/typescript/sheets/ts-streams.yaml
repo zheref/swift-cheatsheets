@@ -1,0 +1,909 @@
+id: ts-streams
+concept: algorithms.streaming
+scope: shared
+title: "Streaming & Time-Series Patterns"
+group: "Shared concepts"
+subtitle: "Unbounded data, bounded memory: windows, sketches, rate limits and backpressure — over async iterables and Node streams."
+applies:
+  platforms: [node, browser]
+  runtime: an engine with Array.fromAsync (Baseline 2024); the examples run on Node.js
+  versions: { typescript: ">=5.4", node: ">=22.18" }
+sources:
+  - title: for await...of — MDN
+    url: https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Statements/for-await...of
+  - title: Stream — Node.js
+    url: https://nodejs.org/api/stream.html
+  - title: Backpressuring in streams — Node.js
+    url: https://nodejs.org/en/learn/modules/backpressuring-in-streams
+cards:
+  - id: constraints
+    kind: rules
+    title: The constraints that define the field
+    note: Every card below is an answer to one of these.
+    items:
+      - tone: modern
+        text: "You see each item **once**, in order, and cannot keep them all — so answers are incremental, approximate, or over a window."
+      - tone: modern
+        text: "**Bounded memory** is the whole game: O(1) or O(window) per stream, never O(stream)."
+      - tone: modern
+        text: "**Time is two things**: **event time** (when it happened) and **processing time** (when you saw it). They diverge; a watermark says how late you still accept data."
+      - tone: neutral
+        text: "**Exact vs approximate**: a sketch trades a percent of accuracy for orders of magnitude of memory. State the error bound out loud."
+      - tone: neutral
+        text: "In TypeScript a stream is an `AsyncIterable` (pull: the consumer sets the pace), a Node or web stream (push, held back by a `highWaterMark`), or an RxJS `Observable` (push with no backpressure: you choose a buffering operator)."
+      - tone: good
+        text: "**Inject the clock and the random source.** `Date.now()` and `Math.random()` inside the algorithm make it untestable and unreplayable."
+  - id: windows
+    kind: table
+    title: Windowing a stream
+    note: Almost every streaming requirement is one of these windows plus a lateness policy.
+    headers: [Window, Shape, Answers, Group by]
+    rows:
+      - ["Tumbling", "fixed size, no overlap: `[0, 60s)`, `[60s, 120s)`", "orders per minute, a billing period", "`t - t % size`"]
+      - ["Hopping", "fixed size advancing by a smaller hop; an event is in `size / hop` windows", "a 5-minute error rate refreshed every 10 s", "every hop start in `(t - size, t]`"]
+      - ["Session", "per key, closed by a gap of inactivity", "a user's visit, a burst of typing", "key, extended while the next event is within the gap"]
+      - ["Count (sliding)", "the last n events", "the average of the last 100 requests", "position: a ring buffer"]
+      - ["Late events", "its window has already closed: window end ≤ watermark (highest event time − allowed lateness)", "what happens to a delayed upload", "drop and count, hold longer, or reopen the window and re-emit"]
+  - id: ring-buffer
+    kind: code
+    title: Ring buffer — a fixed-size sliding window
+    note: "A moving average of the last k request latencies in O(1) per event and O(k) memory — and, when full, the drop-oldest queue for a source you cannot pause."
+    prerequisites: &run
+      - Node.js 22.18 or later (it runs `.mts` files directly by stripping the types)
+      - "Save as `main.mts` and run `node main.mts`"
+      - "Optional type-check: `npm i -D typescript @types/node`, then `npx tsc --noEmit --strict --target esnext --module nodenext main.mts`"
+    code: |-
+      class RingBuffer<T> {
+        private readonly slots: (T | undefined)[];
+        private next = 0;                                  // where the next item goes
+        size = 0;
+
+        constructor(capacity: number) {
+          this.slots = new Array<T | undefined>(capacity);
+        }
+
+        /** Adds an item; once full, returns the oldest one it pushed out. */
+        push(item: T): T | undefined {
+          const evicted = this.size === this.slots.length ? this.slots[this.next] : undefined;
+          this.slots[this.next] = item;
+          this.next = (this.next + 1) % this.slots.length;
+          this.size = Math.min(this.size + 1, this.slots.length);
+          return evicted;
+        }
+
+        /** Oldest first. */
+        toArray(): T[] {
+          const start = (this.next - this.size + this.slots.length) % this.slots.length;
+          return Array.from({ length: this.size }, (_, i) => this.slots[(start + i) % this.slots.length]!);
+        }
+      }
+
+      // Rolling sum: add the newcomer, subtract the evicted — never re-sum the window.
+      const window = new RingBuffer<number>(3);
+      let sum = 0;
+      const averages: number[] = [];
+      for (const latencyMs of [120, 80, 100, 400, 90, 110]) {
+        sum += latencyMs - (window.push(latencyMs) ?? 0);
+        averages.push(Math.round(sum / window.size));
+      }
+      console.log(averages.join(" "), "| window:", window.toArray());
+      // With floats the running sum drifts slowly: recompute it from the window every few thousand events.
+    expected: |-
+      120 100 100 193 197 200 | window: [ 400, 90, 110 ]
+    validation: &ran
+      status: ran
+      toolchain: Node 24.16.0, TypeScript 5.9.3
+      date: "2026-11-16"
+  - id: tumbling-window-watermark
+    kind: code
+    title: Tumbling windows with a watermark
+    note: "Revenue per minute by event time: a window closes once the watermark passes its end, so a delayed order still counts — up to the allowed lateness."
+    prerequisites: *run
+    code: |-
+      type Order = { at: number; cents: number };            // at: event time in ms
+      type Window = { start: number; orders: number; cents: number };
+
+      function tumblingWindows(sizeMs: number, latenessMs: number) {
+        const open = new Map<number, Window>();               // window start -> running totals
+        let watermark = -Infinity;                            // highest event time seen − allowed lateness
+        let late = 0;
+
+        const close = (due: (end: number) => boolean): Window[] => {
+          const closed = [...open.values()].filter((w) => due(w.start + sizeMs)).sort((a, b) => a.start - b.start);
+          for (const w of closed) open.delete(w.start);
+          return closed;
+        };
+
+        return {
+          /** Adds an order; returns the windows the advancing watermark closed, oldest first. */
+          add(order: Order): Window[] {
+            const start = order.at - (order.at % sizeMs);
+            if (start + sizeMs <= watermark) {                // its window is already final: count, don't reopen
+              late++;
+              return [];
+            }
+            const w = open.get(start) ?? { start, orders: 0, cents: 0 };
+            open.set(start, { start, orders: w.orders + 1, cents: w.cents + order.cents });
+            watermark = Math.max(watermark, order.at - latenessMs);
+            return close((end) => end <= watermark);
+          },
+          flush: () => close(() => true),                     // end of stream: everything still open is final
+          late: () => late,
+        };
+      }
+
+      const perMinute = tumblingWindows(60_000, 10_000);      // 1-minute windows, 10 s allowed lateness
+
+      const show = (w: Window) => `[${w.start / 1000}s, +60s) count ${w.orders}, $${(w.cents / 100).toFixed(2)}`;
+      const arrivals = [[5, 1200], [20, 800], [58, 450], [62, 2000], [50, 300], [75, 990], [130, 1500], [55, 700]];
+      for (const [second, cents] of arrivals as [number, number][]) {
+        for (const w of perMinute.add({ at: second * 1000, cents })) console.log(`after ${second}s:`, show(w));
+      }
+
+      for (const w of perMinute.flush()) console.log("at the end:", show(w));
+      console.log("late orders dropped:", perMinute.late());
+    expected: |-
+      after 75s: [0s, +60s) count 4, $27.50
+      after 130s: [60s, +60s) count 2, $29.90
+      at the end: [120s, +60s) count 1, $15.00
+      late orders dropped: 1
+    validation: *ran
+  - id: running-statistics
+    kind: code
+    title: Running statistics — Welford & EMA
+    note: "Mean, standard deviation, a z-score for anomaly alerts and a smoothed level, in O(1) memory and without losing precision."
+    prerequisites: *run
+    code: |-
+      // Welford's online algorithm: numerically stable where "sum of squares" is not.
+      class RunningStats {
+        count = 0;
+        mean = 0;
+        private m2 = 0;                                       // sum of squared distances from the mean
+
+        add(x: number): void {
+          this.count++;
+          const delta = x - this.mean;
+          this.mean += delta / this.count;
+          this.m2 += delta * (x - this.mean);
+        }
+
+        get variance(): number {
+          return this.count > 1 ? this.m2 / (this.count - 1) : 0;
+        }
+      }
+
+      // Exponential moving average: no window and no history, one multiply per event.
+      function ema(period: number): (x: number) => number {
+        const alpha = 2 / (period + 1);
+        let level: number | undefined;
+        return (x) => {
+          level = level === undefined ? x : alpha * x + (1 - alpha) * level;
+          return level;
+        };
+      }
+
+      const stats = new RunningStats();
+      const smooth = ema(4);
+      for (const ms of [102, 98, 110, 95, 105, 99, 101, 104]) {
+        stats.add(ms);
+        smooth(ms);
+      }
+      const sd = Math.sqrt(stats.variance);
+      console.log(stats.mean.toFixed(2), sd.toFixed(2), "| z of 160 ms:", ((160 - stats.mean) / sd).toFixed(1));
+      console.log("smoothed level after a spike:", smooth(300).toFixed(1));
+
+      // Large offsets (nanosecond timestamps, meter readings): the naive formula cancels itself out.
+      const readings = [4, 7, 13, 16].map((x) => 1e9 + x);
+      const sum = readings.reduce((s, x) => s + x, 0);
+      const naive = (readings.reduce((s, x) => s + x * x, 0) - sum ** 2 / readings.length) / (readings.length - 1);
+      const welford = new RunningStats();
+      readings.forEach((x) => welford.add(x));
+      console.log("variance — naive:", naive, "| Welford:", welford.variance);
+    expected: |-
+      101.75 4.65 | z of 160 ms: 12.5
+      smoothed level after a spike: 181.3
+      variance — naive: -170.66666666666666 | Welford: 30
+    sources:
+      - title: Algorithms for calculating variance — Wikipedia
+        url: https://en.wikipedia.org/wiki/Algorithms_for_calculating_variance
+      - title: Exponential smoothing — Wikipedia
+        url: https://en.wikipedia.org/wiki/Exponential_smoothing
+    validation: *ran
+  - id: reservoir-sampling
+    kind: code
+    title: Reservoir sampling
+    note: "A uniform sample of k requests to keep for an audit, from a stream of unknown length, in O(k) memory and with an injected random source so a test can replay it."
+    prerequisites: *run
+    code: |-
+      type Random = () => number;                             // uniform in [0, 1)
+
+      function reservoir<T>(capacity: number, random: Random = Math.random) {
+        const sample: T[] = [];
+        let seen = 0;
+        return {
+          sample,
+          add(item: T): void {
+            seen++;
+            if (sample.length < capacity) {
+              sample.push(item);
+              return;
+            }
+            const j = Math.floor(random() * seen);            // kept with probability k / seen
+            if (j < capacity) sample[j] = item;
+          },
+        };
+      }
+
+      // mulberry32: a tiny seeded generator. Repeatable, fast — and never for security.
+      function seeded(seed: number): Random {
+        return () => {
+          seed = (seed + 0x6d2b79f5) | 0;
+          let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+          t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+          return ((t ^ (t >>> 14)) >>> 0) / 4_294_967_296;
+        };
+      }
+
+      const audit = reservoir<string>(4, seeded(42));
+      for (let i = 1; i <= 100_000; i++) audit.add(`req-${i}`);
+      console.log(audit.sample);
+
+      // Uniform? Each of 10 items should land in a 3-item sample 30% of the time.
+      const random = seeded(7);
+      const hits = new Array<number>(10).fill(0);
+      for (let trial = 0; trial < 20_000; trial++) {
+        const r = reservoir<number>(3, random);
+        for (let i = 0; i < 10; i++) r.add(i);
+        for (const i of r.sample) hits[i] = hits[i]! + 1;
+      }
+      console.log(hits.map((h) => `${Math.round((h / 20_000) * 100)}%`).join(" "));
+    expected: |-
+      [ 'req-87920', 'req-46041', 'req-46094', 'req-98935' ]
+      30% 30% 30% 30% 30% 30% 30% 30% 30% 30%
+    sources:
+      - title: Reservoir sampling — Wikipedia
+        url: https://en.wikipedia.org/wiki/Reservoir_sampling
+    validation: *ran
+  - id: count-min-sketch
+    kind: code
+    title: Count-Min Sketch — approximate frequencies
+    note: "Requests per endpoint over millions of distinct keys in a fixed few kilobytes — it may overcount, but never undercounts."
+    prerequisites: *run
+    code: |-
+      // FNV-1a plus a murmur finaliser: fast, deterministic, well spread (not cryptographic).
+      function hash(key: string, seed: number): number {
+        let h = 0x811c9dc5 ^ seed;
+        for (let i = 0; i < key.length; i++) h = Math.imul(h ^ key.charCodeAt(i), 0x01000193);
+        h = Math.imul(h ^ (h >>> 16), 0x85ebca6b);
+        h = Math.imul(h ^ (h >>> 13), 0xc2b2ae35);
+        return (h ^ (h >>> 16)) >>> 0;
+      }
+
+      class CountMinSketch {
+        private readonly rows: Uint32Array[];                // wraps past 4.29 billion: Float64Array if unbounded
+        private readonly width: number;
+
+        // width ≈ e / ε, depth ≈ ln(1 / δ): 2048 × 5 overcounts by ≤ 0.13% of the total, 99% of the time.
+        constructor(width = 2048, depth = 5) {
+          this.width = width;
+          this.rows = Array.from({ length: depth }, () => new Uint32Array(width));
+        }
+
+        add(key: string, count = 1): void {
+          for (const [seed, row] of this.rows.entries()) row[hash(key, seed) % this.width]! += count;
+        }
+
+        /** Each row overcounts by its collisions, so the smallest row is the best guess. */
+        estimate(key: string): number {
+          return Math.min(...this.rows.map((row, seed) => row[hash(key, seed) % this.width]!));
+        }
+      }
+
+      const sketch = new CountMinSketch(256, 4);              // 4 KB, deliberately small to show collisions
+      const truth = new Map<string, number>();
+      for (let i = 0; i < 60_000; i++) {
+        const endpoint = i % 3 === 0 ? "/v1/charges" : i % 5 === 0 ? "/v1/refunds" : `/v1/customers/${i % 5_000}`;
+        sketch.add(endpoint);
+        truth.set(endpoint, (truth.get(endpoint) ?? 0) + 1);
+      }
+      for (const key of ["/v1/charges", "/v1/refunds", "/v1/customers/42"]) {
+        console.log(key, "true", truth.get(key), "estimate", sketch.estimate(key));
+      }
+      console.log(truth.size, "distinct keys counted in", 256 * 4 * 4, "bytes");
+    expected: |-
+      /v1/charges true 20000 estimate 20064
+      /v1/refunds true 8000 estimate 8088
+      /v1/customers/42 true 8 estimate 96
+      4002 distinct keys counted in 4096 bytes
+    sources:
+      - title: Count–min sketch — Wikipedia
+        url: https://en.wikipedia.org/wiki/Count%E2%80%93min_sketch
+    validation: *ran
+  - id: bloom-filter
+    kind: code
+    title: Bloom filter — approximate membership
+    note: "\"Have I already synced this event?\" without keeping every id: \"definitely not\" or \"probably yes\", in about 10 bits per key at 1%."
+    prerequisites: *run
+    code: |-
+      function hash(key: string, seed: number): number {      // FNV-1a + murmur finaliser, as for Count-Min
+        let h = 0x811c9dc5 ^ seed;
+        for (let i = 0; i < key.length; i++) h = Math.imul(h ^ key.charCodeAt(i), 0x01000193);
+        h = Math.imul(h ^ (h >>> 16), 0x85ebca6b);
+        h = Math.imul(h ^ (h >>> 13), 0xc2b2ae35);
+        return (h ^ (h >>> 16)) >>> 0;
+      }
+
+      class BloomFilter {
+        readonly bitCount: number;
+        readonly hashCount: number;
+        private readonly bits: Uint32Array;
+
+        constructor(expected: number, falsePositiveRate = 0.01) {
+          // m = -n·ln(p) / (ln 2)²  and  k = (m / n)·ln 2
+          this.bitCount = Math.ceil((-expected * Math.log(falsePositiveRate)) / Math.LN2 ** 2);
+          this.hashCount = Math.max(1, Math.round((this.bitCount / expected) * Math.LN2));
+          this.bits = new Uint32Array(Math.ceil(this.bitCount / 32));
+        }
+
+        // Double hashing: k positions from two hashes, h1 + i·h2.
+        private positions(key: string): number[] {
+          const h1 = hash(key, 1);
+          const h2 = (hash(key, 2) | 1) >>> 0;                // odd, read back as unsigned
+          return Array.from({ length: this.hashCount }, (_, i) => (h1 + i * h2) % this.bitCount);
+        }
+
+        add(key: string): void {
+          for (const p of this.positions(key)) this.bits[p >>> 5]! |= 1 << (p & 31);
+        }
+
+        /** false: definitely never added. true: probably added. */
+        mayContain(key: string): boolean {
+          return this.positions(key).every((p) => (this.bits[p >>> 5]! & (1 << (p & 31))) !== 0);
+        }
+      }
+
+      const ids = (prefix: string) => Array.from({ length: 10_000 }, (_, i) => `${prefix}${i}`);
+      const synced = new BloomFilter(10_000, 0.01);
+      for (const id of ids("evt_")) synced.add(id);
+      const missed = ids("evt_").filter((id) => !synced.mayContain(id)).length;
+      const falseHits = ids("evt_new_").filter((id) => synced.mayContain(id)).length;
+      console.log(Math.ceil(synced.bitCount / 8), "bytes,", synced.hashCount, "hashes");
+      console.log("false negatives:", missed, "| false positives:", `${(falseHits / 100).toFixed(2)}%`);
+    expected: |-
+      11982 bytes, 7 hashes
+      false negatives: 0 | false positives: 0.96%
+    sources:
+      - title: Bloom filter — Wikipedia
+        url: https://en.wikipedia.org/wiki/Bloom_filter
+    validation: *ran
+  - id: heavy-hitters
+    kind: code
+    title: Heavy hitters — Misra–Gries
+    note: "The accounts placing most orders, tracked with k counters for any number of accounts — anything above n/(k+1) occurrences is guaranteed to survive."
+    prerequisites: *run
+    code: |-
+      class HeavyHitters<K> {
+        private readonly counters = new Map<K, number>();
+        private readonly capacity: number;
+
+        constructor(capacity: number) {
+          this.capacity = capacity;
+        }
+
+        add(key: K): void {
+          const count = this.counters.get(key);
+          if (count !== undefined) {
+            this.counters.set(key, count + 1);
+          } else if (this.counters.size < this.capacity) {
+            this.counters.set(key, 1);
+          } else {
+            // No room: every counter loses one, and those that reach zero leave.
+            for (const [k, n] of this.counters) {
+              if (n === 1) this.counters.delete(k);
+              else this.counters.set(k, n - 1);
+            }
+          }
+        }
+
+        /** Candidates with lower-bound counts (low by at most n/(k+1)); a second pass gives exact ones. */
+        top(n: number): [K, number][] {
+          return [...this.counters].sort((a, b) => b[1] - a[1]).slice(0, n);
+        }
+      }
+
+      const accountOf = (i: number) =>
+        i % 5 === 0 ? "acme" : i % 7 === 0 ? "globex" : i % 11 === 0 ? "initech" : `cust-${i % 4_000}`;
+      const orders = Array.from({ length: 30_000 }, (_, i) => accountOf(i));
+      const hitters = new HeavyHitters<string>(20);           // guaranteed: anyone above 30,000 / 21 ≈ 1,429
+      for (const account of orders) hitters.add(account);
+      const exact = (account: string) => orders.filter((a) => a === account).length;
+      for (const [account, atLeast] of hitters.top(3)) {
+        console.log(account, "at least", atLeast, "exactly", exact(account));
+      }
+    expected: |-
+      acme at least 4961 exactly 6000
+      globex at least 2389 exactly 3428
+      initech at least 831 exactly 1870
+    sources:
+      - title: Misra–Gries heavy hitters algorithm — Wikipedia
+        url: https://en.wikipedia.org/wiki/Misra%E2%80%93Gries_heavy_hitters_algorithm
+    validation: *ran
+  - id: streaming-quantiles
+    kind: code
+    title: Streaming quantiles
+    note: "p50/p95/p99 latency without storing the requests: log-sized buckets (the DDSketch idea) keep every estimate within 1% of a real value."
+    prerequisites: *run
+    code: |-
+      class QuantileSketch {
+        readonly buckets = new Map<number, number>();         // bucket index -> count
+        private readonly gamma: number;
+        private count = 0;
+
+        constructor(relativeAccuracy = 0.01) {
+          this.gamma = (1 + relativeAccuracy) / (1 - relativeAccuracy);
+        }
+
+        /** Positive values only. Bucket i holds (gamma^(i-1), gamma^i]. */
+        add(value: number): void {
+          const i = Math.ceil(Math.log(value) / Math.log(this.gamma));
+          this.buckets.set(i, (this.buckets.get(i) ?? 0) + 1);
+          this.count++;
+        }
+
+        quantile(q: number): number {
+          const rank = q * (this.count - 1);
+          let seen = 0;
+          for (const i of [...this.buckets.keys()].sort((a, b) => a - b)) {
+            seen += this.buckets.get(i)!;
+            if (seen > rank) return (2 * this.gamma ** i) / (this.gamma + 1); // ±1% of every value in it
+          }
+          return Number.NaN;
+        }
+      }
+
+      // 100,000 latencies: mostly 20–150 ms, 2% slow outliers. Park–Miller is seeded, so the run repeats.
+      let seed = 3;
+      function random(): number {
+        seed = (seed * 48_271) % 2_147_483_647;
+        return seed / 2_147_483_647;
+      }
+      const latency = () => (20 - Math.log(1 - random()) * 30) * (random() < 0.02 ? 15 : 1);
+      const latencies = Array.from({ length: 100_000 }, latency);
+
+      const sketch = new QuantileSketch(0.01);
+      for (const ms of latencies) sketch.add(ms);
+      const sorted = latencies.toSorted((a, b) => a - b);    // the exact answer, for comparison only
+      for (const q of [0.5, 0.95, 0.99]) {
+        const exact = sorted[Math.floor(q * (sorted.length - 1))]!;
+        console.log(`p${q * 100}`, "exact", exact.toFixed(1), "sketch", sketch.quantile(q).toFixed(1));
+      }
+      console.log(sketch.buckets.size, "buckets for", latencies.length, "values");
+    expected: |-
+      p50 exact 41.5 sketch 41.7
+      p95 exact 124.6 sketch 125.2
+      p99 exact 619.9 sketch 620.3
+      250 buckets for 100000 values
+    sources:
+      - title: "DDSketch: a fast and fully-mergeable quantile sketch with relative-error guarantees — arXiv"
+        url: https://arxiv.org/abs/1908.10693
+    validation: *ran
+  - id: rate-limiting
+    kind: code
+    title: Rate limiting — token bucket vs sliding window
+    note: "The same requests under two policies and an injected clock: a token bucket lets a burst through and then a steady rate, while a sliding window log allows at most n in any window."
+    prerequisites: *run
+    code: |-
+      type Clock = () => number;   // milliseconds; in production performance.now — monotonic, unlike Date.now
+      type Limiter = () => boolean;                           // true: let this request through
+
+      // Token bucket: `capacity` is the burst you tolerate, `perSecond` the sustained rate.
+      function tokenBucket(capacity: number, perSecond: number, clock: Clock): Limiter {
+        let tokens = capacity;
+        let last = clock();
+        return () => {
+          const now = clock();
+          tokens = Math.min(capacity, tokens + ((now - last) / 1000) * perSecond);
+          last = now;
+          if (tokens < 1) return false;
+          tokens -= 1;
+          return true;
+        };
+      }
+
+      // Sliding window log: never more than `limit` in any `windowMs`; memory grows with the limit.
+      function slidingWindow(limit: number, windowMs: number, clock: Clock): Limiter {
+        const hits: number[] = [];                            // at most `limit` timestamps, oldest first
+        return () => {
+          const now = clock();
+          // shift() is fine for small limits; keep a ring buffer of `limit` timestamps for large ones.
+          while (hits.length && hits[0]! <= now - windowMs) hits.shift();
+          if (hits.length >= limit) return false;
+          hits.push(now);
+          return true;
+        };
+      }
+
+      let now = 0;
+      const clock: Clock = () => now;
+      const bucket = tokenBucket(3, 2, clock);                // bursts of 3, then 2 per second
+      const window = slidingWindow(3, 1_000, clock);          // at most 3 in any 1 second
+      const verdict = (ok: boolean) => (ok ? "allow" : "deny ");
+      for (const t of [0, 0, 0, 0, 300, 600, 1_000, 1_000, 1_001, 2_500]) {
+        now = t;
+        console.log(`${`${t} ms`.padEnd(8)} bucket ${verdict(bucket())}  window ${verdict(window())}`);
+      }
+      // Leaky bucket: a queue drained at a fixed rate — smooth output; requests wait instead of failing.
+    expected: |-
+      0 ms     bucket allow  window allow
+      0 ms     bucket allow  window allow
+      0 ms     bucket allow  window allow
+      0 ms     bucket deny   window deny
+      300 ms   bucket deny   window deny
+      600 ms   bucket allow  window deny
+      1000 ms  bucket allow  window allow
+      1000 ms  bucket deny   window allow
+      1001 ms  bucket deny   window allow
+      2500 ms  bucket allow  window allow
+    sources:
+      - title: Token bucket — Wikipedia
+        url: https://en.wikipedia.org/wiki/Token_bucket
+    validation: *ran
+  - id: live-debounce
+    kind: code
+    title: Live debounce, cancellable
+    note: "Search-as-you-type on live input: a timer-based debounce with an injected scheduler, cancellable so a search box that unmounts never fires a stale query."
+    prerequisites: *run
+    code: |-
+      import { mock } from "node:test";
+
+      type Timers = { setTimeout(run: () => void, ms: number): unknown; clearTimeout(id: unknown): void };
+
+      // Run once the input has been quiet for quietMs; the scheduler is injected so a test can drive it.
+      function debounce<A>(run: (arg: A) => void, quietMs: number, timers: Timers = globalThis) {
+        let pending: unknown;
+        return {
+          call(arg: A): void {
+            timers.clearTimeout(pending);                     // each keystroke restarts the quiet period
+            pending = timers.setTimeout(() => run(arg), quietMs);
+          },
+          cancel(): void {
+            timers.clearTimeout(pending);                     // nothing fires later, no timer holds Node open
+          },
+        };
+      }
+
+      mock.timers.enable({ apis: ["setTimeout"] });           // a test's clock; production keeps real timers
+      const searched: string[] = [];
+      const search = debounce((query: string) => searched.push(query), 300);
+
+      search.call("s");
+      search.call("sw");
+      mock.timers.tick(400);                                  // quiet for 300 ms: one search, for "sw"
+      console.log("after the pause:", searched);
+
+      search.call("swift");
+      search.cancel();                                        // the search box unmounts with a search pending
+      mock.timers.tick(1_000);
+      console.log("after cancel:", searched);
+      mock.timers.reset();
+      // Throttle, sample and audit on live input, and their RxJS forms: see the Timing Operators sheet.
+    expected: |-
+      after the pause: [ 'sw' ]
+      after cancel: [ 'sw' ]
+    sources:
+      - title: Mocking timers — Node.js test runner
+        url: https://nodejs.org/api/test.html#class-mocktimers
+    validation: *ran
+  - id: debounce-throttle-sample
+    kind: code
+    title: Debounce, throttle & sample over recorded events
+    note: "Debounce, throttle and sample over recorded, timestamped events — replayed logs and tests — where each operator works on event time and acts only as the next event arrives."
+    prerequisites: *run
+    code: |-
+      // Recorded events (replayed logs, tests): each operator works on event time and acts only when
+      // the next event arrives — for live input, use timers as in the live debounce card.
+      type Timed<T> = { at: number; value: T };                // at: event time in ms
+      type Events<T> = Iterable<Timed<T>> | AsyncIterable<Timed<T>>;
+
+      // Debounce: keep a value only if nothing newer came within quietMs.
+      async function* debounce<T>(events: Events<T>, quietMs: number) {
+        let pending: Timed<T> | undefined;
+        for await (const e of events) {
+          if (pending && e.at - pending.at >= quietMs) yield pending;
+          pending = e;
+        }
+        if (pending) yield pending;                            // the recording ended: nothing newer can come
+      }
+
+      // Throttle: the first value, then nothing for ms.
+      async function* throttle<T>(events: Events<T>, ms: number) {
+        let openAt = -Infinity;
+        for await (const e of events) {
+          if (e.at < openAt) continue;
+          openAt = e.at + ms;
+          yield e;
+        }
+      }
+
+      // Sample: the latest value at each tick. Like RxJS sampleTime, a value pending at the end is dropped.
+      async function* sample<T>(events: Events<T>, ms: number) {
+        let latest: Timed<T> | undefined;
+        let tick = ms;
+        for await (const e of events) {
+          if (e.at >= tick && latest) yield { at: tick, value: latest.value };   // at the first tick passed
+          while (e.at >= tick) tick += ms;
+          latest = e;
+        }
+      }
+
+      const typed = [[0, "s"], [90, "sw"], [170, "swi"], [600, "swif"], [680, "swift"], [1300, "swift u"]] as const;
+      const keystrokes = typed.map(([at, value]) => ({ at, value }));
+      const show = async (events: AsyncIterable<Timed<string>>) =>
+        (await Array.fromAsync(events)).map((e) => `${e.at}:${e.value}`).join("  ");
+
+      console.log("debounce 300 |", await show(debounce(keystrokes, 300)));
+      console.log("throttle 500 |", await show(throttle(keystrokes, 500)));
+      console.log("sample   500 |", await show(sample(keystrokes, 500)));
+    expected: |-
+      debounce 300 | 170:swi  680:swift  1300:swift u
+      throttle 500 | 0:s  600:swif  1300:swift u
+      sample   500 | 500:swi  1000:swift
+    sources:
+      - title: Array.fromAsync — MDN
+        url: https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Array/fromAsync
+    validation: *ran
+  - id: backpressure
+    kind: code
+    title: Backpressure & buffering policy
+    note: "When production outruns consumption, either slow the producer — pull, or honour `highWaterMark` — or decide explicitly what to drop."
+    applies:
+      platforms: [node]
+    prerequisites: *run
+    code: |-
+      import { once } from "node:events";
+      import { Writable } from "node:stream";
+      import { finished } from "node:stream/promises";
+
+      // Pull: an async generator runs only when the consumer asks for the next value.
+      async function* sensorReadings(): AsyncGenerator<number> {
+        for (let n = 1; n <= 3; n++) {
+          console.log(`produce ${n}`);
+          yield n;
+        }
+      }
+      for await (const n of sensorReadings()) console.log(`consume ${n}`);   // strictly alternating: no queue grows
+
+      // Push with a limit: write() returns false once highWaterMark items wait; resume on "drain".
+      const uploaded: number[] = [];
+      const slowUpload = new Writable({
+        objectMode: true,
+        highWaterMark: 2,
+        write(batch: number, _encoding, done) {
+          setTimeout(() => {
+            uploaded.push(batch);
+            done();
+          }, 5);
+        },
+      });
+      const accepted: boolean[] = [];
+      for (let batch = 1; batch <= 6; batch++) {
+        const ok = slowUpload.write(batch);
+        accepted.push(ok);
+        if (!ok) await once(slowUpload, "drain");          // the producer waits instead of piling up
+      }
+      slowUpload.end();
+      await finished(slowUpload);
+      console.log(accepted.join(" "), "| uploaded:", uploaded.join(" "));
+
+      // A source you cannot pause (a WebSocket, a sensor) needs a stated policy:
+      //   keep the newest n  -> a ring buffer (telemetry, prices: only recent values matter)
+      //   keep the oldest n  -> reject new arrivals when full (a job queue answering "try later")
+      //   coalesce           -> keep only the latest value per key (see batching)
+      // events.on(emitter, "data") and an unbounded array queue every event until consumed.
+    expected: |-
+      produce 1
+      consume 1
+      produce 2
+      consume 2
+      produce 3
+      consume 3
+      true false true false true false | uploaded: 1 2 3 4 5 6
+    validation: *ran
+  - id: batching-coalescing
+    kind: code
+    title: Batching, chunking and coalescing
+    note: "Amortise per-item cost: upload analytics in batches by size or age, split a bulk call at the API's limit, and send only the latest update per key."
+    prerequisites: *run
+    code: |-
+      type Timed<T> = { at: number; value: T };
+
+      // Flush when `size` items wait or the oldest has waited maxWaitMs, whichever comes first.
+      async function* batched<T>(source: AsyncIterable<Timed<T>>, size: number, maxWaitMs: number) {
+        let batch: Timed<T>[] = [];
+        const flush = () => {
+          const values = batch.map((e) => e.value);
+          batch = [];
+          return values;
+        };
+        for await (const event of source) {
+          if (batch.length && event.at - batch[0]!.at >= maxWaitMs) yield flush();
+          batch.push(event);
+          if (batch.length === size) yield flush();
+        }
+        if (batch.length) yield flush();                    // never lose the tail
+      }
+      // (Live, a timer also flushes an aged batch when no next event arrives to trigger it.)
+
+      async function* clicks(): AsyncGenerator<Timed<string>> {
+        for (const at of [0, 10, 20, 30, 40, 900, 2_500, 2_600]) yield { at, value: `click@${at}` };
+      }
+      for await (const batch of batched(clicks(), 4, 1_000)) console.log("upload", batch);
+
+      // Chunk: the bulk endpoint takes at most 3 ids per call.
+      function chunk<T>(items: readonly T[], n: number): T[][] {
+        return Array.from({ length: Math.ceil(items.length / n) }, (_, i) => items.slice(i * n, i * n + n));
+      }
+      console.log(chunk(["a1", "a2", "a3", "a4", "a5", "a6", "a7"], 3));
+
+      // Coalesce: of many cart updates per SKU, only the last one matters.
+      const updates = [
+        { sku: "mug", qty: 1 }, { sku: "tee", qty: 2 }, { sku: "mug", qty: 3 }, { sku: "mug", qty: 2 },
+      ];
+      console.log([...new Map(updates.map((u) => [u.sku, u])).values()]);
+    expected: |-
+      upload [ 'click@0', 'click@10', 'click@20', 'click@30' ]
+      upload [ 'click@40', 'click@900' ]
+      upload [ 'click@2500', 'click@2600' ]
+      [ [ 'a1', 'a2', 'a3' ], [ 'a4', 'a5', 'a6' ], [ 'a7' ] ]
+      [ { sku: 'mug', qty: 2 }, { sku: 'tee', qty: 2 } ]
+    validation: *ran
+  - id: dedupe-with-ttl
+    kind: code
+    title: Deduplication with a TTL
+    note: "Webhooks and queues deliver at least once, so drop an event id seen within the last few minutes, in bounded memory."
+    prerequisites: *run
+    code: |-
+      type Clock = () => number;
+
+      // A Map keeps insertion order, so it is also a queue by age: evict from the front.
+      class RecentIds {
+        private readonly seenAt = new Map<string, number>();
+        private readonly ttlMs: number;
+        private readonly capacity: number;
+        private readonly clock: Clock;
+
+        constructor(ttlMs: number, capacity: number, clock: Clock) {
+          this.ttlMs = ttlMs;
+          this.capacity = capacity;
+          this.clock = clock;
+        }
+
+        /** true the first time an id is seen within the TTL. Past `capacity` ids per TTL the oldest are
+         *  forgotten early and their redeliveries run again: size capacity to peak rate × TTL. */
+        firstTime(id: string): boolean {
+          const now = this.clock();
+          for (const [old, at] of this.seenAt) {             // oldest first: stop at the first fresh one
+            if (now - at < this.ttlMs) break;
+            this.seenAt.delete(old);
+          }
+          if (this.seenAt.has(id)) return false;
+          this.seenAt.set(id, now);
+          if (this.seenAt.size > this.capacity) this.seenAt.delete(this.seenAt.keys().next().value!);
+          return true;
+        }
+      }
+
+      let now = 0;
+      const recent = new RecentIds(5_000, 1_000, () => now);
+      const deliveries = [
+        [0, "evt_1"], [100, "evt_2"], [200, "evt_1"], [4_900, "evt_2"], [6_000, "evt_1"],
+      ] as const;
+      for (const [at, id] of deliveries) {
+        now = at;
+        console.log(at, id, recent.firstTime(id) ? "process" : "duplicate");
+      }
+      // Millions of ids? Use a Bloom filter per time slice and accept ~1% false duplicates.
+    expected: |-
+      0 evt_1 process
+      100 evt_2 process
+      200 evt_1 duplicate
+      4900 evt_2 duplicate
+      6000 evt_1 process
+    validation: *ran
+  - id: merge-and-change-detection
+    kind: code
+    title: Merging ordered streams & change detection
+    note: "Combine per-device readings into one time-ordered stream — closing every input if the consumer stops early — then alert on a threshold without flapping."
+    prerequisites: *run
+    code: |-
+      type Reading = { at: number; device: string; cpu: number };
+
+      // k-way merge: each input is sorted by event time, so the smallest head is next overall.
+      async function* mergeByTime(streams: AsyncIterable<Reading>[]): AsyncGenerator<Reading> {
+        const inputs = streams.map((s) => s[Symbol.asyncIterator]());
+        const next = async (i: number) => {
+          const r = await inputs[i]!.next();
+          return r.done ? undefined : r.value;              // a generator's return value is not a reading
+        };
+        try {
+          const heads = await Promise.all(inputs.map((_, i) => next(i)));
+          for (;;) {
+            let min = -1;
+            for (const [i, h] of heads.entries()) {
+              if (h && (min === -1 || h.at < heads[min]!.at)) min = i;
+            }
+            if (min === -1) return;
+            yield heads[min]!;
+            heads[min] = await next(min);                   // a silent input stalls the merge: order costs latency
+          }
+        } finally {
+          await Promise.all(inputs.map((it) => it.return?.()));   // break/throw downstream closes every input
+        }
+      }
+
+      async function* device(name: string, samples: [number, number][]): AsyncGenerator<Reading> {
+        try {
+          for (const [at, cpu] of samples) yield { at, device: name, cpu };
+        } finally {
+          console.log(`${name} closed`);                    // where a socket or file handle is released
+        }
+      }
+
+      const alerting = new Set<string>();   // hysteresis per device: alert above 80, clear only below 60
+      const web1 = device("web-1", [[0, 50], [20, 81], [40, 79], [60, 55], [80, 90]]);
+      const web2 = device("web-2", [[10, 70], [30, 82], [50, 78], [70, 50]]);
+
+      for await (const r of mergeByTime([web1, web2])) {
+        const was = alerting.has(r.device);
+        if (!was && r.cpu > 80) alerting.add(r.device);
+        if (was && r.cpu < 60) alerting.delete(r.device);
+        if (was !== alerting.has(r.device)) console.log(`${r.at}s ${was ? "clear" : "ALERT"} ${r.device}`);
+        if (r.at >= 60) break;                              // stop early: both inputs must still be closed
+      }
+    expected: |-
+      20s ALERT web-1
+      30s ALERT web-2
+      60s clear web-1
+      web-1 closed
+      web-2 closed
+    validation: *ran
+  - id: sketch-selection
+    kind: table
+    title: Sketch selection
+    note: What to reach for when the exact answer costs too much memory.
+    headers: [Question, Structure, Memory, Error]
+    rows:
+      - ["How many distinct users?", "HyperLogLog", "~12 KB for billions", "~0.8% standard error (16,384 registers)"]
+      - ["How often did key X appear?", "Count-Min Sketch", "width × depth counters", "overcounts only"]
+      - ["Have I seen X before?", "Bloom filter", "~10 bits per key at 1%", "false positives only"]
+      - ["What are the top k keys?", "Misra–Gries / Space-Saving", "O(k)", "may miss keys at or under n/(k+1); counts low by at most n/(k+1)"]
+      - ["What is the p95 latency?", "DDSketch / t-digest / reservoir", "O(buckets) or O(sample)", "±1% relative (DDSketch)"]
+      - ["A uniform sample of k items", "Reservoir sampling", "O(k)", "exact and unbiased"]
+      - ["A rolling average", "Ring buffer or EMA", "O(k) or O(1)", "exact / smoothed"]
+      - ["Seen within the last N minutes?", "`Map` in insertion order + TTL", "O(ids in the window)", "exact"]
+      - ["Exact counts, few distinct keys", "`Map<string, number>`", "O(distinct)", "exact"]
+  - id: streaming-pitfalls
+    kind: rules
+    title: Streaming pitfalls
+    note: The bugs that only appear at production volume.
+    items:
+      - tone: bad
+        text: "Unbounded buffers: an array used as a queue, `events.on` over a fast emitter, an RxJS `buffer` with no limit. Every hot source needs a stated policy."
+      - tone: bad
+        text: "Recomputing the whole window per event — O(n·k) instead of O(n). Slide: add the newcomer, subtract the evicted."
+      - tone: bad
+        text: "`queue.shift()` on a long array is O(n): use a head index or a ring buffer."
+      - tone: bad
+        text: "Using processing time when the business asks about event time. Network and device delays reorder everything."
+      - tone: bad
+        text: "Assuming exactly-once delivery. Design for at-least-once and make the consumer idempotent."
+      - tone: bad
+        text: "Summing squares for variance — it cancels to nonsense at large offsets. Use Welford."
+      - tone: bad
+        text: "Counting past 2^53 in a `number`, past 2^32 in a `Uint32Array`, or hashing with bitwise operators and forgetting they are 32-bit: `>>> 0` to read unsigned, `bigint` for more."
+      - tone: bad
+        text: "A merge or operator that stops early without calling `return()` on its inputs leaks their sockets and file handles."
+      - tone: good
+        text: "Decide the lateness policy explicitly: drop, hold until a watermark passes, or reopen the window and re-emit."
+      - tone: good
+        text: "Instrument the stream itself: input rate, drop count, queue depth, end-to-end lag."

@@ -1,0 +1,388 @@
+id: ts-ui-compared
+concept: ui.declarative-vs-imperative
+scope: platform
+title: "jQuery vs React vs SolidJS"
+group: "UI"
+subtitle: Translate any answer between the imperative DOM, React's re-render-and-diff and Solid's fine-grained signals — and embed one inside another.
+applies:
+  platforms: [browser]
+  runtime: a browser page (the examples run in Node against jsdom)
+  requires: [jQuery, React, SolidJS]
+  versions: { typescript: ">=5.5", jquery: ">=4.0", react: ">=19.0", solid-js: ">=1.9", node: ">=22.18" }
+sources:
+  - title: jQuery API documentation
+    url: https://api.jquery.com/
+  - title: Learn React — react.dev
+    url: https://react.dev/learn
+  - title: SolidJS documentation
+    url: https://docs.solidjs.com/
+cards:
+  - id: concept-mapping
+    kind: table
+    title: Concept mapping
+    note: The same job in each model; the jQuery column is also what the other two do for you underneath.
+    headers: [Concept, jQuery (imperative), React (re-render + diff), SolidJS (fine-grained)]
+    rows:
+      - ["a piece of UI", "a function that builds and returns nodes", "a component function, re-run on every render", "a component function, run **once**"]
+      - ["local state", "a variable + your own `update()`", "`useState` / `useReducer`", "`createSignal` / `createStore`"]
+      - ["derived value", "recomputed in each handler that changes the input", "computed in render (`useMemo` if expensive)", "`createMemo` or a plain function `() => …`"]
+      - ["list with identity", "`data-id` + a `Map` of rows, patched by hand", "`items.map` + `key`", "`<For each={items}>` (keyed by reference)"]
+      - ["conditional UI", "`.toggle(cond)`, insert / `.remove()`", "`cond ? <A/> : <B/>`", "`<Show when={cond()} fallback={…}>`"]
+      - ["events", "`.on(\"click\", \".row\", fn)` (delegated)", "`onClick={fn}` (React delegates at the root)", "`onClick={fn}` (delegated for common events)"]
+      - ["side effect + cleanup", "your own setup/teardown pair, `.off(\".ns\")`", "`useEffect(() => { …; return cleanup }, deps)`", "`createEffect` + `onCleanup` (dependencies tracked automatically)"]
+      - ["reach the real DOM node", "you already hold it", "`useRef` + `ref={ref}`", "`let el!: HTMLElement` + `ref={el}`"]
+      - ["shared dependencies", "globals, or pass them in", "`createContext` + `use(Context)`", "`createContext` + `useContext`"]
+      - ["async data", "`$.ajax` / `fetch` + callbacks", "`use(promise)` + `<Suspense>`, or a data library", "`createResource` + `<Suspense>`"]
+      - ["cost of an update", "exactly what your handler touches", "the updated component's subtree, then a DOM diff", "only the computations that read the changed signal"]
+  - id: list-screen-jquery-vs-react
+    kind: compare
+    title: The same task screen — jQuery and React
+    note: Both programs drive the screen identically and print the same result; jQuery keeps data and DOM in step by hand, React derives the DOM from state.
+    prerequisites:
+      - "`npm i jquery react react-dom jsdom @testing-library/dom` and `npm i -D esbuild @types/jquery @types/react @types/react-dom @types/jsdom`"
+      - "The `JSDOM` lines stand in for a browser page; in a browser use `import $ from \"jquery\"` and the page's `document`"
+      - "Save as `main.tsx`, then `npx esbuild main.tsx --jsx=automatic --format=esm --outfile=main.mjs && node main.mjs`"
+    columns:
+      - label: jQuery 4 — imperative
+        tone: legacy
+        code: |-
+          import { JSDOM } from "jsdom";
+          import { jQueryFactory } from "jquery/factory";
+
+          const form = `<form><label>New task <input name="title"></label> <button>Add</button></form>`;
+          const { window } = new JSDOM(`<main>${form}<p class="count"></p><ul></ul></main>`);
+          const $ = jQueryFactory(window as unknown as Window);
+
+          type Task = { id: string; title: string; done: boolean };
+
+          const tasks: Task[] = [
+            { id: "t1", title: "Rotate keys", done: true },
+            { id: "t2", title: "Review PR", done: false },
+          ];
+
+          // Every change must update the data AND each node that shows it.
+          function appendRow(task: Task): void {
+            const $box = $("<input>", { type: "checkbox" }).prop("checked", task.done);
+            const $label = $("<label>").append($box, " ", $("<span>").text(task.title));
+            $("<li>", { "data-id": task.id }).append($label).appendTo("ul");
+          }
+
+          function updateCount(): void {
+            $(".count").text(`${tasks.filter((t) => !t.done).length} open`);
+          }
+
+          tasks.forEach(appendRow);
+          updateCount();
+
+          $("ul").on("change", "input", (e) => {
+            const id = $(e.currentTarget).closest("li").attr("data-id");
+            const task = tasks.find((t) => t.id === id);
+            if (task) task.done = $(e.currentTarget).prop("checked") === true;
+            updateCount();
+          });
+
+          $("form").on("submit", (e) => {
+            e.preventDefault();
+            const task: Task = { id: `t${tasks.length + 1}`, title: String($("[name=title]").val()), done: false };
+            tasks.push(task);
+            appendRow(task);
+            updateCount();
+            $("[name=title]").val("");
+          });
+
+          $("li[data-id=t2] input").prop("checked", true).trigger("change");   // the user ticks t2…
+          $("[name=title]").val("Email QA");
+          $("form").trigger("submit");                                        // …and adds a task
+
+          const rows = $("li").map((_, li) => $(li).text().trim() + ($(li).find("input").prop("checked") ? " ✓" : ""));
+          console.log(`${$(".count").text()} | ${rows.get().join(", ")}`);
+      - label: React 19 — declarative
+        tone: modern
+        code: |-
+          import { act, useState, type FormEvent } from "react";
+          import { JSDOM } from "jsdom";
+
+          const { window } = new JSDOM(`<div id="root"></div>`);
+          Object.assign(globalThis, { window, document: window.document, IS_REACT_ACT_ENVIRONMENT: true });
+          const { createRoot } = await import("react-dom/client");
+          const { fireEvent } = await import("@testing-library/dom");
+
+          function TaskScreen() {                                      // the screen as a function of state
+            const [tasks, setTasks] = useState([
+              { id: "t1", title: "Rotate keys", done: true },
+              { id: "t2", title: "Review PR", done: false },
+            ]);
+            const [title, setTitle] = useState("");                    // controlled: each keystroke re-renders
+
+            const toggle = (id: string) => setTasks((ts) => ts.map((t) => (t.id === id ? { ...t, done: !t.done } : t)));
+            const add = (e: FormEvent) => {
+              e.preventDefault();
+              setTasks((ts) => [...ts, { id: `t${ts.length + 1}`, title, done: false }]);
+              setTitle("");
+            };
+
+            return (
+              <main>
+                <form onSubmit={add}>
+                  <input aria-label="New task" name="title" value={title} onChange={(e) => setTitle(e.target.value)} />
+                  <button>Add</button>
+                </form>
+                <p className="count">{tasks.filter((t) => !t.done).length} open</p>
+                <ul>{tasks.map((t) => (
+                  <li key={t.id} data-id={t.id}><label>
+                    <input type="checkbox" checked={t.done} onChange={() => toggle(t.id)} /> <span>{t.title}</span>
+                  </label></li>
+                ))}</ul>
+              </main>
+            );
+          }
+
+          await act(() => createRoot(document.querySelector("#root")!).render(<TaskScreen />));
+
+          await act(() => document.querySelector<HTMLInputElement>("li[data-id=t2] input")!.click());   // ticks t2…
+          await act(() => fireEvent.change(document.querySelector("[name=title]")!, { target: { value: "Email QA" } }));
+          await act(() => fireEvent.submit(document.querySelector("form")!));                         // …adds a task
+
+          const rows = [...document.querySelectorAll("li")]
+            .map((li) => li.textContent!.trim() + (li.querySelector("input")!.checked ? " ✓" : ""));
+          console.log(`${document.querySelector(".count")!.textContent} | ${rows.join(", ")}`);
+    expected: |-
+      1 open | Rotate keys ✓, Review PR ✓, Email QA
+    validation:
+      status: ran
+      toolchain: Node 24.16.0, TypeScript 5.9.3
+      date: "2026-11-16"
+      jsx: react
+  - id: list-screen-solid
+    kind: code
+    title: The same task screen — SolidJS
+    note: Looks like the React version, behaves like the jQuery one — the component runs once and each signal read in JSX becomes a direct DOM update.
+    prerequisites:
+      - "A Solid project: `npx degit solidjs/templates/ts app` (Vite with `vite-plugin-solid`)"
+      - "A page containing `<main id=\"app\"></main>`"
+    code: |-
+      import { createSignal, For } from "solid-js";
+      import { createStore } from "solid-js/store";
+      import { render } from "solid-js/web";
+
+      type Task = { id: string; title: string; done: boolean };
+
+      function TaskScreen(props: { initial: Task[] }) {             // runs once, wiring signals to nodes
+        const [tasks, setTasks] = createStore<Task[]>([...props.initial]);
+        const [title, setTitle] = createSignal("");
+        const open = () => tasks.filter((t) => !t.done).length;   // re-evaluated only where it is read
+
+        const add = (e: Event) => {
+          e.preventDefault();
+          setTasks((ts) => [...ts, { id: `t${ts.length + 1}`, title: title(), done: false }]);
+          setTitle("");
+        };
+
+        return (
+          <main>
+            <form onSubmit={add}>
+              <input aria-label="New task" name="title" value={title()}
+                onInput={(e) => setTitle(e.currentTarget.value)} />
+              <button>Add</button>
+            </form>
+            <p class="count">{open()} open</p>
+            <ul>
+              <For each={tasks}>{(task, index) => (
+                <li data-id={task.id}>
+                  <label>
+                    <input type="checkbox" checked={task.done}
+                      onChange={(e) => setTasks(index(), "done", e.currentTarget.checked)} />
+                    <span>{task.title}</span>
+                  </label>
+                </li>
+              )}</For>
+            </ul>
+          </main>
+        );
+      }
+
+      const initial: Task[] = [
+        { id: "t1", title: "Rotate keys", done: true },
+        { id: "t2", title: "Review PR", done: false },
+      ];
+      render(() => <TaskScreen initial={initial} />, document.querySelector("#app")!);
+    expected: The same screen as the two above; ticking a box updates only that row's `checked` and the count text — no component function runs again.
+    sources:
+      - title: List rendering — SolidJS
+        url: https://docs.solidjs.com/concepts/control-flow/list-rendering
+    validation:
+      status: compiled
+      toolchain: Node 24.16.0, TypeScript 5.9.3
+      date: "2026-11-16"
+      host: a Solid app built with `vite-plugin-solid` (Solid's JSX needs its compiler)
+      jsx: solid
+  - id: what-re-runs
+    kind: table
+    title: What re-runs on an update
+    note: The one question that separates the three models — and the one interviewers ask.
+    headers: [On…, jQuery, React, SolidJS]
+    rows:
+      - ["ticking one task", "your `change` handler: the task's data and the count text", "`TaskScreen` re-renders, every row is re-rendered and diffed, one checkbox and the count are patched", "that row's `checked` binding and the count text node"]
+      - ["typing one character", "nothing — the input holds its own value", "`TaskScreen` and all its rows re-render (unless rows are `memo`)", "the input's `value` binding"]
+      - ["adding a task", "your `submit` handler: one `<li>`, one count", "a re-render; the keyed diff inserts one `<li>`", "`<For>` creates one row; the count updates"]
+      - ["the component function", "—", "runs on **every** render", "runs **once**"]
+      - ["what you must get right", "every place a value is shown", "keys, stable props and callbacks, effect dependencies", "read signals where they are used; never destructure props"]
+      - ["how it scales", "bookkeeping grows with every feature", "render cost grows with subtree size; memoise or let the React Compiler do it", "cost grows with the number of bindings, not the tree size"]
+  - id: jquery-plugin-in-react
+    kind: code
+    title: A jQuery plugin inside React — through a ref
+    note: React owns the element; the plugin owns its behaviour — create it on mount, push props in with an effect, destroy it on unmount.
+    prerequisites:
+      - "`npm i jquery react react-dom jsdom` and `npm i -D esbuild @types/jquery @types/react @types/react-dom @types/jsdom`"
+      - "In an app `import $ from \"jquery\"` and the real plugin (Select2, a tag editor…); the `JSDOM` lines and the stand-in `tagInput` plugin — init, `\"set\"`, `\"destroy\"` and its own event — make the file runnable alone"
+      - "Save as `main.tsx`, then `npx esbuild main.tsx --jsx=automatic --format=esm --outfile=main.mjs && node main.mjs`"
+    code: |-
+      import { act, useEffect, useEffectEvent, useRef } from "react";
+      import { JSDOM } from "jsdom";
+      import { jQueryFactory } from "jquery/factory";
+
+      const { window } = new JSDOM(`<div id="root"></div>`);
+      Object.assign(globalThis, { window, document: window.document, IS_REACT_ACT_ENVIRONMENT: true });
+      const { createRoot } = await import("react-dom/client");
+      const $ = jQueryFactory(window as unknown as Window);
+
+      declare global {
+        interface JQuery<TElement = HTMLElement> { tagInput(command?: "set" | "destroy", tags?: string[]): this }
+      }
+
+      const parseTags = (text: string) => text.split(",").map((t) => t.trim()).filter(Boolean);
+
+      $.fn.tagInput = function (command, tags = []) {
+        if (command === "set") return this.val(tags.join(", "));
+        if (command === "destroy") return this.off(".tagInput").removeClass("tag-input");
+        return this.addClass("tag-input").on("change.tagInput", (e) => {
+          $(e.currentTarget).trigger("tags:change", [parseTags(String($(e.currentTarget).val()))]);
+        });
+      };
+
+      function TagInput({ tags, onChange }: { tags: string[]; onChange: (tags: string[]) => void }) {
+        const input = useRef<HTMLInputElement>(null);
+        const emit = useEffectEvent(onChange);            // the latest callback, without re-creating the plugin
+
+        useEffect(() => {
+          const $input = $(input.current!).tagInput();
+          $input.on("tags:change", (_e, next: string[]) => emit(next));
+          return () => {
+            $input.off("tags:change").tagInput("destroy");
+          };
+        }, []);
+
+        useEffect(() => { $(input.current!).tagInput("set", tags); }, [tags]);   // props → plugin
+
+        return <input ref={input} aria-label="Labels" />;
+      }
+
+      const root = createRoot(document.querySelector("#root")!);
+      const log = (next: string[]) => console.log("onChange", next);
+      await act(() => root.render(<TagInput tags={["urgent"]} onChange={log} />));
+
+      const field = document.querySelector("input")!;
+      console.log(`mounted: class="${field.className}" value="${field.value}"`);
+
+      await act(() => { $(field).val("urgent, backend").trigger("change"); });   // the user edits in the plugin
+
+      await act(() => root.unmount());
+      console.log(`unmounted: plugin destroyed = ${!field.classList.contains("tag-input")}`);
+    expected: |-
+      mounted: class="tag-input" value="urgent"
+      onChange [ 'urgent', 'backend' ]
+      unmounted: plugin destroyed = true
+    applies:
+      versions: { typescript: ">=5.5", jquery: ">=4.0", react: ">=19.2", node: ">=22.18" }
+    sources:
+      - title: useEffectEvent — react.dev
+        url: https://react.dev/reference/react/useEffectEvent
+    validation:
+      status: ran
+      toolchain: Node 24.16.0, TypeScript 5.9.3
+      date: "2026-11-16"
+      jsx: react
+  - id: react-island
+    kind: code
+    title: A React island in a server-rendered page
+    note: Keep the page server-rendered (Rails, Django, PHP) and mount React only where it is interactive; talk to the rest of the page with DOM events.
+    prerequisites:
+      - "`npm i react react-dom jsdom` and `npm i -D esbuild @types/react @types/react-dom @types/jsdom`"
+      - "In a browser the markup is the server's page and the `JSDOM` lines go; bundle the mount script and load it with `<script type=\"module\">`"
+      - "Save as `main.tsx`, then `npx esbuild main.tsx --jsx=automatic --format=esm --outfile=main.mjs && node main.mjs`"
+    code: |-
+      import { act, useEffect, useState } from "react";
+      import { JSDOM } from "jsdom";
+
+      const { window } = new JSDOM(`
+        <header>Shop <span data-island="cart-badge" data-count="2"></span></header>
+        <article><h1>Mechanical keyboard</h1><button class="legacy-add">Add to cart</button></article>`);
+      const { document, CustomEvent } = window;                // jsdom dispatches only its own event objects
+      Object.assign(globalThis, { window, document, CustomEvent, IS_REACT_ACT_ENVIRONMENT: true });
+      const { createRoot } = await import("react-dom/client");
+
+      function CartBadge({ initialCount }: { initialCount: number }) {
+        const [count, setCount] = useState(initialCount);
+
+        useEffect(() => {
+          const onAdd = () => setCount((c) => c + 1);
+          document.addEventListener("cart:add", onAdd);    // the page's legacy code announces additions
+          return () => document.removeEventListener("cart:add", onAdd);
+        }, []);
+
+        // a live region: screen readers announce each new count
+        return (
+          <span className="badge" role="status">
+            {count}<span className="visually-hidden"> items in cart</span>
+          </span>
+        );
+      }
+
+      // One entry per island type; server-rendered data travels in data-* attributes.
+      const islands: Record<string, (el: HTMLElement) => void> = {
+        "cart-badge": (el) => createRoot(el).render(<CartBadge initialCount={Number(el.dataset.count ?? 0)} />),
+      };
+
+      await act(() => {
+        for (const el of document.querySelectorAll<HTMLElement>("[data-island]")) {
+          islands[el.dataset.island ?? ""]?.(el);
+        }
+      });
+      console.log(document.querySelector("header")!.innerHTML);
+
+      // The page's existing code keeps working: it only dispatches an event.
+      const announceAdd = () => document.dispatchEvent(new CustomEvent("cart:add"));
+      document.querySelector(".legacy-add")!.addEventListener("click", announceAdd);
+
+      await act(() => document.querySelector<HTMLButtonElement>(".legacy-add")!.click());
+      console.log(document.querySelector("header")!.innerHTML);
+    expected: |-
+      Shop <span data-island="cart-badge" data-count="2"><span class="badge" role="status">2<span class="visually-hidden"> items in cart</span></span></span>
+      Shop <span data-island="cart-badge" data-count="2"><span class="badge" role="status">3<span class="visually-hidden"> items in cart</span></span></span>
+    sources:
+      - title: createRoot — react.dev
+        url: https://react.dev/reference/react-dom/client/createRoot
+    validation:
+      status: ran
+      toolchain: Node 24.16.0, TypeScript 5.9.3
+      date: "2026-11-16"
+      jsx: react
+  - id: interview-talking-points
+    kind: rules
+    title: Interview talking points
+    note: The answers to "how do jQuery, React and Solid differ?" — one breath each.
+    items:
+      - tone: legacy
+        text: "jQuery is **imperative**: you find nodes and mutate them; the DOM is the state, and keeping several views of one value in step is your job."
+      - tone: modern
+        text: "React is **declarative, re-render and diff**: a component is a function of state; on change React re-runs it and patches the difference. Identity is position + `key`."
+      - tone: modern
+        text: "Solid is **declarative, fine-grained**: components run once and compile to real DOM nodes; each signal read in JSX is a subscription that updates exactly one place. No virtual DOM."
+      - tone: neutral
+        text: "React's cost is re-rendering subtrees (mitigated by `memo` and the React Compiler); Solid's cost is reactivity rules (no destructuring props, read signals lazily)."
+      - tone: neutral
+        text: "Same JSX, different semantics: in React `{count}` is a value captured at render; in Solid `{count()}` is a live binding the compiler wraps in an effect."
+      - tone: good
+        text: "Coexistence is normal: jQuery plugins inside React via a ref and effect cleanup; React or Solid islands inside server-rendered pages; migrate leaf-first."
+      - tone: bad
+        text: "Never let two owners mutate the same DOM subtree — the framework's picture of the DOM goes stale and the next update corrupts it."

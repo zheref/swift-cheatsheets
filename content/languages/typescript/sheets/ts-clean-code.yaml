@@ -1,0 +1,502 @@
+id: ts-clean-code
+concept: practice.clean-code
+scope: shared
+title: "Clean Code in TypeScript"
+group: "Design & practice"
+subtitle: "Names, small functions, options over flags, errors as values, guard clauses, branded types and clean tests — every before/after proved to behave the same."
+applies:
+  platforms: [node, browser]
+  runtime: any ES2023 engine; the examples run on Node.js
+  versions: { typescript: ">=5.5", node: ">=22.18" }
+sources:
+  - title: Google TypeScript Style Guide
+    url: https://google.github.io/styleguide/tsguide.html
+  - title: Narrowing — TypeScript Handbook
+    url: https://www.typescriptlang.org/docs/handbook/2/narrowing.html
+  - title: Test runner — Node.js
+    url: https://nodejs.org/api/test.html
+cards:
+  - id: rule-to-idiom
+    kind: table
+    title: Uncle Bob rule → TypeScript idiom
+    note: The classic rules still hold; TypeScript's type system enforces most of them for you.
+    headers: [Clean Code rule, The TypeScript way to satisfy it]
+    rows:
+      - ["Avoid `null`", "`strict` on; one convention for absence per codebase, read with `?.` and `??`; return `[]`, not `undefined`"]
+      - ["Don't return error codes", "a discriminated-union result for expected failures; `throw new Error(msg, { cause })` for the unexpected"]
+      - ["Prefer polymorphism to `switch`", "a closed union with an exhaustive `switch` (a `never` check), or a `Record<Kind, Handler>` when the set grows"]
+      - ["Encapsulate conditionals", "a named predicate: `const isRefundable = (order: Order) => …`"]
+      - ["Avoid output arguments", "return a new value; `readonly` parameters make mutation a compile error"]
+      - ["No flag arguments", "an options object, or a string-literal union such as `\"compact\" | \"full\"`"]
+      - ["Avoid primitive obsession", "branded types, created by one parser at the boundary"]
+      - ["Keep classes small", "modules of functions; a class only when it owns state over time"]
+      - ["Separate construction from use", "a composition root (`main.ts`) wires dependencies; functions receive them as parameters"]
+      - ["Comments explain why", "TSDoc (`/** … */`) on exported API; `// why` beside surprising code; never `// what`"]
+  - id: naming
+    kind: compare
+    title: Naming
+    note: Intention-revealing, pronounceable, searchable — `camelCase` values, `PascalCase` types, `is`/`has` booleans, no `I` prefix, no Hungarian notation.
+    prerequisites: &run
+      - Node.js 22.18 or later (it runs `.mts` files directly by stripping the types)
+      - "Save as `main.mts` and run `node main.mts`"
+      - "Optional type-check: `npm i -D typescript @types/node`, then `npx tsc --noEmit --strict --target esnext --module nodenext main.mts`"
+    columns:
+      - label: Don't
+        tone: bad
+        code: |-
+          type O = { i: string; t: number; s: number; d: number };
+
+          const list1: O[] = [
+            { i: "A-1", t: 4200, s: 2, d: 3 },
+            { i: "A-2", t: 1500, s: 1, d: 12 },
+            { i: "A-3", t: 9900, s: 2, d: 45 },
+          ];
+
+          function proc(a: O[]): string[] {
+            const r: string[] = [];
+            for (const o of a) if (o.s === 2 && o.d < 30) r.push(o.i);   // 2? 30?
+            return r;
+          }
+
+          const flag = proc(list1).length > 0;
+          console.log(proc(list1), flag);
+      - label: Do
+        tone: good
+        code: |-
+          type OrderStatus = "placed" | "delivered";
+          type Order = { id: string; totalCents: number; status: OrderStatus; ageInDays: number };
+
+          const REFUND_WINDOW_DAYS = 30;
+
+          const orders: Order[] = [
+            { id: "A-1", totalCents: 4200, status: "delivered", ageInDays: 3 },
+            { id: "A-2", totalCents: 1500, status: "placed", ageInDays: 12 },
+            { id: "A-3", totalCents: 9900, status: "delivered", ageInDays: 45 },
+          ];
+
+          function refundableOrderIds(orders: readonly Order[]): string[] {
+            return orders
+              .filter((order) => order.status === "delivered" && order.ageInDays < REFUND_WINDOW_DAYS)
+              .map((order) => order.id);
+          }
+
+          const refundableIds = refundableOrderIds(orders);
+          const hasRefundableOrders = refundableIds.length > 0;
+          console.log(refundableIds, hasRefundableOrders);
+    expected: |-
+      [ 'A-1' ] true
+    validation: &ran
+      status: ran
+      toolchain: Node 24.16.0, TypeScript 5.9.3
+      date: "2026-11-16"
+  - id: small-functions
+    kind: compare
+    title: "Small functions, one level of abstraction"
+    note: When a function needs a comment to separate its steps, each step wants to be a function with that name.
+    prerequisites: *run
+    columns:
+      - label: Before
+        tone: bad
+        code: |-
+          type Item = { sku: string; priceCents: number; quantity: number; onSale: boolean };
+          type Cart = { tier: "free" | "pro"; items: Item[] };
+
+          function checkout(cart: Cart) {
+            let total = 0;
+            for (const item of cart.items) {
+              let price = item.priceCents;
+              if (item.onSale) price = Math.round(price * 0.8);
+              if (cart.tier === "pro") price = Math.round(price * 0.9);
+              total += price * item.quantity;
+            }
+            if (total > 10_000) total -= 500;
+            const tax = Math.round(total * 0.21);
+            return { totalCents: total + tax, taxCents: tax };
+          }
+
+          console.log(checkout({
+            tier: "pro",
+            items: [
+              { sku: "mug", priceCents: 1200, quantity: 2, onSale: true },
+              { sku: "lamp", priceCents: 9900, quantity: 1, onSale: false },
+            ],
+          }));
+      - label: After
+        tone: good
+        code: |-
+          type Tier = "free" | "pro";
+          type Item = { sku: string; priceCents: number; quantity: number; onSale: boolean };
+          type Cart = { tier: Tier; items: Item[] };
+
+          const SALE_MULTIPLIER = 0.8;
+          const TIER_MULTIPLIER: Record<Tier, number> = { free: 1, pro: 0.9 };
+          const BULK = { thresholdCents: 10_000, discountCents: 500 };
+          const TAX_RATE = 0.21;
+
+          function checkout(cart: Cart) {
+            const subtotal = subtotalCents(cart);
+            const discounted = applyBulkDiscount(subtotal);
+            const tax = taxCents(discounted);
+            return { totalCents: discounted + tax, taxCents: tax };
+          }
+
+          const taxCents = (cents: number) => Math.round(cents * TAX_RATE);
+
+          function subtotalCents(cart: Cart): number {
+            return cart.items.reduce((sum, item) => sum + unitPriceCents(item, cart.tier) * item.quantity, 0);
+          }
+
+          function unitPriceCents(item: Item, tier: Tier): number {
+            const onSale = item.onSale ? Math.round(item.priceCents * SALE_MULTIPLIER) : item.priceCents;
+            return Math.round(onSale * TIER_MULTIPLIER[tier]);
+          }
+
+          function applyBulkDiscount(cents: number): number {
+            return cents > BULK.thresholdCents ? cents - BULK.discountCents : cents;
+          }
+
+          console.log(checkout({
+            tier: "pro",
+            items: [
+              { sku: "mug", priceCents: 1200, quantity: 2, onSale: true },
+              { sku: "lamp", priceCents: 9900, quantity: 1, onSale: false },
+            ],
+          }));
+    expected: |-
+      { totalCents: 12267, taxCents: 2129 }
+    validation: *ran
+  - id: options-over-flags
+    kind: compare
+    title: Options objects and unions over flag arguments
+    note: "A positional boolean means the function does two things and the call site cannot say which; name the choice."
+    prerequisites: *run
+    columns:
+      - label: Don't
+        tone: bad
+        code: |-
+          type Order = { id: string; totalCents: number; status: string };
+
+          function renderOrder(order: Order, compact: boolean, withStatus: boolean, currency: string): string {
+            const total = new Intl.NumberFormat("en-US", { style: "currency", currency })
+              .format(order.totalCents / 100);
+            if (compact) return withStatus ? `${order.id} ${total} [${order.status}]` : `${order.id} ${total}`;
+            const line = `Order ${order.id} — total ${total}`;
+            return withStatus ? `${line} — ${order.status}` : line;
+          }
+
+          const order = { id: "A-1", totalCents: 4250, status: "shipped" };
+          console.log(renderOrder(order, true, false, "EUR"));     // true what? false what?
+          console.log(renderOrder(order, false, true, "USD"));
+      - label: Do
+        tone: good
+        code: |-
+          type Order = { id: string; totalCents: number; status: string };
+          type RenderOptions = {
+            layout: "compact" | "full";
+            currency: "EUR" | "USD";
+            showStatus?: boolean;
+          };
+
+          function renderOrder(order: Order, { layout, currency, showStatus = false }: RenderOptions): string {
+            const total = formatMoney(order.totalCents, currency);
+            const line = layout === "compact" ? `${order.id} ${total}` : `Order ${order.id} — total ${total}`;
+            if (!showStatus) return line;
+            return layout === "compact" ? `${line} [${order.status}]` : `${line} — ${order.status}`;
+          }
+
+          function formatMoney(cents: number, currency: RenderOptions["currency"]): string {
+            return new Intl.NumberFormat("en-US", { style: "currency", currency }).format(cents / 100);
+          }
+
+          const order = { id: "A-1", totalCents: 4250, status: "shipped" };
+          console.log(renderOrder(order, { layout: "compact", currency: "EUR" }));
+          console.log(renderOrder(order, { layout: "full", currency: "USD", showStatus: true }));
+    expected: |-
+      A-1 €42.50
+      Order A-1 — total $42.50 — shipped
+    validation: *ran
+  - id: comments
+    kind: compare
+    title: Comments that earn their place
+    note: "Code says what and a comment says why — the bug, the constraint, the decision — so delete the rest and let git keep the old code."
+    prerequisites: *run
+    columns:
+      - label: Noise
+        tone: bad
+        code: |-
+          type ApiResponse = { status: number; body: string };
+
+          // check the response
+          function isSignedIn(res: ApiResponse): boolean {
+            // if the status is 200
+            if (res.status === 200) {
+              // and the body is not empty
+              if (res.body.length > 0) return true;   // return true
+            }
+            // function isSignedInOld(res) { return res.status < 400; }
+            return false; // TODO: fix this
+          }
+
+          console.log(isSignedIn({ status: 200, body: '{"user":"ada"}' }));
+          console.log(isSignedIn({ status: 200, body: "" }));
+          console.log(isSignedIn({ status: 401, body: "" }));
+      - label: Useful
+        tone: good
+        code: |-
+          type ApiResponse = { status: number; body: string };
+
+          /**
+           * Whether the response proves an authenticated session.
+           *
+           * @remarks An expired token still gets `200`, with an empty body (vendor bug AUTH-4821),
+           * so an empty body counts as signed out.
+           */
+
+          function isSignedIn(response: ApiResponse): boolean {
+            const isSuccess = response.status === 200;
+            const hasSessionPayload = response.body.length > 0;
+            return isSuccess && hasSessionPayload;
+          }
+
+          console.log(isSignedIn({ status: 200, body: '{"user":"ada"}' }));
+          console.log(isSignedIn({ status: 200, body: "" }));
+          console.log(isSignedIn({ status: 401, body: "" }));
+    expected: |-
+      true
+      false
+      false
+    validation: *ran
+  - id: errors-over-sentinels
+    kind: compare
+    title: Errors as values, not sentinel codes
+    note: "Expected failures become a union the compiler makes every caller handle; keep `throw` (with a `cause`) for the unexpected."
+    prerequisites: *run
+    columns:
+      - label: Sentinels
+        tone: bad
+        code: |-
+          // -1 = not a whole number, -2 = out of range. Every caller must remember.
+          function parseQuantity(input: string): number {
+            const n = Number(input);
+            if (!Number.isInteger(n)) return -1;
+            if (n < 1 || n > 99) return -2;
+            return n;
+          }
+
+          for (const input of ["3", "three", "250"]) {
+            const quantity = parseQuantity(input);
+            if (quantity === -1) console.log(`"${input}": not a whole number`);
+            else if (quantity === -2) console.log(`"${input}": must be 1–99`);
+            else console.log(`"${input}": ok, ${quantity}`);
+            // Forget the check and -1 flows into the cart total.
+          }
+      - label: Typed result
+        tone: good
+        code: |-
+          type QuantityError =
+            | { kind: "not-a-whole-number"; input: string }
+            | { kind: "out-of-range"; value: number; min: number; max: number };
+
+          type Parsed<T, E> = { ok: true; value: T } | { ok: false; error: E };
+
+          function parseQuantity(input: string): Parsed<number, QuantityError> {
+            const n = Number(input);
+            if (!Number.isInteger(n)) return { ok: false, error: { kind: "not-a-whole-number", input } };
+            if (n < 1 || n > 99) return { ok: false, error: { kind: "out-of-range", value: n, min: 1, max: 99 } };
+            return { ok: true, value: n };
+          }
+
+          function describe(error: QuantityError): string {
+            switch (error.kind) {
+              case "not-a-whole-number": return "not a whole number";
+              case "out-of-range": return `must be ${error.min}–${error.max}`;
+            }
+          }
+
+          for (const input of ["3", "three", "250"]) {
+            const result = parseQuantity(input);
+            // `result.value` does not type-check until `ok` has been checked.
+            console.log(`"${input}": ${result.ok ? `ok, ${result.value}` : describe(result.error)}`);
+          }
+    expected: |-
+      "3": ok, 3
+      "three": not a whole number
+      "250": must be 1–99
+    validation: *ran
+  - id: guard-clauses
+    kind: compare
+    title: Guard clauses over the arrow anti-pattern
+    note: Reject the edge cases first and return; the happy path stays at the left margin and every `else` disappears.
+    prerequisites: *run
+    columns:
+      - label: Nested
+        tone: bad
+        code: |-
+          type Payment = { id: string; amountCents: number };
+          type WebhookEvent = { type: string; signatureValid: boolean; payment?: Payment };
+
+          function handleWebhook(event: WebhookEvent | undefined): string {
+            if (event) {
+              if (event.signatureValid) {
+                if (event.type === "payment.succeeded") {
+                  if (event.payment) {
+                    return `fulfil ${event.payment.id}`;
+                  } else {
+                    return "ignored: no payment";
+                  }
+                } else {
+                  return `ignored: ${event.type}`;
+                }
+              } else {
+                return "rejected: bad signature";
+              }
+            }
+            return "ignored: empty";
+          }
+
+          const payment = { id: "pay_1", amountCents: 4250 };
+          console.log(handleWebhook({ type: "payment.succeeded", signatureValid: true, payment }));
+          console.log(handleWebhook({ type: "payment.succeeded", signatureValid: false, payment }));
+          console.log(handleWebhook({ type: "refund.created", signatureValid: true }));
+          console.log(handleWebhook(undefined));
+      - label: Flat
+        tone: good
+        code: |-
+          type Payment = { id: string; amountCents: number };
+          type WebhookEvent = { type: string; signatureValid: boolean; payment?: Payment };
+
+          function handleWebhook(event: WebhookEvent | undefined): string {
+            if (!event) return "ignored: empty";
+            if (!event.signatureValid) return "rejected: bad signature";
+            if (event.type !== "payment.succeeded") return `ignored: ${event.type}`;
+            if (!event.payment) return "ignored: no payment";
+
+            return `fulfil ${event.payment.id}`;   // narrowed: `payment` is defined here
+          }
+
+          const payment = { id: "pay_1", amountCents: 4250 };
+          console.log(handleWebhook({ type: "payment.succeeded", signatureValid: true, payment }));
+          console.log(handleWebhook({ type: "payment.succeeded", signatureValid: false, payment }));
+          console.log(handleWebhook({ type: "refund.created", signatureValid: true }));
+          console.log(handleWebhook(undefined));
+    expected: |-
+      fulfil pay_1
+      rejected: bad signature
+      ignored: refund.created
+      ignored: empty
+    validation: *ran
+  - id: branded-types
+    kind: code
+    title: Branded types over bare primitives
+    note: "Two `string` ids are interchangeable to the compiler; a brand makes swapping them a type error, at zero runtime cost."
+    prerequisites: *run
+    code: |-
+      declare const brand: unique symbol;
+
+      type Brand<T, Name extends string> = T & { readonly [brand]: Name };
+
+      type OrderId = Brand<string, "OrderId">;
+      type CustomerId = Brand<string, "CustomerId">;
+      type Email = Brand<string, "Email">;
+
+      // Parse once, at the edge: everything downstream can trust the type.
+      function parseEmail(raw: string): Email | undefined {
+        const normalized = raw.trim().toLowerCase();
+        return /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(normalized) ? (normalized as Email) : undefined;
+      }
+
+      const orderId = (raw: string) => raw as OrderId;
+      const customerId = (raw: string) => raw as CustomerId;
+
+      function sendReceipt(order: OrderId, customer: CustomerId, to: Email): string {
+        return `receipt for ${order} → ${customer} <${to}>`;
+      }
+
+      const email = parseEmail("  Ada@Example.com ");
+      if (email) {
+        console.log(sendReceipt(orderId("ord_42"), customerId("cus_7"), email));
+        // @ts-expect-error — swapped arguments: a CustomerId is not an OrderId
+        sendReceipt(customerId("cus_7"), orderId("ord_42"), email);
+      }
+
+      console.log(parseEmail("not-an-email"));
+    expected: |-
+      receipt for ord_42 → cus_7 <ada@example.com>
+      undefined
+    validation: *ran
+  - id: clean-test
+    kind: code
+    title: "A clean test: arrange, act, assert"
+    note: "Name the behaviour, build inputs with a factory, inject the clock — so the test is fast, independent and repeatable."
+    prerequisites:
+      - Node.js 22.18 or later (it runs `.mts` files directly by stripping the types)
+      - "Save as `refund.test.mts` and run `node refund.test.mts` — or `node --test` to run every `*.test.mts`"
+    code: |-
+      import assert from "node:assert/strict";
+      import { describe, test } from "node:test";
+
+      type Order = { id: string; status: "placed" | "delivered"; deliveredAt?: number };
+      type Eligibility = { eligible: true } | { eligible: false; reason: "not-delivered" | "window-closed" };
+      const DAY_MS = 86_400_000;
+
+      function refundEligibility(order: Order, now: () => number, windowDays = 30): Eligibility {
+        if (order.status !== "delivered" || order.deliveredAt === undefined) {
+          return { eligible: false, reason: "not-delivered" };
+        }
+        const ageInDays = (now() - order.deliveredAt) / DAY_MS;
+        return ageInDays <= windowDays ? { eligible: true } : { eligible: false, reason: "window-closed" };
+      }
+
+      const NOW = Date.UTC(2026, 10, 16);   // a fixed instant, never the real clock
+      const deliveredDaysAgo = (days: number): Order =>
+        ({ id: "ord_1", status: "delivered", deliveredAt: NOW - days * DAY_MS });
+
+      describe("refundEligibility", () => {
+        test("rejects an order delivered more than 30 days ago", () => {
+          const order = deliveredDaysAgo(31);                     // Arrange
+
+          const result = refundEligibility(order, () => NOW);    // Act
+
+          assert.deepEqual(result, { eligible: false, reason: "window-closed" });   // Assert
+        });
+
+        test("accepts an order on the last day of the window", () => {
+          assert.deepEqual(refundEligibility(deliveredDaysAgo(30), () => NOW), { eligible: true });
+        });
+
+        test("rejects an order that has not been delivered", () => {
+          const placed: Order = { id: "ord_2", status: "placed" };
+          assert.deepEqual(refundEligibility(placed, () => NOW), { eligible: false, reason: "not-delivered" });
+        });
+      });
+    expected: "Three passing tests under `▶ refundEligibility` — `tests 3`, `pass 3`, `fail 0` — and exit status 0 (the timings vary)."
+    validation:
+      status: ran
+      toolchain: Node 24.16.0, TypeScript 5.9.3
+      date: "2026-11-16"
+      check: exit-code
+  - id: smells-and-first
+    kind: rules
+    title: "Smell checklist, and F.I.R.S.T. tests"
+    note: Name the smell out loud in review; it turns a taste argument into a shared vocabulary.
+    items:
+      - tone: bad
+        text: "**Long function / god module** — many reasons to change, and no honest name for it."
+      - tone: bad
+        text: "**Deep nesting** — invert the condition and return early."
+      - tone: bad
+        text: "**Duplicated logic** — the third copy is when you extract; two copies may still be a coincidence."
+      - tone: bad
+        text: "**Primitive obsession** — `string` for an id, an email, a currency; brand it or give it a union."
+      - tone: bad
+        text: "**Boolean blindness** — `isLoading`, `hasError`, `isEmpty` encoding one state; use a discriminated union."
+      - tone: bad
+        text: "**`any` and `as`** — each one switches the checker off; prefer `unknown` plus a narrowing guard."
+      - tone: bad
+        text: "**Feature envy** — a function that mostly reads another module's data belongs in that module."
+      - tone: bad
+        text: "**Temporal coupling** — `init()` must run before `start()`; make the constructor or factory return a ready value."
+      - tone: good
+        text: "**F.I.R.S.T.** tests are **Fast** (no network, no sleeps), **Independent** (no shared state, any order), **Repeatable** (inject the clock, ids and randomness), **Self-validating** (an assertion, never a log to eyeball) and **Timely** (written with the change)."
+      - tone: neutral
+        text: "**The boy scout rule** — leave the file cleaner than you found it, in small commits that keep the tests green."

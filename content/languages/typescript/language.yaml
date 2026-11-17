@@ -3,7 +3,7 @@ name: TypeScript
 title: TypeScript Cheat Sheets
 route: /typescript/
 status: published
-description: Dense TypeScript reference — collections, async/await and cancellation, the type system, testing, algorithm costs, Node.js files and browser state — with every example's setup, versions and validation stated.
+description: Dense TypeScript reference — React, SolidJS and the DOM, styling, Redux and RxJS, async and timers, networking, video streaming, security, accessibility, localization, serialization, collections and strings, testing, architecture and design principles — with every example's setup, versions and validation stated.
 locale: en
 codeLanguage: typescript
 requireExampleMetadata: true
@@ -79,11 +79,42 @@ applies:
 sheets:
   - ts-collections
   - ts-collection-ops
+  - ts-strings
+  - ts-serialization
   - ts-async
   - ts-algorithms
+  - ts-streams
   - ts-testing
+  - ts-clean-code
+  - ts-solid-principles
+  - ts-fp
+  - ts-architecture
+  - ts-modularization
+  - ts-best-practices
   - ts-essentials
   - ts-modeling
+  - ts-react
+  - ts-react-state
+  - ts-dom-jquery
+  - ts-ui-compared
+  - ts-solidjs
+  - ts-styling
+  - ts-tailwind
+  - ts-redux
+  - ts-redux-toolkit
+  - ts-mvvm-stores
+  - ts-rxjs
+  - ts-rxjs-react
+  - ts-timers
+  - ts-timing-operators
+  - ts-workers
+  - ts-networking-rest
+  - ts-networking-protocols
+  - ts-video-streaming
+  - ts-security
+  - ts-accessibility
+  - ts-localization
+  - ts-ui-testing
   - ts-node-files
   - ts-browser-state
   - ts-coverage

@@ -1,0 +1,481 @@
+id: ui-testing
+concept: testing.ui-e2e
+scope: platform
+title: "UI & End-to-End Testing"
+group: iOS Practice
+subtitle: Drive the real app, find what the user sees by identity, wait for conditions instead of time, and keep the suite green on CI.
+applies:
+  platforms:
+    - ios
+    - ipados
+  requires:
+    - XCTest
+    - XCUIAutomation
+  versions:
+    swift: ">=6.0"
+    ios: ">=17"
+    xcode: ">=16"
+sources:
+  - title: XCTest — Apple Developer Documentation
+    url: https://developer.apple.com/documentation/xctest
+  - title: XCUIAutomation — Apple Developer Documentation
+    url: https://developer.apple.com/documentation/xcuiautomation
+  - title: Improving code assessment by organizing tests into test plans
+    url: https://developer.apple.com/documentation/xcode/organizing-tests-to-improve-feedback
+  - title: swift-snapshot-testing — Point-Free
+    url: https://github.com/pointfreeco/swift-snapshot-testing
+cards:
+  - id: tooling
+    kind: table
+    title: Tooling
+    note: Most behaviour belongs in fast in-process tests; XCUITest proves the few journeys that pay the bills.
+    headers:
+      - Tool
+      - Runs
+      - Best for
+      - Watch out
+    rows:
+      - - XCUITest
+        - a separate runner process driving the real app through accessibility
+        - end-to-end journeys on a simulator or device
+        - seconds per step; a black box steered only by launch arguments
+      - - "XCTest + `loadViewIfNeeded()`"
+        - in-process, inside the host app
+        - "UIKit screens: render, send control events, assert labels"
+        - no real touches, no animation, no system alerts
+      - - ViewInspector
+        - in-process, walks a SwiftUI view tree
+        - "SwiftUI components: find a button, tap it, read a `Text`"
+        - third-party; tracks SwiftUI internals and can lag a new OS
+      - - swift-snapshot-testing
+        - in-process, renders to an image or text
+        - design-system components across sizes, modes and locales
+        - references are tied to one simulator model and OS version
+      - - "Swift Testing on the `@Observable` model"
+        - in-process, no UI at all
+        - the logic behind the screen — the bulk of your tests
+        - says nothing about whether the view binds to it
+      - - Maestro
+        - YAML flows driving the app from outside
+        - quick black-box smoke flows, shared with Android
+        - another runtime in CI; fewer hooks into app state
+      - - Appium
+        - a WebDriver server on top of XCUITest
+        - one cross-platform suite owned by a QA team
+        - the slowest option, with the most moving parts
+  - id: a-first-xcuitest
+    kind: code
+    title: "A first XCUITest: launch, find, tap, assert"
+    note: Every UI test is these four verbs; everything else on this sheet keeps them reliable.
+    code: |-
+      import XCTest
+
+      final class CheckoutUITests: XCTestCase {
+        override func setUpWithError() throws {
+          continueAfterFailure = false          // later steps after a failure only add noise
+        }
+
+        @MainActor
+        func testBuyingAShirtShowsTheOrderNumber() {
+          let app = XCUIApplication()
+          app.launchArguments = ["-ui-testing"]           // the app swaps in fixtures (see below)
+          app.launch()
+
+          app.cells["product-linen-shirt"].tap()
+          app.buttons["add-to-cart"].tap()
+          app.buttons["cart-button"].tap()
+
+          let email = app.textFields["checkout-email"]
+          email.tap()
+          email.typeText("ana@example.com")
+          app.buttons["place-order"].tap()
+
+          let confirmation = app.staticTexts["order-confirmation-number"]
+          XCTAssertTrue(confirmation.waitForExistence(timeout: 5))
+          XCTAssertEqual(confirmation.label, "Order A-1042")    // what the user reads
+        }
+      }
+
+      // App side, once per element the tests touch:
+      //   Button("Place order") { … }.accessibilityIdentifier("place-order")
+  - id: finding-elements
+    kind: compare
+    title: Finding elements
+    note: Query by role plus a stable identifier, because labels change with copy and language and indexes change with data.
+    columns:
+      - label: Breaks on the next change
+        tone: bad
+        code: |-
+          // The copy changes, or the suite runs in German
+          app.buttons["Place order"].tap()
+
+          // The third row — until sorting or the fixtures change
+          app.cells.element(boundBy: 2).tap()
+
+          // Locale-formatted and probably on more than one screen
+          XCTAssertTrue(app.staticTexts["€49.90"].exists)
+
+          // Recorder output: coupled to today's view hierarchy
+          app.otherElements.children(matching: .any).element(boundBy: 3).buttons.firstMatch.tap()
+
+          // A point on one screen size
+          app.coordinate(withNormalizedOffset: CGVector(dx: 0.9, dy: 0.95)).tap()
+      - label: Survives redesigns and translations
+        tone: good
+        code: |-
+          // Role + identifier set in the app, never localized
+          app.buttons["place-order"].tap()
+
+          // An identifier derived from the data, not the position
+          app.cells["product-linen-shirt"].tap()
+
+          // Find by identifier, then assert on what the user sees
+          XCTAssertEqual(app.staticTexts["cart-total"].label, "€49.90")
+
+          // Scope to a container so a twin elsewhere can't match
+          // (app: .accessibilityElement(children: .contain).accessibilityIdentifier("cart-sheet"))
+          let cart = app.otherElements["cart-sheet"]
+          cart.buttons.matching(identifier: "remove-item").firstMatch.tap()
+          XCTAssertEqual(cart.cells.count, 1)
+
+          // Role alone, when the role is the point
+          XCTAssertFalse(app.alerts.firstMatch.exists)
+  - id: waiting-without-sleeping
+    kind: code
+    title: Waiting without sleeping
+    note: "Wait for a condition with a generous timeout, which returns the moment the condition holds (`waitForNonExistence` and `wait(for:toEqual:)` are Xcode 16+)."
+    code: |-
+      @MainActor
+      func testPlacingAnOrderReplacesTheSpinnerWithTheConfirmation() {
+        let app = launchApp(scenario: "slow-payment")
+        app.buttons["place-order"].tap()
+
+        // Appear: polls the accessibility snapshot until true or the timeout
+        XCTAssertTrue(app.activityIndicators["payment-spinner"].waitForExistence(timeout: 5))
+
+        // Disappear
+        XCTAssertTrue(app.activityIndicators["payment-spinner"].waitForNonExistence(timeout: 15))
+
+        // Any property: wait until the button is enabled again
+        XCTAssertTrue(app.buttons["track-order"].wait(for: \.isEnabled, toEqual: true, timeout: 5))
+
+        // Any predicate: the total settles after the promo code is applied
+        let total = app.staticTexts["cart-total"]
+        let discounted = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label == %@", "€44.91"),
+                                                   object: total)
+        XCTAssertEqual(XCTWaiter().wait(for: [discounted], timeout: 5), .completed)
+      }
+
+      // Never:   sleep(2)  — too slow when the app is fast, too short when CI is slow.
+      // Taps already wait for the app to go idle; waits are for work the app does on its own.
+  - id: known-state-from-launch-arguments
+    kind: code
+    title: "Known state: launch arguments, environment and a stubbed network"
+    note: The test can't reach into the app, so it describes the world it wants and the app builds it at launch.
+    code: |-
+      // Test side: every test launches through one helper
+      @MainActor
+      func launchApp(scenario: String = "happy-path", signedIn: Bool = true) -> XCUIApplication {
+        let app = XCUIApplication()
+        app.launchArguments = ["-ui-testing", "-AppleLanguages", "(en)", "-AppleLocale", "en_IE"]
+        app.launchEnvironment = ["STUB_SCENARIO": scenario, "SIGNED_IN": signedIn ? "1" : "0"]
+        app.launch()
+        return app
+      }
+
+      // App side: the composition root reads it once. #if DEBUG keeps it out of the App Store build.
+      extension AppEnvironment {
+        static func fromLaunch(_ process: ProcessInfo = .processInfo) -> AppEnvironment {
+          #if DEBUG
+          if process.arguments.contains("-ui-testing") {
+            UIView.setAnimationsEnabled(false)                   // faster, and no taps mid-transition
+            let scenario = process.environment["STUB_SCENARIO"] ?? "happy-path"
+            return AppEnvironment(
+              api: .fixtures(scenario: scenario),                // no network, any error on demand
+              store: .inMemory(),                                // nothing left from the previous test
+              session: process.environment["SIGNED_IN"] == "1" ? .signedIn(.fixture) : .signedOut,
+              now: { Date(timeIntervalSince1970: 1_772_534_400) }  // "today" never moves
+            )
+          }
+          #endif
+          return .live
+        }
+      }
+
+      extension APIClient {
+        /// Serves Fixtures/<scenario>/<path>.json from a Debug-only resource folder.
+        static func fixtures(scenario: String) -> APIClient {
+          APIClient { request in
+            let name = request.url!.path().split(separator: "/").joined(separator: "_")
+            guard let file = Bundle.main.url(forResource: name, withExtension: "json",
+                                             subdirectory: "Fixtures/\(scenario)")
+            else { throw URLError(.fileDoesNotExist) }
+            return try Data(contentsOf: file)
+          }
+        }
+      }
+  - id: screen-objects
+    kind: code
+    title: Screen objects (the robot pattern)
+    note: One type per screen, named in product language; identifiers live in exactly one place.
+    code: |-
+      @MainActor
+      struct CatalogScreen {
+        let app: XCUIApplication
+
+        /// Opens the product, adds it, and goes to the cart — one user intent, one method.
+        func addToCartAndOpenCart(_ slug: String) -> CartScreen {
+          app.cells["product-\(slug)"].tap()
+          app.buttons["add-to-cart"].tap()
+          app.buttons["cart-button"].tap()
+          return CartScreen(app: app)
+        }
+      }
+
+      @MainActor
+      struct CartScreen {
+        let app: XCUIApplication
+        var total: String { app.staticTexts["cart-total"].label }
+
+        func checkOut(email: String) -> ConfirmationScreen {
+          let field = app.textFields["checkout-email"]
+          field.tap()
+          field.typeText(email)
+          app.buttons["place-order"].tap()
+          return ConfirmationScreen(app: app)
+        }
+      }
+
+      @MainActor
+      struct ConfirmationScreen {
+        let app: XCUIApplication
+        var orderNumber: XCUIElement { app.staticTexts["order-confirmation-number"] }
+      }
+
+      // The test reads as the journey; a redesign touches one screen object, not forty tests
+      @MainActor
+      func testCheckoutJourney() {
+        let cart = CatalogScreen(app: launchApp()).addToCartAndOpenCart("linen-shirt")
+        XCTAssertEqual(cart.total, "€49.90")
+        XCTAssertTrue(cart.checkOut(email: "ana@example.com").orderNumber.waitForExistence(timeout: 5))
+      }
+  - id: system-alerts-and-interruptions
+    kind: code
+    title: System alerts and interruptions
+    note: Permission prompts belong to SpringBoard, not your app — query them there, or register a monitor.
+    code: |-
+      final class PickupLocationUITests: XCTestCase {
+        @MainActor
+        func testNearbyPickupPointsAskForLocation() {
+          let app = XCUIApplication()
+          app.resetAuthorizationStatus(for: .location)            // a fresh prompt every run
+          app.launchArguments = ["-ui-testing", "-AppleLanguages", "(en)"]  // alert buttons are localized
+          app.launch()
+
+          // 1. Expected alert: query SpringBoard directly
+          app.buttons["show-nearby-pickup-points"].tap()
+          let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
+          let allow = springboard.alerts.buttons["Allow While Using App"]
+          XCTAssertTrue(allow.waitForExistence(timeout: 5))
+          allow.tap()
+          XCTAssertTrue(app.cells["pickup-point-0"].waitForExistence(timeout: 5))
+        }
+
+        @MainActor
+        func testCheckoutSurvivesAnUnexpectedPrompt() {
+          // 2. Alert that MAY appear at any point: a monitor handles it when it blocks a step
+          let token = addUIInterruptionMonitor(withDescription: "Any system prompt") { alert in
+            let dismiss = alert.buttons["Don’t Allow"]            // a typographic apostrophe
+            guard dismiss.exists else { return false }            // not handled: try the next monitor
+            dismiss.tap()
+            return true
+          }
+          defer { removeUIInterruptionMonitor(token) }
+
+          let app = launchApp()
+          app.buttons["place-order"].tap()     // monitors run only when an interaction is blocked
+        }
+      }
+
+      // CI alternative: pre-grant before the run — xcrun simctl privacy booted grant photos com.example.shop
+  - id: component-tests-render-interact-assert
+    kind: code
+    title: "Component tests: render, interact, assert"
+    note: In-process and milliseconds long — test each state of one screen here, and keep XCUITest for the journey.
+    code: |-
+      import XCTest
+      @testable import Shop
+
+      @MainActor
+      final class PromoCodeViewControllerTests: XCTestCase {
+        func testAValidCodeShowsTheDiscountedTotal() {
+          let sut = PromoCodeViewController(subtotal: Decimal(string: "49.90")!,
+                                            pricing: .stub(["SPRING10": Decimal(string: "0.10")!]),
+                                            locale: Locale(identifier: "en_IE"))  // pinned: "€44.91" anywhere
+          sut.loadViewIfNeeded()                               // builds the real view hierarchy
+
+          sut.codeField.text = "SPRING10"
+          sut.codeField.sendActions(for: .editingChanged)     // what typing would trigger
+          XCTAssertTrue(sut.applyButton.isEnabled)
+
+          sut.applyButton.sendActions(for: .touchUpInside)    // what a tap would trigger
+          XCTAssertEqual(sut.totalLabel.text, "€44.91")
+          XCTAssertTrue(sut.errorLabel.isHidden)
+        }
+
+        func testAnUnknownCodeExplainsWhyAndKeepsTheTotal() {
+          let sut = PromoCodeViewController(subtotal: Decimal(string: "49.90")!, pricing: .stub([:]),
+                                            locale: Locale(identifier: "en_IE"))
+          sut.loadViewIfNeeded()
+
+          sut.codeField.text = "WINTER"
+          sut.codeField.sendActions(for: .editingChanged)
+          sut.applyButton.sendActions(for: .touchUpInside)
+
+          XCTAssertEqual(sut.errorLabel.text, "This code isn’t valid")
+          XCTAssertFalse(sut.errorLabel.isHidden)
+          XCTAssertEqual(sut.totalLabel.text, "€49.90")
+        }
+      }
+
+      // SwiftUI: test the @Observable model directly, snapshot the view for its look, or use
+      // ViewInspector: try view.inspect().find(button: "Apply").tap()
+  - id: snapshot-tests-and-when-they-pay
+    kind: code
+    title: Snapshot tests, and when they pay
+    note: Snapshots pay for many states of one look — sizes, modes, locales — here with swift-snapshot-testing 1.17+ and Swift Testing.
+    code: |-
+      import SnapshotTesting
+      import SwiftUI
+      import Testing
+
+      @MainActor
+      @Suite(.snapshots(record: .missing))         // record missing references, compare the rest
+      struct OrderSummarySnapshotTests {
+        @Test(arguments: [UIContentSizeCategory.large, .accessibilityExtraExtraExtraLarge])
+        func textSizes(_ size: UIContentSizeCategory) {
+          let view = OrderSummaryView(order: .fixture)          // fixed data, fixed date
+            .environment(\.locale, Locale(identifier: "en_IE"))
+          assertSnapshot(of: view,
+                         as: .image(layout: .device(config: .iPhone13),
+                                    traits: UITraitCollection(preferredContentSizeCategory: size)),
+                         named: size.rawValue)
+        }
+
+        @Test func darkMode() {
+          assertSnapshot(of: OrderSummaryView(order: .fixture),
+                         as: .image(layout: .device(config: .iPhone13),
+                                    traits: UITraitCollection(userInterfaceStyle: .dark)))
+        }
+
+        @Test func rightToLeft() {
+          let view = OrderSummaryView(order: .fixture).environment(\.layoutDirection, .rightToLeft)
+          assertSnapshot(of: view, as: .image(layout: .device(config: .iPhone13)))
+        }
+      }
+
+      // Pays: design-system components, every text size and mode, regressions nobody would spot by eye.
+      // Costs: references depend on the simulator model and OS — pin both in CI, re-record on upgrade.
+      // Skip: whole screens with live data, animations, anything that changes every sprint.
+  - id: performance-tests-with-xctmetric
+    kind: code
+    title: Performance tests with XCTMetric
+    note: Each `measure` runs five times and compares the average with a baseline you set in the test report.
+    code: |-
+      final class ShopPerformanceTests: XCTestCase {
+        @MainActor
+        func testColdLaunch() {
+          // Until the first frame AND the app answers input — what a user perceives as "launched"
+          measure(metrics: [XCTApplicationLaunchMetric(waitUntilResponsive: true)]) {
+            XCUIApplication().launch()
+          }
+        }
+
+        @MainActor
+        func testScrollingTheCatalog() {
+          let app = launchApp(scenario: "catalog-500-products")
+          let grid = app.collectionViews["catalog-grid"]
+
+          let options = XCTMeasureOptions()
+          options.invocationOptions = [.manuallyStop]           // exclude the reset from the timing
+          measure(metrics: [XCTOSSignpostMetric.scrollingAndDecelerationMetric], options: options) {
+            grid.swipeUp(velocity: .fast)                        // hitch ratio, frame rate, frame count
+            stopMeasuring()
+            grid.swipeDown(velocity: .fast)
+          }
+        }
+
+        @MainActor
+        func testCheckoutMemoryAndCPU() {
+          let app = launchApp()
+          measure(metrics: [XCTMemoryMetric(application: app), XCTCPUMetric(application: app),
+                            XCTClockMetric()]) {
+            app.buttons["cart-button"].tap()
+            app.buttons["close-cart"].tap()
+          }
+        }
+      }
+
+      // Run performance tests in Release on one pinned device model; simulator numbers are only trends.
+  - id: test-plans-parallel-runs-and-retries-in-ci
+    kind: table
+    title: Test plans, parallel runs and retries in CI
+    note: Pin the destination, build once, shard the tests, and keep the result bundle of every run.
+    headers:
+      - Need
+      - How
+      - Why it matters
+    rows:
+      - - Run a plan on CI
+        - "`xcodebuild test -scheme Shop -testPlan UITests -destination 'platform=iOS Simulator,name=iPhone 16,OS=18.6'`"
+        - pin the model and OS — layout, timing and snapshot references depend on both
+      - - Several configurations, one run
+        - "a `.xctestplan` with configurations: English and Arabic, Address Sanitizer, code coverage"
+        - one plan per purpose — `Smoke` on every PR, `Full` nightly, `Snapshots` on UI changes
+      - - Parallel
+        - "`-parallel-testing-enabled YES -parallel-testing-worker-count 4`"
+        - clones the simulator per worker; tests must not share accounts or server state
+      - - Build once, test on many machines
+        - "`build-for-testing`, then `test-without-building -xctestrun … -only-testing:ShopUITests/CheckoutUITests`"
+        - shard by test class; the slowest shard sets the wall-clock time
+      - - Retries
+        - "`-retry-tests-on-failure -test-iterations 3`"
+        - a test that passes on retry is a **flake** — report it, never hide it
+      - - Hunt one flake
+        - "`-only-testing:… -test-iterations 50 -run-tests-until-failure`"
+        - reproduces a 1-in-30 failure in minutes instead of weeks
+      - - Evidence
+        - "`-resultBundlePath build/UITests.xcresult`, read with `xcrun xcresulttool`"
+        - keeps screenshots, logs and the failing hierarchy for every failure
+      - - Clean devices
+        - "`xcrun simctl erase`, `xcrun simctl privacy booted grant …`"
+        - Keychain and permissions survive reinstalls on a simulator
+  - id: flake-checklist
+    kind: rules
+    title: Flake checklist
+    note: Walk this list before adding a retry.
+    items:
+      - tone: bad
+        text: "**`sleep` anywhere.** Wait for the element, the property or a predicate instead."
+      - tone: bad
+        text: "**Tests that depend on order** or on what the previous test left behind. Every test launches its own app into a declared state."
+      - tone: bad
+        text: "**A real backend** in the main suite. Stub at the app's API seam; run a small live smoke suite separately, on a schedule."
+      - tone: bad
+        text: "**Unpinned language, region, time zone or clock.** \"Today\", \"€\" and \"Allow\" all differ on the next CI machine."
+      - tone: bad
+        text: "**Selecting by label, index or coordinate.** Use identifiers; scope queries to a container."
+      - tone: bad
+        text: "**Tapping what is not hittable** — under the keyboard or still animating. Check `isHittable`, dismiss the keyboard, disable animations under test."
+      - tone: good
+        text: "**`continueAfterFailure = false`**, so the first real failure is the one reported."
+      - tone: good
+        text: "**Keep evidence of the failure**: `let shot = XCTAttachment(screenshot: app.screenshot()); shot.lifetime = .keepAlways; add(shot)` — a CI failure is rarely reproducible on your Mac."
+      - tone: good
+        text: "**Deep-link past setup screens** with `app.open(URL(string: \"com.example.shop://cart\")!)` (iOS 16.4+), so each test starts on the screen it is about."
+      - tone: good
+        text: "**Reset what persists across runs**: permissions (`resetAuthorizationStatus`), Keychain items, files in the app container."
+      - tone: good
+        text: "**Track the flake rate** per test from the result bundles; quarantine a flaky test with an owner and a date instead of retrying forever."
+      - tone: neutral
+        text: "Keep UI tests few and long-lived: one per critical journey. Validation rules and edge cases belong in model and component tests."

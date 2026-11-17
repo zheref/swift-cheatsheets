@@ -1,0 +1,466 @@
+id: swiftui-styling
+concept: ui.styling
+scope: platform
+title: "SwiftUI — Styling, Design Tokens & Theming"
+group: SwiftUI
+subtitle: Define colour, type, spacing and radius once; let views ask for a role, and let the environment, dark mode and Dynamic Type do the rest.
+applies:
+  platforms:
+    - ios
+    - ipados
+    - macos
+    - tvos
+    - watchos
+    - visionos
+  requires:
+    - SwiftUI
+  versions:
+    swift: ">=6.0"
+    ios: ">=17"
+sources:
+  - title: SwiftUI — Apple Developer Documentation
+    url: https://developer.apple.com/documentation/swiftui
+  - title: EnvironmentValues — Apple Developer Documentation
+    url: https://developer.apple.com/documentation/swiftui/environmentvalues
+  - title: ScaledMetric — Apple Developer Documentation
+    url: https://developer.apple.com/documentation/swiftui/scaledmetric
+  - title: Dark Mode — Human Interface Guidelines
+    url: https://developer.apple.com/design/human-interface-guidelines/dark-mode
+  - title: Typography — Human Interface Guidelines
+    url: https://developer.apple.com/design/human-interface-guidelines/typography
+  - title: UIFontMetrics — Apple Developer Documentation
+    url: https://developer.apple.com/documentation/uikit/uifontmetrics
+cards:
+  - id: where-each-token-lives
+    kind: table
+    title: Where each token lives
+    note: A view should never contain a hex value, a point size or a magic padding — only a name.
+    headers:
+      - Token
+      - Defined as
+      - Read in a view as
+    rows:
+      - - Colour (light + dark)
+        - asset-catalog Color Set with **Any** and **Dark** appearances
+        - "`Color(.surface)` — compile-checked symbol (Xcode 15+)"
+      - - Colour role
+        - "`extension ShapeStyle where Self == Color`"
+        - "`.foregroundStyle(.priceDrop)`"
+      - - Type
+        - "`Font` built on a text style (`.title2`, `.body`)"
+        - "`.font(.Tokens.price)`"
+      - - Spacing / radius
+        - "`enum Spacing` / `enum Radius` with `static let` values"
+        - "`.padding(Spacing.m)`, `.rect(cornerRadius: Radius.card)`"
+      - - Component variant
+        - "`ButtonStyle`, `LabelStyle`, `ToggleStyle`… conformance"
+        - "`.buttonStyle(.primary)`"
+      - - Reusable decoration
+        - "`ViewModifier` + `View` extension"
+        - "`.cardBackground()`"
+      - - Theme (switchable at runtime)
+        - "`struct Theme` in `EnvironmentValues` via `@Entry`"
+        - "`@Environment(\\.theme) private var theme`"
+      - - Size that tracks text size
+        - "`@ScaledMetric`"
+        - "`.frame(width: thumbnailSize)`"
+      - - System material (Liquid Glass)
+        - "the system's — don't re-create it with blur and opacity tokens"
+        - "`.glassEffect(.regular, in: .capsule)`, `.buttonStyle(.glass)` behind `if #available(iOS 26, macOS 26, tvOS 26, watchOS 26, *)`, else `.background(.regularMaterial, in: .capsule)`; wrap it in `#if !os(visionOS)` — unavailable there, where materials are already glass"
+  - id: a-namespaced-token-set
+    kind: code
+    title: A namespaced token set
+    note: Nest tokens inside the type they produce so autocomplete finds them — `.font(.Tokens.title)` reads naturally.
+    code: |-
+      enum Spacing {
+        static let xs: CGFloat = 4
+        static let s: CGFloat = 8
+        static let m: CGFloat = 16
+        static let l: CGFloat = 24
+      }
+
+      enum Radius {
+        static let control: CGFloat = 10
+        static let card: CGFloat = 16
+      }
+
+      extension Font {
+        enum Tokens {
+          // Built on text styles, so every one of them follows Dynamic Type.
+          static let title = Font.system(.title2, design: .rounded, weight: .bold)
+          static let body = Font.body
+          static let price = Font.system(.headline, design: .rounded).monospacedDigit()
+          static let caption = Font.caption.weight(.medium)
+        }
+      }
+
+      extension Color {
+        enum Tokens {
+          // Assets.xcassets colour sets, each with Any + Dark (+ High Contrast) appearances.
+          // Xcode 15+ generates ColorResource.surface etc., so a typo is a build error.
+          static let surface = Color(.surface)
+          static let card = Color(.card)
+          static let brand = Color(.brand)
+          static let success = Color(.success)
+        }
+      }
+  - id: semantic-colours-and-shapestyle
+    kind: code
+    title: Semantic colours and ShapeStyle
+    note: Ask for a role (`.secondary`, `.tint`, `.background`), not a colour — roles adapt to dark mode, vibrancy and contrast.
+    code: |-
+      // Dot syntax anywhere a ShapeStyle is accepted: foregroundStyle, background, fill, stroke.
+      extension ShapeStyle where Self == Color {
+        static var priceDrop: Color { Color.Tokens.success }
+      }
+
+      struct OrderRow: View {
+        let order: Order
+
+        var body: some View {
+          HStack(spacing: Spacing.m) {
+            VStack(alignment: .leading, spacing: Spacing.xs) {
+              Text(order.title)
+                .foregroundStyle(.primary)            // hierarchical levels, not greys
+              Text(order.status)
+                .font(.Tokens.caption)
+                .foregroundStyle(.secondary)
+            }
+            Spacer()
+            Text(order.total, format: .currency(code: "USD"))
+              .font(.Tokens.price)
+              .foregroundStyle(order.isDiscounted ? AnyShapeStyle(.priceDrop) : AnyShapeStyle(.tint))
+          }
+          .padding(Spacing.m)
+          .background(.background.secondary, in: .rect(cornerRadius: Radius.card))
+        }
+      }
+  - id: viewmodifier-and-view-extension
+    kind: code
+    title: A reusable look — ViewModifier + View extension
+    note: Reach for a modifier when the same decoration repeats on views of different types.
+    code: |-
+      struct CardBackground: ViewModifier {
+        var isSelected = false
+
+        func body(content: Content) -> some View {
+          content
+            .padding(Spacing.m)
+            .background(Color.Tokens.card, in: .rect(cornerRadius: Radius.card))
+            .overlay {
+              RoundedRectangle(cornerRadius: Radius.card)
+                .strokeBorder(.tint, lineWidth: isSelected ? 2 : 0)
+            }
+            .shadow(color: .black.opacity(0.08), radius: 6, y: 2)
+        }
+      }
+
+      extension View {
+        func cardBackground(selected: Bool = false) -> some View {
+          modifier(CardBackground(isSelected: selected))
+        }
+      }
+
+      struct OrderCard: View {
+        let order: Order
+        let isSelected: Bool
+
+        var body: some View {
+          OrderRow(order: order)
+            .cardBackground(selected: isSelected)
+            .animation(.snappy, value: isSelected)   // same view, new value: it animates
+        }
+      }
+  - id: conditional-styling
+    kind: compare
+    title: Conditional styling — branch in the value, not in the view
+    note: "An `if` around a modifier makes two different views: toggling it throws away state and can't animate."
+    columns:
+      - label: The `.if` extension
+        tone: bad
+        code: |-
+          extension View {
+            @ViewBuilder
+            func `if`<Styled: View>(_ condition: Bool, transform: (Self) -> Styled) -> some View {
+              if condition { transform(self) } else { self }
+            }
+          }
+
+          struct OrderCard: View {
+            let order: Order
+            let isSelected: Bool
+
+            var body: some View {
+              // Two branches = two identities. Selecting swaps the view out.
+              OrderRow(order: order)
+                .if(isSelected) { $0.border(.tint, width: 2) }
+            }
+          }
+      - label: One view, a changing value
+        tone: good
+        code: |-
+          struct OrderCard: View {
+            let order: Order
+            let isSelected: Bool
+
+            var body: some View {
+              OrderRow(order: order)
+                .overlay {
+                  RoundedRectangle(cornerRadius: Radius.card)
+                    .strokeBorder(.tint, lineWidth: isSelected ? 2 : 0)
+                }
+                .opacity(order.isCancelled ? 0.5 : 1)
+                .animation(.snappy, value: isSelected)
+            }
+          }
+  - id: button-and-label-styles
+    kind: code
+    title: ButtonStyle, LabelStyle and the other style protocols
+    note: "A style keeps the control's role, accessibility and keyboard behaviour; `.snappy` needs iOS 17."
+    code: |-
+      struct PrimaryButtonStyle: ButtonStyle {
+        @Environment(\.isEnabled) private var isEnabled
+
+        func makeBody(configuration: Configuration) -> some View {
+          configuration.label
+            .font(.headline)
+            .frame(maxWidth: .infinity, minHeight: 50)
+            .foregroundStyle(.white)
+            .background(.tint, in: .rect(cornerRadius: Radius.control))
+            .opacity(isEnabled ? 1 : 0.4)
+            .scaleEffect(configuration.isPressed ? 0.97 : 1)
+            .animation(.snappy(duration: 0.15), value: configuration.isPressed)
+        }
+      }
+
+      extension ButtonStyle where Self == PrimaryButtonStyle {
+        static var primary: PrimaryButtonStyle { PrimaryButtonStyle() }
+      }
+
+      struct TrailingIconLabelStyle: LabelStyle {
+        func makeBody(configuration: Configuration) -> some View {
+          HStack(spacing: Spacing.xs) {
+            configuration.title
+            configuration.icon
+          }
+        }
+      }
+
+      extension LabelStyle where Self == TrailingIconLabelStyle {
+        static var trailingIcon: TrailingIconLabelStyle { TrailingIconLabelStyle() }
+      }
+
+      struct CheckoutFooter: View {
+        let placeOrder: () -> Void
+        var body: some View {
+          Button(action: placeOrder) { Label("Place order", systemImage: "arrow.right") }
+            .buttonStyle(.primary)
+            .labelStyle(.trailingIcon)
+          // Same pattern: ToggleStyle, ProgressViewStyle, LabeledContentStyle, GroupBoxStyle.
+        }
+      }
+  - id: theme-through-the-environment
+    kind: code
+    title: A theme injected through the Environment
+    note: "`@Entry` (Xcode 16+) writes the `EnvironmentKey` boilerplate and back-deploys to older OS versions."
+    code: |-
+      struct Theme: Sendable {
+        var accent: Color
+        var cardRadius: CGFloat
+        var titleFont: Font
+
+        static let standard = Theme(accent: Color.Tokens.brand, cardRadius: Radius.card,
+                                    titleFont: .Tokens.title)
+        static let holiday = Theme(accent: .red, cardRadius: 24,
+                                   titleFont: .system(.title2, design: .serif, weight: .bold))
+      }
+
+      extension EnvironmentValues {
+        @Entry var theme: Theme = .standard
+      }
+
+      struct OrdersHeader: View {
+        @Environment(\.theme) private var theme
+        let title: String
+
+        var body: some View {
+          Text(title)
+            .font(theme.titleFont)
+            .padding(Spacing.m)
+            .background(theme.accent.opacity(0.15), in: .rect(cornerRadius: theme.cardRadius))
+        }
+      }
+
+      struct ShopRoot: View {
+        let isHolidaySeason: Bool
+
+        var body: some View {
+          let theme: Theme = isHolidaySeason ? .holiday : .standard
+          OrdersHeader(title: "Your orders")
+            .environment(\.theme, theme)      // everything below reads the new theme
+            .tint(theme.accent)               // and system controls follow it too
+        }
+      }
+  - id: dark-mode-and-colorscheme
+    kind: code
+    title: Dark mode and colorScheme
+    note: Adaptive colours handle most of it; read `colorScheme` only for what a colour can't express.
+    code: |-
+      struct OrderReceiptView: View {
+        @Environment(\.colorScheme) private var colorScheme
+        @Environment(\.colorSchemeContrast) private var contrast
+        let order: Order
+
+        var body: some View {
+          VStack(spacing: Spacing.m) {
+            Image(systemName: "checkmark.seal.fill")
+              .font(.largeTitle)
+              .foregroundStyle(.priceDrop)        // asset colour: already has a dark variant
+            Text(order.title).font(.Tokens.title)
+          }
+          .padding(Spacing.l)
+          .background(.background, in: .rect(cornerRadius: Radius.card))
+          // Shadows disappear on black — use a hairline instead in dark or high-contrast mode.
+          .shadow(color: .black.opacity(colorScheme == .dark ? 0 : 0.12), radius: 8, y: 4)
+          .overlay {
+            RoundedRectangle(cornerRadius: Radius.card)
+              .strokeBorder(.separator, lineWidth: colorScheme == .dark || contrast == .increased ? 1 : 0)
+          }
+        }
+      }
+
+      #Preview("Light") { OrderReceiptView(order: .sample) }
+      #Preview("Dark") { OrderReceiptView(order: .sample).preferredColorScheme(.dark) }
+      // A screen that is always dark (photo viewer): .preferredColorScheme(.dark)
+      // Only one subtree:                           .environment(\.colorScheme, .dark)
+  - id: dynamic-type
+    kind: code
+    title: Dynamic Type — scaled metrics, relative fonts, a layout that reflows
+    note: Test at the largest accessibility size; the row must reflow, not truncate.
+    code: |-
+      struct OrderLineView: View {
+        @Environment(\.dynamicTypeSize) private var typeSize
+        @ScaledMetric(relativeTo: .body) private var thumbnailSize: CGFloat = 44
+        let line: OrderLine
+
+        var body: some View {
+          let layout = typeSize.isAccessibilitySize
+            ? AnyLayout(VStackLayout(alignment: .leading, spacing: Spacing.s))
+            : AnyLayout(HStackLayout(spacing: Spacing.m))
+
+          layout {
+            Image(systemName: line.symbolName)
+              .resizable()
+              .scaledToFit()
+              .frame(width: thumbnailSize, height: thumbnailSize)   // grows with the text
+            Text(line.name)
+              .font(.custom("Avenir Next", size: 17, relativeTo: .body))  // custom face, still scales
+            Spacer(minLength: 0)
+            Text(line.price, format: .currency(code: "USD"))
+              .font(.Tokens.price)
+          }
+          .dynamicTypeSize(...DynamicTypeSize.accessibility3)   // cap only where the design truly breaks
+        }
+      }
+  - id: adaptive-layout
+    kind: code
+    title: Adaptive layout — size classes, ViewThatFits, containerRelativeFrame
+    note: "Size the content from its container, not the device (`containerRelativeFrame` needs iOS 17)."
+    code: |-
+      struct CheckoutBar: View {
+        let total: Decimal
+        let pay: () -> Void
+
+        var body: some View {
+          ViewThatFits(in: .horizontal) {           // the first child that fits the width wins
+            HStack {
+              totalLabel
+              Spacer()
+              payButton
+            }
+            VStack(alignment: .leading, spacing: Spacing.s) {
+              totalLabel
+              payButton
+            }
+          }
+          .padding(Spacing.m)
+        }
+
+        private var totalLabel: some View {
+          Text(total, format: .currency(code: "USD")).font(.Tokens.price)
+        }
+        private var payButton: some View {
+          Button("Pay now", action: pay).buttonStyle(.primary).frame(minWidth: 200)
+        }
+      }
+
+      struct FeaturedCarousel: View {
+        @Environment(\.horizontalSizeClass) private var sizeClass
+        let orders: [Order]
+
+        var body: some View {
+          ScrollView(.horizontal) {
+            LazyHStack(spacing: Spacing.m) {
+              ForEach(orders) { order in
+                OrderRow(order: order)   // 1 per page on iPhone, 3 on iPad, from the scroll view's width
+                  .containerRelativeFrame(.horizontal, count: sizeClass == .regular ? 3 : 1, spacing: Spacing.m)
+              }
+            }
+            .scrollTargetLayout()
+          }
+          .scrollTargetBehavior(.viewAligned)
+        }
+      }
+  - id: uikit-equivalents
+    kind: table
+    title: The same ideas in UIKit
+    note: For screens still in UIKit — the token files stay the same, only the reading side changes.
+    headers:
+      - SwiftUI
+      - UIKit
+    rows:
+      - - "`Color(.surface)` (asset symbol)"
+        - "`UIColor(resource: .surface)` / `UIColor(named: \"Surface\")`"
+      - - adaptive colour defined in code
+        - "`UIColor { traits in traits.userInterfaceStyle == .dark ? .white : .black }` — the dynamic provider"
+      - - "`.primary` / `.secondary` / `.background`"
+        - "`.label` / `.secondaryLabel` / `.systemBackground`"
+      - - "`.font(.custom(_:size:relativeTo:))`"
+        - "`UIFontMetrics(forTextStyle: .body).scaledFont(for: font)` + `adjustsFontForContentSizeCategory = true`"
+      - - "`@ScaledMetric`"
+        - "`UIFontMetrics.default.scaledValue(for: 44)` — recompute on a trait change"
+      - - "`ButtonStyle`"
+        - "`UIButton.Configuration` + `configurationUpdateHandler` for pressed/disabled"
+      - - "`.tint(_:)`"
+        - "`tintColor` on a view or the window — inherited by subviews"
+      - - "`.environment(\\.theme, …)` for the whole app"
+        - "`UIAppearance` proxies: `UINavigationBar.appearance().standardAppearance = …` (set before views load)"
+      - - custom `EnvironmentValues` entry
+        - "custom `UITraitDefinition` + `traitOverrides` (iOS 17+)"
+      - - "`@Environment(\\.colorScheme)`, `\\.horizontalSizeClass`"
+        - "`traitCollection.userInterfaceStyle`, `.horizontalSizeClass`; observe with `registerForTraitChanges(_:handler:)` (iOS 17+)"
+      - - "`.preferredColorScheme(.dark)`"
+        - "`overrideUserInterfaceStyle = .dark`"
+      - - "`.dynamicTypeSize(...)` cap"
+        - "`maximumContentSizeCategory` on a view (iOS 15+)"
+  - id: styling-rules
+    kind: rules
+    title: Styling rules
+    note: What breaks first when a design system meets dark mode and large text.
+    items:
+      - tone: bad
+        text: "`Color(red:green:blue:)`, `.font(.system(size: 17))` and `.padding(13)` inside a view — no dark variant, no Dynamic Type, and nothing to change in one place."
+      - tone: bad
+        text: "Branching on `colorScheme == .dark` to pick colours an asset colour would adapt by itself — it also misses **Increased Contrast**."
+      - tone: bad
+        text: "Breakpoints from `UIScreen.main.bounds` — an iPad window in Split View or Stage Manager is not the screen. Use size classes, `ViewThatFits`, `containerRelativeFrame`."
+      - tone: bad
+        text: "A `.if(condition)` modifier extension — it swaps view identity, resets `@State` and kills animation."
+      - tone: good
+        text: "Style through the protocols (`.buttonStyle`, `.labelStyle`, `.toggleStyle`) rather than wrapper views — the control keeps its role, traits and focus behaviour."
+      - tone: good
+        text: "Use `.tint(_:)` for the brand colour; `accentColor(_:)` is deprecated."
+      - tone: good
+        text: "Preview every component in light, dark, Increased Contrast, an accessibility text size and right-to-left before calling it done."
+      - tone: neutral
+        text: "Environment values flow **down** only. A child can't restyle its parent — expose a value or a preference instead."

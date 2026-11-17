@@ -1,0 +1,497 @@
+id: kt-android-views
+concept: ui.programmatic
+scope: platform
+title: "Android Views — Programmatic UI"
+group: Android
+subtitle: The Activity and Fragment lifecycle, building the view tree in code, ConstraintSet, RecyclerView with ListAdapter and DiffUtil, View Binding, keeping views in sync with a StateFlow, navigation and custom views.
+applies:
+  platforms: [android]
+  runtime: an Android app using the View system (AppCompat and Material Components)
+  requires: [androidx.appcompat, androidx.fragment, androidx.recyclerview, androidx.constraintlayout, androidx.lifecycle, Material Components]
+  versions: { kotlin: ">=2.0", fragment-ktx: ">=1.8", recyclerview: ">=1.3", constraintlayout: ">=2.1", lifecycle: ">=2.8", navigation-fragment: ">=2.8.0", material: ">=1.12", android: "API 21+ at these minimums (Material 1.14, AppCompat 1.8 and Core 1.19 need 23; Navigation 2.10 needs 24)" }
+sources:
+  - title: The activity lifecycle — Android Developers
+    url: https://developer.android.com/guide/components/activities/activity-lifecycle
+  - title: Fragment lifecycle — Android Developers
+    url: https://developer.android.com/guide/fragments/lifecycle
+  - title: Create dynamic lists with RecyclerView — Android Developers
+    url: https://developer.android.com/develop/ui/views/layout/recyclerview
+  - title: Use Kotlin coroutines with lifecycle-aware components (Views) — Android Developers
+    url: https://developer.android.com/topic/libraries/architecture/views/coroutines-views
+cards:
+  - id: lifecycle-table
+    kind: table
+    title: Activity and Fragment lifecycle in one table
+    note: "Where each kind of work belongs; the `Lifecycle.State` column is what `repeatOnLifecycle` and `collectAsStateWithLifecycle` key on."
+    headers: [Callback, Called on, State after, Do here]
+    rows:
+      - ["`onCreate`", "Activity, Fragment", "`CREATED`", "read arguments and saved state, get the ViewModel (`by viewModels()`); an Activity calls `setContentView`"]
+      - ["`onCreateView`", "Fragment", "view: `INITIALIZED`", "build or inflate the view tree and return it — nothing else"]
+      - ["`onViewCreated`", "Fragment", "view: `INITIALIZED` (→ `CREATED` at `onViewStateRestored`)", "wire listeners and adapters, start collecting with `viewLifecycleOwner`"]
+      - ["`onStart`", "Activity, Fragment", "`STARTED`", "visible: `repeatOnLifecycle(STARTED)` blocks start here"]
+      - ["`onResume`", "Activity, Fragment", "`RESUMED`", "in front and interactive: camera, sensors, exclusive resources"]
+      - ["`onPause`", "Activity, Fragment", "back to `STARTED`", "losing focus but often still visible (multi-window): release exclusive resources"]
+      - ["`onStop`", "Activity, Fragment", "back to `CREATED`", "invisible: `STARTED` collectors are cancelled; persist drafts"]
+      - ["`onSaveInstanceState`", "Activity, Fragment", "—", "small UI state into the `Bundle` (it must survive process death)"]
+      - ["`onDestroyView`", "Fragment", "view: `DESTROYED`", "drop the binding and every view reference; the fragment itself may live on in the back stack"]
+      - ["`onDestroy`", "Activity, Fragment", "`DESTROYED`", "finishing or a configuration change (`isChangingConfigurations`); the ViewModel survives the latter"]
+  - id: view-tree-in-code
+    kind: code
+    title: Building the view tree in code
+    note: Create views with a `Context`, give each its `LayoutParams` from the parent's type, add them, and set listeners — no XML.
+    prerequisites: &app
+      - "An Android Studio project with an `AppCompatActivity` and a Material 3 theme (Kotlin 2.x, `androidx.appcompat`, `androidx.activity:activity-ktx` 1.8+ for `enableEdgeToEdge`, `androidx.core:core-ktx` — merged into `androidx.core:core` from 1.19 — `androidx.recyclerview`, `com.google.android.material:material`)"
+      - "`res/values/ids.xml` with `<item name=\"orders_search\" type=\"id\"/>`; `OrdersAdapter` from the RecyclerView card; an `OrderDetailActivity` whose companion has `intent(context, orderId)`"
+      - "`android:windowSoftInputMode=\"adjustResize\"` on the activity in the manifest, so the window receives IME insets"
+      - "Declare the activity in `AndroidManifest.xml` and run the app on a device or emulator"
+    code: |-
+      class OrdersActivity : AppCompatActivity() {
+          private val viewModel: OrdersViewModel by viewModels()
+          private val Int.dp: Int get() = (this * resources.displayMetrics.density).roundToInt()
+
+          override fun onCreate(savedInstanceState: Bundle?) {
+              super.onCreate(savedInstanceState)
+              enableEdgeToEdge()                          // enforced from target SDK 35: we handle the insets below
+              val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+              val search = EditText(this).apply {
+                  id = R.id.orders_search                 // a stable id: the typed text survives rotation
+                  hint = "Search orders"
+                  doAfterTextChanged { text -> viewModel.onQueryChange(text?.toString().orEmpty()) }
+              }
+              val list = RecyclerView(this).apply {
+                  layoutManager = LinearLayoutManager(context)
+                  adapter = OrdersAdapter(onOpen = ::openOrder)
+              }
+              val refresh = MaterialButton(this).apply {
+                  text = "Refresh"
+                  setOnClickListener { viewModel.refresh() }
+              }
+              root.addView(search, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
+              root.addView(list, LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f))    // weight 1: what is left
+              val end = LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { gravity = Gravity.END }
+              root.addView(refresh, end)
+              ViewCompat.setOnApplyWindowInsetsListener(root) { view, insets ->
+                  val types = WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout() or
+                      WindowInsetsCompat.Type.ime()            // the keyboard too: the larger bottom wins
+                  val bars = insets.getInsets(types)
+                  view.updatePadding(                     // clear of the bars, the cutout and the keyboard
+                      left = bars.left + 16.dp,
+                      top = bars.top + 16.dp,
+                      right = bars.right + 16.dp,
+                      bottom = bars.bottom,
+                  )
+                  insets
+              }
+              setContentView(root)
+          }
+
+          private fun openOrder(id: String) = startActivity(OrderDetailActivity.intent(this, id))
+      }
+    expected: A search field below the status bar, a scrolling order list that fills the remaining height, and a Refresh button at the bottom end above the navigation bar; while the keyboard is open the list and button sit above it; typing filters through the ViewModel, and the text is restored after rotation.
+    validation: &excerpt
+      status: excerpt
+      host: an Android app using the View system (needs the Android SDK)
+  - id: constraintset-in-code
+    kind: code
+    title: ConstraintLayout with a ConstraintSet in code
+    note: "Every child needs an id; `clone` the layout, `connect` sides, set sizes with `constrainWidth`/`constrainHeight`, then `applyTo`."
+    prerequisites:
+      - "The project above, plus `androidx.constraintlayout:constraintlayout` 2.1 or later"
+      - "Used as the row view of `OrdersAdapter` in the RecyclerView card"
+    code: |-
+      class OrderRowView(context: Context) : ConstraintLayout(context) {
+          val customer = TextView(context).apply {
+              id = View.generateViewId()
+              maxLines = 1
+              ellipsize = TextUtils.TruncateAt.END
+          }
+          val details = TextView(context).apply { id = View.generateViewId() }
+          val total = TextView(context).apply { id = View.generateViewId() }
+
+          init {
+              val gap = (16 * resources.displayMetrics.density).roundToInt()
+              setPadding(gap, gap / 2, gap, gap / 2)
+              addView(customer)
+              addView(details)
+              addView(total)
+              ConstraintSet().apply {
+                  clone(this@OrderRowView)                     // start from the children just added
+                  constrainWidth(customer.id, ConstraintSet.MATCH_CONSTRAINT)   // 0dp: stretch between constraints
+                  constrainHeight(customer.id, ConstraintSet.WRAP_CONTENT)
+                  connect(customer.id, ConstraintSet.TOP, ConstraintSet.PARENT_ID, ConstraintSet.TOP)
+                  connect(customer.id, ConstraintSet.START, ConstraintSet.PARENT_ID, ConstraintSet.START)
+                  connect(customer.id, ConstraintSet.END, total.id, ConstraintSet.START, gap)
+
+                  constrainWidth(details.id, ConstraintSet.MATCH_CONSTRAINT)
+                  constrainHeight(details.id, ConstraintSet.WRAP_CONTENT)
+                  connect(details.id, ConstraintSet.TOP, customer.id, ConstraintSet.BOTTOM)
+                  connect(details.id, ConstraintSet.START, customer.id, ConstraintSet.START)
+                  connect(details.id, ConstraintSet.END, total.id, ConstraintSet.START, gap)
+
+                  constrainWidth(total.id, ConstraintSet.WRAP_CONTENT)
+                  constrainHeight(total.id, ConstraintSet.WRAP_CONTENT)
+                  connect(total.id, ConstraintSet.END, ConstraintSet.PARENT_ID, ConstraintSet.END)
+                  centerVertically(total.id, ConstraintSet.PARENT_ID)
+              }.applyTo(this)
+          }
+      }
+    expected: The customer name at the top start and the order details under it, both stopping before the total, which is centred vertically at the end.
+    sources:
+      - title: ConstraintSet — Android Developers reference
+        url: https://developer.android.com/reference/androidx/constraintlayout/widget/ConstraintSet
+    validation: *excerpt
+  - id: recyclerview-listadapter
+    kind: code
+    title: RecyclerView with ListAdapter, DiffUtil and view holders
+    note: "`submitList` diffs on a background thread and dispatches the minimal `notifyItem…` calls; the view holder caches the row's views."
+    prerequisites:
+      - "The project above, with `androidx.recyclerview:recyclerview` 1.3 or later and `OrderRowView` from the ConstraintSet card"
+      - "`data class Order(val id: String, val customer: String, val totalCents: Long, val status: OrderStatus)`"
+    code: |-
+      class OrdersAdapter(private val onOpen: (String) -> Unit) :
+          ListAdapter<Order, OrdersAdapter.OrderViewHolder>(OrderDiff) {
+
+          class OrderViewHolder(val row: OrderRowView) : RecyclerView.ViewHolder(row)
+
+          private val money = NumberFormat.getCurrencyInstance().apply {   // the user's locale, our currency
+              currency = Currency.getInstance("USD")
+          }
+
+          override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): OrderViewHolder {
+              val row = OrderRowView(parent.context).apply {
+                  layoutParams = RecyclerView.LayoutParams(MATCH_PARENT, WRAP_CONTENT)
+              }
+              val holder = OrderViewHolder(row)
+              row.setOnClickListener {                       // once per holder, not on every bind
+                  val position = holder.bindingAdapterPosition
+                  if (position != RecyclerView.NO_POSITION) onOpen(getItem(position).id)
+              }
+              return holder
+          }
+
+          override fun onBindViewHolder(holder: OrderViewHolder, position: Int) {
+              val order = getItem(position)
+              holder.row.customer.text = order.customer
+              holder.row.details.text = "#${order.id} · ${order.status}"
+              holder.row.total.text = money.format(order.totalCents / 100.0)
+          }
+
+          object OrderDiff : DiffUtil.ItemCallback<Order>() {
+              override fun areItemsTheSame(oldItem: Order, newItem: Order) = oldItem.id == newItem.id   // same row?
+              override fun areContentsTheSame(oldItem: Order, newItem: Order) = oldItem == newItem   // redraw it?
+          }
+      }
+    expected: "Submitting a new list animates only the inserted, removed, moved and changed rows; rows scrolled off screen are recycled instead of re-created."
+    sources:
+      - title: ListAdapter — Android Developers reference
+        url: https://developer.android.com/reference/androidx/recyclerview/widget/ListAdapter
+    validation: *excerpt
+  - id: view-binding
+    kind: code
+    title: The same row with XML and View Binding
+    note: For comparison — layouts stay in XML, and the generated binding gives typed, null-safe references instead of `findViewById`.
+    prerequisites:
+      - "`android { buildFeatures { viewBinding = true } }` in the module's `build.gradle.kts`; `OrdersAdapter.OrderDiff` from the RecyclerView card and the `OrderDetail` route from the navigation card"
+      - "`res/layout/item_order.xml` with `TextView`s whose ids are `customer`, `order_details` and `total`, and `res/layout/fragment_orders.xml` with a `RecyclerView` whose id is `list`"
+    code: |-
+      // item_order.xml generates ItemOrderBinding: order_details → binding.orderDetails, typed as TextView
+      class XmlOrdersAdapter(private val onOpen: (String) -> Unit) :
+          ListAdapter<Order, XmlOrdersAdapter.OrderViewHolder>(OrdersAdapter.OrderDiff) {   // the same DiffUtil
+
+          class OrderViewHolder(val binding: ItemOrderBinding) : RecyclerView.ViewHolder(binding.root)
+
+          private val money = NumberFormat.getCurrencyInstance().apply { currency = Currency.getInstance("USD") }
+
+          override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): OrderViewHolder {
+              val binding = ItemOrderBinding.inflate(LayoutInflater.from(parent.context), parent, false)
+              val holder = OrderViewHolder(binding)
+              binding.root.setOnClickListener {                // once per holder, not on every bind
+                  val position = holder.bindingAdapterPosition
+                  if (position != RecyclerView.NO_POSITION) onOpen(getItem(position).id)
+              }
+              return holder
+          }
+
+          override fun onBindViewHolder(holder: OrderViewHolder, position: Int) {
+              val order = getItem(position)
+              with(holder.binding) {
+                  customer.text = order.customer
+                  orderDetails.text = "#${order.id} · ${order.status}"
+                  total.text = money.format(order.totalCents / 100.0)
+              }
+          }
+      }
+
+      class OrdersFragment : Fragment(R.layout.fragment_orders) {
+          private var _binding: FragmentOrdersBinding? = null
+          private val binding get() = _binding!!              // valid only between onViewCreated and onDestroyView
+
+          override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
+              super.onViewCreated(view, savedInstanceState)
+              _binding = FragmentOrdersBinding.bind(view)      // the layout is already inflated: bind, not inflate
+              binding.list.adapter = XmlOrdersAdapter(onOpen = { id ->
+                  findNavController().navigate(OrderDetail(id))
+              })
+          }
+
+          override fun onDestroyView() {
+              super.onDestroyView()
+              _binding = null                                  // the fragment outlives its views
+          }
+      }
+    expected: The same row and list as the code-only version, with layout in XML; a wrong id or type fails the build instead of crashing at run time.
+    sources:
+      - title: View binding — Android Developers
+        url: https://developer.android.com/topic/libraries/view-binding
+    validation: *excerpt
+  - id: state-holder-sync
+    kind: code
+    title: One StateFlow, rendered by hand — the logic runs on the JVM
+    note: The ViewModel's logic without Android, and a renderer that touches only the views whose data changed — what the screen's collector calls.
+    applies:
+      platforms: [jvm, android]
+      runtime: Kotlin/JVM with kotlinx.coroutines
+      requires: [kotlinx-coroutines-core]
+      versions: { kotlin: ">=2.0", kotlinx-coroutines: ">=1.10", jvm: ">=17" }
+    prerequisites:
+      - A Kotlin 2.x compiler (`kotlinc`), JDK 17 or later, and `kotlinx-coroutines-core-jvm-1.10.2.jar`
+      - "Save as `main.kt`; run `kotlinc -cp kotlinx-coroutines-core-jvm-1.10.2.jar main.kt -d out && kotlin -cp out:kotlinx-coroutines-core-jvm-1.10.2.jar MainKt`"
+      - "Or, in a Gradle project: `implementation(\"org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.2\")`"
+    code: |-
+      import kotlinx.coroutines.flow.*
+      import kotlinx.coroutines.launch
+      import kotlinx.coroutines.runBlocking
+      import kotlinx.coroutines.yield
+
+      data class Order(val id: String, val customer: String)
+
+      data class OrdersUiState(
+          val query: String = "",
+          val visible: List<Order> = emptyList(),
+          val loading: Boolean = false,
+      )
+
+      class OrdersStateHolder(private val all: List<Order>) {          // a ViewModel's body, minus Android
+          private val _state = MutableStateFlow(OrdersUiState(visible = all))
+          val state: StateFlow<OrdersUiState> = _state.asStateFlow()
+
+          fun onQueryChange(query: String) = _state.update { current ->
+              current.copy(query = query, visible = all.filter { it.customer.contains(query, ignoreCase = true) })
+          }
+      }
+
+      class OrdersRenderer {                                           // what render(state) does with real views
+          private var last: OrdersUiState? = null
+          fun render(state: OrdersUiState) {
+              if (state.visible != last?.visible) println("adapter.submitList(${state.visible.map { it.id }})")
+              if (state.loading != last?.loading) println("progress.isVisible = ${state.loading}")
+              last = state
+          }
+      }
+
+      fun main() = runBlocking {
+          val orders = listOf(Order("1041", "Ada"), Order("1042", "Grace"), Order("1043", "Adele"))
+          val holder = OrdersStateHolder(orders)
+          val renderer = OrdersRenderer()
+          val collector = launch { holder.state.collect(renderer::render) }   // the repeatOnLifecycle body
+          yield()
+          holder.onQueryChange("ad")
+          yield()
+          holder.onQueryChange("AD")              // new query, same rows: nothing to touch
+          yield()
+          holder.onQueryChange("gr")
+          yield()
+          collector.cancel()                       // what onStop does to a STARTED collector
+      }
+    expected: |-
+      adapter.submitList([1041, 1042, 1043])
+      progress.isVisible = false
+      adapter.submitList([1041, 1043])
+      adapter.submitList([1042])
+    sources:
+      - title: StateFlow and SharedFlow — Android Developers
+        url: https://developer.android.com/kotlin/flow/stateflow-and-sharedflow
+    validation:
+      status: ran
+      toolchain: kotlinc 2.4.21, JVM 21.0.12.1, kotlinx-coroutines-core 1.10.2
+      date: "2026-11-16"
+  - id: repeat-on-lifecycle
+    kind: code
+    title: Collecting the state in a Fragment with repeatOnLifecycle
+    note: "Collect with the view's lifecycle, only while `STARTED`; one `launch` per flow inside the block."
+    prerequisites:
+      - "The project above, plus `androidx.lifecycle:lifecycle-runtime-ktx` 2.8+, `androidx.fragment:fragment-ktx` and Material Components (`Snackbar`)"
+      - "An `OrdersViewModel` with `state: StateFlow<OrdersUiState>` and `messages: Flow<String>`; `OrdersScreenView` exposes `search`, `list`, `progress` and `empty`; the `OrderDetail` route from the navigation card"
+    code: |-
+      class OrdersFragment : Fragment() {
+          private val viewModel: OrdersViewModel by viewModels()
+
+          override fun onCreateView(inflater: LayoutInflater, container: ViewGroup?, saved: Bundle?): View =
+              OrdersScreenView(requireContext())
+
+          override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
+              super.onViewCreated(view, savedInstanceState)
+              val screen = view as OrdersScreenView
+              val adapter = OrdersAdapter(onOpen = ::openOrder)
+              screen.list.adapter = adapter
+              screen.search.doAfterTextChanged { viewModel.onQueryChange(it?.toString().orEmpty()) }
+
+              viewLifecycleOwner.lifecycleScope.launch {
+                  viewLifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {   // cancelled at each onStop
+                      launch { viewModel.state.collect { state -> render(screen, adapter, state) } }
+                      launch {
+                          viewModel.messages.collect { message ->
+                              Snackbar.make(screen, message, Snackbar.LENGTH_SHORT).show()
+                          }
+                      }
+                  }
+              }
+          }
+
+          private fun render(screen: OrdersScreenView, adapter: OrdersAdapter, state: OrdersUiState) {
+              adapter.submitList(state.visible)                       // DiffUtil finds the minimal change
+              screen.progress.isVisible = state.loading
+              screen.empty.isVisible = !state.loading && state.visible.isEmpty()
+              if (screen.search.text.toString() != state.query) {    // avoid a loop with the text listener
+                  screen.search.setText(state.query)
+              }
+          }
+
+          private fun openOrder(id: String) = findNavController().navigate(OrderDetail(orderId = id))
+      }
+    expected: The list, spinner and empty state follow every new state while the screen is visible; nothing is collected while it is stopped, and collection ends with the view, not the fragment.
+    sources:
+      - title: Use Kotlin coroutines with lifecycle-aware components (Views) — Android Developers
+        url: https://developer.android.com/topic/libraries/architecture/views/coroutines-views
+    validation: *excerpt
+  - id: navigation-fragments
+    kind: code
+    title: Moving between screens — Navigation component or a FragmentManager transaction
+    note: "Navigation 2.8+ builds the Fragment graph from the same `@Serializable` routes as Navigation Compose; a plain transaction is the no-library fallback."
+    prerequisites:
+      - "`androidx.navigation:navigation-fragment-ktx` 2.8 or later and the `org.jetbrains.kotlin.plugin.serialization` Gradle plugin"
+      - "`res/layout/activity_main.xml` holding a `FragmentContainerView` with id `nav_host` and `android:name=\"androidx.navigation.fragment.NavHostFragment\"`"
+    code: |-
+      @Serializable data object Orders
+
+      @Serializable data class OrderDetail(val orderId: String)
+
+      class MainActivity : AppCompatActivity() {
+          override fun onCreate(savedInstanceState: Bundle?) {
+              super.onCreate(savedInstanceState)
+              setContentView(R.layout.activity_main)
+              val navHost = supportFragmentManager.findFragmentById(R.id.nav_host) as NavHostFragment
+              val navController = navHost.navController
+              navController.graph = navController.createGraph(startDestination = Orders) {
+                  fragment<OrdersFragment, Orders> { label = "Orders" }
+                  fragment<OrderDetailFragment, OrderDetail> { label = "Order" }
+              }
+          }
+      }
+
+      class OrdersFragment : Fragment() {
+          private fun openOrder(id: String) = findNavController().navigate(OrderDetail(orderId = id))
+      }
+
+      // OrderDetailFragment's ViewModel: the typed argument, no Bundle keys
+      class OrderDetailViewModel(handle: SavedStateHandle) : ViewModel() {
+          val orderId: String = handle.toRoute<OrderDetail>().orderId
+      }
+
+      // Without Navigation: replace the fragment in a container and keep Back working
+      fun AppCompatActivity.showOrderDetail(id: String) {
+          supportFragmentManager.commit {
+              setReorderingAllowed(true)
+              replace<OrderDetailFragment>(R.id.container, args = Bundle().apply { putString("orderId", id) })
+              addToBackStack("order")
+          }
+      }
+    expected: Tapping an order shows its detail screen with the id as a typed argument, and the system Back gesture returns to the list in both versions.
+    sources:
+      - title: Build a graph programmatically using the Kotlin DSL — Android Developers
+        url: https://developer.android.com/guide/navigation/design/kotlin-dsl
+      - title: Fragment transactions — Android Developers
+        url: https://developer.android.com/guide/fragments/transactions
+    validation: *excerpt
+  - id: custom-view
+    kind: code
+    title: A custom view in brief — onMeasure and onDraw
+    note: "Ask for a size in `onMeasure` (always ending in `setMeasuredDimension`), draw with `Paint` objects allocated once, and `invalidate()` when only the pixels change."
+    prerequisites:
+      - "The project above, with Material Components 1.12+ for `MaterialColors` and a Material 3 app theme; `colorPrimary` is AppCompat's attribute (Material 1.13+ no longer re-declares it in its non-transitive `R`)"
+      - "Add it like any view: `OrderProgressView(context).also { it.step = 2 }`; it sizes itself under `wrap_content`"
+    code: |-
+      class OrderProgressView(context: Context, attrs: AttributeSet? = null) : View(context, attrs) {
+          var step: Int = 0
+              set(value) {
+                  field = value.coerceIn(0, STEPS - 1)
+                  contentDescription = "Step ${field + 1} of $STEPS"     // TalkBack reads this, not the circles
+                  invalidate()                                          // same size: redraw only, no requestLayout
+              }
+
+          private val density = resources.displayMetrics.density
+          private val radius = 6 * density
+          private val done = Paint(Paint.ANTI_ALIAS_FLAG).apply {        // allocated once, never in onDraw
+              color = MaterialColors.getColor(this@OrderProgressView, androidx.appcompat.R.attr.colorPrimary)
+              strokeWidth = 2 * density
+          }
+          private val outline = MaterialColors.getColor(this, com.google.android.material.R.attr.colorOutline)
+          private val todo = Paint(done).apply { color = outline }
+
+          init { step = 0 }                                   // run the setter once: described from the start
+
+          override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+              val dots = STEPS * 2 * radius + (STEPS - 1) * 24 * density   // four dots, 24 dp apart
+              val wantedWidth = dots.roundToInt() + paddingStart + paddingEnd
+              setMeasuredDimension(
+                  View.resolveSize(wantedWidth, widthMeasureSpec),   // exact width wins; wrap_content gets ours
+                  View.resolveSize((2 * radius).roundToInt() + paddingTop + paddingBottom, heightMeasureSpec),
+              )
+          }
+
+          override fun onDraw(canvas: Canvas) {
+              val cy = paddingTop + radius
+              val gap = (width - paddingStart - paddingEnd - 2 * radius) / (STEPS - 1)
+              val mirror = if (layoutDirection == LAYOUT_DIRECTION_RTL) -1f else 1f   // RTL: step 1 on the right
+              canvas.withScale(x = mirror, pivotX = width / 2f) {
+                  for (i in 0 until STEPS) {
+                      val cx = paddingStart + radius + i * gap
+                      val paint = if (i <= step) done else todo
+                      if (i > 0) drawLine(cx - gap, cy, cx, cy, paint)
+                      drawCircle(cx, cy, radius, paint)
+                  }
+              }
+          }
+
+          companion object { const val STEPS = 4 }
+      }
+    expected: "Four dots joined by a line — about 120 dp wide under `wrap_content`, stretched under an exact width — filled in the primary colour up to the current step and in the outline colour after it, mirrored in right-to-left layouts."
+    sources:
+      - title: Create a custom drawing — Android Developers
+        url: https://developer.android.com/develop/ui/views/layout/custom-views/custom-drawing
+    validation: *excerpt
+  - id: traps
+    kind: rules
+    title: The traps
+    note: Most View-system bugs in review are one of these.
+    items:
+      - tone: bad
+        text: "Holding an `Activity`, a `View` or a binding in a ViewModel, a singleton or a long-lived callback: after a rotation it pins the whole old view tree in memory. Pass ids and data, or the application context."
+      - tone: bad
+        text: "Keeping a Fragment's binding after `onDestroyView`: the back stack keeps the fragment but destroys its views. Null the binding (and adapters that reference views) there."
+      - tone: bad
+        text: "`lifecycleScope.launch { flow.collect { } }` in a Fragment: it follows the fragment, not its view, and keeps collecting while stopped. Use `viewLifecycleOwner.repeatOnLifecycle(STARTED)`."
+      - tone: bad
+        text: "`launchWhenStarted` and friends (deprecated since lifecycle 2.6) suspend instead of cancelling, so upstream flows keep working in the background — use `repeatOnLifecycle`."
+      - tone: bad
+        text: "Network, disk or JSON parsing on the main thread: dropped frames, and an ANR after about 5 seconds. Move it behind `withContext(Dispatchers.IO)` in the repository."
+      - tone: bad
+        text: "`notifyDataSetChanged()` after every change rebinds every row and loses animations: `submitList` with a `DiffUtil.ItemCallback`."
+      - tone: bad
+        text: "Ignoring window insets: from target SDK 35 the app is edge-to-edge on Android 15+, so the first and last views slide under the status and navigation bars. Pad with `ViewCompat.setOnApplyWindowInsetsListener`, and give scrolling lists `clipToPadding = false`."
+      - tone: good
+        text: "Views that hold user input need a stable resource id (not `View.generateViewId()`) for their state to be restored after recreation."
+      - tone: good
+        text: "Set click listeners in `onCreateViewHolder` and read `bindingAdapterPosition` when clicked; the position captured at bind time goes stale."
+      - tone: neutral
+        text: "Need a measured size? `doOnLayout { }` (androidx.core) runs now if the view is already laid out, otherwise after the next layout; `doOnNextLayout` always waits."

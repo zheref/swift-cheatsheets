@@ -106,6 +106,729 @@ cards:
       dir.Delete(recursive: true);
     expected: "src/app/Program.cs | 3 events"
     validation: *ran
+  - id: where-things-belong
+    kind: table
+    title: Where things belong
+    note: "Ask the runtime for the folder; a hard-coded path breaks on the next OS, user or install location."
+    headers: [Purpose, Accessor, Notes]
+    rows:
+      - ["Scratch for one operation", "`Path.GetTempPath()`, `Directory.CreateTempSubdirectory()`", "shared with every process and purged by the OS: delete what you create"]
+      - ["App data the user never browses (caches, databases, logs)", "`Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData)` + your app's folder", "`%LOCALAPPDATA%` on Windows, `~/Library/Application Support` on macOS, `~/.local/share` on Linux"]
+      - ["Settings that roam with a Windows domain user", "`Environment.SpecialFolder.ApplicationData`", "`%APPDATA%` on Windows, `~/.config` on Linux; the same folder as above on macOS"]
+      - ["Files the user created and expects to find", "`Environment.SpecialFolder.MyDocuments`", "write there only when the user asks (a save dialog), never silently"]
+      - ["Data shared by every user of the machine", "`Environment.SpecialFolder.CommonApplicationData`", "`C:\\ProgramData` on Windows; writing usually needs elevated rights"]
+      - ["Files shipped with the app", "`AppContext.BaseDirectory`", "read-only once installed; not `Environment.CurrentDirectory`, which is wherever the app was launched from"]
+      - ["A .NET MAUI app (Android, iOS, Mac Catalyst, Windows)", "`FileSystem.AppDataDirectory`, `FileSystem.CacheDirectory`, `FileSystem.OpenAppPackageFileAsync`", "`AppDataDirectory` is private and backed up (Android Auto Backup, iCloud); `CacheDirectory` is not, and the OS may clear it; bundled assets open as streams, not paths"]
+    sources:
+      - title: Environment.SpecialFolder — .NET API
+        url: https://learn.microsoft.com/en-us/dotnet/api/system.environment.specialfolder
+      - title: File system helpers — .NET MAUI
+        url: https://learn.microsoft.com/en-us/dotnet/maui/platform-integration/storage/file-system-helpers
+  - id: path-combine-and-join
+    kind: code
+    title: Path.Combine, Path.Join, and untrusted names
+    note: "Build paths with `Path` APIs, never `+`; `Combine` restarts at a rooted segment, `Join` does not, and neither stops `..` — resolve and check (lexically; links need one more check)."
+    prerequisites: *run
+    code: |-
+      static string Show(string path) => path.Replace('\\', '/');   // print the same on Windows
+
+      // Combine restarts at a rooted segment; Join only concatenates. Neither normalizes "..".
+      Console.WriteLine($"Combine: {Show(Path.Combine("uploads", "2026", "invoice.pdf"))}");
+      Console.WriteLine($"Combine(\"uploads\", \"/etc/passwd\"): {Show(Path.Combine("uploads", "/etc/passwd"))}");
+      Console.WriteLine($"Join(\"uploads\", \"/etc/passwd\"):    {Show(Path.Join("uploads", "/etc/passwd"))}");
+
+      var export = Path.Join("exports", "orders.2026-11.csv");
+      Console.WriteLine($"{Path.GetFileName(export)} | {Path.GetFileNameWithoutExtension(export)}"
+                        + $" | {Path.GetExtension(export)} | {Show(Path.ChangeExtension(export, ".json"))}");
+
+      // An uploaded file name is untrusted: join, resolve, then prove the result is still under the root.
+      var root = Directory.CreateTempSubdirectory("uploads-");
+      try
+      {
+          foreach (var name in new[] { "invoice.pdf", "../../.ssh/id_rsa", "/etc/passwd", "q4/../summary.csv", "" })
+          {
+              var path = ResolveUnder(root.FullName, name);
+              var shown = path is null ? "rejected" : Show(Path.GetRelativePath(root.FullName, path));
+              Console.WriteLine($"{$"\"{name}\"",-20} -> {shown}");
+          }
+      }
+      finally { root.Delete(recursive: true); }
+
+      // A lexical check only: if entries can be symbolic links (an extracted archive), also check
+      // new FileInfo(full).ResolveLinkTarget(returnFinalTarget: true), or refuse FileAttributes.ReparsePoint.
+      static string? ResolveUnder(string root, string untrustedName)
+      {
+          var fullRoot = Path.TrimEndingDirectorySeparator(Path.GetFullPath(root)) + Path.DirectorySeparatorChar;
+          var full = Path.GetFullPath(Path.Join(fullRoot, untrustedName));   // collapses ".." segments
+          if (full.Length <= fullRoot.Length) return null;                   // "" or "." is the root itself
+          var comparison = OperatingSystem.IsWindows()                       // Windows paths are case-insensitive
+              ? StringComparison.OrdinalIgnoreCase
+              : StringComparison.Ordinal;
+          return full.StartsWith(fullRoot, comparison) ? full : null;
+      }
+    expected: |-
+      Combine: uploads/2026/invoice.pdf
+      Combine("uploads", "/etc/passwd"): /etc/passwd
+      Join("uploads", "/etc/passwd"):    uploads/etc/passwd
+      orders.2026-11.csv | orders.2026-11 | .csv | exports/orders.2026-11.json
+      "invoice.pdf"        -> invoice.pdf
+      "../../.ssh/id_rsa"  -> rejected
+      "/etc/passwd"        -> etc/passwd
+      "q4/../summary.csv"  -> summary.csv
+      ""                   -> rejected
+    sources:
+      - title: Path.Join — .NET API
+        url: https://learn.microsoft.com/en-us/dotnet/api/system.io.path.join
+      - title: Path.Combine — .NET API
+        url: https://learn.microsoft.com/en-us/dotnet/api/system.io.path.combine
+    validation: &ran-2026-11-16
+      status: ran
+      toolchain: .NET SDK 9.0.304 (net9.0, C# 13)
+      date: "2026-11-16"
+  - id: real-durability
+    kind: code
+    title: "Real durability: Flush(true) and File.Replace"
+    note: "When \"the power went out\" has to be survivable (a ledger, a journal): flush to the device, then swap in the new file — a rename on Linux and macOS, not atomic on Windows — keeping a backup to restore at start-up."
+    prerequisites: *run
+    code: |-
+      using System.Text;
+
+      // The order ledger must survive a power cut: bytes on the device first, then swap the new file in.
+      var dir = Directory.CreateTempSubdirectory("ledger-");
+      try
+      {
+          var ledger = Path.Join(dir.FullName, "ledger.json");
+          SaveDurably(ledger, """{"orders":1}""");
+          SaveDurably(ledger, """{"orders":2}""");
+          Console.WriteLine($"current {File.ReadAllText(ledger)}, backup {File.ReadAllText(ledger + ".bak")}");
+          var files = Directory.GetFiles(dir.FullName).Select(Path.GetFileName).Order();
+          Console.WriteLine($"files: {string.Join(", ", files)}");
+      }
+      finally { dir.Delete(recursive: true); }
+
+      static void SaveDurably(string path, string json)
+      {
+          var temp = path + ".tmp";                            // a sibling: same volume, so the swap is a rename
+          using (var stream = new FileStream(temp, FileMode.Create, FileAccess.Write, FileShare.None))
+          {
+              stream.Write(Encoding.UTF8.GetBytes(json));
+              stream.Flush(flushToDisk: true);                 // fsync / FlushFileBuffers: past the OS cache
+          }
+          try
+          {
+              // Linux/macOS: rename(2), atomic. Windows: ReplaceFileW (per the runtime source) is NOT atomic — it
+              // can leave only path.bak, and it fails while a reader holds path without FileShare.Delete.
+              File.Replace(temp, path, path + ".bak");
+          }
+          catch (FileNotFoundException) when (!File.Exists(path))   // the first save: nothing to replace yet
+          {
+              File.Move(temp, path);
+          }
+          finally
+          {
+              File.Delete(temp);                               // gone on success; never left behind on failure
+          }
+      }
+      // On start-up: if ledger.json is missing but ledger.json.bak exists, restore the backup.
+      // Windows readers: open with FileShare.ReadWrite | FileShare.Delete, or the save fails while they read.
+      // Flush(true) is F_FULLFSYNC on macOS (per the runtime source). The BCL cannot fsync a directory, so on
+      // Linux and macOS the rename itself may not be durable yet: where that matters, use SQLite.
+    expected: |-
+      current {"orders":2}, backup {"orders":1}
+      files: ledger.json, ledger.json.bak
+    sources:
+      - title: File.Replace — .NET API
+        url: https://learn.microsoft.com/en-us/dotnet/api/system.io.file.replace
+    validation: *ran-2026-11-16
+  - id: streaming-large-write
+    kind: code
+    title: Streaming a large write
+    note: "Export millions of rows in constant memory: one buffered `StreamWriter`, `await using` so the last flush is awaited, a temporary file published by a move."
+    prerequisites: *run
+    code: |-
+      using System.Globalization;
+      using System.Text;
+
+      // Export 200,000 order rows to CSV without holding them: one buffered writer, a temporary file, one move.
+      var dir = Directory.CreateTempSubdirectory("export-");
+      try
+      {
+          var target = Path.Join(dir.FullName, "orders.csv");
+          var temp = target + ".partial";
+          var options = new FileStreamOptions
+          {
+              Mode = FileMode.CreateNew,
+              Access = FileAccess.Write,
+              Options = FileOptions.Asynchronous,
+              BufferSize = 0,                                  // StreamWriter already buffers; skip a second copy
+              PreallocationSize = 8 << 20,                     // a hint: reserve ~8 MB up front, fewer extents
+          };
+          var utf8 = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false);   // Encoding.UTF8 would write a BOM
+          await using (var writer = new StreamWriter(temp, utf8, options))
+          {
+              writer.NewLine = "\n";                           // not Environment.NewLine: same bytes on every OS
+              await writer.WriteLineAsync("id,customer,total");
+              foreach (var row in Orders(200_000))
+                  await writer.WriteLineAsync(row);            // buffered: a syscall per buffer, not per row
+          }                                                    // await using: the final flush is awaited too
+          File.Move(temp, target);
+
+          var lines = 0;
+          await foreach (var _ in File.ReadLinesAsync(target)) lines++;
+          var size = new FileInfo(target).Length;
+          Console.WriteLine(string.Create(CultureInfo.InvariantCulture, $"{lines:N0} lines, {size:N0} bytes"));
+      }
+      finally { dir.Delete(recursive: true); }
+
+      static IEnumerable<string> Orders(int count)
+      {
+          for (var i = 1; i <= count; i++)
+              yield return string.Create(CultureInfo.InvariantCulture, $"{i},customer-{i % 997},{i % 500 + 0.99m}");
+      }
+    expected: |-
+      200,001 lines, 5,222,805 bytes
+    sources:
+      - title: FileStreamOptions — .NET API
+        url: https://learn.microsoft.com/en-us/dotnet/api/system.io.filestreamoptions
+    validation: *ran-2026-11-16
+  - id: external-merge-sort
+    kind: code
+    title: Algorithm — external merge sort
+    note: "Sort a file larger than RAM: sorted runs that fit in memory, then a k-way merge through a `PriorityQueue` holding one line per run."
+    prerequisites: *run
+    code: |-
+      // Sort an order-id file too big for memory: sorted runs of 5,000 lines, then a k-way merge.
+      // O(n log n) overall; the merge is O(n log k) with O(k) memory. In production, size runs by bytes.
+      var dir = Directory.CreateTempSubdirectory("sort-");
+      try
+      {
+          var input = Path.Join(dir.FullName, "orders.txt");
+          var random = new Random(5);
+          File.WriteAllLines(input, Enumerable.Range(0, 20_000).Select(_ => $"ord-{random.Next(1_000_000):D6}"));
+
+          var runs = new List<string>();
+          foreach (var chunk in File.ReadLines(input).Chunk(5_000))   // lazy: one chunk in memory at a time
+          {
+              Array.Sort(chunk, StringComparer.Ordinal);       // ordinal: fast, and the same on every machine
+              runs.Add(Path.Join(dir.FullName, $"run-{runs.Count}.txt"));
+              File.WriteAllLines(runs[^1], chunk);
+          }
+
+          var output = Path.Join(dir.FullName, "orders.sorted.txt");
+          MergeRuns(runs, output);
+          runs.ForEach(File.Delete);
+          var sorted = File.ReadAllLines(output);
+          var inOrder = sorted.SequenceEqual(sorted.Order(StringComparer.Ordinal));
+          Console.WriteLine($"{runs.Count} runs, {sorted.Length} lines, in order: {inOrder}, from {sorted[0]}");
+      }
+      finally { dir.Delete(recursive: true); }
+
+      static void MergeRuns(List<string> runs, string output)
+      {
+          var readers = runs.Select(r => new StreamReader(r)).ToList();
+          try
+          {
+              var heads = new PriorityQueue<int, string>(StringComparer.Ordinal);   // run index, by current line
+              for (var i = 0; i < readers.Count; i++)
+                  if (readers[i].ReadLine() is { } first) heads.Enqueue(i, first);
+              using var writer = new StreamWriter(output);
+              while (heads.TryDequeue(out var run, out var smallest))      // always the global minimum
+              {
+                  writer.WriteLine(smallest);
+                  if (readers[run].ReadLine() is { } next) heads.Enqueue(run, next);   // refill from that run
+              }
+          }
+          finally { readers.ForEach(r => r.Dispose()); }
+      }
+    expected: |-
+      4 runs, 20000 lines, in order: True, from ord-000014
+    validation: *ran-2026-11-16
+  - id: offset-index
+    kind: code
+    title: Algorithm — an offset index for random access
+    note: "Build the index once in one sequential pass, then read any line with one positional `RandomAccess.Read` — a log viewer that jumps to line 50,001."
+    prerequisites: *run
+    code: |-
+      using System.Text;
+
+      // Jump to any line of a large log in one read: index the byte offset of every line start once.
+      var dir = Directory.CreateTempSubdirectory("index-");
+      try
+      {
+          var log = Path.Join(dir.FullName, "access.log");
+          var lines = Enumerable.Range(0, 100_000)
+              .Select(i => $"{i} GET /orders/{i * 7 % 1000} {(i % 50 == 0 ? 500 : 200)}\n");
+          File.WriteAllText(log, string.Concat(lines));
+
+          var offsets = BuildIndex(log);                       // 8 bytes per line; save it beside the file
+          using var handle = File.OpenHandle(log);             // RandomAccess: positional reads, no shared cursor
+          foreach (var n in new[] { 0, 50_001, 99_999 })
+              Console.WriteLine($"line {n}: {ReadLine(handle, offsets, n)}");
+      }
+      finally { dir.Delete(recursive: true); }
+
+      static List<long> BuildIndex(string path)
+      {
+          var offsets = new List<long> { 0 };
+          using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 1 << 16,
+                                            FileOptions.SequentialScan);
+          var buffer = new byte[1 << 16];
+          long position = 0;
+          int read;
+          while ((read = stream.Read(buffer)) > 0)
+          {
+              for (var i = 0; i < read; i++)
+                  if (buffer[i] == (byte)'\n') offsets.Add(position + i + 1);
+              position += read;
+          }
+          if (offsets[^1] == stream.Length) offsets.RemoveAt(offsets.Count - 1);   // a final newline starts nothing
+          return offsets;
+      }
+
+      static string ReadLine(Microsoft.Win32.SafeHandles.SafeFileHandle handle, List<long> offsets, int n)
+      {
+          var end = n + 1 < offsets.Count ? offsets[n + 1] : RandomAccess.GetLength(handle);
+          var bytes = new byte[end - offsets[n]];
+          var read = RandomAccess.Read(handle, bytes, fileOffset: offsets[n]);   // fewer if the file shrank since
+          return Encoding.UTF8.GetString(bytes, 0, read).TrimEnd('\r', '\n');
+      }
+      // Fixed-width records need no index: offset = n * recordSize, and a sorted file can be binary searched.
+    expected: |-
+      line 0: 0 GET /orders/0 500
+      line 50001: 50001 GET /orders/7 200
+      line 99999: 99999 GET /orders/993 200
+    sources:
+      - title: RandomAccess class — .NET API
+        url: https://learn.microsoft.com/en-us/dotnet/api/system.io.randomaccess
+    validation: *ran-2026-11-16
+  - id: tail-last-lines
+    kind: code
+    title: Algorithm — tail -n
+    note: "The last lines of a huge log, reading fixed blocks backwards from the end — the same lines as `File.ReadAllLines(path).TakeLast(n)` on short, empty, blank-line and CRLF files."
+    prerequisites: *run
+    code: |-
+      using System.Text;
+
+      // tail -n: the last lines of a huge log, reading 4 KB blocks backwards from the end — never the whole file.
+      var dir = Directory.CreateTempSubdirectory("tail-");
+      try
+      {
+          var log = Path.Join(dir.FullName, "sync.log");
+          var lines = Enumerable.Range(1, 50_000).Select(i => $"sync batch {i % 1_000}: ok\n");
+          File.WriteAllText(log, string.Concat(lines));
+          Console.WriteLine(string.Join(" | ", Tail(log, 3)));
+
+          var crlf = Path.Join(dir.FullName, "short.txt");     // fewer lines than asked, a blank one, CRLF ends
+          File.WriteAllText(crlf, "first\r\n\r\nlast\r\n");
+          Console.WriteLine($"[{string.Join("|", Tail(crlf, 10))}] same as ReadAllLines: "
+                            + $"{Tail(crlf, 10).SequenceEqual(File.ReadAllLines(crlf).TakeLast(10))}");
+
+          var empty = Path.Join(dir.FullName, "empty.txt");
+          File.WriteAllText(empty, "");
+          Console.WriteLine($"empty file: {Tail(empty, 3).Length} lines");
+      }
+      finally { dir.Delete(recursive: true); }
+
+      static string[] Tail(string path, int count)
+      {
+          if (count <= 0) return [];
+          using var handle = File.OpenHandle(path);
+          var start = RandomAccess.GetLength(handle);
+          var blocks = new List<byte[]>();
+          var newlines = 0;
+          while (start > 0 && newlines <= count)               // count + 1 newlines: the last line ends with one
+          {
+              var block = new byte[Math.Min(4_096, start)];
+              start -= block.Length;
+              RandomAccess.Read(handle, block, start);
+              newlines += block.Count(b => b == (byte)'\n');
+              blocks.Insert(0, block);
+          }
+          var text = Encoding.UTF8.GetString([.. blocks.SelectMany(b => b)]);
+          if (text.Length == 0) return [];
+          if (text.EndsWith('\n')) text = text[..^1];          // the last line's terminator, not an empty line
+          return [.. text.Split('\n').TakeLast(count).Select(line => line.TrimEnd('\r'))];
+      }
+    expected: |-
+      sync batch 998: ok | sync batch 999: ok | sync batch 0: ok
+      [first||last] same as ReadAllLines: True
+      empty file: 0 lines
+    sources:
+      - title: RandomAccess class — .NET API
+        url: https://learn.microsoft.com/en-us/dotnet/api/system.io.randomaccess
+    validation: *ran-2026-11-16
+  - id: dedupe-and-checksum
+    kind: code
+    title: Algorithm — distinct lines and a checksum
+    note: "Count distinct lines with 8 bytes of hash each instead of the line (memory still grows with distinct lines), and SHA-256 a file of any size without loading it."
+    prerequisites: *run
+    code: |-
+      using System.Security.Cryptography;
+      using System.Text;
+
+      var dir = Directory.CreateTempSubdirectory("tools-");
+      try
+      {
+          var log = Path.Join(dir.FullName, "sync.log");
+          var lines = Enumerable.Range(1, 50_000).Select(i => $"sync batch {i % 1_000}: ok\n");
+          File.WriteAllText(log, string.Concat(lines));
+
+          // Distinct lines, keeping 8 bytes of SHA-256 per distinct line instead of the line itself: memory still
+          // grows with distinct lines, and a 64-bit collision would merge two lines — fine for statistics only.
+          var seen = new HashSet<ulong>();
+          foreach (var line in File.ReadLines(log))
+              seen.Add(BitConverter.ToUInt64(SHA256.HashData(Encoding.UTF8.GetBytes(line))));
+          Console.WriteLine($"{seen.Count} distinct lines");
+
+          // Checksum a file of any size: HashDataAsync reads the stream in chunks.
+          await using var stream = File.OpenRead(log);
+          var digest = await SHA256.HashDataAsync(stream);
+          Console.WriteLine($"sha256 {Convert.ToHexString(digest).ToLowerInvariant()[..16]}...");
+      }
+      finally { dir.Delete(recursive: true); }
+    expected: |-
+      1000 distinct lines
+      sha256 29010b25d5492e76...
+    sources:
+      - title: SHA256.HashDataAsync — .NET API
+        url: https://learn.microsoft.com/en-us/dotnet/api/system.security.cryptography.sha256.hashdataasync
+    validation: *ran-2026-11-16
+  - id: attributes-and-permissions
+    kind: code
+    title: Attributes and permissions
+    note: "`FileInfo` for size, times and the read-only flag; `UnixFileMode` to create a secret owner-only — on Windows those APIs throw, and a file under the user's profile is already private to them (encrypt it with DPAPI `ProtectedData`, Windows only, from the `System.Security.Cryptography.ProtectedData` package)."
+    prerequisites:
+      - .NET 8 SDK or later; the output shown is from Linux or macOS (on Windows the `UnixFileMode` part is skipped)
+      - "`dotnet new console -o Demo`, replace `Demo/Program.cs` with the example, then `dotnet run --project Demo` — it works in a fresh temporary directory and removes it"
+    code: |-
+      // Metadata through FileInfo, and an API token file only its owner can read (Linux and macOS).
+      var dir = Directory.CreateTempSubdirectory("attrs-");
+      var report = new FileInfo(Path.Join(dir.FullName, "report.csv"));
+      try
+      {
+          File.WriteAllText(report.FullName, "id,total\n1,9.99\n");
+          report.LastWriteTimeUtc = new DateTime(2026, 11, 1, 8, 30, 0, DateTimeKind.Utc);   // the source's time
+          report.IsReadOnly = true;
+          report.Refresh();                                    // FileInfo caches: re-read after a change
+          Console.WriteLine($"{report.Name}: {report.Length} bytes, modified {report.LastWriteTimeUtc:O}, "
+                            + $"read-only {report.IsReadOnly}");
+
+          var tokenPath = Path.Join(dir.FullName, "api-token");
+          if (!OperatingSystem.IsWindows())
+          {
+              // Created owner-only (still filtered by the umask): a chmod after creating would leave a moment
+              // when others could open it.
+              var options = new FileStreamOptions
+              {
+                  Mode = FileMode.CreateNew,
+                  Access = FileAccess.Write,
+                  UnixCreateMode = UnixFileMode.UserRead | UnixFileMode.UserWrite,   // 0600
+              };
+              using (var writer = new StreamWriter(tokenPath, options)) writer.Write("tok_test_123");
+              Console.WriteLine($"token: {Describe(File.GetUnixFileMode(tokenPath))}");
+              File.SetUnixFileMode(tokenPath, UnixFileMode.UserRead);              // read-only once written
+              Console.WriteLine($"after chmod: {Describe(File.GetUnixFileMode(tokenPath))}");
+          }
+      }
+      finally
+      {
+          if (File.Exists(report.FullName)) report.IsReadOnly = false;   // Windows cannot delete a read-only file
+          dir.Delete(recursive: true);
+      }
+
+      static string Describe(UnixFileMode mode) => $"{mode} (0{Convert.ToString((int)mode, 8)})";
+    expected: |-
+      report.csv: 16 bytes, modified 2026-11-01T08:30:00.0000000Z, read-only True
+      token: UserWrite, UserRead (0600)
+      after chmod: UserRead (0400)
+    sources:
+      - title: UnixFileMode enum — .NET API
+        url: https://learn.microsoft.com/en-us/dotnet/api/system.io.unixfilemode
+      - title: FileInfo class — .NET API
+        url: https://learn.microsoft.com/en-us/dotnet/api/system.io.fileinfo
+    validation: *ran-2026-11-16
+  - id: sharing-and-locking
+    kind: code
+    title: File sharing and locking
+    note: "`FileShare` says what others may do while you hold the file; on Linux and macOS it is an advisory `flock` that only other lockers honour (a no-op where `flock` is missing or `DOTNET_SYSTEM_IO_DISABLEFILELOCKING` is set), and `FileStream.Lock` (byte ranges) is unsupported on macOS."
+    prerequisites: *run
+    code: |-
+      // Only one sync job may run at a time, even across processes: hold a lock file opened with FileShare.None.
+      var dir = Directory.CreateTempSubdirectory("sync-");
+      try
+      {
+          var lockPath = Path.Join(dir.FullName, "sync.lock");
+          using (var first = TryAcquire(lockPath))
+          {
+              Console.WriteLine($"first job got the lock: {first is not null}");
+              using var second = TryAcquire(lockPath);
+              Console.WriteLine($"second job got the lock: {second is not null}");
+          }
+          Console.WriteLine($"lock file removed on close: {!File.Exists(lockPath)}");
+
+          // Readers can follow a log while one writer appends, if each side allows what the other does.
+          var log = Path.Join(dir.FullName, "events.log");
+          var appending = new FileStream(log, FileMode.Append, FileAccess.Write, FileShare.Read);
+          using var writer = new StreamWriter(appending) { AutoFlush = true };
+          writer.Write("started\n");
+          var following = new FileStream(log, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+          using var reader = new StreamReader(following);
+          Console.WriteLine($"tail -f sees: {reader.ReadLine()}");
+      }
+      finally { dir.Delete(recursive: true); }
+
+      static FileStream? TryAcquire(string path)
+      {
+          try
+          {
+              // Keep exactly these options: on Linux/macOS .NET re-checks that the locked file is still the one at
+              // the path only for OpenOrCreate + FileShare.None + DeleteOnClose (per the runtime source).
+              return new FileStream(path, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None,
+                                    bufferSize: 1, FileOptions.DeleteOnClose);
+          }
+          catch (IOException)                                  // a sharing violation: someone holds it
+          {
+              return null;
+          }
+      }
+    expected: |-
+      first job got the lock: True
+      second job got the lock: False
+      lock file removed on close: True
+      tail -f sees: started
+    sources:
+      - title: FileShare enum — .NET API
+        url: https://learn.microsoft.com/en-us/dotnet/api/system.io.fileshare
+      - title: FileStream.Lock — .NET API
+        url: https://learn.microsoft.com/en-us/dotnet/api/system.io.filestream.lock
+    validation: *ran-2026-11-16
+  - id: files-are-blocking-work
+    kind: compare
+    title: "Files are blocking work: async APIs, never .Result"
+    note: "A disk can stall for seconds; keep it off the UI thread of a MAUI, WPF or WinUI app with the `*Async` APIs and `FileOptions.Asynchronous`, awaited all the way up."
+    prerequisites: *run
+    columns:
+      - label: Blocks the caller
+        tone: bad
+        code: |-
+          var dir = Directory.CreateTempSubdirectory("settings-");
+          try
+          {
+              var path = Path.Join(dir.FullName, "settings.json");
+              File.WriteAllText(path, """{"theme":"dark"}""");
+
+              // On a UI thread (MAUI, WPF, WinUI) this freezes the window for the whole read,
+              // and .Result deadlocks when the awaited code needs that same thread back.
+              string LoadSettings() => File.ReadAllTextAsync(path).Result;
+
+              var settings = LoadSettings();
+              Console.WriteLine($"{settings.Length} chars: {settings}");
+          }
+          finally { dir.Delete(recursive: true); }
+      - label: Async all the way
+        tone: good
+        code: |-
+          var dir = Directory.CreateTempSubdirectory("settings-");
+          try
+          {
+              var path = Path.Join(dir.FullName, "settings.json");
+              await File.WriteAllTextAsync(path, """{"theme":"dark"}""");
+
+              // Async all the way: FileOptions.Asynchronous asks for real overlapped I/O (it matters on Windows),
+              // and the UI thread is free while the disk works. Cancellable when the page closes.
+              async Task<string> LoadSettingsAsync(CancellationToken token)
+              {
+                  await using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read,
+                                                          bufferSize: 4_096, FileOptions.Asynchronous);
+                  using var reader = new StreamReader(stream);
+                  return await reader.ReadToEndAsync(token);
+              }
+
+              var settings = await LoadSettingsAsync(CancellationToken.None);
+              Console.WriteLine($"{settings.Length} chars: {settings}");
+          }
+          finally { dir.Delete(recursive: true); }
+    expected: |-
+      16 chars: {"theme":"dark"}
+    sources:
+      - title: FileOptions enum — .NET API
+        url: https://learn.microsoft.com/en-us/dotnet/api/system.io.fileoptions
+    validation: *ran-2026-11-16
+  - id: pipelines
+    kind: code
+    title: System.IO.Pipelines in brief
+    note: "For parsers over large files or sockets: `PipeReader` hands you pooled buffers and keeps a partial record for the next read, so nothing is copied into strings."
+    prerequisites:
+      - .NET 8 SDK or later
+      - "`dotnet new console -o Demo`; on .NET 8 also `dotnet add Demo package System.IO.Pipelines` (in-box from .NET 9)"
+      - "Replace `Demo/Program.cs` with the example, then `dotnet run --project Demo` — it works in a fresh temporary directory and removes it"
+    code: |-
+      using System.Buffers;
+      using System.IO.Pipelines;
+
+      // Count error lines in a large log without allocating a string per line: PipeReader + SequenceReader.
+      var dir = Directory.CreateTempSubdirectory("pipes-");
+      try
+      {
+          var log = Path.Join(dir.FullName, "app.log");
+          var lines = Enumerable.Range(0, 100_000).Select(i => $"{(i % 40 == 0 ? "ERROR" : "INFO")} request {i}\n");
+          await File.WriteAllTextAsync(log, string.Concat(lines));
+
+          var reader = PipeReader.Create(File.OpenRead(log), new StreamPipeReaderOptions(bufferSize: 1 << 16));
+          long total = 0, errors = 0;
+          try
+          {
+              while (true)
+              {
+                  var result = await reader.ReadAsync();
+                  var consumed = CountLines(result.Buffer, ref total, ref errors);
+                  reader.AdvanceTo(consumed, examined: result.Buffer.End);   // keep the partial last line for later
+                  if (result.IsCompleted) break;               // (a last line without '\n' stays in Buffer)
+              }
+          }
+          finally { await reader.CompleteAsync(); }            // also disposes the FileStream
+          Console.WriteLine($"{total} lines, {errors} errors");
+      }
+      finally { dir.Delete(recursive: true); }
+
+      // SequenceReader is a ref struct: it lives in a synchronous helper, not across an await.
+      static SequencePosition CountLines(ReadOnlySequence<byte> buffer, ref long total, ref long errors)
+      {
+          var reader = new SequenceReader<byte>(buffer);
+          while (reader.TryReadTo(out ReadOnlySequence<byte> line, (byte)'\n'))   // a line may span two segments
+          {
+              total++;
+              if (new SequenceReader<byte>(line).IsNext("ERROR"u8)) errors++;
+          }
+          return reader.Position;
+      }
+    expected: |-
+      100000 lines, 2500 errors
+    sources:
+      - title: System.IO.Pipelines — .NET
+        url: https://learn.microsoft.com/en-us/dotnet/standard/io/pipelines
+    validation: *ran-2026-11-16
+  - id: errors-by-exception
+    kind: table
+    title: Error handling by exception
+    note: "Try the operation and catch the specific exception — a check first (`File.Exists`) is stale by the time you act on it."
+    headers: [Situation, You catch, Notes]
+    rows:
+      - ["File missing", "`FileNotFoundException`", "derives from `IOException`, so catch it first; `FileName` says which file"]
+      - ["A folder in the path missing", "`DirectoryNotFoundException`", "also an `IOException`; `Directory.CreateDirectory` is idempotent — call it before writing"]
+      - ["No permission, or a read-only file", "`UnauthorizedAccessException`", "**not** an `IOException`: a `catch (IOException)` alone misses it"]
+      - ["Open elsewhere (sharing violation)", "`IOException`", "on Windows `HResult` is `0x80070020`; retry with backoff, then name the file in the error"]
+      - ["Already exists (`FileMode.CreateNew`, `File.Move` without overwrite)", "`IOException`", "on Windows `HResult & 0xFFFF` is 80 or 183"]
+      - ["Disk full", "`IOException`", "on Windows `0x80070070`; often thrown by `Flush` or `Dispose`, not by `Write`"]
+      - ["Path too long", "`PathTooLongException`", "an `IOException` too"]
+      - ["Any of the above, generically", "`catch (IOException e)`", "on Linux and macOS the `HResult` of a plain `IOException` is not a Windows code: decide by type and operation, not by number"]
+    sources:
+      - title: Handling I/O errors in .NET
+        url: https://learn.microsoft.com/en-us/dotnet/standard/io/handling-io-errors
+  - id: testing-file-code
+    kind: code
+    title: Testing file code in a temp directory
+    note: "A directory per test from `Directory.CreateTempSubdirectory`, deleted in `Dispose` whatever happens — in xUnit, the test class's constructor and `Dispose` — around code that takes its root as a parameter."
+    prerequisites: *run
+    code: |-
+      // Each test gets its own directory, removed whatever happens: tests can run in parallel and leave nothing.
+      SaveReplacesTheFileAndLeavesNoTemporaries();
+      Console.WriteLine("PASS save replaces the file and leaves no temporaries");
+      // The failure paths, in a directory of their own: see the next card.
+
+      static void SaveReplacesTheFileAndLeavesNoTemporaries()
+      {
+          using var dir = new TempDirectory();             // xUnit: create in the constructor, delete in Dispose
+          var store = new SettingsStore(dir.Root);
+          store.Save("""{"theme":"dark"}""");
+          store.Save("""{"theme":"light"}""");
+          Expect(Directory.GetFiles(dir.Root).Select(Path.GetFileName).SequenceEqual(["settings.json"]));
+          Expect(store.Load() == """{"theme":"light"}""");
+      }
+
+      static void Expect(bool condition)
+      {
+          if (!condition) throw new InvalidOperationException("expectation failed");
+      }
+
+      sealed class TempDirectory : IDisposable
+      {
+          public string Root { get; } = Directory.CreateTempSubdirectory("test-").FullName;
+          public void Dispose() => Directory.Delete(Root, recursive: true);
+      }
+
+      // The code under test takes its root directory instead of a hard-coded or ambient path.
+      sealed class SettingsStore(string root)
+      {
+          private readonly string _path = Path.Join(root, "settings.json");
+
+          public string Load() => File.ReadAllText(_path);
+
+          public void Save(string json)                        // flush and durability: see real-durability
+          {
+              var temp = $"{_path}.{Guid.NewGuid():N}.tmp";    // unique: two writers never share a temp file
+              File.WriteAllText(temp, json);
+              File.Move(temp, _path, overwrite: true);
+          }
+      }
+    expected: |-
+      PASS save replaces the file and leaves no temporaries
+    sources:
+      - title: Directory.CreateTempSubdirectory — .NET API
+        url: https://learn.microsoft.com/en-us/dotnet/api/system.io.directory.createtempsubdirectory
+    validation: *ran-2026-11-16
+  - id: testing-file-failures
+    kind: code
+    title: Testing the failure path of file code
+    note: "A throwaway directory makes the error cases cheap to test too — here, loading before any save must throw `FileNotFoundException`, the case a `File.Exists` shortcut would hide."
+    prerequisites: *run
+    code: |-
+      // Failure paths are cheap to test in a throwaway directory: nothing to mock, nothing left behind.
+      LoadBeforeAnySaveThrowsFileNotFound();
+      Console.WriteLine("PASS load before any save throws FileNotFoundException");
+
+      static void LoadBeforeAnySaveThrowsFileNotFound()
+      {
+          using var dir = new TempDirectory();
+          ExpectThrows<FileNotFoundException>(() => new SettingsStore(dir.Root).Load());
+      }
+
+      static void ExpectThrows<T>(Action act) where T : Exception   // xUnit: Assert.Throws<T>(act)
+      {
+          try
+          {
+              act();
+          }
+          catch (T)
+          {
+              return;
+          }
+          throw new InvalidOperationException($"expected {typeof(T).Name}");
+      }
+
+      sealed class TempDirectory : IDisposable
+      {
+          public string Root { get; } = Directory.CreateTempSubdirectory("test-").FullName;
+          public void Dispose() => Directory.Delete(Root, recursive: true);
+      }
+
+      // The same store as the previous card.
+      sealed class SettingsStore(string root)
+      {
+          private readonly string _path = Path.Join(root, "settings.json");
+
+          public string Load() => File.ReadAllText(_path);
+
+          public void Save(string json)                        // flush and durability: see real-durability
+          {
+              var temp = $"{_path}.{Guid.NewGuid():N}.tmp";    // unique: two writers never share a temp file
+              File.WriteAllText(temp, json);
+              File.Move(temp, _path, overwrite: true);
+          }
+      }
+    expected: |-
+      PASS load before any save throws FileNotFoundException
+    validation: *ran-2026-11-16
   - id: data-loss-rules
     kind: rules
     title: Rules that prevent data loss

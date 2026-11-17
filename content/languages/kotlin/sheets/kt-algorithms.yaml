@@ -27,6 +27,29 @@ cards:
       - ["binary search", "`List.binarySearch`", "O(log n); returns `-(insertion point) - 1` on a miss"]
       - ["build a string", "`buildString { }`", "`+=` in a loop is O(n²)"]
       - ["big integers", "`java.math.BigInteger`", "`Int` overflows silently"]
+  - id: pattern-picker
+    kind: table
+    title: Pattern picker
+    note: Match the sentence in the problem statement to a row, then write that card's template.
+    headers: [The problem says…, Reach for, Typical cost]
+    rows:
+      - ["sorted input, a pair or triple hitting a target", "two pointers", "O(n) after the sort"]
+      - ["longest / shortest contiguous run with a constraint", "sliding window", "O(n)"]
+      - ["sorted data, or \"the smallest value that still works\"", "binary search (on the answer)", "O(log n) checks"]
+      - ["seen before? count, group, pair up unsorted values", "hash map", "O(n)"]
+      - ["many range-sum queries, or many range updates", "prefix sums / difference array", "O(n) prep, O(1) per query"]
+      - ["intervals, meetings, overlaps", "sort by start, then sweep", "O(n log n)"]
+      - ["matching brackets; the next greater / warmer element", "stack / monotonic stack", "O(n)"]
+      - ["k largest, k closest, a running median", "heap", "O(n log k)"]
+      - ["a linked list's middle, a cycle, in place", "fast & slow pointers, reversal", "O(n), O(1) space"]
+      - ["hierarchy, sorted traversal, levels", "tree DFS / BFS", "O(n)"]
+      - ["fewest steps, degrees of separation, a grid maze", "BFS", "O(V + E)"]
+      - ["dependencies, build or course order", "topological sort", "O(V + E)"]
+      - ["all combinations / permutations / placements", "backtracking", "exponential — prune early"]
+      - ["fewest / most / how many ways, with overlapping subproblems", "dynamic programming", "states × transitions"]
+      - ["connected groups, merging accounts, a redundant edge", "union-find", "near O(1) per operation"]
+      - ["prefix search, autocomplete", "trie", "O(length)"]
+      - ["each value twice except one; flags; values 1..n", "XOR / bit masks / cyclic sort", "O(n), O(1) space"]
   - id: two-pointers
     kind: code
     title: Two pointers
@@ -150,6 +173,638 @@ cards:
       fun main() = println(shortestPath(listOf("..#.", ".##.", "...."), 0 to 0, 0 to 3))
     expected: "7"
     validation: *ran
+  - id: hash-map
+    kind: code
+    title: "Hash map: counting, grouping, memory of the past"
+    note: "Unsorted two-sum, anagram groups and the first non-repeating character — remember what you have seen, in O(n) hash operations and O(n) space."
+    prerequisites: *run
+    code: |-
+      fun twoSumUnsorted(xs: IntArray, target: Int): Pair<Int, Int>? {
+          val indexOf = HashMap<Int, Int>()                   // value -> where it was seen
+          for ((i, x) in xs.withIndex()) {
+              indexOf[target - x]?.let { return it to i }       // near Int.MAX_VALUE, compute in Long
+              indexOf[x] = i
+          }
+          return null
+      }
+
+      fun main() {
+          println(twoSumUnsorted(intArrayOf(7, 2, 11, 15, 4), 6))
+
+          // Grouping: a canonical key per group (sorting each word adds O(L log L) per word);
+          // groupBy keeps first-seen order (LinkedHashMap).
+          val words = listOf("listen", "silent", "enlist", "google", "gogole", "cat")
+          println(words.groupBy { it.toCharArray().sorted().joinToString("") }.values)
+
+          // Counting: groupingBy().eachCount() builds the frequency map in one pass.
+          val text = "swiss"
+          val counts = text.groupingBy { it }.eachCount()
+          println("$counts first unique: ${text.firstOrNull { counts[it] == 1 }}")
+      }
+    expected: |-
+      (1, 4)
+      [[listen, silent, enlist], [google, gogole], [cat]]
+      {s=3, w=1, i=1} first unique: w
+    sources:
+      - title: Grouping — Kotlin docs
+        url: https://kotlinlang.org/docs/collection-grouping.html
+    validation: &ran21
+      status: ran
+      toolchain: kotlinc 2.4.21, JVM 21.0.12.1
+      date: "2026-11-16"
+  - id: prefix-sums
+    kind: code
+    title: Prefix sums & difference arrays
+    note: "Daily revenue: any range total in O(1) after O(n) prep, subarrays summing to k, and many range updates in O(1) each."
+    prerequisites: *run
+    code: |-
+      // Revenue in cents: Long, because an Int sum silently wraps past 2^31 (about $21M).
+      fun prefixSums(xs: IntArray): LongArray {
+          val prefix = LongArray(xs.size + 1)                 // prefix[i] = sum of the first i
+          for (i in xs.indices) prefix[i + 1] = prefix[i] + xs[i]
+          return prefix
+      }
+
+      /** How many contiguous runs sum to exactly k? Prefix sums + a hash map, O(n). */
+      fun subarraysSummingTo(xs: IntArray, k: Long): Int {
+          val seen = hashMapOf(0L to 1)                       // prefix value -> times seen
+          var running = 0L
+          var total = 0
+          for (x in xs) {
+              running += x
+              total += seen[running - k] ?: 0
+              seen[running] = (seen[running] ?: 0) + 1
+          }
+          return total
+      }
+
+      /** "Add v to every day from l to r" many times: O(1) per update, one O(n) pass at the end. */
+      fun applyRangeAdds(days: Int, updates: List<Triple<Int, Int, Long>>): LongArray {
+          val diff = LongArray(days + 1)
+          for ((l, r, v) in updates) {
+              diff[l] += v
+              diff[r + 1] -= v
+          }
+          var running = 0L
+          return LongArray(days) { running += diff[it]; running }
+      }
+
+      fun main() {
+          val prefix = prefixSums(intArrayOf(3, 1, 4, 1, 5, 9, 2))
+          fun rangeSum(from: Int, to: Int) = prefix[to + 1] - prefix[from]     // inclusive, O(1)
+          println("days 2..5 = ${rangeSum(2, 5)}")
+          println(subarraysSummingTo(intArrayOf(1, 2, 3, -2, 2), 3))
+          println(applyRangeAdds(5, listOf(Triple(0, 2, 10L), Triple(1, 4, 5L))).toList())
+      }
+    expected: |-
+      days 2..5 = 19
+      4
+      [10, 15, 15, 5, 5]
+    validation: *ran21
+  - id: intervals
+    kind: code
+    title: "Sort then sweep: intervals"
+    note: "A room's bookings merged into busy blocks, and the number of rooms the day needs — sorting first makes both a linear scan."
+    prerequisites: *run
+    code: |-
+      data class Booking(val start: Int, val end: Int)
+
+      fun busyBlocks(bookings: List<Booking>): List<Booking> {
+          val merged = mutableListOf<Booking>()
+          for (b in bookings.sortedBy { it.start }) {
+              val last = merged.lastOrNull()
+              if (last != null && b.start <= last.end) {
+                  merged[merged.lastIndex] = last.copy(end = maxOf(last.end, b.end))   // overlap: extend
+              } else {
+                  merged += b
+              }
+          }
+          return merged
+      }
+
+      /** Sweep line: +1 at each start, -1 at each end. Ends sort first on a tie: a room frees up for the next. */
+      fun roomsNeeded(bookings: List<Booking>): Int {
+          val events = bookings.flatMap { listOf(it.start to +1, it.end to -1) }
+              .sortedWith(compareBy({ it.first }, { it.second }))
+          var inUse = 0
+          var peak = 0
+          for ((_, delta) in events) {
+              inUse += delta
+              peak = maxOf(peak, inUse)
+          }
+          return peak
+      }
+
+      fun main() {
+          val day = listOf(Booking(9, 10), Booking(13, 15), Booking(9, 12), Booking(12, 13), Booking(16, 17))
+          println(busyBlocks(day))
+          println("rooms: ${roomsNeeded(day)}")
+      }
+    expected: |-
+      [Booking(start=9, end=15), Booking(start=16, end=17)]
+      rooms: 2
+    validation: *ran21
+  - id: monotonic-stack
+    kind: code
+    title: Stack & monotonic stack
+    note: "Validate the brackets in a template, and for each day count the days until a warmer one — both O(n) with an ArrayDeque."
+    prerequisites: *run
+    code: |-
+      fun isBalanced(s: String): Boolean {
+          val openerOf = mapOf(')' to '(', ']' to '[', '}' to '{')
+          val open = ArrayDeque<Char>()
+          for (ch in s) {
+              when (ch) {
+                  in openerOf.values -> open.addLast(ch)
+                  in openerOf.keys -> if (open.removeLastOrNull() != openerOf[ch]) return false
+              }
+          }
+          return open.isEmpty()
+      }
+
+      /** Indices wait on a stack whose temperatures decrease; a warmer day pops and answers them. */
+      fun daysUntilWarmer(temps: IntArray): IntArray {
+          val answer = IntArray(temps.size)
+          val waiting = ArrayDeque<Int>()
+          for (i in temps.indices) {
+              while (waiting.isNotEmpty() && temps[waiting.last()] < temps[i]) {
+                  val day = waiting.removeLast()
+                  answer[day] = i - day
+              }
+              waiting.addLast(i)
+          }
+          return answer
+      }
+
+      fun main() {
+          println("${isBalanced("{ \"items\": [1, (2)] }")} ${isBalanced("([)]")} ${isBalanced("((")}")
+          println(daysUntilWarmer(intArrayOf(73, 74, 75, 71, 69, 72, 76, 73)).toList())
+          // The same skeleton: stock span, largest rectangle in a histogram, trapping rain water.
+      }
+    expected: |-
+      true false false
+      [1, 1, 4, 2, 1, 1, 0, 0]
+    validation: *ran21
+  - id: fast-slow-pointers
+    kind: code
+    title: Fast & slow pointers on a linked list
+    note: "A playlist chained by next pointers: find its middle, and detect a corrupted chain that loops — O(n) time, O(1) space."
+    prerequisites: *run
+    code: |-
+      class Node(val value: Int, var next: Node? = null)
+
+      fun middle(head: Node?): Node? {
+          var slow = head
+          var fast = head
+          while (fast?.next != null) {
+              slow = slow?.next
+              fast = fast.next?.next
+          }
+          return slow
+      }
+
+      fun hasCycle(head: Node?): Boolean {
+          var slow = head
+          var fast = head
+          while (fast?.next != null) {
+              slow = slow?.next
+              fast = fast.next?.next
+              if (slow === fast) return true                  // identity, not equality
+          }
+          return false
+      }
+
+      fun linked(vararg values: Int): Node? = values.reversed().fold(null as Node?) { next, v -> Node(v, next) }
+
+      fun main() {
+          val playlist = linked(1, 2, 3, 4, 5)
+          println("middle=${middle(playlist)?.value} cycle=${hasCycle(playlist)}")
+          println("middle of an even list: ${middle(linked(1, 2, 3, 4))?.value}")   // the second of the two
+          val second = Node(2)
+          val looping = Node(1, second)
+          second.next = Node(3, next = second)                       // a corrupted chain: 3 points back at 2
+          println("cycle=${hasCycle(looping)}")
+      }
+    expected: |-
+      middle=3 cycle=false
+      middle of an even list: 3
+      cycle=true
+    validation: *ran21
+  - id: reverse-linked-list
+    kind: code
+    title: In-place reversal of a linked list
+    note: "Reverse the play-next queue without allocating — three pointers in one pass, the building block of reverse-in-groups and palindrome checks."
+    prerequisites: *run
+    code: |-
+      class Node(val value: Int, var next: Node? = null)
+
+      /** Turns each node's `next` to point backwards. O(n) time, O(1) extra space. */
+      fun reverse(head: Node?): Node? {
+          var previous: Node? = null
+          var current = head
+          while (current != null) {
+              val next = current.next                          // remember the rest before cutting the link
+              current.next = previous
+              previous = current
+              current = next
+          }
+          return previous
+      }
+
+      fun linked(vararg values: Int): Node? = values.reversed().fold(null as Node?) { next, v -> Node(v, next) }
+
+      fun Node?.values() = generateSequence(this) { it.next }.map { it.value }.toList()
+
+      fun main() {
+          println(reverse(linked(1, 2, 3, 4, 5)).values())
+          println("${reverse(linked(7)).values()} ${reverse(null).values()}")
+      }
+    expected: |-
+      [5, 4, 3, 2, 1]
+      [7] []
+    validation: *ran21
+  - id: trees-dfs-bfs
+    kind: code
+    title: "Trees: DFS and BFS"
+    note: "A binary search tree of product prices: in-order DFS gives sorted output, BFS gives levels, and validity needs bounds passed down."
+    prerequisites: *run
+    code: |-
+      class TreeNode(val value: Int, val left: TreeNode? = null, val right: TreeNode? = null)
+
+      // Recursion depth = tree height: a degenerate tree of ~20k nodes (prices inserted in sorted order)
+      // overflows the stack — walk it with an explicit ArrayDeque stack there.
+      fun inorder(node: TreeNode?, out: MutableList<Int> = mutableListOf()): List<Int> {
+          if (node != null) {
+              inorder(node.left, out)
+              out += node.value
+              inorder(node.right, out)
+          }
+          return out
+      }
+
+      fun levels(root: TreeNode?): List<List<Int>> {
+          val result = mutableListOf<List<Int>>()
+          var level = listOfNotNull(root)
+          while (level.isNotEmpty()) {
+              result += level.map { it.value }
+              level = level.flatMap { listOfNotNull(it.left, it.right) }
+          }
+          return result
+      }
+
+      /** Compare against the allowed range, not just the parent. Long bounds so Int.MIN_VALUE still fits. */
+      fun isValidBst(node: TreeNode?, low: Long = Long.MIN_VALUE, high: Long = Long.MAX_VALUE): Boolean {
+          if (node == null) return true
+          val v = node.value.toLong()
+          return low < v && v < high && isValidBst(node.left, low, v) && isValidBst(node.right, v, high)
+      }
+
+      fun main() {
+          val prices = TreeNode(8,
+              left = TreeNode(3, TreeNode(1), TreeNode(6, TreeNode(4), TreeNode(7))),
+              right = TreeNode(10, right = TreeNode(14, TreeNode(13))))
+          println(inorder(prices))
+          println(levels(prices))
+          val broken = TreeNode(5, TreeNode(1), TreeNode(6, TreeNode(3), TreeNode(7)))   // 3 sits right of 5
+          println("${isValidBst(prices)} ${isValidBst(broken)}")
+      }
+    expected: |-
+      [1, 3, 4, 6, 7, 8, 10, 13, 14]
+      [[8], [3, 10], [1, 6, 14], [4, 7, 13]]
+      true false
+    validation: *ran21
+  - id: graphs-bfs-dfs
+    kind: code
+    title: "Graphs: BFS and DFS"
+    note: "Degrees of separation between two users by BFS and every service hit by a failing one by DFS, both in O(V + E)."
+    prerequisites: *run
+    code: |-
+      typealias Graph = Map<String, List<String>>
+
+      /** BFS: the first time a person is reached is by the fewest hops — shortest in an unweighted graph. */
+      fun degreesBetween(friends: Graph, from: String, to: String): Int? {
+          val distance = hashMapOf(from to 0)
+          val queue = ArrayDeque(listOf(from))
+          while (queue.isNotEmpty()) {
+              val person = queue.removeFirst()
+              if (person == to) return distance.getValue(person)
+              for (friend in friends[person].orEmpty()) {
+                  if (friend in distance) continue
+                  distance[friend] = distance.getValue(person) + 1
+                  queue.addLast(friend)
+              }
+          }
+          return null
+      }
+
+      /** Iterative DFS with an explicit stack: a deep graph cannot overflow the call stack. */
+      fun affectedBy(dependents: Graph, failing: String): Set<String> {
+          val seen = HashSet<String>()
+          val stack = ArrayDeque(listOf(failing))
+          while (stack.isNotEmpty()) {
+              val service = stack.removeLast()
+              if (seen.add(service)) dependents[service].orEmpty().forEach(stack::addLast)
+          }
+          return (seen - failing).toSortedSet()
+      }
+
+      fun main() {
+          val friends = mapOf("ana" to listOf("ben", "cy"), "ben" to listOf("ana", "dee"), "cy" to listOf("ana"),
+              "dee" to listOf("ben", "eve"), "eve" to listOf("dee"), "fay" to emptyList())
+          println("${degreesBetween(friends, "ana", "eve")} ${degreesBetween(friends, "ana", "fay")}")
+          val dependents = mapOf("db" to listOf("orders", "users"), "orders" to listOf("checkout"),
+              "users" to listOf("checkout", "profile"), "search" to listOf("checkout"))
+          println(affectedBy(dependents, "db"))
+      }
+    expected: |-
+      3 null
+      [checkout, orders, profile, users]
+    validation: *ran21
+  - id: topological-sort
+    kind: code
+    title: Topological sort
+    note: "The order to build Gradle modules so each comes after what it depends on — Kahn's algorithm in O(V + E), which also detects a cycle."
+    prerequisites: *run
+    code: |-
+      /** Returns null when the dependencies contain a cycle. */
+      fun buildOrder(dependsOn: Map<String, List<String>>): List<String>? {
+          val modules = (dependsOn.keys + dependsOn.values.flatten()).toSortedSet()
+          val waitingOn = modules.associateWith { dependsOn[it].orEmpty().size }.toMutableMap()
+          val unblocks = HashMap<String, MutableList<String>>()
+          for ((module, deps) in dependsOn) for (dep in deps) unblocks.getOrPut(dep) { mutableListOf() } += module
+
+          val ready = ArrayDeque(modules.filter { waitingOn[it] == 0 })
+          val order = mutableListOf<String>()
+          while (ready.isNotEmpty()) {
+              val module = ready.removeFirst()
+              order += module
+              for (next in unblocks[module].orEmpty()) {
+                  waitingOn[next] = waitingOn.getValue(next) - 1
+                  if (waitingOn[next] == 0) ready.addLast(next)
+              }
+          }
+          return if (order.size == modules.size) order else null     // leftovers are on a cycle or wait on one
+      }
+
+      fun main() {
+          val project = mapOf(
+              ":app" to listOf(":feature-cart", ":core-ui"),
+              ":feature-cart" to listOf(":core-network", ":core-ui"),
+              ":core-ui" to listOf(":core-model"),
+              ":core-network" to listOf(":core-model"),
+          )
+          println(buildOrder(project))
+          println(buildOrder(mapOf(":a" to listOf(":b"), ":b" to listOf(":a"))))
+      }
+    expected: |-
+      [:core-model, :core-ui, :core-network, :feature-cart, :app]
+      null
+    validation: *ran21
+  - id: backtracking
+    kind: code
+    title: Backtracking
+    note: "Every set of gift cards that pays an order exactly, and every order of delivery stops — choose, explore, un-choose, and prune early."
+    prerequisites: *run
+    code: |-
+      fun exactCombinations(cards: List<Int>, total: Int): List<List<Int>> {
+          require(cards.all { it > 0 }) { "card values must be positive" }   // the `break` pruning relies on it
+          val sorted = cards.sorted()
+          val result = mutableListOf<List<Int>>()
+          val chosen = mutableListOf<Int>()
+          fun explore(start: Int, remaining: Int) {
+              if (remaining == 0) { result += chosen.toList(); return }
+              for (i in start until sorted.size) {
+                  if (sorted[i] > remaining) break                       // sorted: nothing later fits either
+                  if (i > start && sorted[i] == sorted[i - 1]) continue  // same value, same subtree
+                  chosen += sorted[i]                                    // choose
+                  explore(i + 1, remaining - sorted[i])                  // explore
+                  chosen.removeAt(chosen.lastIndex)                      // un-choose
+              }
+          }
+          explore(0, total)
+          return result
+      }
+
+      fun <T> routes(stops: List<T>): List<List<T>> {
+          val result = mutableListOf<List<T>>()
+          val route = mutableListOf<T>()
+          val used = BooleanArray(stops.size)
+          fun explore() {
+              if (route.size == stops.size) { result += route.toList(); return }
+              for (i in stops.indices) {
+                  if (used[i]) continue
+                  used[i] = true; route += stops[i]
+                  explore()
+                  route.removeAt(route.lastIndex); used[i] = false
+              }
+          }
+          explore()
+          return result
+      }
+
+      fun main() {
+          println(exactCombinations(listOf(10, 1, 2, 7, 6, 1, 5), 8))
+          println(routes(listOf("A", "B", "C")))
+      }
+    expected: |-
+      [[1, 1, 6], [1, 2, 5], [1, 7], [2, 6]]
+      [[A, B, C], [A, C, B], [B, A, C], [B, C, A], [C, A, B], [C, B, A]]
+    validation: *ran21
+  - id: dynamic-programming
+    kind: code
+    title: Dynamic programming
+    note: "Fewest coins for change (1-D), edit distance for \"did you mean\" (2-D), and a memoised count when the recurrence reads better top-down."
+    prerequisites: *run
+    code: |-
+      /** dp[a] = fewest coins making a. O(amount × coins). -1 when impossible. */
+      fun fewestCoins(coins: IntArray, amount: Int): Int {
+          val dp = IntArray(amount + 1) { if (it == 0) 0 else Int.MAX_VALUE }
+          for (a in 1..amount) {
+              for (c in coins) if (c <= a && dp[a - c] != Int.MAX_VALUE) dp[a] = minOf(dp[a], dp[a - c] + 1)
+          }
+          return if (dp[amount] == Int.MAX_VALUE) -1 else dp[amount]
+      }
+
+      /** dp[i][j] = edits turning the first i chars of a into the first j of b. */
+      fun editDistance(a: String, b: String): Int {
+          val dp = Array(a.length + 1) { IntArray(b.length + 1) }
+          for (i in 0..a.length) dp[i][0] = i                        // delete everything
+          for (j in 0..b.length) dp[0][j] = j                        // insert everything
+          for (i in 1..a.length) {
+              for (j in 1..b.length) {
+                  dp[i][j] = if (a[i - 1] == b[j - 1]) dp[i - 1][j - 1]
+                  else 1 + minOf(dp[i - 1][j], dp[i][j - 1], dp[i - 1][j - 1])   // delete, insert, substitute
+              }
+          }
+          return dp[a.length][b.length]
+      }
+
+      /** Paths through an r × c grid moving right or down. Long: the count outgrows Int quickly. */
+      fun gridPaths(r: Int, c: Int, memo: MutableMap<Pair<Int, Int>, Long> = HashMap()): Long =
+          if (r == 1 || c == 1) 1
+          else memo.getOrPut(r to c) { gridPaths(r - 1, c, memo) + gridPaths(r, c - 1, memo) }
+
+      fun main() {
+          println("${fewestCoins(intArrayOf(1, 5, 10, 25), 63)} ${fewestCoins(intArrayOf(2), 3)}")
+          println("${editDistance("kitten", "sitting")} ${editDistance("recieve", "receive")}")
+          println(gridPaths(17, 17))
+      }
+    expected: |-
+      6 -1
+      3 2
+      601080390
+    validation: *ran21
+  - id: union-find
+    kind: code
+    title: Union-Find (disjoint set)
+    note: "Cables between routers: which cable closes a loop and how many separate networks remain, in near O(1) per operation."
+    prerequisites: *run
+    code: |-
+      class UnionFind(size: Int) {
+          private val parent = IntArray(size) { it }
+          private val rank = IntArray(size)
+          var components = size
+              private set
+
+          fun find(x: Int): Int {
+              if (parent[x] != x) parent[x] = find(parent[x])    // path compression
+              return parent[x]
+          }
+
+          /** False when a and b were already connected — the new edge is redundant. */
+          fun union(a: Int, b: Int): Boolean {
+              val ra = find(a)
+              val rb = find(b)
+              if (ra == rb) return false
+              when {                                              // union by rank keeps trees shallow
+                  rank[ra] < rank[rb] -> parent[ra] = rb
+                  rank[ra] > rank[rb] -> parent[rb] = ra
+                  else -> { parent[rb] = ra; rank[ra]++ }
+              }
+              components--
+              return true
+          }
+      }
+
+      fun main() {
+          val networks = UnionFind(6)
+          for ((a, b) in listOf(0 to 1, 1 to 2, 3 to 4, 2 to 0, 4 to 5)) {
+              if (!networks.union(a, b)) println("cable $a-$b closes a loop")
+          }
+          println("networks=${networks.components}")
+          println("0~2 ${networks.find(0) == networks.find(2)}, 0~5 ${networks.find(0) == networks.find(5)}")
+      }
+    expected: |-
+      cable 2-0 closes a loop
+      networks=2
+      0~2 true, 0~5 false
+    validation: *ran21
+  - id: trie
+    kind: code
+    title: Trie (prefix tree)
+    note: "Autocomplete for a search box: completions of a prefix in O(prefix + results), whatever the dictionary size."
+    prerequisites: *run
+    code: |-
+      class Trie {
+          private class Node {
+              val children = sortedMapOf<Char, Node>()            // sorted: completions come out alphabetical
+              var isWord = false
+          }
+
+          private val root = Node()
+
+          fun insert(word: String) {
+              var node = root
+              for (ch in word) node = node.children.getOrPut(ch) { Node() }
+              node.isWord = true
+          }
+
+          private fun find(prefix: String): Node? {
+              var node = root
+              for (ch in prefix) node = node.children[ch] ?: return null
+              return node
+          }
+
+          fun complete(prefix: String, limit: Int = 5): List<String> {
+              val out = mutableListOf<String>()
+              fun collect(node: Node, path: StringBuilder) {
+                  if (out.size == limit) return
+                  if (node.isWord) out += path.toString()
+                  for ((ch, child) in node.children) {
+                      path.append(ch)
+                      collect(child, path)
+                      path.setLength(path.length - 1)
+                  }
+              }
+              find(prefix)?.let { collect(it, StringBuilder(prefix)) }
+              return out
+          }
+      }
+
+      fun main() {
+          val products = Trie()
+          listOf("kotlin", "kotlinx", "kodein", "koin", "ktor", "java").forEach(products::insert)
+          println("${products.complete("ko")} ${products.complete("kt")} ${products.complete("sw")}")
+      }
+    expected: |-
+      [kodein, koin, kotlin, kotlinx] [ktor] []
+    validation: *ran21
+  - id: bits-and-cyclic-sort
+    kind: code
+    title: Bit manipulation & cyclic sort
+    note: "Feature flags packed in an Int, the one unpaired id, and the lowest ticket number not yet issued — O(1) extra space each."
+    prerequisites: *run
+    code: |-
+      // An Int holds 32 flags (test with `!= 0`); `1 shl 32 == 1` because the shift count wraps —
+      // use Long and `1L shl n` for up to 64.
+      const val DARK_MODE = 1 shl 0
+      const val OFFLINE = 1 shl 1
+      const val BETA = 1 shl 2
+
+      fun IntArray.swap(i: Int, j: Int) {
+          val t = this[i]
+          this[i] = this[j]
+          this[j] = t
+      }
+
+      /**
+       * Cyclic sort: put each value v in 1..n at index v - 1, then the first misfit is the answer.
+       * It reorders `tickets` in place (that is the O(1) space): pass `tickets.copyOf()` to keep the original.
+       */
+      fun lowestUnissued(tickets: IntArray): Int {
+          var i = 0
+          while (i < tickets.size) {
+              val home = tickets[i] - 1
+              if (home in tickets.indices && tickets[home] != tickets[i]) tickets.swap(i, home) else i++
+          }
+          return (tickets.indices.firstOrNull { tickets[it] != it + 1 } ?: tickets.size) + 1
+      }
+
+      fun main() {
+          var flags = DARK_MODE or BETA
+          println("beta=${(flags and BETA) != 0} offline=${(flags and OFFLINE) != 0} set=${flags.countOneBits()}")
+          flags = flags and BETA.inv()                                   // clear one flag
+          println("flags=${flags.toString(2)} lowest=${(OFFLINE or BETA).takeLowestOneBit()}")
+          val isPowerOfTwo = { x: Int -> x > 0 && (x and (x - 1)) == 0 }  // x and (x - 1) drops the lowest bit
+          println("powers of two: ${listOf(64, 96).map(isPowerOfTwo)}")
+
+          println("unpaired id: ${intArrayOf(4, 1, 2, 1, 2).reduce { acc, id -> acc xor id }}")  // pairs cancel
+          val items = listOf("a", "b", "c")                              // every subset as a bitmask (< 31 items)
+          val subsets = (0 until (1 shl items.size)).map { mask ->
+              items.filterIndexed { i, _ -> (mask shr i) and 1 == 1 }
+          }
+          println(subsets)
+
+          println("${lowestUnissued(intArrayOf(3, 4, -1, 1))} ${lowestUnissued(intArrayOf(1, 2, 3))}")
+      }
+    expected: |-
+      beta=true offline=false set=2
+      flags=1 lowest=2
+      powers of two: [true, false]
+      unpaired id: 4
+      [[], [a], [b], [a, b], [c], [a, c], [b, c], [a, b, c]]
+      2 4
+    validation: *ran21
   - id: working-it-out
     kind: rules
     title: Working a problem out loud

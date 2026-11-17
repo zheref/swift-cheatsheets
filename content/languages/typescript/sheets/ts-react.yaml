@@ -1,0 +1,479 @@
+id: ts-react
+concept: ui.views-layout-animation
+scope: platform
+title: "React — Components, Layout & Animation"
+group: "UI"
+subtitle: Typed function components, children and slots, keyed lists, flex and grid layout, routing, CSS and view transitions, and what makes a re-render cheap.
+applies:
+  platforms: [browser]
+  runtime: a browser page with React (the examples render in Node with `react-dom/server` or jsdom)
+  requires: [React]
+  versions: { typescript: ">=5.5", react: ">=19.0", react-dom: ">=19.0", node: ">=22.18" }
+sources:
+  - title: Learn React — react.dev
+    url: https://react.dev/learn
+  - title: React reference — react.dev
+    url: https://react.dev/reference/react
+cards:
+  - id: swiftui-to-react
+    kind: table
+    title: SwiftUI idea → React
+    note: The same declarative contract — describe the UI for a state, the framework applies the difference.
+    headers: [SwiftUI, React, Note]
+    rows:
+      - ["`struct TaskRow: View`", "`function TaskRow(props: TaskRowProps)`", "a component is a function of its props; it re-runs on every render"]
+      - ["`let task: Task` (init parameter)", "a typed `props` object, destructured", "props are read-only; never mutate them"]
+      - ["`@ViewBuilder content: () -> Content`", "`children: ReactNode`, or named slot props (`actions: ReactNode`)", "composition over configuration"]
+      - ["`ForEach(tasks) { … }` + `Identifiable`", "`tasks.map((t) => <TaskRow key={t.id} … />)`", "`key` is the identity; never the array index for editable lists"]
+      - ["`if` / `switch` in `body`", "early `return`, `cond ? a : b`, `cond && a`", "`0 && x` renders `0` — compare explicitly"]
+      - ["`VStack` / `HStack` / `Spacer()`", "`display: flex` with `flex-direction`, `gap`; `flex: 1`", "layout is CSS, not components"]
+      - ["`LazyVGrid(.adaptive(minimum:))`", "`grid-template-columns: repeat(auto-fill, minmax(12rem, 1fr))`", "no laziness: virtualise long lists with a library"]
+      - ["`NavigationStack` + `navigationDestination`", "a router (`<Routes>`, `useParams`, `useNavigate`)", "the URL is the navigation path"]
+      - ["`withAnimation` / `.transition`", "CSS `transition` on a state-driven style or class; `<ViewTransition>`", "the browser animates; React only changes the DOM"]
+      - ["`ViewModifier`", "a wrapper component or a shared `className`", "props spread onto the native element keep it accessible"]
+      - ["`Equatable` + `.equatable()`", "`memo(Component)`", "skips a render when props are shallow-equal"]
+  - id: typed-props-and-children
+    kind: code
+    title: Function components, typed props and children
+    note: Type props as an object type; take `children` (and named slots) as `ReactNode` so callers compose instead of configure.
+    prerequisites: &static
+      - "A React project (`npm create vite@latest app -- --template react-ts`), or standalone as shown here"
+      - "`npm i react react-dom` and `npm i -D esbuild @types/react @types/react-dom`"
+      - "Save as `main.tsx`, then `npx esbuild main.tsx --jsx=automatic --format=esm --outfile=main.mjs && node main.mjs`"
+    code: |-
+      import type { ReactNode } from "react";
+      import { renderToStaticMarkup } from "react-dom/server";
+
+      type Task = { id: string; title: string; done: boolean; due?: string };
+
+      type TaskRowProps = {
+        task: Task;
+        onToggle?: (id: string) => void;          // optional: a read-only list omits it
+      };
+
+      function TaskRow({ task, onToggle }: TaskRowProps) {
+        return (
+          <li className={task.done ? "task done" : "task"}>
+            <label>
+              <input type="checkbox" checked={task.done} disabled={!onToggle}
+                onChange={() => onToggle?.(task.id)} />
+              {task.title}
+            </label>
+            {task.due !== undefined && <small> due {task.due}</small>}
+          </li>
+        );
+      }
+
+      type PanelProps = { title: string; actions?: ReactNode; children: ReactNode };
+
+      function Panel({ title, actions, children }: PanelProps) {
+        return (
+          <section className="panel">
+            <header><h2>{title}</h2>{actions}</header>
+            {children}
+          </section>
+        );
+      }
+
+      const task: Task = { id: "t1", title: "Renew TLS certificate", done: false, due: "Fri" };
+      console.log(renderToStaticMarkup(<TaskRow task={task} />));
+      console.log(renderToStaticMarkup(<Panel title="Today" actions={<button>Add</button>}><p>3 open</p></Panel>));
+    expected: |-
+      <li class="task"><label><input type="checkbox" disabled=""/>Renew TLS certificate</label><small> due Fri</small></li>
+      <section class="panel"><header><h2>Today</h2><button>Add</button></header><p>3 open</p></section>
+    sources:
+      - title: Passing props to a component — react.dev
+        url: https://react.dev/learn/passing-props-to-a-component
+    validation: &ran-static
+      status: ran
+      toolchain: Node 24.16.0, TypeScript 5.9.3
+      date: "2026-11-16"
+      jsx: react
+  - id: lists-and-conditionals
+    kind: code
+    title: Lists with stable keys, conditional rendering
+    note: Key rows by the data's own id; return early for empty states; never let a number reach `&&`.
+    prerequisites: *static
+    code: |-
+      import { renderToStaticMarkup } from "react-dom/server";
+
+      type Task = { id: string; title: string; done: boolean };
+
+      function TaskList({ tasks, filter }: { tasks: readonly Task[]; filter: string }) {
+        const shown = tasks.filter((t) => t.title.toLowerCase().includes(filter.toLowerCase()));
+        if (shown.length === 0) return <p className="empty">No tasks match {filter}.</p>;
+
+        const open = shown.filter((t) => !t.done).length;
+        return (
+          <>
+            <p>{open > 0 ? `${open} open` : "All done"}</p>
+            <ul>
+              {shown.map((t) => (
+                <li key={t.id}>{t.done ? <s>{t.title}</s> : t.title}</li>
+              ))}
+            </ul>
+          </>
+        );
+      }
+
+      const UnreadBadge = ({ count }: { count: number }) => <span>{count && <b>{count} new</b>}</span>;
+      const FixedBadge = ({ count }: { count: number }) => <span>{count > 0 && <b>{count} new</b>}</span>;
+
+      const tasks: Task[] = [
+        { id: "t1", title: "Rotate API keys", done: true },
+        { id: "t2", title: "Review deploy PR", done: false },
+      ];
+      console.log(renderToStaticMarkup(<TaskList tasks={tasks} filter="" />));
+      console.log(renderToStaticMarkup(<TaskList tasks={tasks} filter="audit" />));
+      console.log(renderToStaticMarkup(<UnreadBadge count={0} />), renderToStaticMarkup(<FixedBadge count={0} />));
+    expected: |-
+      <p>1 open</p><ul><li><s>Rotate API keys</s></li><li>Review deploy PR</li></ul>
+      <p class="empty">No tasks match audit.</p>
+      <span>0</span> <span></span>
+    sources:
+      - title: Rendering lists — react.dev
+        url: https://react.dev/learn/rendering-lists
+      - title: Conditional rendering — react.dev
+        url: https://react.dev/learn/conditional-rendering
+    validation: *ran-static
+  - id: layout-flex-grid
+    kind: code
+    title: Layout with flexbox and grid
+    note: Stacks are `flex`, adaptive grids are `grid` with `auto-fill`; in an app put these in CSS classes — inline styles here keep the example to one file.
+    prerequisites: *static
+    code: |-
+      import type { CSSProperties, ReactNode } from "react";
+      import { renderToStaticMarkup } from "react-dom/server";
+
+      type StackProps = {
+        direction?: "row" | "column";
+        gap?: number;                              // a number becomes px
+        align?: CSSProperties["alignItems"];
+        children: ReactNode;
+      };
+
+      function Stack({ direction = "column", gap = 8, align = "stretch", children }: StackProps) {
+        return <div style={{ display: "flex", flexDirection: direction, gap, alignItems: align }}>{children}</div>;
+      }
+
+      const Spacer = () => <div style={{ flex: 1 }} />;
+
+      function CardGrid({ minColumn = "12rem", children }: { minColumn?: string; children: ReactNode }) {
+        // as many columns as fit, each at least `minColumn` wide — no media query needed
+        const columns = `repeat(auto-fill, minmax(${minColumn}, 1fr))`;
+        return <div style={{ display: "grid", gap: 12, gridTemplateColumns: columns }}>{children}</div>;
+      }
+
+      console.log(renderToStaticMarkup(
+        <Stack direction="row" align="center"><h1>Tasks</h1><Spacer /><button>Add</button></Stack>,
+      ));
+      console.log(renderToStaticMarkup(<CardGrid><article>Inbox</article><article>Done</article></CardGrid>));
+    expected: |-
+      <div style="display:flex;flex-direction:row;gap:8px;align-items:center"><h1>Tasks</h1><div style="flex:1"></div><button>Add</button></div>
+      <div style="display:grid;gap:12px;grid-template-columns:repeat(auto-fill, minmax(12rem, 1fr))"><article>Inbox</article><article>Done</article></div>
+    sources:
+      - title: CSS flexible box layout — MDN
+        url: https://developer.mozilla.org/en-US/docs/Web/CSS/CSS_flexible_box_layout
+      - title: CSS grid layout — MDN
+        url: https://developer.mozilla.org/en-US/docs/Web/CSS/CSS_grid_layout
+    validation: *ran-static
+  - id: routing-between-screens
+    kind: code
+    title: Routing between screens
+    note: The URL is the navigation stack — a list route, a detail route with a dynamic segment, links for users and `navigate` for code.
+    prerequisites:
+      - "A React project (`npm create vite@latest app -- --template react-ts`)"
+      - "`npm i react-router`"
+    code: |-
+      import { useEffect } from "react";
+      import { createRoot } from "react-dom/client";
+      import { BrowserRouter, Link, Navigate, Outlet, Route, Routes, useNavigate, useParams } from "react-router";
+
+      type Task = { id: string; title: string };
+      const tasks: Task[] = [{ id: "t1", title: "Rotate API keys" }, { id: "t2", title: "Review deploy PR" }];
+
+      function TasksLayout() {
+        // <Outlet /> is where the matched child route renders
+        return <main><nav><Link to="/tasks">All tasks</Link></nav><Outlet /></main>;
+      }
+
+      function TaskIndex() {
+        return <ul>{tasks.map((t) => <li key={t.id}><Link to={`/tasks/${t.id}`}>{t.title}</Link></li>)}</ul>;
+      }
+
+      function TaskDetail() {
+        const { taskId } = useParams();            // string | undefined: it comes from the URL
+        const navigate = useNavigate();
+        useEffect(() => {                          // navigation from code: Escape closes the detail
+          const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") navigate("/tasks"); };
+          window.addEventListener("keydown", onKey);
+          return () => window.removeEventListener("keydown", onKey);
+        }, [navigate]);
+
+        const task = tasks.find((t) => t.id === taskId);
+        if (!task) return <p>Task not found.</p>;
+        return <article><h2>{task.title}</h2><Link to="/tasks">Back to tasks</Link></article>;
+      }
+
+      createRoot(document.getElementById("root")!).render(
+        <BrowserRouter>
+          <Routes>
+            <Route path="/" element={<Navigate to="/tasks" replace />} />
+            <Route path="tasks" element={<TasksLayout />}>
+              <Route index element={<TaskIndex />} />
+              <Route path=":taskId" element={<TaskDetail />} />
+            </Route>
+          </Routes>
+        </BrowserRouter>,
+      );
+    expected: "`/` redirects to `/tasks`, which lists the tasks; a link pushes `/tasks/t2` and shows its detail inside the same layout; **Back to tasks** or Escape returns to the list, even after a deep link."
+    applies:
+      requires: [React, React Router]
+      versions: { typescript: ">=5.5", react: ">=19.0", react-router: ">=7.0" }
+    sources:
+      - title: Declarative routing — React Router
+        url: https://reactrouter.com/start/declarative/routing
+    validation:
+      status: excerpt
+      host: a React app with `react-router` installed and a `<div id="root">` in its page
+  - id: css-transitions-from-state
+    kind: code
+    title: CSS transitions driven by state
+    note: The owner flips `open` with `useState`; the browser animates the style change that causes — here a height animation with `grid-template-rows`.
+    prerequisites: &jsdom
+      - "A React project (`npm create vite@latest app -- --template react-ts`), or standalone as shown here"
+      - "`npm i react react-dom jsdom @testing-library/dom` and `npm i -D esbuild @types/react @types/react-dom @types/jsdom`"
+      - "The `JSDOM` lines give Node a DOM before `react-dom` loads (hence the dynamic `import`); a browser page needs none of them"
+      - "Save as `main.tsx`, then `npx esbuild main.tsx --jsx=automatic --format=esm --outfile=main.mjs && node main.mjs`"
+    code: |-
+      import { act, useState, type ReactNode } from "react";
+      import { JSDOM } from "jsdom";
+
+      const { window } = new JSDOM(`<main></main>`);
+      Object.assign(globalThis, { window, document: window.document, IS_REACT_ACT_ENVIRONMENT: true });
+      const { createRoot } = await import("react-dom/client");
+
+      type DisclosureProps = { open: boolean; title: string; onToggle: () => void; children: ReactNode };
+
+      function Disclosure({ open, title, onToggle, children }: DisclosureProps) {
+        // 0fr → 1fr animates to the content's real height, which `height: auto` cannot
+        const rows = open ? "1fr" : "0fr";
+        const panel = { display: "grid", gridTemplateRows: rows, transition: "grid-template-rows 200ms ease-out" };
+        return (
+          <section>
+            <button aria-expanded={open} onClick={onToggle}>{title}</button>
+            <div inert={!open} style={panel}><div style={{ overflow: "hidden" }}>{children}</div></div>
+          </section>
+        );
+      }
+
+      function ReleaseChecklist() {
+        const [open, setOpen] = useState(false);                  // the state the animation follows
+        return (
+          <Disclosure open={open} title="Release checklist" onToggle={() => setOpen((o) => !o)}>
+            <p>Back up the database</p>
+          </Disclosure>
+        );
+      }
+
+      // In the stylesheet: @media (prefers-reduced-motion: reduce) { * { transition: none !important } }
+      await act(() => createRoot(document.querySelector("main")!).render(<ReleaseChecklist />));
+
+      const button = document.querySelector("button")!;
+      const show = () => {
+        const panel = button.nextElementSibling!;
+        const state = `expanded=${button.ariaExpanded} inert=${panel.hasAttribute("inert")}`;
+        console.log(state, panel.getAttribute("style"));
+      };
+
+      show();
+      await act(() => button.click());
+      show();
+    expected: |-
+      expanded=false inert=true display: grid; grid-template-rows: 0fr; transition: grid-template-rows 200ms ease-out;
+      expanded=true inert=false display: grid; grid-template-rows: 1fr; transition: grid-template-rows 200ms ease-out;
+    sources:
+      - title: Using CSS transitions — MDN
+        url: https://developer.mozilla.org/en-US/docs/Web/CSS/CSS_transitions
+    validation: *ran-static
+  - id: view-transitions
+    kind: code
+    title: View transitions between list and detail
+    note: Wrap what should animate in `<ViewTransition>` and change state inside `startTransition`; a shared `name` morphs the row's title into the detail heading.
+    prerequisites:
+      - "A React 19.3+ project (`npm create vite@latest app -- --template react-ts`)"
+      - "A browser with the View Transitions API (without it the update simply applies, unanimated)"
+    code: |-
+      import { startTransition, useState, ViewTransition } from "react";
+
+      type Task = { id: string; title: string; notes: string };
+
+      export function TaskBoard({ tasks }: { tasks: readonly Task[] }) {
+        const [selectedId, setSelectedId] = useState<string | null>(null);
+        const selected = tasks.find((t) => t.id === selectedId);
+        // Only transitions animate: a plain setState commits immediately, with no animation.
+        const show = (id: string | null) => startTransition(() => setSelectedId(id));
+
+        if (selected) {
+          return (
+            <article>
+              <ViewTransition name={`task-${selected.id}`}><h2>{selected.title}</h2></ViewTransition>
+              <p>{selected.notes}</p>
+              <button type="button" onClick={() => show(null)}>Back</button>
+            </article>
+          );
+        }
+        return (
+          <ul>
+            {tasks.map((t) => (
+              <li key={t.id}>
+                <button type="button" onClick={() => show(t.id)}>
+                  <ViewTransition name={`task-${t.id}`}><span>{t.title}</span></ViewTransition>
+                </button>
+              </li>
+            ))}
+          </ul>
+        );
+      }
+
+      // Tune it in CSS: ::view-transition-group(*) { animation-duration: 250ms; }
+      // Before React 19.3: document.startViewTransition(() => flushSync(() => setSelectedId(id)))
+    expected: Activating a row (click, Enter or Space) cross-fades the list into the detail while the title glides into the heading's position; **Back** plays it in reverse.
+    applies:
+      versions: { typescript: ">=5.5", react: ">=19.3", react-dom: ">=19.3" }
+    sources:
+      - title: "<ViewTransition> — react.dev"
+        url: https://react.dev/reference/react/ViewTransition
+      - title: View Transition API — MDN
+        url: https://developer.mozilla.org/en-US/docs/Web/API/View_Transition_API
+    validation:
+      status: compiled
+      toolchain: Node 24.16.0, TypeScript 5.9.3
+      date: "2026-11-16"
+      host: a React app in a browser that supports the View Transitions API
+      jsx: react
+  - id: reusable-building-blocks
+    kind: code
+    title: Reusable building blocks
+    note: Extend the native element's props so a wrapper stays a real button; make a list generic so the type of each item flows into `renderItem`.
+    prerequisites: *static
+    code: |-
+      import type { ComponentProps, Key, ReactNode } from "react";
+      import { renderToStaticMarkup } from "react-dom/server";
+
+      type ButtonProps = ComponentProps<"button"> & { variant?: "primary" | "ghost" };
+
+      // `...rest` forwards aria-*, onClick, disabled and (React 19) ref to the real <button>
+      function Button({ variant = "primary", type = "button", className = "", ...rest }: ButtonProps) {
+        return <button type={type} className={`btn btn-${variant} ${className}`.trim()} {...rest} />;
+      }
+
+      type ListProps<T> = {
+        items: readonly T[];
+        getKey: (item: T) => Key;
+        renderItem: (item: T) => ReactNode;
+        empty?: ReactNode;
+      };
+
+      function List<T>({ items, getKey, renderItem, empty = <p>Nothing here.</p> }: ListProps<T>) {
+        if (items.length === 0) return empty;
+        return <ul>{items.map((item) => <li key={getKey(item)}>{renderItem(item)}</li>)}</ul>;
+      }
+
+      type Assignee = { login: string; open: number };
+      const people: Assignee[] = [{ login: "ada", open: 3 }, { login: "grace", open: 0 }];
+
+      console.log(renderToStaticMarkup(<Button variant="ghost" aria-label="Archive task">Archive</Button>));
+      console.log(renderToStaticMarkup(
+        <List items={people} getKey={(p) => p.login} renderItem={(p) => `${p.login} (${p.open})`} />,
+      ));
+      console.log(renderToStaticMarkup(
+        <List items={[] as Assignee[]} getKey={(p) => p.login} renderItem={(p) => p.login} />,
+      ));
+    expected: |-
+      <button type="button" class="btn btn-ghost" aria-label="Archive task">Archive</button>
+      <ul><li>ada (3)</li><li>grace (0)</li></ul>
+      <p>Nothing here.</p>
+    validation: *ran-static
+  - id: cheap-re-renders
+    kind: code
+    title: Keep re-renders cheap — memo, keys, stable callbacks
+    note: A state change re-renders its component and every child; `memo` lets a row skip when its props are unchanged, which needs callbacks with a stable identity.
+    prerequisites: *jsdom
+    code: |-
+      import { act, memo, useCallback, useState } from "react";
+      import { JSDOM } from "jsdom";
+
+      const { window } = new JSDOM(`<main></main>`);
+      Object.assign(globalThis, { window, document: window.document, IS_REACT_ACT_ENVIRONMENT: true });
+      const { createRoot } = await import("react-dom/client");
+      const { fireEvent } = await import("@testing-library/dom");
+
+      type Task = { id: string; title: string; done: boolean };
+      const seed: Task[] = [{ id: "t1", title: "Triage", done: false }, { id: "t2", title: "Ship", done: false }];
+      const rendered: string[] = [];                          // demo instrumentation only
+
+      type RowProps = { task: Task; onToggle: (id: string) => void };
+
+      const TaskRow = memo(function TaskRow({ task, onToggle }: RowProps) {
+        rendered.push(task.id);
+        const box = <input type="checkbox" checked={task.done} onChange={() => onToggle(task.id)} />;
+        return <li><label>{box} {task.title}</label></li>;
+      });
+
+      function TaskScreen() {
+        const [tasks, setTasks] = useState(seed);
+        const [draft, setDraft] = useState("");
+
+        // the functional update reads no `tasks`, so `toggle` keeps one identity for good
+        const toggle = useCallback((id: string) =>
+          setTasks((ts) => ts.map((t) => (t.id === id ? { ...t, done: !t.done } : t))), []);
+
+        return (
+          <>
+            <input aria-label="New task" value={draft} onChange={(e) => setDraft(e.target.value)} />
+            <ul>{tasks.map((t) => <TaskRow key={t.id} task={t} onToggle={toggle} />)}</ul>
+          </>
+        );
+      }
+
+      const root = createRoot(document.querySelector("main")!);
+      async function step(label: string, update: () => void) {
+        await act(update);
+        console.log(`${label}: ${rendered.splice(0).join(",") || "no rows"}`);
+      }
+
+      await step("first render", () => root.render(<TaskScreen />));
+      await step("typing", () => fireEvent.change(document.querySelector("input")!, { target: { value: "x" } }));
+      await step("toggle t2", () => document.querySelectorAll<HTMLInputElement>("li input")[1]!.click());
+    expected: |-
+      first render: t1,t2
+      typing: no rows
+      toggle t2: t2
+    sources:
+      - title: memo — react.dev
+        url: https://react.dev/reference/react/memo
+      - title: useCallback — react.dev
+        url: https://react.dev/reference/react/useCallback
+    validation: *ran-static
+  - id: performance-rules
+    kind: rules
+    title: Rendering and performance rules
+    note: What re-renders, and how to keep it cheap.
+    items:
+      - tone: good
+        text: "Keep render pure and cheap — it runs on every state change of the component **and** of every ancestor. No fetches, no subscriptions, no `Date.now()` in the body."
+      - tone: good
+        text: "Put state as low as it can go: a filter box that owns its own `draft` re-renders itself, not the whole screen."
+      - tone: good
+        text: "`key` = the row's own stable id. An index key reuses the wrong row's state (focus, an open editor, a checkbox) after an insert or sort."
+      - tone: good
+        text: "`memo` only helps when props are stable: pass ids and primitives, keep callbacks stable (`useCallback`, functional `setState`), and do not create `{}` or `[]` literals as props."
+      - tone: neutral
+        text: "The **React Compiler** (`babel-plugin-react-compiler`) memoises components and values automatically; with it on, hand-written `memo`/`useCallback` is mostly unnecessary."
+      - tone: bad
+        text: "Defining a component inside another component: every render creates a new type, so React unmounts and remounts the subtree and its state is lost."
+      - tone: bad
+        text: "Rendering thousands of rows: React has no lazy stack — virtualise (`@tanstack/react-virtual`, `react-window`) or paginate."
+      - tone: neutral
+        text: "React DevTools: the **Profiler** records what rendered and why; the \"Highlight updates when components render\" setting flashes renders live."
