@@ -22,6 +22,7 @@ cards:
     note: In the Swift catalog's reading order.
     headers: [Swift topic, Disposition, Here, Why]
     rows:
+      - ["Interview: Project Bluebird", "no counterpart", "—", "The interview walkthrough assembles SwiftUI and iOS platform APIs into a single exercise."]
       - ["SwiftUI — State & Data Flow", "equivalent", "React — State & Data Flow", "which hook owns which state, lifting and context, effects tied to the component — React's answer to the property-wrapper table"]
       - ["SwiftUI — Views, Layout & Animation", "equivalent", "React — Components, Layout & Animation", "components and props, lists with keys, layout with flexbox and grid, routing, transitions and the re-render rules"]
       - ["SwiftUI vs UIKit", "equivalent", "jQuery vs React vs SolidJS", "the same screen written imperatively and declaratively, and what each model costs"]

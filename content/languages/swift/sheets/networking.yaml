@@ -454,6 +454,51 @@ cards:
           throw URLError(.badServerResponse)
         }
       }
+  - id: image-data-cache
+    kind: code
+    title: An in-memory image data cache
+    note: Use `NSCache` with a cost budget when you own the image loader. The injected session can also use `URLCache` for HTTP policy and revalidation. See `index.html#networking--caching-etag-and-policies`.
+    applies:
+      platforms: [ios, macos]
+      runtime: Swift toolchain
+      requires: [Foundation]
+    prerequisites:
+      - Inject a session and share one cache across the screens that use the same image URLs.
+    validation:
+      status: compiled
+      toolchain: Swift 6.4, Swift 6 language mode
+      date: "2026-11-17"
+    expected: A repeat request can use memory until eviction. Concurrent misses may each start a request.
+    code: |-
+      import Foundation
+
+      actor ImageDataCache {
+          private let memory = NSCache<NSURL, NSData>()
+          private let session: URLSession
+
+          init(session: URLSession) {
+              self.session = session
+              memory.totalCostLimit = 16 * 1024 * 1024
+          }
+
+          func data(for url: URL) async throws -> Data {
+              try Task.checkCancellation()
+              if let hit = memory.object(forKey: url as NSURL) {
+                  return hit as Data
+              }
+
+              let (data, response) = try await session.data(from: url)
+              try Task.checkCancellation()
+              guard let http = response as? HTTPURLResponse,
+                    (200..<300).contains(http.statusCode),
+                    http.mimeType?.hasPrefix("image/") == true else {
+                  throw URLError(.badServerResponse)
+              }
+
+              memory.setObject(data as NSData, forKey: url as NSURL, cost: data.count)
+              return data
+          }
+      }
   - id: upload-download-with-progress
     kind: code
     title: Upload and download with progress

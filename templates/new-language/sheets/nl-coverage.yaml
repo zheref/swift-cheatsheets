@@ -26,6 +26,10 @@ cards:
       - Here
       - Why
     rows:
+      - - "Interview: Project Bluebird"
+        - no counterpart
+        - —
+        - "TODO: does the topic not exist here, or is it not written yet?"
       - - SwiftUI — State & Data Flow
         - no counterpart
         - —
