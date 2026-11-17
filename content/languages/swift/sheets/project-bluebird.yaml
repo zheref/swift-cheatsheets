@@ -1,0 +1,477 @@
+id: project-bluebird
+concept: ios.project-bluebird
+scope: platform
+title: "Interview: Project Bluebird"
+group: Interview indexes
+subtitle: An APOD-style iOS list and detail exercise with follow-up prompts.
+applies:
+  platforms: [ios]
+  runtime: Swift toolchain
+cards:
+  - id: 60-second-scan
+    kind: rules
+    title: 60-second scan
+    note: Jump to the sample or follow-up that matches the prompt.
+    items:
+      - tone: neutral
+        text: "Inject the session, check HTTP status, then decode. `index.html#project-bluebird--apod-client`"
+      - tone: neutral
+        text: "Use the date as the row ID and expect unfamiliar media. `index.html#project-bluebird--apod-model`"
+      - tone: neutral
+        text: "Drive the list and detail from explicit load state. `index.html#project-bluebird--apod-list`"
+      - tone: neutral
+        text: "Show images inline and route video by URL type. `index.html#project-bluebird--apod-detail`"
+      - tone: neutral
+        text: "Bound the image cache and keep HTTP cache policy on the session. `index.html#networking--image-data-cache`"
+      - tone: neutral
+        text: "Page by date and bound retry to transient reads. `index.html#project-bluebird--pagination`"
+      - tone: neutral
+        text: "Cancel on exit and isolate UI writes to the main actor. `index.html#project-bluebird--cancellation`"
+      - tone: neutral
+        text: "Stub the injected session and keep an offline fixture. `index.html#project-bluebird--testing`"
+      - tone: neutral
+        text: "Use Keychain for secrets and LocalAuthentication for a screen gate. `index.html#project-bluebird--face-id`"
+      - tone: neutral
+        text: "Validate incoming routes and treat silent pushes as best-effort refreshes. `index.html#project-bluebird--deep-links`"
+  - id: networking
+    kind: table
+    title: "Networking"
+    note: "Start with the range request and an injected session."
+    headers: [Reference, Anchor]
+    rows:
+      - ["APOD range client","`index.html#project-bluebird--apod-client`"]
+      - ["Typed GET and POST","`index.html#networking--typed-get-and-post`"]
+      - ["API client and typed errors","`index.html#networking--api-client-and-typed-errors`"]
+      - ["Timeouts and cancellation","`index.html#networking--timeouts-and-cancellation`"]
+  - id: models
+    kind: table
+    title: "Models and Codable"
+    note: "Use the calendar date as identity and decode unknown media into a safe branch."
+    headers: [Reference, Anchor]
+    rows:
+      - ["APOD model and fixture","`index.html#project-bluebird--apod-model`"]
+      - ["Codable round trip","`index.html#serialization--codable-round-trip`"]
+      - ["Dates","`index.html#serialization--dates`"]
+      - ["Enums","`index.html#serialization--enums`"]
+      - ["Decoding errors with a path","`index.html#serialization--decoding-errors-with-a-path`"]
+  - id: swiftui
+    kind: table
+    title: "SwiftUI list and detail"
+    note: "Render a row for each day and push a detail from the selected entry."
+    headers: [Reference, Anchor]
+    rows:
+      - ["APOD list and load states","`index.html#project-bluebird--apod-list`"]
+      - ["APOD detail by media kind","`index.html#project-bluebird--apod-detail`"]
+      - ["Lists and collections","`index.html#swiftui-views--lists-collections`"]
+      - ["SwiftUI navigation","`index.html#swiftui-views--navigation-vanilla-swiftui`"]
+  - id: uikit
+    kind: table
+    title: "UIKit equivalent"
+    note: "Use the same client and state, apply a diffable snapshot and push the selected item through the coordinator."
+    headers: [Reference, Anchor]
+    rows:
+      - ["List screen both ways","`index.html#swiftui-uikit--a-list-screen-both-ways`"]
+      - ["Diffable list and row selection","`index.html#uikit-programmatic--the-list-screen`"]
+      - ["Loading and applying a snapshot","`index.html#uikit-programmatic--loading-the-list`"]
+      - ["Programmatic detail controller","`index.html#uikit-programmatic--target-action-vs-uiaction`"]
+      - ["Navigation coordinator","`index.html#uikit-programmatic--navigation-coordinator`"]
+      - ["Same view model in UIKit","`index.html#mvvm-state--same-view-model-in-uikit`"]
+  - id: loading
+    kind: table
+    title: "Loading and errors"
+    note: "Keep empty results distinct from failures. Offer retry and an explicit fixture after failure."
+    headers: [Reference, Anchor]
+    rows:
+      - ["APOD list and load states","`index.html#project-bluebird--apod-list`"]
+      - ["Synthetic fixture","`index.html#project-bluebird--apod-model`"]
+      - ["Rendering each load state","`index.html#mvvm-state--rendering-each-load-state`"]
+  - id: media
+    kind: table
+    title: "Image and video"
+    note: "Show images inline, open hosted video URLs, and use the existing player for a direct HLS stream."
+    headers: [Reference, Anchor]
+    rows:
+      - ["APOD detail by media kind","`index.html#project-bluebird--apod-detail`"]
+      - ["HLS in SwiftUI","`index.html#video-streaming--play-hls-in-swiftui`"]
+  - id: image-cache
+    kind: table
+    title: "Image cache"
+    note: "Keep hot image bytes in memory when you own the image loader and use HTTP caching for server policy and revalidation."
+    headers: [Reference, Anchor]
+    rows:
+      - ["Image data cache","`index.html#networking--image-data-cache`"]
+      - ["HTTP cache policies and ETags","`index.html#networking--caching-etag-and-policies`"]
+  - id: pagination
+    kind: table
+    title: "Pagination"
+    note: "Demonstrate one APOD date range. To page older entries, end the next range the day before the oldest date and deduplicate by date."
+    headers: [Reference, Anchor]
+    rows:
+      - ["APOD range client","`index.html#project-bluebird--apod-client`"]
+      - ["Cursor pagination for APIs with cursors","`index.html#networking--cursor-pagination-asyncsequence`"]
+  - id: retry
+    kind: table
+    title: "Retry"
+    note: "Retry transient, idempotent reads with bounded backoff and honor Retry-After when the server provides it."
+    headers: [Reference, Anchor]
+    rows:
+      - ["Backoff, jitter and Retry-After","`index.html#networking--retry-with-backoff`"]
+      - ["Manual retry in the list","`index.html#project-bluebird--apod-list`"]
+  - id: cancellation
+    kind: table
+    title: "Task cancellation when leaving the screen"
+    note: "Tie the load to the view task. Check for cancellation before updating state after a suspension."
+    headers: [Reference, Anchor]
+    rows:
+      - ["View-owned task","`index.html#project-bluebird--apod-list`"]
+      - ["Async work in a view","`index.html#swiftui-state--async-work-in-a-view`"]
+      - ["Cooperative cancellation","`index.html#conc-core--cancellation`"]
+      - ["Model-owned cancellation","`index.html#mvvm-state--cancellation-owned-by-the-model`"]
+  - id: testing
+    kind: table
+    title: "Inject URLSession and stub it with XCTest"
+    note: "Put a URLProtocol subclass on an ephemeral configuration and inject the resulting session. Cover success, empty, malformed JSON and non-2xx."
+    headers: [Reference, Anchor]
+    rows:
+      - ["Injected APOD session","`index.html#project-bluebird--apod-client`"]
+      - ["Inject the test seam","`index.html#testing--design-for-testability-inject-the-seam`"]
+      - ["Deterministic URLProtocol stubs","`index.html#testing--deterministic-networking-with-urlprotocol`"]
+  - id: isolation
+    kind: table
+    title: "MainActor and actors"
+    note: "Publish UI state on the main actor. Use an actor for shared mutable resources such as the image cache."
+    headers: [Reference, Anchor]
+    rows:
+      - ["MainActor hop","`index.html#conc-core--mainactor-hop`"]
+      - ["Actor isolation","`index.html#conc-actors--actor-reference-type-with-a-serial-executor`"]
+      - ["Isolation decisions","`index.html#conc-actors--isolation-quick-decisions`"]
+  - id: keychain
+    kind: table
+    title: "Keychain"
+    note: "Use Keychain for secrets, and bind access control to an item when reading it must require authentication."
+    headers: [Reference, Anchor]
+    rows:
+      - ["Keychain wrapper","`index.html#security--a-small-keychain-wrapper`"]
+      - ["Biometric item access","`index.html#security--biometrics-bound-to-a-keychain-item`"]
+  - id: face-id
+    kind: table
+    title: "Face ID"
+    note: "Ask the system to authenticate before opening a local screen."
+    headers: [Reference, Anchor]
+    rows:
+      - ["Face ID screen gate","`index.html#security--face-id-screen-gate`"]
+      - ["Biometric item access","`index.html#security--biometrics-bound-to-a-keychain-item`"]
+  - id: push
+    kind: table
+    title: "APNs and push"
+    note: "Register for a device token, choose foreground presentation, and treat a silent update as a best-effort refresh."
+    headers: [Reference, Anchor]
+    rows:
+      - ["Push registration and delivery","`index.html#project-bluebird--push-basics`"]
+  - id: deep-links
+    kind: table
+    title: "Deep links and universal links"
+    note: "Route custom-scheme and verified HTTPS URLs to the same entry date."
+    headers: [Reference, Anchor]
+    rows:
+      - ["Link routing and associated domains","`index.html#project-bluebird--link-routing`"]
+  - id: mvvm
+    kind: table
+    title: "MVVM sample"
+    note: "Move load state and dependency injection to a view model once they need to be shared or tested in isolation."
+    headers: [Reference, Anchor]
+    rows:
+      - ["Standard view model","`index.html#mvvm-state--a-standard-view-model`"]
+      - ["Same view model in UIKit","`index.html#mvvm-state--same-view-model-in-uikit`"]
+  - id: tca
+    kind: table
+    title: "TCA sample"
+    note: "Model state and actions in a reducer, inject the client, test the effect and keep detail routing in the stack."
+    headers: [Reference, Anchor]
+    rows:
+      - ["Minimal feature","`index.html#tca-core--minimal-feature`"]
+      - ["Dependency client","`index.html#tca-compose--dependency-client`"]
+      - ["TestStore","`index.html#tca-compose--teststore-exhaustive-testing`"]
+      - ["Stack-based navigation","`index.html#tca-nav--stack-based-navigation`"]
+  - id: arc
+    kind: table
+    title: "ARC and retain cycles"
+    note: "Trace ownership through stored callbacks and tasks. Use weak capture where the owner should be free to disappear."
+    headers: [Reference, Anchor]
+    rows:
+      - ["ARC and capture lists","`index.html#lang--memory-arc`"]
+  - id: apod-model
+    kind: code
+    title: APOD model and offline fixture
+    note: Keep the API's fixed-width `yyyy-MM-dd` calendar date as a string for identity and ordering. The synthesized Codable conformance preserves unfamiliar wire values while the UI has an explicit `other` branch.
+    applies:
+      platforms: [ios, macos]
+      runtime: Swift toolchain
+      requires: [Foundation]
+    prerequisites:
+      - Save as `APODEntry.swift`. The fixture has no media URLs, so both rows work offline.
+    validation:
+      status: compiled
+      toolchain: Swift 6.4, Swift 6 language mode
+      date: "2026-11-17"
+    expected: The fixture yields an image entry and a video entry with distinct calendar dates.
+    code: |-
+      import Foundation
+
+      struct APODEntry: Codable, Identifiable, Sendable {
+          enum Media { case image, video, other }
+
+          let date: String
+          let title: String
+          let explanation: String
+          let url: URL?
+          private let mediaType: String
+
+          var id: String { date }
+          var media: Media {
+              switch mediaType {
+              case "image": .image
+              case "video": .video
+              default: .other
+              }
+          }
+
+          private enum CodingKeys: String, CodingKey {
+              case date, title, explanation, url
+              case mediaType = "media_type"
+          }
+
+          static func fixture() throws -> [Self] {
+              let json = """
+              [
+                {"date":"2024-01-02","title":"A violet moon",
+                 "explanation":"An imaginary moon rises above a crater.","media_type":"image"},
+                {"date":"2024-01-01","title":"A comet in motion",
+                 "explanation":"An imaginary comet passes a ringed planet.","media_type":"video"}
+              ]
+              """
+              return try JSONDecoder().decode([Self].self, from: Data(json.utf8))
+          }
+      }
+  - id: apod-client
+    kind: code
+    title: APOD range client
+    note: "The legacy range response is an array. DEMO_KEY allows 30 requests per hour and 50 per day per IP. NASA lists December 1, 2026 as the legacy API archive date. Use the fixture for a repeatable exercise, or adapt this client to the replacement feed."
+    applies:
+      platforms: [ios, macos]
+      runtime: Swift toolchain
+      requires: [Foundation]
+    sources:
+      - title: NASA Open APIs and APOD
+        url: https://api.nasa.gov/
+      - title: NASA demo-key rate limits
+        url: https://api.nasa.gov/assets/html/authentication.html
+      - title: NASA APOD API migration notice
+        url: https://api.nasa.gov/assets/html/header.html
+    prerequisites:
+      - Compile alongside the model from `index.html#project-bluebird--apod-model`. Pass an ephemeral, stubbed session in tests.
+      - Supply an inclusive date range with `yyyy-MM-dd` calendar dates.
+    validation:
+      status: compiled
+      toolchain: Swift 6.4, Swift 6 language mode
+      date: "2026-11-17"
+    expected: A successful response yields the newest entries first. Non-2xx responses throw before decoding.
+    code: |-
+      import Foundation
+
+      struct APODClient: Sendable {
+          enum RequestError: Error {
+              case invalidURL, nonHTTPResponse, status(Int)
+          }
+
+          let session: URLSession
+
+          func entries(from start: String, through end: String) async throws -> [APODEntry] {
+              var endpoint = URLComponents()
+              endpoint.scheme = "https"
+              endpoint.host = "api.nasa.gov"
+              endpoint.path = "/planetary/apod"
+              endpoint.queryItems = [
+                  URLQueryItem(name: "api_key", value: "DEMO_KEY"),
+                  URLQueryItem(name: "start_date", value: start),
+                  URLQueryItem(name: "end_date", value: end)
+              ]
+              guard let url = endpoint.url else { throw RequestError.invalidURL }
+
+              let (data, response) = try await session.data(from: url)
+              guard let http = response as? HTTPURLResponse else {
+                  throw RequestError.nonHTTPResponse
+              }
+              guard (200..<300).contains(http.statusCode) else {
+                  throw RequestError.status(http.statusCode)
+              }
+
+              return try JSONDecoder().decode([APODEntry].self, from: data)
+                  .sorted { $0.date > $1.date }
+          }
+      }
+  - id: apod-list
+    kind: code
+    title: SwiftUI list with five load states
+    note: Inject a loader so the same list runs with a session, a stub or a fixture. SwiftUI cancels the list's task when it disappears and restarts it when the retry ID changes.
+    applies:
+      platforms: [ios]
+      runtime: iOS 16+
+      requires: [SwiftUI]
+    prerequisites:
+      - Add the APOD model, range client and detail in the same app target.
+      - >-
+        For a live attempt, present `APODList { try await APODClient(session: .shared)
+        .entries(from: "2024-01-01", through: "2024-01-02") }`.
+      - For a deterministic run, present `APODList { try APODEntry.fixture() }`.
+    validation:
+      status: excerpt
+      host: an iOS app with SwiftUI
+    expected: Loading ends in rows, empty or failure. A failed request offers retry or an explicit offline fixture.
+    code: |-
+      import SwiftUI
+
+      @MainActor
+      struct APODList: View {
+          private enum State {
+              case idle, loading, loaded([APODEntry]), empty, failed
+          }
+
+          @State private var state = State.idle
+          @State private var attempt = 0
+          let load: @Sendable () async throws -> [APODEntry]
+
+          var body: some View {
+              NavigationStack {
+                  Group {
+                      switch state {
+                      case .idle, .loading:
+                          ProgressView("Loading entries")
+                      case .loaded(let entries):
+                          List(entries) { entry in
+                              NavigationLink {
+                                  APODDetail(entry: entry)
+                              } label: {
+                                  VStack(alignment: .leading) {
+                                      Text(entry.title)
+                                      Text(entry.date).foregroundStyle(.secondary)
+                                  }
+                              }
+                          }
+                      case .empty:
+                          Text("No entries in this date range.")
+                      case .failed:
+                          VStack(spacing: 12) {
+                              Text("Couldn’t load entries.")
+                              Button("Retry") { attempt += 1 }
+                              Button("Use offline fixture") {
+                                  if let entries = try? APODEntry.fixture() {
+                                      state = .loaded(entries)
+                                  }
+                              }
+                          }
+                      }
+                  }
+                  .navigationTitle("Daily sky")
+                  .task(id: attempt) { await refresh() }
+              }
+          }
+
+          private func refresh() async {
+              switch state {
+              case .loaded, .empty: return
+              case .idle, .loading, .failed: break
+              }
+              state = .loading
+              do {
+                  let entries = try await load()
+                  try Task.checkCancellation()
+                  state = entries.isEmpty ? .empty : .loaded(entries)
+              } catch is CancellationError {
+                  return
+              } catch {
+                  guard !Task.isCancelled else { return }
+                  state = .failed
+              }
+          }
+      }
+  - id: apod-detail
+    kind: code
+    title: SwiftUI detail by media kind
+    note: APOD video URLs may point to a hosted player. Open those as links and reuse `index.html#video-streaming--play-hls-in-swiftui` for direct HLS streams.
+    applies:
+      platforms: [ios]
+      runtime: iOS 16+
+      requires: [SwiftUI]
+    prerequisites:
+      - Add the model from `index.html#project-bluebird--apod-model` to the app target.
+    validation:
+      status: excerpt
+      host: an iOS app with SwiftUI
+    expected: The detail shows the explanation and routes media by kind. A missing image or video URL has an offline state.
+    code: |-
+      import SwiftUI
+
+      struct APODDetail: View {
+          let entry: APODEntry
+
+          var body: some View {
+              ScrollView {
+                  VStack(alignment: .leading, spacing: 12) {
+                      switch entry.media {
+                      case .image:
+                          if let url = entry.url {
+                              AsyncImage(url: url) { phase in
+                                  if let image = phase.image {
+                                      image.resizable().scaledToFit()
+                                  } else if phase.error != nil {
+                                      Label("Image unavailable", systemImage: "photo")
+                                  } else {
+                                      ProgressView("Loading image")
+                                  }
+                              }
+                          } else {
+                              Label("Image unavailable offline", systemImage: "photo")
+                          }
+                      case .video:
+                          if let url = entry.url {
+                              Link("Open video", destination: url)
+                          } else {
+                              Label("Video unavailable offline", systemImage: "video")
+                          }
+                      case .other:
+                          Text("Unsupported media")
+                      }
+                      Text(entry.explanation)
+                  }
+                  .padding()
+              }
+              .navigationTitle(entry.title)
+          }
+      }
+  - id: push-basics
+    kind: table
+    title: Push registration and delivery
+    note: Start with one refresh action that the list can call from a foreground event or background callback.
+    applies:
+      platforms: [ios]
+      requires: [UIKit, UserNotifications]
+    headers: [Step, What to do]
+    rows:
+      - ["Register", "Enable Push Notifications and call `UIApplication.shared.registerForRemoteNotifications()` at launch. Request alert, sound or badge authorization through `UNUserNotificationCenter` when the app needs visible notifications."]
+      - ["Device token", "Forward the current token from `application(_:didRegisterForRemoteNotificationsWithDeviceToken:)` to your provider. Handle `application(_:didFailToRegisterForRemoteNotificationsWithError:)` and register again on later launches."]
+      - ["Foreground alert", "Assign a `UNUserNotificationCenterDelegate` at launch. Return presentation options such as `[.banner, .sound]` from `userNotificationCenter(_:willPresent:)` when an alert should appear."]
+      - ["Silent refresh", "Enable Background Modes → Remote notifications. Send `{\"aps\":{\"content-available\":1}}` with `apns-push-type: background` and `apns-priority: 5`. Refresh in `application(_:didReceiveRemoteNotification:fetchCompletionHandler:)` and report the result promptly. Delivery is best effort."]
+  - id: link-routing
+    kind: table
+    title: Link routing and associated domains
+    note: Parse both URL forms to the same entry date. Queue a route until the list can resolve the entry.
+    applies:
+      platforms: [ios]
+      requires: [SwiftUI, UIKit]
+    headers: [Route, Setup and delivery]
+    rows:
+      - ["Custom scheme", "Register `bluebird` under URL Types. Handle `bluebird://entry/2024-01-02` in SwiftUI's `onOpenURL` or UIKit's `scene(_:openURLContexts:)`."]
+      - ["Universal link", "Add `applinks:example.com` to Associated Domains. Serve `/.well-known/apple-app-site-association` over HTTPS with the app ID and `/entry/*` in its route components. With the app absent, `https://example.com/entry/2024-01-02` opens the website."]
+      - ["Universal link delivery", "SwiftUI receives the URL via `onOpenURL`. UIKit reads `NSUserActivity.webpageURL` for `NSUserActivityTypeBrowsingWeb` in `scene(_:continue:)`. For a cold start with a UIKit scene, check the URL contexts and user activities in the scene connection options."]
+      - ["Validate and navigate", "Check the expected scheme, host, path and calendar date. Resolve the date to an entry and select it in the same navigation state used by a row tap."]

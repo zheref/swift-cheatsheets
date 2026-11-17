@@ -22,6 +22,7 @@ cards:
     note: In the Swift catalog's reading order.
     headers: [Swift topic, Disposition, Here, Why]
     rows:
+      - ["Interview: Project Bluebird", "no counterpart", "—", "The interview walkthrough assembles SwiftUI and iOS platform APIs into a single exercise."]
       - ["SwiftUI — State & Data Flow", "equivalent", "Jetpack Compose — State & Data Flow", "the same decision: local state, hoisting, an observable model, environment and view-scoped tasks"]
       - ["SwiftUI — Views, Layout & Animation", "equivalent", "Jetpack Compose — Layout, Lists, Navigation & Animation", "composables and modifier order, lazy lists with keys, Scaffold, navigation, animation and the rules that keep recomposition cheap"]
       - ["SwiftUI vs UIKit", "equivalent", "Compose vs Views", "the same screen in Compose and in Android Views, interop in both directions and a migration plan"]

@@ -370,6 +370,41 @@ cards:
 
       // Only gating a screen? LAContext().evaluatePolicy(.deviceOwnerAuthentication, localizedReason:)
       // falls back to the passcode. Either way Info.plist needs NSFaceIDUsageDescription.
+  - id: face-id-screen-gate
+    kind: code
+    title: A Face ID gate for a local screen
+    note: Ask for Face ID when the user opens the screen and handle cancellation separately from failure. For a secret that requires authentication on read, see `index.html#security--biometrics-bound-to-a-keychain-item`.
+    applies:
+      platforms: [ios]
+      requires: [LocalAuthentication, Face ID]
+    prerequisites:
+      - Add `NSFaceIDUsageDescription` to Info.plist and use a Face ID-capable device or simulator with enrollment enabled.
+    validation:
+      status: excerpt
+      host: an iOS app with LocalAuthentication
+    expected: Open the screen on success. Keep it gated if authentication is unavailable, fails or is cancelled.
+    code: |-
+      import LocalAuthentication
+
+      enum ScreenGateError: Error {
+          case faceIDUnavailable
+      }
+
+      @MainActor
+      func authenticateForScreen() async throws -> Bool {
+          let context = LAContext()
+          let policy = LAPolicy.deviceOwnerAuthenticationWithBiometrics
+          var availabilityError: NSError?
+          guard context.canEvaluatePolicy(policy, error: &availabilityError) else {
+              if let availabilityError { throw availabilityError }
+              throw ScreenGateError.faceIDUnavailable
+          }
+          guard context.biometryType == .faceID else {
+              throw ScreenGateError.faceIDUnavailable
+          }
+
+          return try await context.evaluatePolicy(policy, localizedReason: "Open your saved entries")
+      }
   - id: transport-security-and-certificate-pinning
     kind: code
     title: Transport security and certificate pinning

@@ -22,6 +22,7 @@ cards:
     note: In the Swift catalog's reading order.
     headers: [Swift topic, Disposition, Here, Why]
     rows:
+      - ["Interview: Project Bluebird", "no counterpart", "—", "The interview walkthrough assembles SwiftUI and iOS platform APIs into a single exercise."]
       - ["SwiftUI — State & Data Flow", "partial", "MVVM State — INotifyPropertyChanged & Observable Collections", "the observable view model and collection a XAML binding watches; no view-owned state wrappers like `@State`"]
       - ["SwiftUI — Views, Layout & Animation", "equivalent", ".NET MAUI — XAML Views, Layout & Navigation", "pages with compiled bindings, layouts and sizing, CollectionView, Shell routes, animation and reusable views"]
       - ["SwiftUI vs UIKit", "equivalent", "XAML vs Code vs Blazor", "the same screen in XAML, in C# code and in Blazor, embedding one in another and choosing a stack"]

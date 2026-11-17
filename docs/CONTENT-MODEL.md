@@ -146,7 +146,7 @@ it records. A language with
 example state `applies.platforms`, `applies.runtime` and `applies.versions`, `sources`,
 `prerequisites`, `expected` and `validation`; applicability and sources count where the
 page shows them — on the card or on its sheet — so a value set only on the language does
-not. The Swift catalog does not set it and is unchanged.
+not. The Swift catalog keeps this flag off and allows metadata on individual examples.
 
 `npm run examples` (`scripts/run-examples.mts`) re-proves the claims: it compiles every
 `ran` and `compiled` example with the real toolchain — the snippet on the page is the whole

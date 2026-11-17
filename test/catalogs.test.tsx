@@ -13,7 +13,7 @@ import type { Catalog, Sheet, TableCard } from "../src/content/schema";
 import { describesResult, validationLabel } from "../src/ui/cards";
 import { CatalogPage } from "../src/ui/CatalogPage";
 import { UiProvider } from "../src/ui/Provider";
-import { ROOT } from "./helpers";
+import { legacySwiftCatalog, ROOT } from "./helpers";
 
 const NEW = ["typescript", "kotlin", "csharp"] as const;
 const site = loadSite(path.join(ROOT, "content"));
@@ -149,10 +149,10 @@ describe("the validation line", () => {
     expect(validationLabel({ status: "excerpt", host: "an Android app" })).toBe("Excerpt, not compiled or run here: it needs an Android app.");
   });
 
-  it("is absent from the Swift catalog, whose cards carry no example metadata", () => {
+  it("omits validation and prerequisites from legacy Swift cards", () => {
     const html = renderToString(
       <UiProvider>
-        <CatalogPage catalog={swift} languages={site.languages} />
+        <CatalogPage catalog={legacySwiftCatalog()} languages={site.languages} />
       </UiProvider>,
     );
     expect(html).not.toContain("data-status=");
@@ -168,7 +168,9 @@ describe("an example's result", () => {
     expect(describesResult(card("ts-testing", "node-test-basics"))).toBe(true); // ran, checked on exit status
     expect(describesResult(card("ts-browser-state", "render-from-state"))).toBe(true); // compiled
     expect(describesResult(card("ts-collections", "costs"))).toBe(false); // not an example
-    expect(swift.sheets.flatMap((s) => s.cards).some(describesResult)).toBe(false); // the Swift catalog renders as before
+    const bluebird = swift.sheets.find((s) => s.id === "project-bluebird")!;
+    expect(describesResult(bluebird.cards.find((c) => c.id === "apod-model")!)).toBe(true); // compiled
+    expect(describesResult(bluebird.cards.find((c) => c.id === "apod-list")!)).toBe(true); // excerpt
 
     const html = renderToString(
       <UiProvider>

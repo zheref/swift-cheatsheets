@@ -1,6 +1,6 @@
 # Swift Interview Cheat Sheets
 
-42 dense cheat sheets — SwiftUI, UIKit, styling and design tokens, MVVM, TCA, Swift
+43 dense cheat sheets — SwiftUI, UIKit, styling and design tokens, MVVM, TCA, Swift
 concurrency, Combine, RxSwift, timing operators, collections, strings, serialization, SOLID,
 functional Swift, Clean Code, engineering practices, iOS architecture, modularization,
 testing, UI testing, security, accessibility, localization, networking (REST, SOAP, gRPC,
@@ -27,6 +27,46 @@ kept as data** (YAML), so another language is a new catalog folder, not a new pa
   file (no CDN, no fonts, no network) that works opened from disk, AirDropped, or in Files.
 - **A build step to change it** — edit `content/`, then `npm run build` regenerates the
   Gatsby site (`public/`) and the offline `index.html`.
+
+## Interview: Project Bluebird
+
+Practice an APOD-style iOS list and detail with a synthetic offline fixture or a live
+range request. [Open the interview sheet](index.html#project-bluebird).
+
+### [60-second scan](index.html#project-bluebird--60-second-scan)
+
+- Inject the session, check HTTP status, then decode. [Reference](index.html#project-bluebird--apod-client)
+- Use the date as the row ID and expect unfamiliar media. [Reference](index.html#project-bluebird--apod-model)
+- Drive the list and detail from explicit load state. [Reference](index.html#project-bluebird--apod-list)
+- Show images inline and route video by URL type. [Reference](index.html#project-bluebird--apod-detail)
+- Bound the image cache and keep HTTP cache policy on the session. [Reference](index.html#networking--image-data-cache)
+- Page by date and bound retry to transient reads. [Reference](index.html#project-bluebird--pagination)
+- Cancel on exit and isolate UI writes to the main actor. [Reference](index.html#project-bluebird--cancellation)
+- Stub the injected session and keep an offline fixture. [Reference](index.html#project-bluebird--testing)
+- Use Keychain for secrets and LocalAuthentication for a screen gate. [Reference](index.html#project-bluebird--face-id)
+- Validate incoming routes and treat silent pushes as best-effort refreshes. [Reference](index.html#project-bluebird--deep-links)
+
+### Follow-up references
+
+- [Networking](index.html#project-bluebird--networking) — [APOD range client](index.html#project-bluebird--apod-client), [Typed GET and POST](index.html#networking--typed-get-and-post), [API client and typed errors](index.html#networking--api-client-and-typed-errors), [Timeouts and cancellation](index.html#networking--timeouts-and-cancellation).
+- [Models and Codable](index.html#project-bluebird--models) — [APOD model and fixture](index.html#project-bluebird--apod-model), [Codable round trip](index.html#serialization--codable-round-trip), [Dates](index.html#serialization--dates), [Enums](index.html#serialization--enums), [Decoding errors with a path](index.html#serialization--decoding-errors-with-a-path).
+- [SwiftUI list and detail](index.html#project-bluebird--swiftui) — [APOD list and load states](index.html#project-bluebird--apod-list), [APOD detail by media kind](index.html#project-bluebird--apod-detail), [Lists and collections](index.html#swiftui-views--lists-collections), [SwiftUI navigation](index.html#swiftui-views--navigation-vanilla-swiftui).
+- [UIKit equivalent](index.html#project-bluebird--uikit) — [List screen both ways](index.html#swiftui-uikit--a-list-screen-both-ways), [Diffable list and row selection](index.html#uikit-programmatic--the-list-screen), [Loading and applying a snapshot](index.html#uikit-programmatic--loading-the-list), [Programmatic detail controller](index.html#uikit-programmatic--target-action-vs-uiaction), [Navigation coordinator](index.html#uikit-programmatic--navigation-coordinator), [Same view model in UIKit](index.html#mvvm-state--same-view-model-in-uikit).
+- [Loading and errors](index.html#project-bluebird--loading) — [APOD list and load states](index.html#project-bluebird--apod-list), [Synthetic fixture](index.html#project-bluebird--apod-model), [Rendering each load state](index.html#mvvm-state--rendering-each-load-state).
+- [Image and video](index.html#project-bluebird--media) — [APOD detail by media kind](index.html#project-bluebird--apod-detail), [HLS in SwiftUI](index.html#video-streaming--play-hls-in-swiftui).
+- [Image cache](index.html#project-bluebird--image-cache) — [Image data cache](index.html#networking--image-data-cache), [HTTP cache policies and ETags](index.html#networking--caching-etag-and-policies).
+- [Pagination](index.html#project-bluebird--pagination) — [APOD range client](index.html#project-bluebird--apod-client), [Cursor pagination for APIs with cursors](index.html#networking--cursor-pagination-asyncsequence).
+- [Retry](index.html#project-bluebird--retry) — [Backoff, jitter and Retry-After](index.html#networking--retry-with-backoff), [Manual retry in the list](index.html#project-bluebird--apod-list).
+- [Task cancellation when leaving the screen](index.html#project-bluebird--cancellation) — [View-owned task](index.html#project-bluebird--apod-list), [Async work in a view](index.html#swiftui-state--async-work-in-a-view), [Cooperative cancellation](index.html#conc-core--cancellation), [Model-owned cancellation](index.html#mvvm-state--cancellation-owned-by-the-model).
+- [Inject URLSession and stub it with XCTest](index.html#project-bluebird--testing) — [Injected APOD session](index.html#project-bluebird--apod-client), [Inject the test seam](index.html#testing--design-for-testability-inject-the-seam), [Deterministic URLProtocol stubs](index.html#testing--deterministic-networking-with-urlprotocol).
+- [MainActor and actors](index.html#project-bluebird--isolation) — [MainActor hop](index.html#conc-core--mainactor-hop), [Actor isolation](index.html#conc-actors--actor-reference-type-with-a-serial-executor), [Isolation decisions](index.html#conc-actors--isolation-quick-decisions).
+- [Keychain](index.html#project-bluebird--keychain) — [Keychain wrapper](index.html#security--a-small-keychain-wrapper), [Biometric item access](index.html#security--biometrics-bound-to-a-keychain-item).
+- [Face ID](index.html#project-bluebird--face-id) — [Face ID screen gate](index.html#security--face-id-screen-gate), [Biometric item access](index.html#security--biometrics-bound-to-a-keychain-item).
+- [APNs and push](index.html#project-bluebird--push) — [Push registration and delivery](index.html#project-bluebird--push-basics).
+- [Deep links and universal links](index.html#project-bluebird--deep-links) — [Link routing and associated domains](index.html#project-bluebird--link-routing).
+- [MVVM sample](index.html#project-bluebird--mvvm) — [Standard view model](index.html#mvvm-state--a-standard-view-model), [Same view model in UIKit](index.html#mvvm-state--same-view-model-in-uikit).
+- [TCA sample](index.html#project-bluebird--tca) — [Minimal feature](index.html#tca-core--minimal-feature), [Dependency client](index.html#tca-compose--dependency-client), [TestStore](index.html#tca-compose--teststore-exhaustive-testing), [Stack-based navigation](index.html#tca-nav--stack-based-navigation).
+- [ARC and retain cycles](index.html#project-bluebird--arc) — [ARC and capture lists](index.html#lang--memory-arc).
 
 ---
 
