@@ -24,7 +24,7 @@ cards:
       - tone: neutral
         text: the one-line version of each
       - tone: neutral
-        text: related principles an interviewer may also ask (DRY, KISS, YAGNI, composition over inheritance, Law of Demeter)
+        text: related principles to apply in practice (DRY, KISS, YAGNI, composition over inheritance, Law of Demeter)
   - id: example
     kind: code
     title: "TODO: a practical example"

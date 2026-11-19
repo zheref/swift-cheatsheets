@@ -22,7 +22,6 @@ cards:
     note: In the Swift catalog's reading order.
     headers: [Swift topic, Disposition, Here, Why]
     rows:
-      - ["Interview: Project Bluebird", "no counterpart", "—", "The interview walkthrough assembles SwiftUI and iOS platform APIs into a single exercise."]
       - ["SwiftUI — State & Data Flow", "equivalent", "React — State & Data Flow", "which hook owns which state, lifting and context, effects tied to the component — React's answer to the property-wrapper table"]
       - ["SwiftUI — Views, Layout & Animation", "equivalent", "React — Components, Layout & Animation", "components and props, lists with keys, layout with flexbox and grid, routing, transitions and the re-render rules"]
       - ["SwiftUI vs UIKit", "equivalent", "jQuery vs React vs SolidJS", "the same screen written imperatively and declaratively, and what each model costs"]
@@ -65,3 +64,4 @@ cards:
       - ["Networking — SOAP, gRPC & GraphQL", "equivalent", "Networking — SOAP, gRPC & GraphQL", "the same three protocols from a browser or Node client, and when each is the right one"]
       - ["Video Streaming — HLS & AVPlayer", "equivalent", "Video Streaming — HLS, DASH & Media Source", "adaptive playback with hls.js and dash.js over Media Source Extensions, quality, captions, errors and DRM"]
       - ["Core Bluetooth (BLE)", "no counterpart", "—", "an Apple framework; Web Bluetooth exists only in Chromium-based browsers and is not covered"]
+      - ["Project Bluebird", "no counterpart", "—", "The project walkthrough assembles SwiftUI and iOS platform APIs into a single exercise."]

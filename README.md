@@ -1,4 +1,4 @@
-# Swift Interview Cheat Sheets
+# Swift Reference Sheets
 
 43 dense cheat sheets — SwiftUI, UIKit, styling and design tokens, MVVM, TCA, Swift
 concurrency, Combine, RxSwift, timing operators, collections, strings, serialization, SOLID,
@@ -28,10 +28,12 @@ kept as data** (YAML), so another language is a new catalog folder, not a new pa
 - **A build step to change it** — edit `content/`, then `npm run build` regenerates the
   Gatsby site (`public/`) and the offline `index.html`.
 
-## Interview: Project Bluebird
+## Project Bluebird
 
 Practice an APOD-style iOS list and detail with a synthetic offline fixture or a live
-range request. [Open the interview sheet](index.html#project-bluebird).
+range request. [Open Project Bluebird](index.html#project-bluebird), under **Projects** at the end
+of the sidebar. Topic cards open the main example, with more references available on expansion.
+Use the project return link above the page to resume browsing.
 
 ### [60-second scan](index.html#project-bluebird--60-second-scan)
 
@@ -169,7 +171,7 @@ The `Makefile` keeps the familiar shortcuts (`make`, `make build`, `make verify`
 ### Adding a card
 
 Open the sheet's YAML file in `content/languages/swift/sheets/` and add an entry under
-`cards:`. Five kinds exist:
+`cards:`. Six kinds exist:
 
 | `kind` | Renders | Fields |
 | --- | --- | --- |
@@ -178,6 +180,7 @@ Open the sheet's YAML file in `content/languages/swift/sheets/` and add an entry
 | `rules` | a colour-coded bullet list | `items: [{tone, text}]` |
 | `table` | a comparison table | `headers`, `rows` |
 | `diagram` | a full-width SVG infographic | `svg`: a file in the catalog's `diagrams/` |
+| `navigation` | compact topic links or an overview grid | `links: [{label, href, icon?}]`, optional `icon` and `layout: overview` |
 
 Every card has an `id` (stable, kebab-case, unique in its sheet), a `title` and a `note`,
 and may carry `concept`, `applies` (platforms, runtime, requirements, versions) and
@@ -207,6 +210,10 @@ booleans or null (`"true"`, `"null"`) — the schema refuses them with the file 
 2. Add `<id>` to `sheets:` in `content/languages/swift/language.yaml` — that order controls
    both the sidebar and the scroll order. Sheets sharing a `group` must be adjacent.
 3. `npm run build && npm run verify`.
+
+For a project, set `project: true`, use its project name as the title and `Projects` as the group,
+and list it after the topic sheets. A navigation card uses a local fragment such as
+`href: "#networking--typed-get-and-post"`. The build checks that each destination exists.
 
 **A sheet's `id` is its page anchor** (`index.html#<id>`). Never rename one: saved links
 depend on it.

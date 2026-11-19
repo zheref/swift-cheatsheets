@@ -385,7 +385,7 @@ cards:
 
   - id: interview-talking-points
     kind: rules
-    title: Interview talking points
+    title: Key concepts
     note: "Short answers to the questions that come up about .NET UI stacks."
     items:
       - tone: modern

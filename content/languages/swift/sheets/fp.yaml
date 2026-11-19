@@ -100,7 +100,7 @@ cards:
   - id: keypaths-as-functions
     kind: code
     title: KeyPaths as functions
-    note: Concise, and a favourite trick in interviews.
+    note: A concise way to compose a reusable transformation.
     code: |-
       let names = users.map(\.name)                       // KeyPath as (User) -> String
       let sorted = users.sorted(using: KeyPathComparator(\.createdAt))

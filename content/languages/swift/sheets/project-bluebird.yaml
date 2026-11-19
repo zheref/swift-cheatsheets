@@ -1,205 +1,279 @@
 id: project-bluebird
 concept: ios.project-bluebird
 scope: platform
-title: "Interview: Project Bluebird"
-group: Interview indexes
-subtitle: An APOD-style iOS list and detail exercise with follow-up prompts.
+project: true
+title: Project Bluebird
+group: Projects
+subtitle: Build an APOD-style iOS list and detail. Browse topics below or jump straight to a sample.
 applies:
-  platforms: [ios]
+  platforms:
+    - ios
   runtime: Swift toolchain
 cards:
   - id: 60-second-scan
-    kind: rules
+    kind: navigation
     title: 60-second scan
-    note: Jump to the sample or follow-up that matches the prompt.
-    items:
-      - tone: neutral
-        text: "Inject the session, check HTTP status, then decode. `index.html#project-bluebird--apod-client`"
-      - tone: neutral
-        text: "Use the date as the row ID and expect unfamiliar media. `index.html#project-bluebird--apod-model`"
-      - tone: neutral
-        text: "Drive the list and detail from explicit load state. `index.html#project-bluebird--apod-list`"
-      - tone: neutral
-        text: "Show images inline and route video by URL type. `index.html#project-bluebird--apod-detail`"
-      - tone: neutral
-        text: "Bound the image cache and keep HTTP cache policy on the session. `index.html#networking--image-data-cache`"
-      - tone: neutral
-        text: "Page by date and bound retry to transient reads. `index.html#project-bluebird--pagination`"
-      - tone: neutral
-        text: "Cancel on exit and isolate UI writes to the main actor. `index.html#project-bluebird--cancellation`"
-      - tone: neutral
-        text: "Stub the injected session and keep an offline fixture. `index.html#project-bluebird--testing`"
-      - tone: neutral
-        text: "Use Keychain for secrets and LocalAuthentication for a screen gate. `index.html#project-bluebird--face-id`"
-      - tone: neutral
-        text: "Validate incoming routes and treat silent pushes as best-effort refreshes. `index.html#project-bluebird--deep-links`"
+    note: Choose a reminder to open its example or reference.
+    layout: overview
+    links:
+      - icon: 🌐
+        label: Inject the session; check HTTP status
+        href: "#project-bluebird--apod-client"
+      - icon: 🧩
+        label: Date identifies rows; expect unknown media
+        href: "#project-bluebird--apod-model"
+      - icon: 📱
+        label: Render explicit load states
+        href: "#project-bluebird--apod-list"
+      - icon: 🎬
+        label: Route image and video by kind
+        href: "#project-bluebird--apod-detail"
+      - icon: 🖼️
+        label: Budget the cache; respect HTTP policy
+        href: "#networking--image-data-cache"
+      - icon: 📚
+        label: Page by date; bound retries
+        href: "#project-bluebird--pagination"
+      - icon: 🛑
+        label: Cancel on exit; isolate UI state
+        href: "#project-bluebird--cancellation"
+      - icon: 🧪
+        label: Stub requests; keep an offline fixture
+        href: "#project-bluebird--testing"
+      - icon: 🔑
+        label: Protect secrets; authenticate screen access
+        href: "#project-bluebird--face-id"
+      - icon: 🔗
+        label: Validate routes; handle push delivery
+        href: "#project-bluebird--deep-links"
   - id: networking
-    kind: table
-    title: "Networking"
-    note: "Start with the range request and an injected session."
-    headers: [Reference, Anchor]
-    rows:
-      - ["APOD range client","`index.html#project-bluebird--apod-client`"]
-      - ["Typed GET and POST","`index.html#networking--typed-get-and-post`"]
-      - ["API client and typed errors","`index.html#networking--api-client-and-typed-errors`"]
-      - ["Timeouts and cancellation","`index.html#networking--timeouts-and-cancellation`"]
+    kind: navigation
+    title: Networking
+    note: Start with the range request and an injected session.
+    icon: 🌐
+    links:
+      - label: APOD range client
+        href: "#project-bluebird--apod-client"
+      - label: Typed GET and POST
+        href: "#networking--typed-get-and-post"
+      - label: API client and typed errors
+        href: "#networking--api-client-and-typed-errors"
+      - label: Timeouts and cancellation
+        href: "#networking--timeouts-and-cancellation"
   - id: models
-    kind: table
-    title: "Models and Codable"
-    note: "Use the calendar date as identity and decode unknown media into a safe branch."
-    headers: [Reference, Anchor]
-    rows:
-      - ["APOD model and fixture","`index.html#project-bluebird--apod-model`"]
-      - ["Codable round trip","`index.html#serialization--codable-round-trip`"]
-      - ["Dates","`index.html#serialization--dates`"]
-      - ["Enums","`index.html#serialization--enums`"]
-      - ["Decoding errors with a path","`index.html#serialization--decoding-errors-with-a-path`"]
+    kind: navigation
+    title: Models and Codable
+    note: Use the calendar date as identity and decode unknown media into a safe branch.
+    icon: 🧩
+    links:
+      - label: APOD model and fixture
+        href: "#project-bluebird--apod-model"
+      - label: Codable round trip
+        href: "#serialization--codable-round-trip"
+      - label: Dates
+        href: "#serialization--dates"
+      - label: Enums
+        href: "#serialization--enums"
+      - label: Decoding errors with a path
+        href: "#serialization--decoding-errors-with-a-path"
   - id: swiftui
-    kind: table
-    title: "SwiftUI list and detail"
-    note: "Render a row for each day and push a detail from the selected entry."
-    headers: [Reference, Anchor]
-    rows:
-      - ["APOD list and load states","`index.html#project-bluebird--apod-list`"]
-      - ["APOD detail by media kind","`index.html#project-bluebird--apod-detail`"]
-      - ["Lists and collections","`index.html#swiftui-views--lists-collections`"]
-      - ["SwiftUI navigation","`index.html#swiftui-views--navigation-vanilla-swiftui`"]
+    kind: navigation
+    title: SwiftUI list and detail
+    note: Render a row for each day and push a detail from the selected entry.
+    icon: 📱
+    links:
+      - label: APOD list and load states
+        href: "#project-bluebird--apod-list"
+      - label: APOD detail by media kind
+        href: "#project-bluebird--apod-detail"
+      - label: Lists and collections
+        href: "#swiftui-views--lists-collections"
+      - label: SwiftUI navigation
+        href: "#swiftui-views--navigation-vanilla-swiftui"
   - id: uikit
-    kind: table
-    title: "UIKit equivalent"
-    note: "Use the same client and state, apply a diffable snapshot and push the selected item through the coordinator."
-    headers: [Reference, Anchor]
-    rows:
-      - ["List screen both ways","`index.html#swiftui-uikit--a-list-screen-both-ways`"]
-      - ["Diffable list and row selection","`index.html#uikit-programmatic--the-list-screen`"]
-      - ["Loading and applying a snapshot","`index.html#uikit-programmatic--loading-the-list`"]
-      - ["Programmatic detail controller","`index.html#uikit-programmatic--target-action-vs-uiaction`"]
-      - ["Navigation coordinator","`index.html#uikit-programmatic--navigation-coordinator`"]
-      - ["Same view model in UIKit","`index.html#mvvm-state--same-view-model-in-uikit`"]
+    kind: navigation
+    title: UIKit equivalent
+    note: Use the same client and state, apply a diffable snapshot and push the selected item through the
+      coordinator.
+    icon: 🛠️
+    links:
+      - label: List screen both ways
+        href: "#swiftui-uikit--a-list-screen-both-ways"
+      - label: Diffable list and row selection
+        href: "#uikit-programmatic--the-list-screen"
+      - label: Loading and applying a snapshot
+        href: "#uikit-programmatic--loading-the-list"
+      - label: Programmatic detail controller
+        href: "#uikit-programmatic--target-action-vs-uiaction"
+      - label: Navigation coordinator
+        href: "#uikit-programmatic--navigation-coordinator"
+      - label: Same view model in UIKit
+        href: "#mvvm-state--same-view-model-in-uikit"
   - id: loading
-    kind: table
-    title: "Loading and errors"
-    note: "Keep empty results distinct from failures. Offer retry and an explicit fixture after failure."
-    headers: [Reference, Anchor]
-    rows:
-      - ["APOD list and load states","`index.html#project-bluebird--apod-list`"]
-      - ["Synthetic fixture","`index.html#project-bluebird--apod-model`"]
-      - ["Rendering each load state","`index.html#mvvm-state--rendering-each-load-state`"]
+    kind: navigation
+    title: Loading and errors
+    note: Keep empty results distinct from failures. Offer retry and an explicit fixture after failure.
+    icon: ⏳
+    links:
+      - label: APOD list and load states
+        href: "#project-bluebird--apod-list"
+      - label: Synthetic fixture
+        href: "#project-bluebird--apod-model"
+      - label: Rendering each load state
+        href: "#mvvm-state--rendering-each-load-state"
   - id: media
-    kind: table
-    title: "Image and video"
-    note: "Show images inline, open hosted video URLs, and use the existing player for a direct HLS stream."
-    headers: [Reference, Anchor]
-    rows:
-      - ["APOD detail by media kind","`index.html#project-bluebird--apod-detail`"]
-      - ["HLS in SwiftUI","`index.html#video-streaming--play-hls-in-swiftui`"]
+    kind: navigation
+    title: Image and video
+    note: Show images inline, open hosted video URLs, and use the existing player for a direct HLS stream.
+    icon: 🎬
+    links:
+      - label: APOD detail by media kind
+        href: "#project-bluebird--apod-detail"
+      - label: HLS in SwiftUI
+        href: "#video-streaming--play-hls-in-swiftui"
   - id: image-cache
-    kind: table
-    title: "Image cache"
-    note: "Keep hot image bytes in memory when you own the image loader and use HTTP caching for server policy and revalidation."
-    headers: [Reference, Anchor]
-    rows:
-      - ["Image data cache","`index.html#networking--image-data-cache`"]
-      - ["HTTP cache policies and ETags","`index.html#networking--caching-etag-and-policies`"]
+    kind: navigation
+    title: Image cache
+    note: Keep hot image bytes in memory when you own the image loader and use HTTP caching for server policy and
+      revalidation.
+    icon: 🖼️
+    links:
+      - label: Image data cache
+        href: "#networking--image-data-cache"
+      - label: HTTP cache policies and ETags
+        href: "#networking--caching-etag-and-policies"
   - id: pagination
-    kind: table
-    title: "Pagination"
-    note: "Demonstrate one APOD date range. To page older entries, end the next range the day before the oldest date and deduplicate by date."
-    headers: [Reference, Anchor]
-    rows:
-      - ["APOD range client","`index.html#project-bluebird--apod-client`"]
-      - ["Cursor pagination for APIs with cursors","`index.html#networking--cursor-pagination-asyncsequence`"]
+    kind: navigation
+    title: Pagination
+    note: Demonstrate one APOD date range. To page older entries, end the next range the day before the oldest
+      date and deduplicate by date.
+    icon: 📚
+    links:
+      - label: APOD range client
+        href: "#project-bluebird--apod-client"
+      - label: Cursor pagination for APIs with cursors
+        href: "#networking--cursor-pagination-asyncsequence"
   - id: retry
-    kind: table
-    title: "Retry"
-    note: "Retry transient, idempotent reads with bounded backoff and honor Retry-After when the server provides it."
-    headers: [Reference, Anchor]
-    rows:
-      - ["Backoff, jitter and Retry-After","`index.html#networking--retry-with-backoff`"]
-      - ["Manual retry in the list","`index.html#project-bluebird--apod-list`"]
+    kind: navigation
+    title: Retry
+    note: Retry transient, idempotent reads with bounded backoff and honor Retry-After when the server provides it.
+    icon: 🔄
+    links:
+      - label: Backoff, jitter and Retry-After
+        href: "#networking--retry-with-backoff"
+      - label: Manual retry in the list
+        href: "#project-bluebird--apod-list"
   - id: cancellation
-    kind: table
-    title: "Task cancellation when leaving the screen"
-    note: "Tie the load to the view task. Check for cancellation before updating state after a suspension."
-    headers: [Reference, Anchor]
-    rows:
-      - ["View-owned task","`index.html#project-bluebird--apod-list`"]
-      - ["Async work in a view","`index.html#swiftui-state--async-work-in-a-view`"]
-      - ["Cooperative cancellation","`index.html#conc-core--cancellation`"]
-      - ["Model-owned cancellation","`index.html#mvvm-state--cancellation-owned-by-the-model`"]
+    kind: navigation
+    title: Task cancellation
+    note: Tie the load to the view task. Check for cancellation before updating state after a suspension.
+    icon: 🛑
+    links:
+      - label: View-owned task
+        href: "#project-bluebird--apod-list"
+      - label: Async work in a view
+        href: "#swiftui-state--async-work-in-a-view"
+      - label: Cooperative cancellation
+        href: "#conc-core--cancellation"
+      - label: Model-owned cancellation
+        href: "#mvvm-state--cancellation-owned-by-the-model"
   - id: testing
-    kind: table
-    title: "Inject URLSession and stub it with XCTest"
-    note: "Put a URLProtocol subclass on an ephemeral configuration and inject the resulting session. Cover success, empty, malformed JSON and non-2xx."
-    headers: [Reference, Anchor]
-    rows:
-      - ["Injected APOD session","`index.html#project-bluebird--apod-client`"]
-      - ["Inject the test seam","`index.html#testing--design-for-testability-inject-the-seam`"]
-      - ["Deterministic URLProtocol stubs","`index.html#testing--deterministic-networking-with-urlprotocol`"]
+    kind: navigation
+    title: URLSession + XCTest
+    note: Put a URLProtocol subclass on an ephemeral configuration and inject the resulting session. Cover
+      success, empty, malformed JSON and non-2xx.
+    icon: 🧪
+    links:
+      - label: Injected APOD session
+        href: "#project-bluebird--apod-client"
+      - label: Inject the test seam
+        href: "#testing--design-for-testability-inject-the-seam"
+      - label: Deterministic URLProtocol stubs
+        href: "#testing--deterministic-networking-with-urlprotocol"
   - id: isolation
-    kind: table
-    title: "MainActor and actors"
-    note: "Publish UI state on the main actor. Use an actor for shared mutable resources such as the image cache."
-    headers: [Reference, Anchor]
-    rows:
-      - ["MainActor hop","`index.html#conc-core--mainactor-hop`"]
-      - ["Actor isolation","`index.html#conc-actors--actor-reference-type-with-a-serial-executor`"]
-      - ["Isolation decisions","`index.html#conc-actors--isolation-quick-decisions`"]
+    kind: navigation
+    title: MainActor + actors
+    note: Publish UI state on the main actor. Use an actor for shared mutable resources such as the image cache.
+    icon: 🔒
+    links:
+      - label: MainActor hop
+        href: "#conc-core--mainactor-hop"
+      - label: Actor isolation
+        href: "#conc-actors--actor-reference-type-with-a-serial-executor"
+      - label: Isolation decisions
+        href: "#conc-actors--isolation-quick-decisions"
   - id: keychain
-    kind: table
-    title: "Keychain"
-    note: "Use Keychain for secrets, and bind access control to an item when reading it must require authentication."
-    headers: [Reference, Anchor]
-    rows:
-      - ["Keychain wrapper","`index.html#security--a-small-keychain-wrapper`"]
-      - ["Biometric item access","`index.html#security--biometrics-bound-to-a-keychain-item`"]
+    kind: navigation
+    title: Keychain
+    note: Use Keychain for secrets, and bind access control to an item when reading it must require authentication.
+    icon: 🔑
+    links:
+      - label: Keychain wrapper
+        href: "#security--a-small-keychain-wrapper"
+      - label: Biometric item access
+        href: "#security--biometrics-bound-to-a-keychain-item"
   - id: face-id
-    kind: table
-    title: "Face ID"
-    note: "Ask the system to authenticate before opening a local screen."
-    headers: [Reference, Anchor]
-    rows:
-      - ["Face ID screen gate","`index.html#security--face-id-screen-gate`"]
-      - ["Biometric item access","`index.html#security--biometrics-bound-to-a-keychain-item`"]
+    kind: navigation
+    title: Face ID
+    note: Ask the system to authenticate before opening a local screen.
+    icon: 👤
+    links:
+      - label: Face ID screen gate
+        href: "#security--face-id-screen-gate"
+      - label: Biometric item access
+        href: "#security--biometrics-bound-to-a-keychain-item"
   - id: push
-    kind: table
-    title: "APNs and push"
-    note: "Register for a device token, choose foreground presentation, and treat a silent update as a best-effort refresh."
-    headers: [Reference, Anchor]
-    rows:
-      - ["Push registration and delivery","`index.html#project-bluebird--push-basics`"]
+    kind: navigation
+    title: APNs and push
+    note: Register for a device token, choose foreground presentation, and treat a silent update as a best-effort
+      refresh.
+    icon: 🔔
+    links:
+      - label: Push registration and delivery
+        href: "#project-bluebird--push-basics"
   - id: deep-links
-    kind: table
-    title: "Deep links and universal links"
-    note: "Route custom-scheme and verified HTTPS URLs to the same entry date."
-    headers: [Reference, Anchor]
-    rows:
-      - ["Link routing and associated domains","`index.html#project-bluebird--link-routing`"]
+    kind: navigation
+    title: Deep links and universal links
+    note: Route custom-scheme and verified HTTPS URLs to the same entry date.
+    icon: 🔗
+    links:
+      - label: Link routing and associated domains
+        href: "#project-bluebird--link-routing"
   - id: mvvm
-    kind: table
-    title: "MVVM sample"
-    note: "Move load state and dependency injection to a view model once they need to be shared or tested in isolation."
-    headers: [Reference, Anchor]
-    rows:
-      - ["Standard view model","`index.html#mvvm-state--a-standard-view-model`"]
-      - ["Same view model in UIKit","`index.html#mvvm-state--same-view-model-in-uikit`"]
+    kind: navigation
+    title: MVVM sample
+    note: Move load state and dependency injection to a view model once they need to be shared or tested in
+      isolation.
+    icon: 🏗️
+    links:
+      - label: Standard view model
+        href: "#mvvm-state--a-standard-view-model"
+      - label: Same view model in UIKit
+        href: "#mvvm-state--same-view-model-in-uikit"
   - id: tca
-    kind: table
-    title: "TCA sample"
-    note: "Model state and actions in a reducer, inject the client, test the effect and keep detail routing in the stack."
-    headers: [Reference, Anchor]
-    rows:
-      - ["Minimal feature","`index.html#tca-core--minimal-feature`"]
-      - ["Dependency client","`index.html#tca-compose--dependency-client`"]
-      - ["TestStore","`index.html#tca-compose--teststore-exhaustive-testing`"]
-      - ["Stack-based navigation","`index.html#tca-nav--stack-based-navigation`"]
+    kind: navigation
+    title: TCA sample
+    note: Model state and actions in a reducer, inject the client, test the effect and keep detail routing in the
+      stack.
+    icon: 🧭
+    links:
+      - label: Minimal feature
+        href: "#tca-core--minimal-feature"
+      - label: Dependency client
+        href: "#tca-compose--dependency-client"
+      - label: TestStore
+        href: "#tca-compose--teststore-exhaustive-testing"
+      - label: Stack-based navigation
+        href: "#tca-nav--stack-based-navigation"
   - id: arc
-    kind: table
-    title: "ARC and retain cycles"
-    note: "Trace ownership through stored callbacks and tasks. Use weak capture where the owner should be free to disappear."
-    headers: [Reference, Anchor]
-    rows:
-      - ["ARC and capture lists","`index.html#lang--memory-arc`"]
+    kind: navigation
+    title: ARC and retain cycles
+    note: Trace ownership through stored callbacks and tasks. Use weak capture where the owner should be free to
+      disappear.
+    icon: ♻️
+    links:
+      - label: ARC and capture lists
+        href: "#lang--memory-arc"
   - id: apod-model
     kind: code
     title: APOD model and offline fixture

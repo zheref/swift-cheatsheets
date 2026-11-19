@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 import { tokenize } from "../src/content/highlight";
 import { parseInline, plainInline } from "../src/content/inline";
 import { CatalogError, diagramProblems, exampleProblems, loadCatalog, loadCatalogs } from "../src/content/load";
-import { codeCard, compareCard, sheet as sheetSchema } from "../src/content/schema";
+import { codeCard, compareCard, navigationCard, sheet as sheetSchema } from "../src/content/schema";
 import { buildIndex, cardText, hitsLabel, search } from "../src/content/search";
 import { FIXTURE_DIR, FIXTURE_ROOT, legacySwiftCatalog, ROOT, swiftCatalog } from "./helpers";
 
@@ -98,6 +98,21 @@ describe("search parity with the pre-migration page (AC-3)", () => {
 });
 
 describe("loader", () => {
+  it("validates navigation destinations and keeps projects after the topic sheets", () => {
+    const base = { id: "references", kind: "navigation", title: "References", note: "Choose a topic" };
+    for (const href of ["javascript:alert(1)", "https://example.com", "index.html#topic"]) {
+      expect(navigationCard.safeParse({ ...base, links: [{ label: "Topic", href }] }).success).toBe(false);
+    }
+    expect(broken((dir) => {
+      fs.appendFileSync(path.join(dir, "sheets/fixture-concurrency.yaml"),
+        '\n  - {id: references, kind: navigation, title: References, note: Choose a topic, links: [{label: Missing, href: "#missing"}]}\n');
+    })).toContain("links to missing anchor #missing");
+    expect(broken((dir) => {
+      fs.appendFileSync(path.join(dir, "sheets/fixture-collections.yaml"), "\nproject: true\n");
+    })).toContain("project sheets must follow all topic sheets");
+    expect(swiftCatalog().sheets.at(-1)).toMatchObject({ id: "project-bluebird", title: "Project Bluebird", project: true });
+  });
+
   it("loads only published catalogs by default", () => {
     expect(loadCatalogs(path.join(ROOT, "content")).map((c) => c.language.id)).toEqual(["swift", "csharp", "kotlin", "typescript"]);
     expect(loadCatalogs(FIXTURE_ROOT)).toEqual([]);

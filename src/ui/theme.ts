@@ -98,6 +98,7 @@ export const pageSize = {
   anchorOffset: "calc(var(--topbar-height, var(--anchor-offset)) + 0.25rem)",
   /** The narrowest a card is before the grid drops a column, and a comparison column. */
   cardMin: "370px",
+  navigationMin: "260px",
   columnMin: "300px",
   /** A chip-sized link or button on a fine pointer; touch sizes are `size.touch`. */
   chip: "8",
@@ -139,6 +140,33 @@ const config = definePrimitivesConfig({
     html: { "--anchor-offset": "61px", [media.narrow]: { "--anchor-offset": "119px" } },
     // ---------- cards ----------
     ".card .note": { margin: 0, marginBottom: "2", fontSize: textSize.prose, color: "var(--dim)", lineHeight: 1.45 },
+    ".project .card:not([data-kind=navigation])": { gridColumn: "1 / -1" },
+    ".sheet:focus": { outline: "none" },
+    ".sheet:focus > .sheethead": { borderColor: "var(--accent)" },
+    ".card:target": { borderColor: "var(--accent)", outline: "2px solid var(--accent)", outlineOffset: "2px" },
+    ".reference-list": { display: "grid", gap: "2", listStyle: "none", margin: 0, padding: 0 },
+    ".reference-list a": {
+      display: "flex", alignItems: "center", gap: "2", minHeight: "44px", paddingBlock: "1.5", paddingInline: "2.5",
+      background: "var(--bg2)", border: "1px solid var(--line)", borderRadius: radius.control,
+      color: "var(--fg)", fontSize: textSize.prose, textDecoration: "none", overflowWrap: "anywhere",
+    },
+    ".reference-list a:hover": { borderColor: "var(--accent)", color: "var(--accent)" },
+    ".reference-list a:focus-visible, .reference-link:focus-visible, .reference-more summary:focus-visible, .project-return a:focus-visible": {
+      outline: "2px solid var(--accent)", outlineOffset: "2px",
+    },
+    ".reference-arrow": { marginInlineStart: "auto", color: "var(--accent)", flexShrink: 0 },
+    ".reference-icon": { flexShrink: 0 },
+    ".reference-more summary": { cursor: "pointer", color: "var(--dim)", fontSize: textSize.prose, minHeight: "44px", paddingBlock: "2.5" },
+    ".reference-more[open] summary": { color: "var(--accent)" },
+    ".reference-overview": { gridTemplateColumns: "repeat(auto-fit,minmax(min(210px,100%),1fr))" },
+    ".reference-link": { color: "var(--accent)", textDecoration: "underline", textUnderlineOffset: pageText.underlineOffset, overflowWrap: "anywhere" },
+    ".project-return": {
+      display: "flex", alignItems: "center", flexBasis: "100%", flexWrap: "wrap", gap: "3", paddingInline: "2",
+      background: "var(--bg2)", border: "1px solid var(--line)", borderRadius: radius.control,
+      fontSize: textSize.prose, color: "var(--dim)",
+    },
+    "#topbar:has(.project-return)": { flexWrap: "wrap" },
+    ".project-return a": { color: "var(--accent)", minHeight: "44px", display: "inline-flex", alignItems: "center", gap: "2" },
     ...codeBlockCss(".card"),
     "code.inline": {
       background: "var(--bg2)", border: "1px solid var(--line)", borderRadius: pageRadius.inline,

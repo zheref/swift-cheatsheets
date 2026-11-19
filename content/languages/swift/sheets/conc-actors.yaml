@@ -141,7 +141,7 @@ cards:
   - id: isolated-sending-parameters
     kind: code
     title: Isolated & sending parameters
-    note: Advanced but very quotable in an interview.
+    note: An advanced isolation pattern for shared state.
     code: |-
       // Run code *in* someone else's isolation domain
       func mutate(_ cache: isolated ImageCache, url: URL) {

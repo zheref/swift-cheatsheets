@@ -38,7 +38,7 @@ cards:
   - id: what-each-one-is-on-the-wire
     kind: rules
     title: What each one is on the wire
-    note: "Knowing the wire format answers most interview follow-ups: where errors live, what can be cached, what can stream."
+    note: "The wire format determines where errors live, what can be cached, and what can stream."
     items:
       - tone: neutral
         text: "**REST** — many URLs, HTTP verbs, status codes carry the outcome. Cacheable by any HTTP layer. Usually JSON."

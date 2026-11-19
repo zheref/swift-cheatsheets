@@ -178,6 +178,20 @@ export function loadCatalog(dir: string): Catalog {
   }
 
   // Sheets sharing a group must be adjacent, or the sidebar repeats a heading.
+  const anchors = new Set(sheets.flatMap((s) => [`#${s.id}`, ...s.cards.map((c) => `#${s.id}--${c.id}`)]));
+  for (const s of sheets) {
+    for (const c of s.cards) {
+      if (c.kind !== "navigation") continue;
+      for (const link of c.links) {
+        if (!anchors.has(link.href)) problems.push(`${path.join(sheetDir, s.id + ".yaml")}: card '${c.id}' links to missing anchor ${link.href}`);
+      }
+    }
+  }
+  const firstProject = sheets.findIndex((s) => s.project);
+  if (firstProject !== -1 && sheets.slice(firstProject).some((s) => !s.project)) {
+    problems.push(`${langFile}: project sheets must follow all topic sheets`);
+  }
+
   const seen = new Set<string>();
   let previous: string | null = null;
   for (const s of sheets) {

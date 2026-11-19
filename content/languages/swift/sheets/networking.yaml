@@ -593,7 +593,7 @@ cards:
   - id: completion-handlers-vs-async
     kind: compare
     title: Completion handlers vs async/await
-    note: "Interviews still ask for the callback version, so know where its bugs hide: a missed call, a double call, the wrong thread."
+    note: "When maintaining callback code, watch for a missed call, a double call, or the wrong thread."
     columns:
       - label: Completion handler
         tone: legacy

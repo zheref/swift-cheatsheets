@@ -1,13 +1,14 @@
 import { Box, chakra, Heading, Text } from "@chakra-ui/react";
 import { memo, type ReactNode } from "react";
 import { lineHeight, radius } from "../bankai";
-import type { Applicability, Card, Highlight, Source, Validation } from "../content/schema";
+import type { Applicability, Card, Highlight, NavigationCard, Source, Validation } from "../content/schema";
 import { CodeBlock, InlineText } from "./text";
 import { pageRadius, pageSize, pageText, textSize } from "./theme";
 
 /** Comparison, table and diagram cards take the full row; a one-column comparison does not. */
 export const isWide = (card: Card) =>
-  card.kind === "table" || card.kind === "diagram" || (card.kind === "compare" && card.columns.length > 1);
+  card.kind === "table" || card.kind === "diagram" || (card.kind === "compare" && card.columns.length > 1) ||
+  (card.kind === "navigation" && card.layout === "overview");
 
 /** Applicability as compact chips: platforms, requirements, version ranges. */
 export function AppliesLine({ applies, runtimeless }: { applies?: Applicability; runtimeless?: boolean }) {
@@ -127,8 +128,36 @@ function Expected({ card, highlight, lang }: { card: Card; highlight: Highlight;
   );
 }
 
+function ReferenceLinks({ links, overview = false }: { links: NavigationCard["links"]; overview?: boolean }) {
+  return (
+    <ul className={`reference-list${overview ? " reference-overview" : ""}`}>
+      {links.map((link) => (
+        <li key={link.href}>
+          <a href={link.href}>
+            {link.icon ? <span className="reference-icon" aria-hidden="true">{link.icon}</span> : null}
+            <span>{link.label}</span>
+            <span className="reference-arrow" aria-hidden="true">↗</span>
+          </a>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 function body(card: Card, highlight: Highlight, lang: string, titleId: string): ReactNode {
   switch (card.kind) {
+    case "navigation":
+      return (
+        <>
+          <ReferenceLinks links={card.layout === "overview" ? card.links : card.links.slice(0, 1)} overview={card.layout === "overview"} />
+          {card.layout === "compact" && card.links.length > 1 ? (
+            <details className="reference-more">
+              <summary>{card.links.length - 1} more {card.links.length === 2 ? "reference" : "references"}</summary>
+              <ReferenceLinks links={card.links.slice(1)} />
+            </details>
+          ) : null}
+        </>
+      );
     case "code":
       return (
         <>
@@ -217,6 +246,7 @@ export const CardView = memo(function CardView({
     <chakra.article
       className={`card${wide ? " wide" : ""}${card.kind === "diagram" ? " diagram" : ""}`}
       id={anchor}
+      tabIndex={-1}
       scrollMarginTop={pageSize.anchorOffset}
       data-kind={card.kind}
       data-concept={card.concept}
@@ -231,9 +261,10 @@ export const CardView = memo(function CardView({
       minW={0}
     >
       <Heading as="h3" id={`${anchor}-title`} m={0} mb="1" fontSize={textSize.heading} lineHeight={lineHeight.body} fontWeight={700} color="cs.fg" letterSpacing={pageText.headingTracking}>
+        {card.kind === "navigation" && card.icon ? <span className="reference-icon" aria-hidden="true">{card.icon} </span> : null}
         {card.title}
       </Heading>
-      {card.note ? <p className="note">{card.note}</p> : null}
+      {card.note ? <p className="note"><InlineText text={card.note} /></p> : null}
       {body(card, highlight, lang, `${anchor}-title`)}
       <ExampleMeta card={card} />
       <AppliesLine applies={card.applies} />

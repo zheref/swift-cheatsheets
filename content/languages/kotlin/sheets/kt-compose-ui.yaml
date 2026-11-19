@@ -546,7 +546,7 @@ cards:
   - id: performance-rules
     kind: rules
     title: What recomposes, and how to keep it cheap
-    note: The rules worth saying out loud in a review or an interview; the key and `derivedStateOf` rules are on kt-compose-state.
+    note: The rules to check in a code review; the key and `derivedStateOf` rules are on kt-compose-state.
     items:
       - tone: good
         text: "**Strong skipping** is on by default since Kotlin 2.0.20: stable parameters are compared with `equals`, unstable ones (`List`, classes from modules without the Compose compiler) with `===`. Pass the same instance when nothing changed; never build a new list in the composable body."

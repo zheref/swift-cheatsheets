@@ -3,7 +3,7 @@ concept: platform.bluetooth-le
 scope: platform
 title: Core Bluetooth (BLE)
 group: iOS Platform
-subtitle: Central role end to end, the GATT model, and the traps that fail interviews.
+subtitle: Central role end to end, the GATT model, and common implementation pitfalls.
 applies:
   platforms:
     - ios
@@ -203,7 +203,7 @@ cards:
       // In didFail:      ...?.resume(throwing: error)   // exactly once, always
   - id: traps-that-fail-interviews
     kind: rules
-    title: Traps that fail interviews
+    title: Common implementation pitfalls
     note: ""
     items:
       - tone: bad

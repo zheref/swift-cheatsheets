@@ -339,9 +339,9 @@
     {
      "kind": "rules",
      "wide": false,
-     "title": "Interview talking points",
+     "title": "Key concepts",
      "note": "",
-     "textSha256": "d0f24ff4f199d581a2e0758f148c0855b6518ec4e631f716ed7d5de96a1167a2",
+     "textSha256": "8e4b0ff971772f46df16832ff473d5b7ef43589e3d6cc7cc06d1ad9acf45d365",
      "codeSha256": []
     }
    ]
@@ -511,8 +511,8 @@
      "kind": "table",
      "wide": true,
      "title": "Common TCA pitfalls",
-     "note": "The things interviewers poke at.",
-     "textSha256": "9b4ec86812dd32756487a2c2ae3f31b7d0793f140a838108d65cb0263d7eae10",
+     "note": "The tradeoffs to examine during code review.",
+     "textSha256": "3501a23c7598b3c5d32c293b3f193cf017a6a2bfde8e29eb4474ad6aed6179fd",
      "codeSha256": []
     }
    ]
@@ -632,8 +632,8 @@
      "kind": "rules",
      "wide": false,
      "title": "Structured vs unstructured",
-     "note": "Interviewers love this distinction.",
-     "textSha256": "8907c845d1e687cee691ea0796a61afb0f1fa559701732dee720315eb731a262",
+     "note": "Choose the isolation boundary before starting concurrent work.",
+     "textSha256": "77a93b3108181e737d8969d15ab87e24c48d102a2fee4a71fc706d40ef5282aa",
      "codeSha256": []
     },
     {
@@ -755,8 +755,8 @@
      "kind": "code",
      "wide": false,
      "title": "Isolated & sending parameters",
-     "note": "Advanced but very quotable in an interview.",
-     "textSha256": "cde38b1af53e0f09d08562427993d0a23686f17e5d365f1b2615d464a3168374",
+     "note": "An advanced isolation pattern for shared state.",
+     "textSha256": "3d02b9c6522354671228b0ca941db23c5f75c1b01b20d8e013327f0d8ad08be9",
      "codeSha256": [
       "8ec011e0de1fe7cde488823dc983cba2a9d2ec35faa3f43ac1175d08eeaefce6"
      ]
@@ -1601,8 +1601,8 @@
      "kind": "code",
      "wide": false,
      "title": "KeyPaths as functions",
-     "note": "Concise, and a favourite trick in interviews.",
-     "textSha256": "4433d221f5a50c1b2bf0188df95f36db4fcefc4b42d29ff28cd3b6e526582372",
+     "note": "A concise way to compose a reusable transformation.",
+     "textSha256": "5cebd3890f5b09155792f64fd5e956688d702592f24f2109a032e99accbab267",
      "codeSha256": [
       "9c4c1dd7aaf97503b80b877a40241e9fa6045ff63aa4d3ab21c97dc7c21db0cd"
      ]
@@ -1772,8 +1772,8 @@
      "kind": "table",
      "wide": true,
      "title": "Costs, per type",
-     "note": "The table interviewers and profilers both care about.",
-     "textSha256": "124844cacce98c8b0cf0ade648c272915344601adca64f376f25ce5d6082117e",
+     "note": "The costs that matter when choosing and profiling a collection.",
+     "textSha256": "ec019779f6f746f24b4f4846f16ff53511c415a640163465dd08bcf4c2d394f9",
      "codeSha256": []
     },
     {
@@ -2359,7 +2359,7 @@
      "wide": false,
      "title": "Principles worth stating out loud",
      "note": "",
-     "textSha256": "e6cdd8f7d8f4a8a5d303a3e27e012b11325e59816858e3d4c6ca91a6109d269a",
+     "textSha256": "72554613cf74d157880427ba9a574eab5fae718b4d1bdbc236eaf373c400b931",
      "codeSha256": []
     }
    ]
@@ -2501,25 +2501,25 @@
      "wide": true,
      "title": "Pattern picker",
      "note": "Match the sentence in the problem statement to the row, then write the template.",
-     "textSha256": "812082d50436bd361236709e47fef335d279189f6b9f6064cdd89e13adf182a7",
+     "textSha256": "6cf74dffe8b89199066fe6180e6a0b14b6c40f27aec277550070de514bbf53e8",
      "codeSha256": [],
-     "svgSha256": "3cc7837668e1802382e5811e2e4f783d2d57eed2d133ebc1e5d23eee052e046b"
+     "svgSha256": "6baf190c41289397f495d54d402201122cb54c5fe081258a842c6133d0d2f880"
     },
     {
      "kind": "svg",
      "wide": true,
      "title": "Complexity, and what it costs",
      "note": "Know where the cliff is: n log n is fine at a million, n² is not.",
-     "textSha256": "373caa1db16a030f203edc5094cd6414cffebb599855a203f44c69ca16587d69",
+     "textSha256": "617606e82cc023807cd157045f692d31c99d03e1a259a1475e070340fb510db3",
      "codeSha256": [],
-     "svgSha256": "1f49b61603b10739c31823c1668e5183200346e1cb3acc543e99dbd429f3eed8"
+     "svgSha256": "787f91bd42a7fcb6eafecde2446b006ecfde2d0c75651c6b8c74297cea281783"
     },
     {
      "kind": "table",
      "wide": true,
      "title": "Swift standard library complexity",
-     "note": "The numbers interviewers expect you to know.",
-     "textSha256": "519fa163b1d05cc5637ae6b00b4babca9b568fb6bb17a8aa0c15ca33a1f3fbfe",
+     "note": "A quick reference for algorithm time and space costs.",
+     "textSha256": "19b473908729d18e4bd56b32b9d27a05959bc82471f78cdb96f4960ba0832e4a",
      "codeSha256": []
     },
     {
@@ -3079,7 +3079,7 @@
    "id": "core-bluetooth",
    "group": "iOS Platform",
    "title": "Core Bluetooth (BLE)",
-   "subtitle": "Central role end to end, the GATT model, and the traps that fail interviews.",
+   "subtitle": "Central role end to end, the GATT model, and common implementation pitfalls.",
    "cards": [
     {
      "kind": "svg",
@@ -3151,9 +3151,9 @@
     {
      "kind": "rules",
      "wide": false,
-     "title": "Traps that fail interviews",
+     "title": "Common implementation pitfalls",
      "note": "",
-     "textSha256": "10cb087ac9dfdc5efe05616fa7bf927bf8dc536355c3290a308bbfacbb2c2576",
+     "textSha256": "0a2a4b9d2991bfd9b7ae186af173de1959ceb2fed8fe001423572a5d6455de8c",
      "codeSha256": []
     },
     {
@@ -3166,5 +3166,6 @@
     }
    ]
   }
- ]
+ ],
+ "editorialUpdate": "2026-11-18: general reference wording in titles, notes and diagram labels. Permanent anchors, card order and code hashes retain their original values."
 }

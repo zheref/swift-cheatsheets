@@ -14,12 +14,14 @@ import { loadCatalog } from "../src/content/load";
 import type { Catalog } from "../src/content/schema";
 import { CatalogPage } from "../src/ui/CatalogPage";
 import { UiProvider } from "../src/ui/Provider";
+import { InlineText } from "../src/ui/text";
 import { buildIndex, search } from "../src/content/search";
 import { FIXTURE_DIR, ROOT, swiftCatalog } from "./helpers";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 beforeAll(() => {
+  HTMLElement.prototype.scrollIntoView ??= vi.fn();
   // jsdom has no layout; the active-section observer only needs to exist.
   globalThis.IntersectionObserver ??= class {
     observe() {}
@@ -65,6 +67,41 @@ const typeQuery = async (value: string) => {
 const visible = (sel: string) => [...document.querySelectorAll<HTMLElement>(sel)].filter((e) => !e.hidden);
 
 describe("Swift page: static render then hydration (AC-3)", () => {
+  it("opens project references through a search filter and returns to the originating topic", async () => {
+    await hydrate(swiftCatalog());
+    expect(document.querySelector("#side a[href='#project-bluebird']")!.textContent).toBe("Project Bluebird");
+    expect([...document.querySelectorAll("#side a[href^='#']")].at(-1)!.getAttribute("href")).toBe("#project-bluebird");
+    const icon = document.querySelector("#project-bluebird--image-cache .reference-icon")!;
+    expect(icon.getAttribute("aria-hidden")).toBe("true");
+    await typeQuery("bluebird");
+    const destination = document.getElementById("networking--image-data-cache")!;
+    expect(destination.hidden).toBe(true);
+    const link = document.querySelector<HTMLAnchorElement>("#project-bluebird--image-cache a")!;
+    await act(async () => link.click());
+    expect((document.getElementById("q") as HTMLInputElement).value).toBe("");
+    expect(destination.hidden).toBe(false);
+    expect(document.activeElement).toBe(destination);
+    expect(window.location.hash).toBe("#networking--image-data-cache");
+    const back = document.querySelector<HTMLAnchorElement>(".project-return a")!;
+    expect(back.getAttribute("href")).toBe("#project-bluebird--image-cache");
+    await act(async () => back.click());
+    expect(window.location.hash).toBe("#project-bluebird--image-cache");
+    expect(document.activeElement?.id).toBe("project-bluebird--image-cache");
+    expect(document.querySelector(".project-return")).toBeNull();
+    await typeQuery("actor sendable");
+    await act(async () => document.querySelector<HTMLAnchorElement>("#side a[href='#project-bluebird']")!.click());
+    expect((document.getElementById("q") as HTMLInputElement).value).toBe("");
+    expect(document.getElementById("project-bluebird")!.hidden).toBe(false);
+  });
+
+  it("renders code-form reference anchors as safe links", () => {
+    const html = renderToString(<InlineText text={'See `index.html#networking--image-data-cache`, `#if` and `javascript:alert(1)`.'} />);
+    const wrapper = document.createElement("div");
+    wrapper.innerHTML = html;
+    expect(wrapper.querySelector("a")!.getAttribute("href")).toBe("#networking--image-data-cache");
+    expect(wrapper.querySelectorAll("a")).toHaveLength(1);
+  });
+
   it("hydrates with no mismatch or recoverable error", async () => {
     const { errors, consoleErrors } = await hydrate(swiftCatalog());
     expect(errors).toEqual([]);
@@ -122,7 +159,7 @@ describe("Swift page: static render then hydration (AC-3)", () => {
     await act(async () => (document.querySelector("#side a[data-target='files']") as HTMLElement).click());
     expect(menu.getAttribute("aria-expanded")).toBe("false");
     expect(document.getElementById("main")!.hasAttribute("inert")).toBe(false);
-    expect(document.activeElement).toBe(menu);
+    expect(document.activeElement?.id).toBe("files");
 
     // Escape closes an open drawer and hands focus back to the menu button.
     await act(async () => menu.click());

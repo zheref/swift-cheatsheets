@@ -647,7 +647,7 @@ cards:
   - id: redux-rules
     kind: rules
     title: Rules and pitfalls
-    note: The things interviewers poke at.
+    note: The tradeoffs to examine during code review.
     items:
       - tone: good
         text: "Reducers are pure and synchronous: no `fetch`, no `Date.now()`, no `Math.random()` — pass such values in the action's payload."

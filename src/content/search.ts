@@ -36,6 +36,9 @@ export function cardText(card: Card): string {
     case "diagram":
       parts.push(svgText(card.svg));
       break;
+    case "navigation":
+      parts.push(...card.links.map((link) => link.label));
+      break;
   }
   return parts.join("");
 }

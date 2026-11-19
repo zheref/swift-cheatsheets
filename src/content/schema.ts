@@ -7,7 +7,7 @@
  * language adds files, never a page template (see docs/CONTENT-MODEL.md).
  */
 import { z } from "zod";
-import { CONCEPT_ID, SLUG } from "./ids";
+import { CONCEPT_ID, REFERENCE_HREF, SLUG } from "./ids";
 
 /** Stable, URL-safe identifier: lowercase words joined by single hyphens. */
 export const slug = z.string().regex(SLUG, "must be a lowercase kebab-case slug");
@@ -191,7 +191,22 @@ export const diagramCard = z
   })
   .strict();
 
-export const card = z.discriminatedUnion("kind", [codeCard, compareCard, rulesCard, tableCard, diagramCard]);
+/** Local references work unchanged in the site and in an offline HTML file. */
+export const referenceHref = z.string().regex(REFERENCE_HREF, "must name a local sheet or card anchor");
+
+export const navigationCard = z.object({
+  ...cardBase,
+  kind: z.literal("navigation"),
+  icon: z.string().min(1).max(16).optional(),
+  layout: z.enum(["compact", "overview"]).default("compact"),
+  links: z.array(z.object({
+    label: z.string().min(1),
+    href: referenceHref,
+    icon: z.string().min(1).max(16).optional(),
+  }).strict()).min(1),
+}).strict();
+
+export const card = z.discriminatedUnion("kind", [codeCard, compareCard, rulesCard, tableCard, diagramCard, navigationCard]);
 
 export const sheet = z
   .object({
@@ -202,6 +217,8 @@ export const sheet = z
     title: z.string().min(1),
     /** Sidebar heading; sheets sharing a group must be adjacent in the language's order. */
     group: z.string().min(1),
+    /** A practical project with a compact reference index, listed after the topic sheets. */
+    project: z.boolean().optional(),
     subtitle: z.string().default(""),
     applies: applicability.optional(),
     sources: z.array(source).min(1).optional(),
@@ -290,6 +307,7 @@ export type CompareCard = z.infer<typeof compareCard>;
 export type RulesCard = z.infer<typeof rulesCard>;
 export type TableCard = z.infer<typeof tableCard>;
 export type DiagramCard = z.infer<typeof diagramCard>;
+export type NavigationCard = z.infer<typeof navigationCard>;
 export type Card = z.infer<typeof card>;
 export type Sheet = z.infer<typeof sheet>;
 export type Highlight = z.infer<typeof highlight>;

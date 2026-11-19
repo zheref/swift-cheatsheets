@@ -313,7 +313,7 @@ cards:
       - ["7. Remove the old world", "delete XML layouts and themes, View Binding, and AppCompat themes where nothing needs them", "one source of truth for theming"]
   - id: interview-talking-points
     kind: rules
-    title: Interview talking points
+    title: Key concepts
     note: The distinctions worth saying out loud.
     items:
       - tone: modern

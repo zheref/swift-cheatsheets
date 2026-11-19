@@ -18,7 +18,7 @@ cards:
   - id: swift-standard-library-complexity
     kind: table
     title: Swift standard library complexity
-    note: The numbers interviewers expect you to know.
+    note: A quick reference for algorithm time and space costs.
     headers:
       - Operation
       - Cost
