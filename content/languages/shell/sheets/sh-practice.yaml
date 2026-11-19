@@ -1,0 +1,33 @@
+id: sh-practice
+concept: practice.engineering
+scope: shared
+title: Debugging and repeatable runs
+group: Programming and automation
+subtitle: Trace control flow, minimise environment assumptions and rerun safely.
+applies:
+  platforms:
+    - macos
+  runtime: macOS /bin/sh and system utilities
+  versions:
+    macos: ">=12"
+sources:
+  - title: Apple Shell Scripting Primer
+    url: https://developer.apple.com/library/archive/documentation/OpenSource/Conceptual/ShellScripting/Introduction/Introduction.html
+cards:
+  - id: reference
+    kind: table
+    title: Troubleshoot a run
+    headers:
+      - Task
+      - Technique
+      - When to use it
+    rows:
+      - - Check syntax
+        - /bin/sh -n ./report.sh
+        - Syntax checking does not execute commands. Exercise the real entry point with fixture data afterwards.
+      - - Trace selectively
+        - set -x and set +x
+        - Trace only a short section with nonsensitive data. Expanded arguments go to stderr.
+      - - Publish a complete file
+        - mktemp in the destination directory, write, then mv on success.
+        - A same-filesystem rename exposes the complete replacement. Trap cleanup on exit and check each failure.

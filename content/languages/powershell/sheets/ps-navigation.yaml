@@ -1,0 +1,37 @@
+id: ps-navigation
+concept: terminal.filesystem
+scope: platform
+title: Navigate and search from the terminal
+group: Terminal and platform
+subtitle: Find files by name, search their contents and inspect recent output.
+applies:
+  platforms:
+    - windows
+    - macos
+  runtime: PowerShell 7 (pwsh)
+  versions:
+    powershell: ">=7.0"
+sources:
+  - title: PowerShell documentation
+    url: https://learn.microsoft.com/en-us/powershell/
+cards:
+  - id: reference
+    kind: table
+    title: Common filesystem tasks
+    headers:
+      - Task
+      - Technique
+      - When to use it
+    rows:
+      - - List children and hidden items
+        - Get-ChildItem -Force
+        - Add -File or -Directory to select one kind of entry.
+      - - Find matching filenames
+        - Get-ChildItem -File -Recurse -Filter '*.log'
+        - -Filter lets the filesystem provider narrow results early.
+      - - Search file contents
+        - Select-String -LiteralPath './build.log' -SimpleMatch 'failed'
+        - Emits match objects with line numbers. Use -Quiet for a Boolean.
+      - - Read recent lines
+        - Get-Content -LiteralPath './build.log' -Tail 20
+        - Add -Wait to follow new lines interactively. Ctrl+C stops the follow.

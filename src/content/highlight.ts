@@ -1,5 +1,5 @@
 /**
- * A data-driven tokenizer for C-family syntaxes.
+ * A data-driven tokenizer for programming languages and terminal scripts.
  *
  * The rule order is the legacy Swift highlighter's, verbatim, so the migrated
  * catalog colours exactly as before: comments, strings, attributes, directives,
@@ -36,19 +36,29 @@ function compile(h: Highlight): Compiled {
     parts.push(src);
     classes.push(cls);
   };
+  if (h.dialect === "batch") add("(^[ \\t]*@?rem\\b[^\\n]*)", "com");
   if (h.lineComment) add(`(${escapeRx(h.lineComment)}[^\\n]*)`, "com");
   if (h.blockComment) {
     const [open, close] = h.blockComment;
     add(`(${escapeRx(open)}[\\s\\S]*?${escapeRx(close)})`, "com");
   }
-  add(`("(?:\\\\.|[^"\\\\])*")`, "str");
+  if (h.dialect === "sh") add("('[^']*')", "str");
+  if (h.dialect === "powershell") {
+    add("('(?:''|[^'])*')", "str");
+    add('("(?:`[\\s\\S]|""|[^"`])*")', "str");
+  } else if (h.dialect === "batch") {
+    add('("[^"\\n]*")', "str");
+  } else {
+    add('("(?:\\\\.|[^"\\\\])*")', "str");
+  }
   if (h.attributePrefix) add(`(${escapeRx(h.attributePrefix)}[A-Za-z_][\\w]*)`, "attr");
   if (h.directivePrefix) add(`(${escapeRx(h.directivePrefix)}[A-Za-z]+)`, "attr");
   add(`(\\b\\d[\\d_]*(?:\\.\\d+)?\\b)`, "num");
   add(`\\b(${h.keywords.map(escapeRx).join("|")})\\b`, "kw");
   if (h.capitalisedTypes) add(`(\\b[A-Z][A-Za-z0-9_]*\\b)`, "typ");
   if (h.members) add(`(\\.[a-z_][\\w]*)`, "mem");
-  const compiled = { rx: new RegExp(parts.join("|"), "g"), classes };
+  const flags = h.dialect === "powershell" || h.dialect === "batch" ? "gim" : "gm";
+  const compiled = { rx: new RegExp(parts.join("|"), flags), classes };
   cache.set(h, compiled);
   return compiled;
 }
@@ -59,6 +69,12 @@ export function tokenize(src: string, h: Highlight): Token[] {
   let last = 0;
   rx.lastIndex = 0;
   for (let m = rx.exec(src); m !== null; m = rx.exec(src)) {
+    // A hash inside a shell word (including $#) is data. Resume matching after it
+    // so an actual comment or quoted string later on this line can still be coloured.
+    if ((h.dialect === "sh" || h.dialect === "powershell") && m[0].startsWith("#") && m.index > 0 && !/[\s;|&()]/.test(src[m.index - 1]!)) {
+      rx.lastIndex = m.index + 1;
+      continue;
+    }
     if (m.index > last) out.push({ cls: null, text: src.slice(last, m.index) });
     let cls: TokenClass | null = null;
     for (let g = 1; g < m.length; g++) {

@@ -1,0 +1,36 @@
+id: sh-discovery
+concept: terminal.discovery
+scope: platform
+title: Find commands and inspect the environment
+group: Terminal and platform
+subtitle: Resolve a command, look up its options and locate the working directory.
+applies:
+  platforms:
+    - macos
+  runtime: macOS /bin/sh and system utilities
+  versions:
+    macos: ">=12"
+sources:
+  - title: Apple Shell Scripting Primer
+    url: https://developer.apple.com/library/archive/documentation/OpenSource/Conceptual/ShellScripting/Introduction/Introduction.html
+cards:
+  - id: reference
+    kind: table
+    title: Inspect the current session
+    headers:
+      - Task
+      - Technique
+      - When to use it
+    rows:
+      - - Resolve names
+        - command -v printf
+        - The result can name a builtin. Use type interactively for details.
+      - - Read local help
+        - man find
+        - macOS includes BSD utilities. Check options such as sed -i in the installed manual.
+      - - Inspect location
+        - pwd and ls -a
+        - The latter includes names beginning with a dot.
+      - - Inspect PATH
+        - printf '%s\n' "$PATH"
+        - Colons separate directories. Set an explicit PATH for scheduled jobs.

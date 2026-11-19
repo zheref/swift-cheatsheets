@@ -1,0 +1,31 @@
+id: sh-streams
+concept: algorithms.streaming
+scope: shared
+title: Streaming records
+group: Programming and automation
+subtitle: Consume one record at a time and keep a running aggregate.
+applies:
+  platforms:
+    - macos
+  runtime: macOS /bin/sh and system utilities
+  versions:
+    macos: ">=12"
+sources:
+  - title: Apple Shell Scripting Primer
+    url: https://developer.apple.com/library/archive/documentation/OpenSource/Conceptual/ShellScripting/Introduction/Introduction.html
+cards:
+  - id: example
+    kind: code
+    title: Maintain a running total
+    note: awk updates one accumulator per input record. The producer can continue writing as awk reads. An upstream producer may receive SIGPIPE if a downstream reader exits early.
+    prerequisites:
+      - Save as demo.sh in an empty directory and run /bin/sh ./demo.sh.
+    code: printf '%s\n' 3 5 2 | awk '{ total += $1; print total }'
+    expected: |-
+      3
+      8
+      10
+    validation:
+      status: ran
+      toolchain: macOS 27.0 /bin/sh (3.2.57)
+      date: 2026-11-19

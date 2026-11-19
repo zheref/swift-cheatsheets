@@ -1,0 +1,36 @@
+id: sh-navigation
+concept: terminal.filesystem
+scope: platform
+title: Navigate and search from the terminal
+group: Terminal and platform
+subtitle: Find files by name, search their contents and inspect recent output.
+applies:
+  platforms:
+    - macos
+  runtime: macOS /bin/sh and system utilities
+  versions:
+    macos: ">=12"
+sources:
+  - title: Apple Shell Scripting Primer
+    url: https://developer.apple.com/library/archive/documentation/OpenSource/Conceptual/ShellScripting/Introduction/Introduction.html
+cards:
+  - id: reference
+    kind: table
+    title: Common filesystem tasks
+    headers:
+      - Task
+      - Technique
+      - When to use it
+    rows:
+      - - List hidden entries
+        - ls -la
+        - Use this for inspection. Parsing ls output loses filename boundaries.
+      - - Find matching filenames
+        - find . -type f -name '*.log'
+        - Quote the pattern to let find match it. For processing paths use -exec with {} and +.
+      - - Search file contents
+        - grep -nF 'build failed' ./build.log
+        - -F treats the pattern literally and -n includes line numbers.
+      - - Read recent lines
+        - tail -n 20 ./build.log
+        - Use tail -f interactively to follow new lines. Ctrl+C stops the follow.

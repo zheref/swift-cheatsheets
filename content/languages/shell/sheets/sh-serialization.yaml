@@ -1,0 +1,30 @@
+id: sh-serialization
+concept: serialization.codecs
+scope: shared
+title: Read structured data
+group: Programming and automation
+subtitle: Decode a JSON record with a parser that understands quoting and escapes.
+applies:
+  platforms:
+    - macos
+  runtime: macOS /bin/sh and system utilities
+  versions:
+    macos: ">=12"
+sources:
+  - title: Apple Shell Scripting Primer
+    url: https://developer.apple.com/library/archive/documentation/OpenSource/Conceptual/ShellScripting/Introduction/Introduction.html
+cards:
+  - id: example
+    kind: code
+    title: Extract a JSON field with macOS plutil
+    note: The explicit key path selects a scalar. plutil -extract with raw output is a macOS tool. Prefer a real parser over splitting JSON on punctuation.
+    prerequisites:
+      - Save as demo.sh in an empty directory and run /bin/sh ./demo.sh.
+    code: |-
+      printf '%s\n' '{"stage":"ready","count":2}' |
+        /usr/bin/plutil -extract stage raw -o - -
+    expected: ready
+    validation:
+      status: ran
+      toolchain: macOS 27.0 /bin/sh (3.2.57)
+      date: 2026-11-19

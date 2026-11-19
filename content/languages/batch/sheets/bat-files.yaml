@@ -1,0 +1,51 @@
+id: bat-files
+concept: io.files-and-text
+scope: shared
+title: Paths, files and text
+group: Programming and automation
+subtitle: Read a file whose path contains spaces and handle a missing file.
+applies:
+  platforms:
+    - windows
+  runtime: Windows Command Prompt (cmd.exe)
+  versions:
+    windows: ">=10"
+sources:
+  - title: Windows command reference
+    url: https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/type
+cards:
+  - id: example
+    kind: code
+    title: Read beside the script
+    note: Use an empty scratch directory. %~dp0 selects the script's own directory. TYPE reads the file directly. FOR /F skips blank lines and tokenizes its input.
+    prerequisites:
+      - Save as demo.cmd in an empty directory and run cmd.exe /d /e:on /v:off /c demo.cmd.
+    code: |-
+      @echo off
+      setlocal
+      set "file=%~dp0daily report.txt"
+      >"%file%" echo ready
+      if not exist "%file%" exit /b 2
+      type "%file%"
+    expected: ready
+    validation:
+      status: ran
+      toolchain: Windows 11 cmd.exe (10.0.26200.9445)
+      date: 2026-11-19
+  - id: paths
+    kind: table
+    title: Split a path without tokenizing on spaces
+    headers:
+      - Task
+      - Example
+      - Behaviour
+    rows:
+      - - Directory of this script
+        - "%~dp0"
+        - Includes the trailing separator. Quote the completed path when appending a sibling filename.
+      - - Absolute first argument
+        - "%~f1"
+        - Resolves relative to the current directory. It does not prove the path exists.
+      - - Iterate entries
+        - for %%F in ("daily reports\*.txt") do ...
+        - Quote "%%~fF" when passing a match onward. Use an existence check when a match is required.

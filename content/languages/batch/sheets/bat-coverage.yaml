@@ -1,0 +1,188 @@
+id: bat-coverage
+concept: meta.coverage
+scope: language
+group: Coverage
+title: Coverage against the Swift catalog
+subtitle: Find the corresponding script topic or the platform boundary.
+cards:
+  - kind: table
+    id: matrix
+    title: Swift topics in reading order
+    headers:
+      - Swift topic
+      - Disposition
+      - Here
+      - Why
+    rows:
+      - - SwiftUI — State & Data Flow
+        - no counterpart
+        - —
+        - This topic uses a graphical application framework and its view or state lifecycle. Terminal commands expose streams and an exit status.
+      - - SwiftUI — Views, Layout & Animation
+        - no counterpart
+        - —
+        - This topic uses a graphical application framework and its view or state lifecycle. Terminal commands expose streams and an exit status.
+      - - SwiftUI vs UIKit
+        - no counterpart
+        - —
+        - This topic uses a graphical application framework and its view or state lifecycle. Terminal commands expose streams and an exit status.
+      - - UIKit — Programmatic UI
+        - no counterpart
+        - —
+        - This topic uses a graphical application framework and its view or state lifecycle. Terminal commands expose streams and an exit status.
+      - - SwiftUI — Styling, Design Tokens & Theming
+        - no counterpart
+        - —
+        - This topic uses a graphical application framework and its view or state lifecycle. Terminal commands expose streams and an exit status.
+      - - MVVM — View Models, Bindings & Observation
+        - no counterpart
+        - —
+        - This topic uses a graphical application framework and its view or state lifecycle. Terminal commands expose streams and an exit status.
+      - - TCA — Core Loop
+        - no counterpart
+        - —
+        - This topic uses a graphical application framework and its view or state lifecycle. Terminal commands expose streams and an exit status.
+      - - TCA — Composition, Dependencies, Testing
+        - partial
+        - Test a script contract
+        - A command can isolate its side effects and test its input/output contract.
+      - - TCA + SwiftUI — Navigation & UI
+        - no counterpart
+        - —
+        - This topic uses a graphical application framework and its view or state lifecycle. Terminal commands expose streams and an exit status.
+      - - Modern Swift Concurrency — Core
+        - partial
+        - Launch and wait for a child process
+        - Batch can launch a process and wait synchronously, with no native structured task group.
+      - - Actors, Sendable & Isolation
+        - partial
+        - Child processes and working directories
+        - Process-local environment and directories illustrate isolation across a child boundary.
+      - - Swift 6 Concurrency — Do's & Don'ts
+        - no counterpart
+        - —
+        - Swift strict-concurrency migration applies to the Swift compiler.
+      - - Multithreading — GCD vs Combine vs async/await
+        - partial
+        - Launch and wait for a child process
+        - Shows process-level coordination and completion.
+      - - Combine — Core
+        - partial
+        - Streaming records
+        - Shows a stream of records and an incremental consumer.
+      - - Timers & Async Patterns — Combine vs async/await
+        - equivalent
+        - Delays, polling and scheduling
+        - Limit retries and choose an OS scheduler for unattended work.
+      - - SwiftUI + Combine — Wiring Them Together
+        - no counterpart
+        - —
+        - This topic uses a graphical application framework and its view or state lifecycle. Terminal commands expose streams and an exit status.
+      - - Timing Operators — Combine vs Swift Concurrency
+        - partial
+        - Delays, polling and scheduling
+        - Covers bounded polling and delays.
+      - - RxSwift — Core
+        - partial
+        - Streaming records
+        - The counterpart here consumes records without Rx subscriptions.
+      - - Clean Code in Swift
+        - equivalent
+        - Small commands with clear contracts
+        - Name the input, guard the failure path and return one kind of result.
+      - - SOLID in Swift
+        - equivalent
+        - Designing replaceable commands
+        - Apply responsibility and substitution to functions, filters and process contracts.
+      - - Functional Programming in Swift
+        - equivalent
+        - Pure transformations
+        - Transform each record independently so the same input gives the same result.
+      - - Swift Language Essentials
+        - equivalent
+        - Variables, branches and loops
+        - Choose a value, test it and iterate over records.
+      - - Collections — Types & Protocols
+        - equivalent
+        - Lists and lookups
+        - Choose a representation for ordered inputs and named values.
+      - - Collections — Operation Cookbook
+        - equivalent
+        - Filter, transform and count
+        - Count matching records without depending on their display format.
+      - - Strings — Characters, Unicode & Operations
+        - equivalent
+        - String operations and pattern matching
+        - Extract a file stem and distinguish literal, wildcard and regular-expression matching.
+      - - Serialization — Codable, JSON & Friends
+        - equivalent
+        - Read structured data
+        - Decode a JSON record with a parser that understands quoting and escapes.
+      - - Swift Engineering Best Practices
+        - equivalent
+        - Debugging and repeatable runs
+        - Trace control flow, minimise environment assumptions and rerun safely.
+      - - Architectural Approaches
+        - equivalent
+        - Structure a command-line tool
+        - Keep argument parsing, transformations and side effects independently testable.
+      - - Modularization Approaches
+        - equivalent
+        - Reuse scripts and functions
+        - Share one helper while controlling which names remain visible to the caller.
+      - - Testing Approaches on iOS
+        - equivalent
+        - Test a script contract
+        - Assert data and failure status using a repeatable fixture.
+      - - UI & End-to-End Testing
+        - equivalent
+        - Test the command-line interface
+        - Exercise the public entry point in a fresh process with realistic arguments.
+      - - Security, Authentication & Privacy
+        - equivalent
+        - Handle input and credentials
+        - Pass values as data and keep credentials out of command history and diagnostics.
+      - - Accessibility on Apple Platforms
+        - equivalent
+        - Readable terminal output
+        - Make status and progress usable in a screen reader, pipe or log.
+      - - Localization & Internationalization
+        - equivalent
+        - Locale and text encoding
+        - Choose stable output for another program and readable output for a person.
+      - - AI Workflows for Swift (Cursor + Claude)
+        - no counterpart
+        - —
+        - The Swift workflow depends on an Xcode project and its build tooling.
+      - - Algorithmic Patterns & Complexity
+        - equivalent
+        - One-pass algorithms
+        - Find a maximum with constant extra memory, including when the numbers are negative.
+      - - Streaming & Time-Series Patterns
+        - equivalent
+        - Streaming records
+        - Consume one record at a time and keep a running aggregate.
+      - - Files, Text & Atomic I/O
+        - equivalent
+        - Paths, files and text
+        - Read a file whose path contains spaces and handle a missing file.
+      - - Networking — REST with URLSession
+        - equivalent
+        - HTTP requests from a terminal
+        - Bound network waits and keep the response body separate from errors.
+      - - Networking — SOAP, gRPC & GraphQL
+        - equivalent
+        - GraphQL, SOAP and gRPC clients
+        - Choose a client and an encoding for each wire protocol.
+      - - Video Streaming — HLS & AVPlayer
+        - no counterpart
+        - —
+        - Terminal scripts invoke media programs externally. Playback and adaptive rendering belong to the player.
+      - - Core Bluetooth (BLE)
+        - no counterpart
+        - —
+        - BLE discovery and GATT services need a platform API outside this shell.
+      - - Project Bluebird
+        - no counterpart
+        - —
+        - This interview project builds an iOS application with SwiftUI.

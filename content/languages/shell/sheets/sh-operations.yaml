@@ -1,0 +1,28 @@
+id: sh-operations
+concept: collections.operations
+scope: shared
+title: Filter, transform and count
+group: Programming and automation
+subtitle: Count matching records without depending on their display format.
+applies:
+  platforms:
+    - macos
+  runtime: macOS /bin/sh and system utilities
+  versions:
+    macos: ">=12"
+sources:
+  - title: Apple Shell Scripting Primer
+    url: https://developer.apple.com/library/archive/documentation/OpenSource/Conceptual/ShellScripting/Introduction/Introduction.html
+cards:
+  - id: example
+    kind: code
+    title: Count records by value
+    note: Sort first when grouping with uniq. An awk associative array counts non-adjacent values in one pass, with memory proportional to the number of keys.
+    prerequisites:
+      - Save as demo.sh in an empty directory and run /bin/sh ./demo.sh.
+    code: printf '%s\n' build test build | awk '$0 == "build" { n++ } END { print n+0 }'
+    expected: "2"
+    validation:
+      status: ran
+      toolchain: macOS 27.0 /bin/sh (3.2.57)
+      date: 2026-11-19

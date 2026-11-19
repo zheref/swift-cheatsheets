@@ -1,0 +1,30 @@
+id: sh-collections
+concept: collections.types
+scope: shared
+title: Lists and lookups
+group: Programming and automation
+subtitle: Choose a representation for ordered inputs and named values.
+applies:
+  platforms:
+    - macos
+  runtime: macOS /bin/sh and system utilities
+  versions:
+    macos: ">=12"
+sources:
+  - title: Apple Shell Scripting Primer
+    url: https://developer.apple.com/library/archive/documentation/OpenSource/Conceptual/ShellScripting/Introduction/Introduction.html
+cards:
+  - id: example
+    kind: code
+    title: Index positional parameters
+    note: Portable sh provides a positional list. Use "$@" to traverse it, $# to count it and shift to remove the first argument. Bash and zsh add arrays with different default indexes.
+    prerequisites:
+      - Save as demo.sh in an empty directory and run /bin/sh ./demo.sh.
+    code: |-
+      set -- build test
+      printf '%s stages: %s\n' "$#" "$2"
+    expected: "2 stages: test"
+    validation:
+      status: ran
+      toolchain: macOS 27.0 /bin/sh (3.2.57)
+      date: 2026-11-19

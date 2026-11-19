@@ -1,0 +1,34 @@
+id: ps-discovery
+concept: terminal.discovery
+scope: platform
+title: Find commands and inspect the environment
+group: Terminal and platform
+subtitle: Resolve a command, look up its options and locate the working directory.
+applies:
+  platforms:
+    - windows
+    - macos
+  runtime: PowerShell 7 (pwsh)
+  versions:
+    powershell: ">=7.0"
+sources:
+  - title: PowerShell documentation
+    url: https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_command_discovery
+cards:
+  - id: reference
+    kind: table
+    title: Inspect the current session
+    headers:
+      - Task
+      - Technique
+      - When to use it
+    rows:
+      - - Resolve names
+        - Get-Command Get-ChildItem -All
+        - Shows candidates including aliases, functions and applications.
+      - - Inspect options
+        - Get-Command Get-ChildItem -Syntax
+        - Use Get-Help Get-ChildItem -Examples for worked examples.
+      - - Locate yourself
+        - Get-Location
+        - $PSScriptRoot names the script directory. $env:PATH lists executable search locations.

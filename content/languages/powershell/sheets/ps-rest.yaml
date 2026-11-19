@@ -1,0 +1,36 @@
+id: ps-rest
+concept: networking.rest
+scope: platform
+title: HTTP requests from a terminal
+group: Terminal and platform
+subtitle: Bound network waits and keep the response body separate from errors.
+applies:
+  platforms:
+    - windows
+    - macos
+  runtime: PowerShell 7 (pwsh)
+  versions:
+    powershell: ">=7.0"
+sources:
+  - title: PowerShell documentation
+    url: https://learn.microsoft.com/en-us/powershell/
+  - title: Invoke-RestMethod
+    url: https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.utility/invoke-restmethod
+cards:
+  - id: reference
+    kind: table
+    title: Make a request
+    headers:
+      - Task
+      - Technique
+      - When to use it
+    rows:
+      - - Fetch JSON
+        - Invoke-RestMethod -Uri $uri -TimeoutSec 10 -ErrorAction Stop
+        - Supply an HTTPS API URI. The cmdlet deserializes a JSON response.
+      - - Send JSON
+        - $body = @{ stage = 'test' } | ConvertTo-Json
+        - Pass $body to Invoke-RestMethod -Method Post -ContentType application/json -Body $body -Uri $uri.
+      - - Retry
+        - Inspect the status in catch
+        - Follow Retry-After for throttling. Bound retries and confirm a POST is safe to repeat.

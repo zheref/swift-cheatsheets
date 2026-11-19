@@ -1,0 +1,34 @@
+id: ps-modules
+concept: architecture.modularization
+scope: language
+title: Reuse scripts and functions
+group: Script syntax
+subtitle: Share one helper while controlling which names remain visible to the caller.
+applies:
+  platforms:
+    - windows
+    - macos
+  runtime: PowerShell 7 (pwsh)
+  versions:
+    powershell: ">=7.0"
+sources:
+  - title: PowerShell documentation
+    url: https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_modules
+cards:
+  - id: reference
+    kind: table
+    title: Choose a reuse boundary
+    headers:
+      - Task
+      - Technique
+      - When to use it
+    rows:
+      - - Module file
+        - Save reusable functions in Reports.psm1.
+        - Use Export-ModuleMember -Function Get-Report to define the public command.
+      - - Import from a script
+        - Import-Module (Join-Path $PSScriptRoot Reports.psm1)
+        - A script-relative path works independently of the current directory.
+      - - Scope
+        - "& .\\helper.ps1 versus . .\\helper.ps1"
+        - A call gets script scope. Dot-sourcing executes in the caller's scope and can replace its definitions.

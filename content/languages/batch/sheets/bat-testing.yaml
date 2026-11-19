@@ -1,0 +1,38 @@
+id: bat-testing
+concept: testing.approaches
+scope: shared
+title: Test a script contract
+group: Programming and automation
+subtitle: Assert data and failure status using a repeatable fixture.
+applies:
+  platforms:
+    - windows
+  runtime: Windows Command Prompt (cmd.exe)
+  versions:
+    windows: ">=10"
+sources:
+  - title: Windows command reference
+    url: https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/exit
+cards:
+  - id: example
+    kind: code
+    title: Exercise success and failure paths
+    note: CALL makes a subroutine usable as a test target. Exit immediately on the first broken expectation so CI can read the process status.
+    prerequisites:
+      - Save as demo.cmd in an empty directory and run cmd.exe /d /e:on /v:off /c demo.cmd.
+    code: |-
+      @echo off
+      call :require ready
+      if errorlevel 1 exit /b 1
+      call :require
+      if not errorlevel 1 exit /b 1
+      echo pass
+      exit /b 0
+      :require
+      if "%~1"=="" exit /b 2
+      exit /b 0
+    expected: pass
+    validation:
+      status: ran
+      toolchain: Windows 11 cmd.exe (10.0.26200.9445)
+      date: 2026-11-19

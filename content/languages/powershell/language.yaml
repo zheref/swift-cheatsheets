@@ -1,0 +1,69 @@
+id: powershell
+name: PowerShell
+title: PowerShell Cheat Sheets
+route: /powershell/
+status: published
+description: Write .ps1 scripts with object pipelines, named parameters, jobs and cmdlets on Windows and macOS.
+locale: en
+codeLanguage: powershell
+requireExampleMetadata: true
+highlight:
+  dialect: powershell
+  keywords:
+    - param
+    - foreach
+    - in
+    - if
+    - else
+    - try
+    - catch
+    - finally
+    - function
+    - throw
+    - return
+    - exit
+  lineComment: "#"
+  blockComment:
+    - <#
+    - "#>"
+  capitalisedTypes: false
+  members: false
+applies:
+  platforms:
+    - windows
+    - macos
+  runtime: PowerShell 7 (pwsh)
+  versions:
+    powershell: ">=7.0"
+sheets:
+  - ps-essentials
+  - ps-arguments
+  - ps-modules
+  - ps-launch
+  - ps-discovery
+  - ps-navigation
+  - ps-processes
+  - ps-jobs
+  - ps-timers
+  - ps-rest
+  - ps-protocols
+  - ps-locale
+  - ps-security
+  - ps-accessibility
+  - ps-pipes
+  - ps-errors
+  - ps-files
+  - ps-collections
+  - ps-operations
+  - ps-strings
+  - ps-serialization
+  - ps-streams
+  - ps-algorithms
+  - ps-architecture
+  - ps-functional
+  - ps-solid
+  - ps-clean
+  - ps-testing
+  - ps-e2e
+  - ps-practice
+  - ps-coverage

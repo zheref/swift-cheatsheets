@@ -1,0 +1,28 @@
+id: sh-pipes
+concept: terminal.pipelines
+scope: shared
+title: Pipelines and redirection
+group: Programming and automation
+subtitle: Connect commands while keeping machine-readable output separate from diagnostics.
+applies:
+  platforms:
+    - macos
+  runtime: macOS /bin/sh and system utilities
+  versions:
+    macos: ">=12"
+sources:
+  - title: Apple Shell Scripting Primer
+    url: https://developer.apple.com/library/archive/documentation/OpenSource/Conceptual/ShellScripting/Introduction/Introduction.html
+cards:
+  - id: example
+    kind: code
+    title: Filter standard output
+    note: Use 2>errors.log for stderr, >> to append and >all.log 2>&1 to capture both streams. In portable sh the last stage normally determines pipeline status.
+    prerequisites:
+      - Save as demo.sh in an empty directory and run /bin/sh ./demo.sh.
+    code: printf '%s\n' ready waiting | grep -x ready
+    expected: ready
+    validation:
+      status: ran
+      toolchain: macOS 27.0 /bin/sh (3.2.57)
+      date: 2026-11-19

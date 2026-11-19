@@ -1,0 +1,34 @@
+id: bat-essentials
+concept: language.essentials
+scope: language
+title: Variables, branches and loops
+group: Script syntax
+subtitle: Choose a value, test it and iterate over records.
+applies:
+  platforms:
+    - windows
+  runtime: Windows Command Prompt (cmd.exe)
+  versions:
+    windows: ">=10"
+sources:
+  - title: Windows command reference
+    url: https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/for
+cards:
+  - id: example
+    kind: code
+    title: Select enabled stages
+    note: Double the percent sign on a FOR variable in a batch file. At an interactive prompt use %S. The /i switch compares case-insensitively.
+    prerequisites:
+      - Save as demo.cmd in an empty directory and run cmd.exe /d /e:on /v:off /c demo.cmd.
+    code: |-
+      @echo off
+      for %%S in (build skip test) do (
+        if /i not "%%S"=="skip" echo %%S
+      )
+    expected: |-
+      build
+      test
+    validation:
+      status: ran
+      toolchain: Windows 11 cmd.exe (10.0.26200.9445)
+      date: 2026-11-19

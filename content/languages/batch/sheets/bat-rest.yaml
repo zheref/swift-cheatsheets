@@ -1,0 +1,35 @@
+id: bat-rest
+concept: networking.rest
+scope: platform
+title: HTTP requests from a terminal
+group: Terminal and platform
+subtitle: Bound network waits and keep the response body separate from errors.
+applies:
+  platforms:
+    - windows
+  runtime: Windows Command Prompt (cmd.exe)
+  versions:
+    windows: ">=10"
+sources:
+  - title: Windows command reference
+    url: https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/cmd
+  - title: curl command-line manual
+    url: https://curl.se/docs/manpage.html
+cards:
+  - id: reference
+    kind: table
+    title: Make a request
+    headers:
+      - Task
+      - Technique
+      - When to use it
+    rows:
+      - - Fetch JSON
+        - curl.exe --fail --silent --show-error --max-time 10 --output response.json "https://example.org/api"
+        - Substitute the real endpoint. Check ERRORLEVEL before reading the file.
+      - - Post a JSON file
+        - curl.exe --fail --max-time 10 --json "@payload.json" "https://example.org/api"
+        - Requires curl 7.82+. Keeping the payload in a file avoids nested cmd quoting.
+      - - Retry
+        - curl.exe --retry 2 --retry-max-time 20
+        - Add these flags to a repeatable request. Keep authentication and response bodies out of logs.

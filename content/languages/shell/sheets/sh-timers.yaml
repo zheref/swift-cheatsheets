@@ -1,0 +1,33 @@
+id: sh-timers
+concept: reactive.timers-and-async
+scope: platform
+title: Delays, polling and scheduling
+group: Terminal and platform
+subtitle: Limit retries and choose an OS scheduler for unattended work.
+applies:
+  platforms:
+    - macos
+  runtime: macOS /bin/sh and system utilities
+  versions:
+    macos: ">=12"
+sources:
+  - title: Apple Shell Scripting Primer
+    url: https://developer.apple.com/library/archive/documentation/OpenSource/Conceptual/ShellScripting/Introduction/Introduction.html
+cards:
+  - id: reference
+    kind: table
+    title: Run once or on a schedule
+    headers:
+      - Task
+      - Technique
+      - When to use it
+    rows:
+      - - Wait once
+        - sleep 2
+        - This is a relative delay. A loop adding a sleep after its work accumulates drift.
+      - - Poll with a limit
+        - for n in 1 2 3 4 5; do [ -f ./ready ] && break; sleep 1; done
+        - Check the file once more after the loop and report a timeout if absent.
+      - - Schedule on macOS
+        - launchd with StartCalendarInterval
+        - Set ProgramArguments as separate strings and supply absolute paths. A LaunchAgent runs in the user's session.

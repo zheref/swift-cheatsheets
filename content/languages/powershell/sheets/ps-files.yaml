@@ -1,0 +1,32 @@
+id: ps-files
+concept: io.files-and-text
+scope: shared
+title: Paths, files and text
+group: Programming and automation
+subtitle: Read a file whose path contains spaces and handle a missing file.
+applies:
+  platforms:
+    - windows
+    - macos
+  runtime: PowerShell 7 (pwsh)
+  versions:
+    powershell: ">=7.0"
+sources:
+  - title: PowerShell documentation
+    url: https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_wildcards
+cards:
+  - id: example
+    kind: code
+    title: Read a literal filename
+    note: Use an empty scratch directory. -LiteralPath protects brackets from wildcard interpretation. Get-Content -Raw reads a document as a single string.
+    prerequisites:
+      - Save as demo.ps1 in an empty directory and run pwsh -NoProfile -File ./demo.ps1.
+    code: |-
+      $file = './report [1].txt'
+      Set-Content -LiteralPath $file -Value 'ready' -Encoding utf8
+      Get-Content -LiteralPath $file
+    expected: ready
+    validation:
+      status: ran
+      toolchain: PowerShell 7.7.0 on macOS arm64
+      date: 2026-11-19

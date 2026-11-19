@@ -1,0 +1,35 @@
+id: ps-algorithms
+concept: algorithms.patterns
+scope: shared
+title: One-pass algorithms
+group: Programming and automation
+subtitle: Find a maximum with constant extra memory, including when the numbers are negative.
+applies:
+  platforms:
+    - windows
+    - macos
+  runtime: PowerShell 7 (pwsh)
+  versions:
+    powershell: ">=7.0"
+sources:
+  - title: PowerShell documentation
+    url: https://learn.microsoft.com/en-us/powershell/
+cards:
+  - id: example
+    kind: code
+    title: Seed a maximum from the input
+    note: Initialising from the first observation handles all-negative data. Test the empty case separately. The scan takes linear time and constant extra storage.
+    prerequisites:
+      - Save as demo.ps1 in an empty directory and run pwsh -NoProfile -File ./demo.ps1.
+    code: |-
+      $numbers = -7, -2, -5
+      $max = $numbers[0]
+      foreach ($n in $numbers) {
+          if ($n -gt $max) { $max = $n }
+      }
+      $max
+    expected: "-2"
+    validation:
+      status: ran
+      toolchain: PowerShell 7.7.0 on macOS arm64
+      date: 2026-11-19

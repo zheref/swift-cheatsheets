@@ -1,0 +1,34 @@
+id: ps-architecture
+concept: architecture.approaches
+scope: shared
+title: Structure a command-line tool
+group: Programming and automation
+subtitle: Keep argument parsing, transformations and side effects independently testable.
+applies:
+  platforms:
+    - windows
+    - macos
+  runtime: PowerShell 7 (pwsh)
+  versions:
+    powershell: ">=7.0"
+sources:
+  - title: PowerShell documentation
+    url: https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_functions
+cards:
+  - id: reference
+    kind: table
+    title: Separate the three responsibilities
+    headers:
+      - Task
+      - Technique
+      - When to use it
+    rows:
+      - - Interface
+        - param([Parameter(Mandatory)][string]$Path)
+        - Convert user input to an explicit parameter once. Use -NonInteractive in automation so a missing value fails promptly.
+      - - Transformation
+        - function Get-Summary { param($Rows) ... }
+        - Pass records in and emit summary objects. Keep prompts and formatting in the outer script.
+      - - I/O boundary
+        - Export-Csv -NoTypeInformation
+        - Let the caller choose CSV, JSON or terminal formatting after computing the result.

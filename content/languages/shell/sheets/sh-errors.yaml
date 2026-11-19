@@ -1,0 +1,37 @@
+id: sh-errors
+concept: terminal.exit-status
+scope: shared
+title: Exit status and diagnostics
+group: Programming and automation
+subtitle: Report an error to a caller and preserve the failing command’s status.
+applies:
+  platforms:
+    - macos
+  runtime: macOS /bin/sh and system utilities
+  versions:
+    macos: ">=12"
+sources:
+  - title: Apple Shell Scripting Primer
+    url: https://developer.apple.com/library/archive/documentation/OpenSource/Conceptual/ShellScripting/Introduction/Introduction.html
+cards:
+  - id: example
+    kind: code
+    title: Distinguish no match from an error
+    note: Save $? before the next command. grep uses 1 for no match and a larger value for an error. Write diagnostics with printf directed to stderr.
+    prerequisites:
+      - Save as demo.sh in an empty directory and run /bin/sh ./demo.sh.
+    code: |-
+      if printf '%s\n' waiting | grep -qx ready; then
+        printf 'ready\n'
+      else
+        status=$?
+        case $status in
+          1) printf 'waiting\n' ;;
+          *) exit "$status" ;;
+        esac
+      fi
+    expected: waiting
+    validation:
+      status: ran
+      toolchain: macOS 27.0 /bin/sh (3.2.57)
+      date: 2026-11-19

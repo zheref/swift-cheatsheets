@@ -1,0 +1,33 @@
+id: bat-e2e
+concept: testing.ui-e2e
+scope: shared
+title: Test the command-line interface
+group: Programming and automation
+subtitle: Exercise the public entry point in a fresh process with realistic arguments.
+applies:
+  platforms:
+    - windows
+  runtime: Windows Command Prompt (cmd.exe)
+  versions:
+    windows: ">=10"
+sources:
+  - title: Windows command reference
+    url: https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/cmd
+cards:
+  - id: reference
+    kind: table
+    title: Test from outside the script
+    headers:
+      - Task
+      - Technique
+      - When to use it
+    rows:
+      - - Launch
+        - cmd.exe /d /c report.cmd "two words.txt"
+        - Place the script and a fixture in a fresh working directory, then check the externally visible result.
+      - - Capture
+        - call report.cmd "two words.txt" 1>result.txt 2>error.txt
+        - Save the return code on the next line. Test the message and status separately.
+      - - Negative case
+        - Invoke without the required argument
+        - Assert a usage failure. Also run from a different working directory to catch implicit relative paths.

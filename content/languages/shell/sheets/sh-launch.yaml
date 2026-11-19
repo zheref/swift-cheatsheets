@@ -1,0 +1,77 @@
+id: sh-launch
+concept: terminal.invocation
+scope: platform
+title: Choose and launch an interpreter
+group: Terminal and platform
+subtitle: Identify the shell that reads each script and reproduce a run from a fresh terminal.
+applies:
+  platforms:
+    - macos
+  runtime: macOS /bin/sh and system utilities
+  versions:
+    macos: ">=12"
+sources:
+  - title: Apple Shell Scripting Primer
+    url: https://developer.apple.com/library/archive/documentation/OpenSource/Conceptual/ShellScripting/Introduction/Introduction.html
+cards:
+  - id: reference
+    kind: table
+    title: Script entry points
+    headers:
+      - Task
+      - Technique
+      - When to use it
+    rows:
+      - - Portable .sh
+        - /bin/sh ./report.sh
+        - Explicit selection works without the executable bit. Save scripts with LF endings.
+      - - Direct invocation
+        - chmod u+x ./report.sh
+        - "Put #!/bin/sh on the first line, then run ./report.sh. Direct execution consults the shebang."
+      - - Bash and zsh
+        - /bin/bash ./report.bash or /bin/zsh ./report.zsh
+        - Choose the matching shebang for dialect-specific features such as arrays. Terminal commonly opens zsh. Running sh file overrides its shebang.
+      - - Finder .command
+        - chmod u+x ./report.command
+        - Give the file a shebang. Resolve paths explicitly because Finder may start it in a different directory.
+  - id: dialects
+    kind: table
+    title: Choose portable sh, Bash or zsh
+    headers:
+      - Task
+      - Example
+      - Behaviour
+    rows:
+      - - Portable list
+        - set -- red blue
+        - In sh, "$1" selects red and "$@" preserves each argument.
+      - - Bash array
+        - names=(red blue); printf "%s\n" "${names[0]}"
+        - With a Bash shebang the first element normally has index zero. Check /bin/bash --version before using newer features.
+      - - zsh array
+        - names=(red blue); print -r -- "${names[1]}"
+        - Native zsh normally starts at one. The KSH_ARRAYS option changes indexing.
+      - - Startup files
+        - ~/.zshrc
+        - Interactive zsh reads this file. A scheduled sh script should declare its own dependencies.
+  - id: translate
+    kind: table
+    title: The same terminal task in three shells
+    note: Switch languages from this sheet to open the equivalent launch instructions.
+    headers:
+      - Task
+      - Example
+      - Behaviour
+    rows:
+      - - Current directory
+        - "PowerShell: Get-Location"
+        - "Batch: cd     ·     macOS sh: pwd"
+      - - Read a variable
+        - "PowerShell: $env:MODE"
+        - 'Batch: %MODE%     ·     macOS sh: "$MODE"'
+      - - Send an error
+        - 'PowerShell: Write-Error "missing"'
+        - 'Batch: 1>&2 echo missing     ·     macOS sh: printf "missing\n" >&2'
+      - - Return status 2
+        - "PowerShell: exit 2"
+        - "Batch: exit /b 2     ·     macOS sh: exit 2"

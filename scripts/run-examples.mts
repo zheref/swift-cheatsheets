@@ -3,7 +3,7 @@
  * `validation` status on a card is something this machine can reproduce
  * (zheref/swift-cheatsheets#3, AC-2).
  *
- *   node scripts/run-examples.mts [--lang typescript,kotlin,csharp] [--sheets <id>,<id>] [--content <dir>]
+ *   node scripts/run-examples.mts [--lang typescript,kotlin,csharp,powershell,batch,shell] [--sheets <id>,<id>] [--content <dir>]
  *                                 [--require-all] [--json <file>] [--write-nuget-lock]
  *
  * `--sheets` runs only the named sheets — for iterating on one — read straight from their
@@ -31,12 +31,15 @@
  *   csharp      `dotnet` ($DOTNET, else ~/.dotnet/dotnet, the install script's default); an
  *               example whose code matches a package's `when` in `examples/csharp/packages.json`
  *               gets that pinned NuGet package, every other example the SDK alone
+ *   powershell  pwsh (PowerShell 7); runs .ps1 files without loading profiles
+ *   batch       Windows cmd.exe; command extensions on, delayed expansion and AutoRun off
+ *   shell       macOS /bin/sh and the Apple utilities shipped with the host
  * A missing toolchain skips its examples and says so — it never counts as a pass. With
  * `--require-all`, a skipped example fails the run.
  *
  * Running this executes every `ran` card as a program on this machine: a content change that
  * adds or edits one is a code change. Snippets get a scratch HOME and TMPDIR and none of the
- * caller's environment beyond PATH and LANG (`snippetEnv`). A C# build gets the same scrubbed
+ * caller's credentials (`snippetEnv`). A C# build gets the same scrubbed
  * environment, because a NuGet package runs its own MSBuild targets and source generators inside
  * the build; it ignores MSBuild files above the work folder (`MSBUILD_ISOLATION`), and every
  * package it restores, transitive ones included, must be the content pinned in
@@ -54,8 +57,8 @@ import { jarFile, parseJars, sha256 } from "./fetch-example-jars.mts";
 
 const run = promisify(execFile);
 
-export type ExampleLanguage = "typescript" | "kotlin" | "csharp";
-export const EXAMPLE_LANGUAGES: readonly ExampleLanguage[] = ["typescript", "kotlin", "csharp"];
+export const EXAMPLE_LANGUAGES = ["typescript", "kotlin", "csharp", "powershell", "batch", "shell"] as const;
+export type ExampleLanguage = (typeof EXAMPLE_LANGUAGES)[number];
 
 export interface Example {
   /** `<catalog>/<sheet>--<card>`, with `[<column>]` for one column of a compare card. */
@@ -498,6 +501,54 @@ export function csharpRunner(env: NodeJS.ProcessEnv = process.env, root?: string
   };
 }
 
+type TerminalLanguage = "powershell" | "batch" | "shell";
+
+/** Run the exact script in a fresh directory. The macOS catalog also uses Apple utilities. */
+function terminalRunner(language: TerminalLanguage): Runner {
+  const windows = process.platform === "win32";
+  const systemRoot = process.env.SystemRoot;
+  const programs = {
+    batch: windows && systemRoot ? path.join(systemRoot, "System32", "cmd.exe") : null,
+    shell: process.platform === "darwin" ? "/bin/sh" : null,
+    powershell: findExecutable([windows ? "pwsh.exe" : "pwsh"]),
+  };
+  const program = programs[language];
+  const names = { batch: "demo.cmd", shell: "demo.sh", powershell: "demo.ps1" };
+  const args = {
+    batch: ["/d", "/e:on", "/v:off", "/c", names.batch],
+    shell: [names.shell],
+    powershell: ["-NoLogo", "-NoProfile", "-NonInteractive", "-File", names.powershell],
+  };
+  return {
+    async probe() {
+      if (!program || !fs.existsSync(program)) {
+        return { missing: { batch: "requires Windows cmd.exe", shell: "requires macOS /bin/sh", powershell: "pwsh not found on PATH" }[language] };
+      }
+      if (language === "powershell") {
+        const version = await exec(program, ["-NoProfile", "-NoLogo", "--version"]);
+        if (version.code !== 0) return { missing: version.stderr || "pwsh version probe failed" };
+        return { toolchain: version.stdout.trim() };
+      }
+      return { toolchain: program };
+    },
+    run(examples, work) {
+      return pool(examples, 3, async (example, index) => {
+        if (example.status !== "ran") {
+          return { id: example.id, status: example.status, result: "fail", detail: "Shell scripts support execution checks only" };
+        }
+        const dir = path.join(work, fileName(example.id, index));
+        fs.mkdirSync(dir);
+        const env = snippetEnv(process.env, dir, windows ? ["SystemRoot", "ComSpec"] : []);
+        if (windows) Object.assign(env, { TEMP: dir, TMP: dir, USERPROFILE: dir });
+        const code = example.code + "\n";
+        fs.writeFileSync(path.join(dir, names[language]), language === "batch" ? code.replace(/\r?\n/g, "\r\n") : code);
+        return judge(example, await exec(program!, args[language], { cwd: dir, env, timeout: 60_000 }));
+      });
+    },
+  };
+}
+
+
 export interface Report {
   toolchains: Record<string, string>;
   outcomes: Outcome[];
@@ -510,7 +561,15 @@ export async function runExamples(
 ): Promise<Report> {
   const log = opts.log ?? console.log;
   const languages = opts.languages ?? EXAMPLE_LANGUAGES;
-  const runners: Record<ExampleLanguage, Runner> = { typescript: typescriptRunner(root), kotlin: kotlinRunner(process.env, root), csharp: csharpRunner(process.env, root), ...opts.runners };
+  const runners: Record<ExampleLanguage, Runner> = {
+    typescript: typescriptRunner(root),
+    kotlin: kotlinRunner(process.env, root),
+    csharp: csharpRunner(process.env, root),
+    powershell: terminalRunner("powershell"),
+    batch: terminalRunner("batch"),
+    shell: terminalRunner("shell"),
+    ...opts.runners,
+  };
   const all = collectExamples(root, opts.sheets, opts.content);
   const report: Report = { toolchains: {}, outcomes: [] };
   const work = fs.mkdtempSync(path.join(os.tmpdir(), "cheatsheet-examples-"));
@@ -555,10 +614,10 @@ export const exitStatus = (report: Report, requireAll: boolean) =>
 
 /** The `--lang` list, refused when it is empty or names a language this runner does not have. */
 export function parseLanguages(value: string | undefined): ExampleLanguage[] | { error: string } {
-  if (value === undefined || value === "" || value.startsWith("--")) return { error: "--lang needs a value: a comma-separated list of typescript, kotlin, csharp" };
+  if (value === undefined || value === "" || value.startsWith("--")) return { error: `--lang needs a value: a comma-separated list of ${EXAMPLE_LANGUAGES.join(", ")}` };
   const langs = value.split(",");
   const unknown = langs.filter((l) => !(EXAMPLE_LANGUAGES as readonly string[]).includes(l));
-  return unknown.length ? { error: `--lang: unknown language ${unknown.join(", ")} (expected typescript, kotlin or csharp)` } : (langs as ExampleLanguage[]);
+  return unknown.length ? { error: `--lang: unknown language ${unknown.join(", ")} (expected ${EXAMPLE_LANGUAGES.join(", ")})` } : (langs as ExampleLanguage[]);
 }
 
 /** The first of `names` given without a value: last on the line, or followed by another flag. */

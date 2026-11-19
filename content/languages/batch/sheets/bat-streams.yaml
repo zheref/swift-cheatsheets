@@ -1,0 +1,38 @@
+id: bat-streams
+concept: algorithms.streaming
+scope: shared
+title: Streaming records
+group: Programming and automation
+subtitle: Consume one record at a time and keep a running aggregate.
+applies:
+  platforms:
+    - windows
+  runtime: Windows Command Prompt (cmd.exe)
+  versions:
+    windows: ">=10"
+sources:
+  - title: Windows command reference
+    url: https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/for
+cards:
+  - id: example
+    kind: code
+    title: Count nonempty records
+    note: The fixture has one trusted decimal integer per line. FOR /F skips empty lines and its default comment lines. SET /A uses signed 32-bit integers.
+    prerequisites:
+      - Save as demo.cmd in an empty directory and run cmd.exe /d /e:on /v:off /c demo.cmd.
+    code: |-
+      @echo off
+      setlocal
+      >counts.txt (
+        echo 3
+        echo 5
+        echo 2
+      )
+      set /a total=0 >nul
+      for /f "usebackq delims=" %%N in ("counts.txt") do set /a total+=%%N >nul
+      echo %total%
+    expected: "10"
+    validation:
+      status: ran
+      toolchain: Windows 11 cmd.exe (10.0.26200.9445)
+      date: 2026-11-19

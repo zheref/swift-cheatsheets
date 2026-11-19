@@ -1,0 +1,33 @@
+id: sh-solid
+concept: principles.solid
+scope: shared
+title: Designing replaceable commands
+group: Programming and automation
+subtitle: Apply responsibility and substitution to functions, filters and process contracts.
+applies:
+  platforms:
+    - macos
+  runtime: macOS /bin/sh and system utilities
+  versions:
+    macos: ">=12"
+sources:
+  - title: Apple Shell Scripting Primer
+    url: https://developer.apple.com/library/archive/documentation/OpenSource/Conceptual/ShellScripting/Introduction/Introduction.html
+cards:
+  - id: reference
+    kind: table
+    title: Apply the principles to scripts
+    headers:
+      - Task
+      - Technique
+      - When to use it
+    rows:
+      - - Single responsibility
+        - Separate the reader, filter and output writer.
+        - Each can be tested using files or pipes.
+      - - Substitution
+        - Interchange two filters that consume and emit the same record format.
+        - Preserve exit status and stderr conventions so downstream scripts can use either implementation.
+      - - Dependency inversion
+        - Accept an input stream in place of opening a fixed file.
+        - The caller chooses a data source. The transformation depends only on the documented stream.

@@ -1,0 +1,33 @@
+id: bat-processes
+concept: terminal.processes
+scope: platform
+title: Child processes and working directories
+group: Terminal and platform
+subtitle: Control which directory and environment a child inherits.
+applies:
+  platforms:
+    - windows
+  runtime: Windows Command Prompt (cmd.exe)
+  versions:
+    windows: ">=10"
+sources:
+  - title: Windows command reference
+    url: https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/setlocal
+cards:
+  - id: example
+    kind: code
+    title: Scope changes to one child
+    note: An environment change in a child cmd.exe ends with that process. Use pushd and popd as a pair when temporarily changing directories.
+    prerequisites:
+      - Save as demo.cmd in an empty directory and run cmd.exe /d /e:on /v:off /c demo.cmd.
+    code: |-
+      @echo off
+      setlocal
+      set "MODE=parent"
+      cmd.exe /d /c "set MODE=child"
+      echo %MODE%
+    expected: parent
+    validation:
+      status: ran
+      toolchain: Windows 11 cmd.exe (10.0.26200.9445)
+      date: 2026-11-19

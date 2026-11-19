@@ -59,10 +59,10 @@ function stub(dir: string, name: string, body: string) {
 }
 
 describe("collecting examples", () => {
-  it("collects every compiled or run example of the three catalogs, and nothing else", () => {
+  it("collects every compiled or run example of the published catalogs, and nothing else", () => {
     const all = collectExamples(ROOT);
     const count = (lang: string, status: string) => all.filter((e) => e.language === lang && e.status === status).length;
-    expect(new Set(all.map((e) => e.language))).toEqual(new Set(["typescript", "kotlin", "csharp"]));
+    expect(new Set(all.map((e) => e.language))).toEqual(new Set(["typescript", "kotlin", "csharp", "powershell", "batch", "shell"]));
     expect(all.length).toBe(new Set(all.map((e) => e.id)).size);
     expect(count("typescript", "compiled")).toBeGreaterThanOrEqual(3);
     expect(count("kotlin", "compiled")).toBeGreaterThanOrEqual(1);
@@ -206,7 +206,7 @@ describe("running examples", () => {
     expect(exitStatus(report, false)).toBe(0);
     expect(exitStatus(report, true)).toBe(1);
     expect(parseLanguages("typescript,csharp")).toEqual(["typescript", "csharp"]);
-    expect(parseLanguages("typscript")).toEqual({ error: "--lang: unknown language typscript (expected typescript, kotlin or csharp)" });
+    expect(parseLanguages("typscript")).toEqual({ error: "--lang: unknown language typscript (expected typescript, kotlin, csharp, powershell, batch, shell)" });
     expect(parseLanguages("--require-all")).toMatchObject({ error: expect.stringMatching(/^--lang needs a value/) });
     expect(parseLanguages(undefined)).toMatchObject({ error: expect.stringMatching(/^--lang needs a value/) });
   });

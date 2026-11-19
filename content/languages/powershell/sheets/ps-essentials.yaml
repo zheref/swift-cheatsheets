@@ -1,0 +1,35 @@
+id: ps-essentials
+concept: language.essentials
+scope: language
+title: Variables, branches and loops
+group: Script syntax
+subtitle: Choose a value, test it and iterate over records.
+applies:
+  platforms:
+    - windows
+    - macos
+  runtime: PowerShell 7 (pwsh)
+  versions:
+    powershell: ">=7.0"
+sources:
+  - title: PowerShell documentation
+    url: https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_language_keywords
+cards:
+  - id: example
+    kind: code
+    title: Select enabled stages
+    note: Variables start with $. Use -eq and -ne for comparisons. A bare expression emits its value to the success stream.
+    prerequisites:
+      - Save as demo.ps1 in an empty directory and run pwsh -NoProfile -File ./demo.ps1.
+    code: |-
+      $stages = 'build', 'skip', 'test'
+      foreach ($stage in $stages) {
+          if ($stage -ne 'skip') { $stage }
+      }
+    expected: |-
+      build
+      test
+    validation:
+      status: ran
+      toolchain: PowerShell 7.7.0 on macOS arm64
+      date: 2026-11-19

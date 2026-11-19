@@ -1,0 +1,36 @@
+id: bat-navigation
+concept: terminal.filesystem
+scope: platform
+title: Navigate and search from the terminal
+group: Terminal and platform
+subtitle: Find files by name, search their contents and inspect recent output.
+applies:
+  platforms:
+    - windows
+  runtime: Windows Command Prompt (cmd.exe)
+  versions:
+    windows: ">=10"
+sources:
+  - title: Windows command reference
+    url: https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/dir
+cards:
+  - id: reference
+    kind: table
+    title: Common filesystem tasks
+    headers:
+      - Task
+      - Technique
+      - When to use it
+    rows:
+      - - List files
+        - dir /a /b
+        - /a includes hidden items. /b emits bare names.
+      - - Find matching filenames
+        - dir /s /b /a:-d "*.log"
+        - Recurses from the current directory. /a:-d excludes directories.
+      - - Search file contents
+        - findstr /n /l /c:"build failed" "build.log"
+        - "/c: keeps the phrase together and /n prefixes line numbers."
+      - - Return to a directory
+        - pushd "D:\Project files" then popd
+        - PUSHD can temporarily map a UNC path when command extensions are enabled.

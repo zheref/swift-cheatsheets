@@ -1,0 +1,58 @@
+id: ps-launch
+concept: terminal.invocation
+scope: platform
+title: Choose and launch an interpreter
+group: Terminal and platform
+subtitle: Identify the shell that reads each script and reproduce a run from a fresh terminal.
+applies:
+  platforms:
+    - windows
+    - macos
+  runtime: PowerShell 7 (pwsh)
+  versions:
+    powershell: ">=7.0"
+sources:
+  - title: PowerShell documentation
+    url: https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_scripts
+cards:
+  - id: reference
+    kind: table
+    title: Script entry points
+    headers:
+      - Task
+      - Technique
+      - When to use it
+    rows:
+      - - PowerShell 7
+        - pwsh -NoProfile -File .\report.ps1
+        - Starts a fresh session. From inside PowerShell, use .\report.ps1.
+      - - Windows PowerShell 5.1
+        - powershell.exe -NoProfile -File .\report.ps1
+        - Check $PSVersionTable.PSVersion before using a version-specific cmdlet.
+      - - Path with spaces
+        - "& 'C:\\My Scripts\\report.ps1'"
+        - The call operator invokes the path stored in a string.
+      - - Script blocked
+        - Get-ExecutionPolicy -List
+        - Inspect policy precedence and the origin of the script.
+  - id: translate
+    kind: table
+    title: The same terminal task in three shells
+    note: Switch languages from this sheet to open the equivalent launch instructions.
+    headers:
+      - Task
+      - Example
+      - Behaviour
+    rows:
+      - - Current directory
+        - "PowerShell: Get-Location"
+        - "Batch: cd     ·     macOS sh: pwd"
+      - - Read a variable
+        - "PowerShell: $env:MODE"
+        - 'Batch: %MODE%     ·     macOS sh: "$MODE"'
+      - - Send an error
+        - 'PowerShell: Write-Error "missing"'
+        - 'Batch: 1>&2 echo missing     ·     macOS sh: printf "missing\n" >&2'
+      - - Return status 2
+        - "PowerShell: exit 2"
+        - "Batch: exit /b 2     ·     macOS sh: exit 2"

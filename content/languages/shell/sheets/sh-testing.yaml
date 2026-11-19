@@ -1,0 +1,32 @@
+id: sh-testing
+concept: testing.approaches
+scope: shared
+title: Test a script contract
+group: Programming and automation
+subtitle: Assert data and failure status using a repeatable fixture.
+applies:
+  platforms:
+    - macos
+  runtime: macOS /bin/sh and system utilities
+  versions:
+    macos: ">=12"
+sources:
+  - title: Apple Shell Scripting Primer
+    url: https://developer.apple.com/library/archive/documentation/OpenSource/Conceptual/ShellScripting/Introduction/Introduction.html
+cards:
+  - id: example
+    kind: code
+    title: Assert output and failure
+    note: Quote the captured result for the comparison. Use a fresh temporary directory when testing filesystem behaviour.
+    prerequisites:
+      - Save as demo.sh in an empty directory and run /bin/sh ./demo.sh.
+    code: |-
+      label() { [ "$#" -eq 1 ] || return 2; printf '<%s>\n' "$1"; }
+      [ "$(label 'two words')" = '<two words>' ] || exit 1
+      if label; then exit 1; fi
+      printf 'pass\n'
+    expected: pass
+    validation:
+      status: ran
+      toolchain: macOS 27.0 /bin/sh (3.2.57)
+      date: 2026-11-19

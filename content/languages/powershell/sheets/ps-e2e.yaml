@@ -1,0 +1,34 @@
+id: ps-e2e
+concept: testing.ui-e2e
+scope: shared
+title: Test the command-line interface
+group: Programming and automation
+subtitle: Exercise the public entry point in a fresh process with realistic arguments.
+applies:
+  platforms:
+    - windows
+    - macos
+  runtime: PowerShell 7 (pwsh)
+  versions:
+    powershell: ">=7.0"
+sources:
+  - title: PowerShell documentation
+    url: https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_pwsh
+cards:
+  - id: reference
+    kind: table
+    title: Test from outside the script
+    headers:
+      - Task
+      - Technique
+      - When to use it
+    rows:
+      - - Launch
+        - pwsh -NoProfile -NonInteractive -File .\report.ps1 -Path 'two words.txt'
+        - Create a fixture file with a space. Assert the real script reads it as a single argument.
+      - - Capture
+        - .\report.ps1 1>result.txt 2>error.txt
+        - Run exit-sensitive tests in a child pwsh and check its $LASTEXITCODE immediately. Compare stdout and stderr separately.
+      - - Negative case
+        - Repeat with an absent file
+        - Assert a nonzero exit status and an actionable diagnostic. Use a fresh directory for each case.

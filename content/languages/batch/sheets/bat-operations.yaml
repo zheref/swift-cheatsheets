@@ -1,0 +1,33 @@
+id: bat-operations
+concept: collections.operations
+scope: shared
+title: Filter, transform and count
+group: Programming and automation
+subtitle: Count matching records without depending on their display format.
+applies:
+  platforms:
+    - windows
+  runtime: Windows Command Prompt (cmd.exe)
+  versions:
+    windows: ">=10"
+sources:
+  - title: Windows command reference
+    url: https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/set_1
+cards:
+  - id: example
+    kind: code
+    title: Count matches
+    note: SET /A can increment a variable by name, even inside a parsed block. Limit numeric input to trusted integers.
+    prerequisites:
+      - Save as demo.cmd in an empty directory and run cmd.exe /d /e:on /v:off /c demo.cmd.
+    code: |-
+      @echo off
+      setlocal
+      set /a count=0 >nul
+      for %%S in (build test build) do if "%%S"=="build" set /a count+=1 >nul
+      echo %count%
+    expected: "2"
+    validation:
+      status: ran
+      toolchain: Windows 11 cmd.exe (10.0.26200.9445)
+      date: 2026-11-19

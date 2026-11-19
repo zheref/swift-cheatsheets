@@ -1,0 +1,32 @@
+id: bat-jobs
+concept: terminal.child-completion
+scope: platform
+title: Launch and wait for a child process
+group: Terminal and platform
+subtitle: Track the lifetime of a child job and observe its completion.
+applies:
+  platforms:
+    - windows
+  runtime: Windows Command Prompt (cmd.exe)
+  versions:
+    windows: ">=10"
+sources:
+  - title: Windows command reference
+    url: https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/start
+cards:
+  - id: example
+    kind: code
+    title: Wait for one child
+    note: START treats its first quoted argument as a window title. The empty title keeps a quoted executable path available as the next argument. /wait blocks until exit.
+    prerequisites:
+      - Save as demo.cmd in an empty directory and run cmd.exe /d /e:on /v:off /c demo.cmd.
+    code: |-
+      @echo off
+      start "" /b /wait cmd.exe /d /c exit 0
+      if errorlevel 1 exit /b 1
+      echo finished
+    expected: finished
+    validation:
+      status: ran
+      toolchain: Windows 11 cmd.exe (10.0.26200.9445)
+      date: 2026-11-19

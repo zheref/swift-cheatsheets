@@ -1,0 +1,32 @@
+id: bat-collections
+concept: collections.types
+scope: shared
+title: Lists and lookups
+group: Programming and automation
+subtitle: Choose a representation for ordered inputs and named values.
+applies:
+  platforms:
+    - windows
+  runtime: Windows Command Prompt (cmd.exe)
+  versions:
+    windows: ">=10"
+sources:
+  - title: Windows command reference
+    url: https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/for
+cards:
+  - id: example
+    kind: code
+    title: Iterate a fixed list
+    note: FOR iterates a sequence of tokens. For a small fixed lookup, use names such as build_count. Choose a structured-data tool when keys come from input.
+    prerequisites:
+      - Save as demo.cmd in an empty directory and run cmd.exe /d /e:on /v:off /c demo.cmd.
+    code: |-
+      @echo off
+      for %%S in (build test) do echo %%S
+    expected: |-
+      build
+      test
+    validation:
+      status: ran
+      toolchain: Windows 11 cmd.exe (10.0.26200.9445)
+      date: 2026-11-19

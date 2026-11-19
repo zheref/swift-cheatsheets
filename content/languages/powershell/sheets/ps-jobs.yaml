@@ -1,0 +1,53 @@
+id: ps-jobs
+concept: concurrency.async-await
+scope: platform
+title: Start work and wait for completion
+group: Terminal and platform
+subtitle: Track the lifetime of a child job and observe its completion.
+applies:
+  platforms:
+    - windows
+    - macos
+  runtime: PowerShell 7 (pwsh)
+  versions:
+    powershell: ">=7.0"
+sources:
+  - title: PowerShell documentation
+    url: https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_jobs
+cards:
+  - id: example
+    kind: code
+    title: Collect and release a job
+    note: Start-Job runs in a separate process. Receive-Job reads its output. On early cancellation use Stop-Job, then remove the completed job record.
+    prerequisites:
+      - Save as demo.ps1 in an empty directory and run pwsh -NoProfile -File ./demo.ps1.
+    code: |-
+      $job = Start-Job { 'ready' }
+      try {
+          $job | Wait-Job | Out-Null
+          $job | Receive-Job -ErrorAction Stop
+      } finally {
+          $job | Remove-Job -Force
+      }
+    expected: ready
+    validation:
+      status: ran
+      toolchain: PowerShell 7.7.0 on macOS arm64
+      date: 2026-11-19
+  - id: lifetime
+    kind: table
+    title: Control a job by its handle
+    headers:
+      - Task
+      - Example
+      - Behaviour
+    rows:
+      - - Wait with a deadline
+        - Wait-Job -Job $job -Timeout 5
+        - Returns the job if it completes within the deadline. Timing out leaves it running.
+      - - Stop an owned job
+        - Stop-Job -Job $job
+        - Receive-Job retrieves buffered output. Check the job state for failure.
+      - - Clean up
+        - Remove-Job -Job $job
+        - Release the finished job record after consuming its output. A background job belongs to its parent session.

@@ -1,0 +1,35 @@
+id: bat-protocols
+concept: networking.protocols
+scope: platform
+title: GraphQL, SOAP and gRPC clients
+group: Terminal and platform
+subtitle: Choose a client and an encoding for each wire protocol.
+applies:
+  platforms:
+    - windows
+  runtime: Windows Command Prompt (cmd.exe)
+  versions:
+    windows: ">=10"
+sources:
+  - title: Windows command reference
+    url: https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/cmd
+  - title: curl command-line manual
+    url: https://curl.se/docs/manpage.html
+cards:
+  - id: reference
+    kind: table
+    title: Choose a protocol client
+    headers:
+      - Task
+      - Technique
+      - When to use it
+    rows:
+      - - GraphQL
+        - Send a JSON object with query and variables using curl.exe and a request file.
+        - Check the errors array even when HTTP status is 200. A mutation may already have taken effect.
+      - - SOAP
+        - Post an XML envelope with the service's documented content type.
+        - SOAP 1.1 may require SOAPAction. Parse the Fault element even when the body is returned with an HTTP error.
+      - - gRPC
+        - Use grpcurl with a service descriptor or server reflection.
+        - Supply the method name and a deadline. A server stream can yield several messages before its final status.

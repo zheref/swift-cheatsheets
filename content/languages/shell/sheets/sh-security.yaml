@@ -1,0 +1,33 @@
+id: sh-security
+concept: security.auth-and-data
+scope: platform
+title: Handle input and credentials
+group: Terminal and platform
+subtitle: Pass values as data and keep credentials out of command history and diagnostics.
+applies:
+  platforms:
+    - macos
+  runtime: macOS /bin/sh and system utilities
+  versions:
+    macos: ">=12"
+sources:
+  - title: Apple Shell Scripting Primer
+    url: https://developer.apple.com/library/archive/documentation/OpenSource/Conceptual/ShellScripting/Introduction/Introduction.html
+cards:
+  - id: reference
+    kind: table
+    title: Protect inputs and secrets
+    headers:
+      - Task
+      - Technique
+      - When to use it
+    rows:
+      - - Pass arguments
+        - tool "$value"
+        - Quote each argument, validate the executable and use -- for tools that support it when a value might start with a dash.
+      - - Create private files
+        - umask 077
+        - Applies to newly created files. Use mktemp for scratch files and install a cleanup trap.
+      - - Use stored credentials
+        - Let the client use its Keychain integration.
+        - Disable shell tracing around sensitive operations. A secret passed in process arguments can still be visible.

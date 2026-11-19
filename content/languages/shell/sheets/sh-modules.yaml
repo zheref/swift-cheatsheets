@@ -1,0 +1,33 @@
+id: sh-modules
+concept: architecture.modularization
+scope: language
+title: Reuse scripts and functions
+group: Script syntax
+subtitle: Share one helper while controlling which names remain visible to the caller.
+applies:
+  platforms:
+    - macos
+  runtime: macOS /bin/sh and system utilities
+  versions:
+    macos: ">=12"
+sources:
+  - title: Apple Shell Scripting Primer
+    url: https://developer.apple.com/library/archive/documentation/OpenSource/Conceptual/ShellScripting/Introduction/Introduction.html
+cards:
+  - id: reference
+    kind: table
+    title: Choose a reuse boundary
+    headers:
+      - Task
+      - Technique
+      - When to use it
+    rows:
+      - - Load definitions
+        - . "$library_dir/report.sh"
+        - Set library_dir to a trusted absolute directory. Sourcing executes the file in the caller's shell.
+      - - Run separately
+        - /bin/sh "$library_dir/report.sh"
+        - A child receives exported variables and its own positional arguments. Its assignments cannot modify the parent's environment.
+      - - Scope
+        - Prefix helper names or use a subshell body.
+        - POSIX sh has no portable local keyword. Keep side effects out of a file intended for sourcing.

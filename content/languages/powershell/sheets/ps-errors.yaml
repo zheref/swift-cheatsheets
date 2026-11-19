@@ -1,0 +1,34 @@
+id: ps-errors
+concept: terminal.exit-status
+scope: shared
+title: Exit status and diagnostics
+group: Programming and automation
+subtitle: Report an error to a caller and preserve the failing command’s status.
+applies:
+  platforms:
+    - windows
+    - macos
+  runtime: PowerShell 7 (pwsh)
+  versions:
+    powershell: ">=7.0"
+sources:
+  - title: PowerShell documentation
+    url: https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_try_catch_finally
+cards:
+  - id: example
+    kind: code
+    title: Catch a cmdlet failure
+    note: -ErrorAction Stop promotes a non-terminating error. For native tools save $LASTEXITCODE immediately and use exit at the script boundary.
+    prerequisites:
+      - Save as demo.ps1 in an empty directory and run pwsh -NoProfile -File ./demo.ps1.
+    code: |-
+      try {
+          Get-Item -LiteralPath './absent-example' -ErrorAction Stop | Out-Null
+      } catch {
+          'missing'
+      }
+    expected: missing
+    validation:
+      status: ran
+      toolchain: PowerShell 7.7.0 on macOS arm64
+      date: 2026-11-19

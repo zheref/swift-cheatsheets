@@ -1,0 +1,34 @@
+id: ps-accessibility
+concept: accessibility.practices
+scope: platform
+title: Readable terminal output
+group: Terminal and platform
+subtitle: Make status and progress usable in a screen reader, pipe or log.
+applies:
+  platforms:
+    - windows
+    - macos
+  runtime: PowerShell 7 (pwsh)
+  versions:
+    powershell: ">=7.0"
+sources:
+  - title: PowerShell documentation
+    url: https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_output_streams
+cards:
+  - id: reference
+    kind: table
+    title: Output for people and programs
+    headers:
+      - Task
+      - Technique
+      - When to use it
+    rows:
+      - - Useful status
+        - Write-Warning 'Config missing. Supply -Path.'
+        - Give the condition and the next action in text.
+      - - Automation
+        - Write-Verbose 'Reading configuration'
+        - Keep diagnostic text out of success output so a caller can consume objects.
+      - - Progress
+        - Write-Progress -Activity 'Import' -Status 'Reading rows'
+        - Also provide a plain completion summary. Assistive technology and captured logs may miss redrawn progress.

@@ -1,0 +1,51 @@
+id: ps-pipes
+concept: terminal.pipelines
+scope: shared
+title: Pipelines and redirection
+group: Programming and automation
+subtitle: Connect commands while keeping machine-readable output separate from diagnostics.
+applies:
+  platforms:
+    - windows
+    - macos
+  runtime: PowerShell 7 (pwsh)
+  versions:
+    powershell: ">=7.0"
+sources:
+  - title: PowerShell documentation
+    url: https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_pipelines
+cards:
+  - id: example
+    kind: code
+    title: Filter objects before formatting
+    note: Cmdlets pass objects along the pipeline. Keep Format-Table for final display. Redirect success with > and errors with 2>.
+    prerequisites:
+      - Save as demo.ps1 in an empty directory and run pwsh -NoProfile -File ./demo.ps1.
+    code: |-
+      'alpha', 'bravo' |
+          Where-Object { $_.Length -gt 4 } |
+          ForEach-Object { $_.ToUpperInvariant() }
+    expected: |-
+      ALPHA
+      BRAVO
+    validation:
+      status: ran
+      toolchain: PowerShell 7.7.0 on macOS arm64
+      date: 2026-11-19
+  - id: inspect
+    kind: table
+    title: Inspect and export pipeline objects
+    headers:
+      - Task
+      - Example
+      - Behaviour
+    rows:
+      - - Inspect available properties
+        - Get-ChildItem -File | Get-Member
+        - Inspect the type once before selecting a property.
+      - - Select fields
+        - Get-ChildItem -File | Select-Object Name, Length
+        - Produces new objects carrying just the listed properties.
+      - - Export records
+        - Get-ChildItem -File | Select-Object Name, Length | Export-Csv ./sizes.csv -NoTypeInformation
+        - Keep formatting commands out of a data export. Format-Table produces formatting instructions.

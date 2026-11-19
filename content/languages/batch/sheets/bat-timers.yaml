@@ -1,0 +1,33 @@
+id: bat-timers
+concept: reactive.timers-and-async
+scope: platform
+title: Delays, polling and scheduling
+group: Terminal and platform
+subtitle: Limit retries and choose an OS scheduler for unattended work.
+applies:
+  platforms:
+    - windows
+  runtime: Windows Command Prompt (cmd.exe)
+  versions:
+    windows: ">=10"
+sources:
+  - title: Windows command reference
+    url: https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/timeout
+cards:
+  - id: reference
+    kind: table
+    title: Run once or on a schedule
+    headers:
+      - Task
+      - Technique
+      - When to use it
+    rows:
+      - - Wait once
+        - timeout /t 2 /nobreak >nul
+        - Intended for a console. A noninteractive host with redirected input can reject timeout.
+      - - Poll with a limit
+        - for /l %%N in (1,1,5) do (...)
+        - Inside the loop test IF EXIST, then wait. On exhaustion return a distinct failure status.
+      - - Run on a schedule
+        - Task Scheduler → Start a program
+        - Use cmd.exe with /d /c and the quoted script path. Set Start in and choose what to do if the previous invocation is still running.

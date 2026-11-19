@@ -1,0 +1,33 @@
+id: bat-locale
+concept: localization.practices
+scope: platform
+title: Locale and text encoding
+group: Terminal and platform
+subtitle: Choose stable output for another program and readable output for a person.
+applies:
+  platforms:
+    - windows
+  runtime: Windows Command Prompt (cmd.exe)
+  versions:
+    windows: ">=10"
+sources:
+  - title: Windows command reference
+    url: https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/chcp
+cards:
+  - id: reference
+    kind: table
+    title: Choose an output format
+    headers:
+      - Task
+      - Technique
+      - When to use it
+    rows:
+      - - Display dates
+        - echo %DATE%
+        - The text depends on Windows regional settings. Splitting at fixed character positions is fragile.
+      - - Inspect the console
+        - chcp
+        - The active code page influences native console programs. A file's encoding is a separate contract.
+      - - Machine timestamps
+        - powershell.exe -NoProfile -Command "[DateTime]::UtcNow.ToString('o')"
+        - UTC round-trip text avoids guessing the order of month and day.

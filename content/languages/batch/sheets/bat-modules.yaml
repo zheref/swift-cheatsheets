@@ -1,0 +1,33 @@
+id: bat-modules
+concept: architecture.modularization
+scope: language
+title: Reuse scripts and functions
+group: Script syntax
+subtitle: Share one helper while controlling which names remain visible to the caller.
+applies:
+  platforms:
+    - windows
+  runtime: Windows Command Prompt (cmd.exe)
+  versions:
+    windows: ">=10"
+sources:
+  - title: Windows command reference
+    url: https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/call
+cards:
+  - id: reference
+    kind: table
+    title: Choose a reuse boundary
+    headers:
+      - Task
+      - Technique
+      - When to use it
+    rows:
+      - - Local subroutine
+        - call :format
+        - End each subroutine with exit /b. Labels live in the same batch file.
+      - - Shared file
+        - call "%~dp0lib\report.cmd"
+        - Use a sibling path anchored to the current script. Pass arguments explicitly.
+      - - Scope
+        - setlocal and endlocal
+        - Localise changes to environment variables. A child can emit a result or return an exit code.

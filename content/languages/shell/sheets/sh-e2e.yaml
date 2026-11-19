@@ -1,0 +1,33 @@
+id: sh-e2e
+concept: testing.ui-e2e
+scope: shared
+title: Test the command-line interface
+group: Programming and automation
+subtitle: Exercise the public entry point in a fresh process with realistic arguments.
+applies:
+  platforms:
+    - macos
+  runtime: macOS /bin/sh and system utilities
+  versions:
+    macos: ">=12"
+sources:
+  - title: Apple Shell Scripting Primer
+    url: https://developer.apple.com/library/archive/documentation/OpenSource/Conceptual/ShellScripting/Introduction/Introduction.html
+cards:
+  - id: reference
+    kind: table
+    title: Test from outside the script
+    headers:
+      - Task
+      - Technique
+      - When to use it
+    rows:
+      - - Launch
+        - /bin/sh ./report.sh 'two words.txt'
+        - Use the declared interpreter, a disposable fixture and a working directory different from the script's directory.
+      - - Capture
+        - ./report.sh "$file" >result.txt 2>error.txt
+        - Save $? immediately. Compare files with diff -u so a trailing newline is part of the contract.
+      - - Negative case
+        - Run with an unreadable or absent input
+        - Check the exit code and stderr independently. Use a pipe for stdin to exercise noninteractive mode.

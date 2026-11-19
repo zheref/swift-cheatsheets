@@ -1,0 +1,33 @@
+id: sh-processes
+concept: terminal.processes
+scope: platform
+title: Child processes and working directories
+group: Terminal and platform
+subtitle: Control which directory and environment a child inherits.
+applies:
+  platforms:
+    - macos
+  runtime: macOS /bin/sh and system utilities
+  versions:
+    macos: ">=12"
+sources:
+  - title: Apple Shell Scripting Primer
+    url: https://developer.apple.com/library/archive/documentation/OpenSource/Conceptual/ShellScripting/Introduction/Introduction.html
+cards:
+  - id: example
+    kind: code
+    title: Isolate a working environment
+    note: Parentheses start a subshell. Its directory and variable assignments disappear on exit. Export a variable when a child executable needs to read it.
+    prerequisites:
+      - Save as demo.sh in an empty directory and run /bin/sh ./demo.sh.
+    code: |-
+      mode=parent
+      ( mode=child; printf '%s\n' "$mode" )
+      printf '%s\n' "$mode"
+    expected: |-
+      child
+      parent
+    validation:
+      status: ran
+      toolchain: macOS 27.0 /bin/sh (3.2.57)
+      date: 2026-11-19

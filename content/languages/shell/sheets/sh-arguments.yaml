@@ -1,0 +1,52 @@
+id: sh-arguments
+concept: terminal.arguments
+scope: language
+title: Arguments and quoting
+group: Script syntax
+subtitle: Keep a path containing spaces in one argument.
+applies:
+  platforms:
+    - macos
+  runtime: macOS /bin/sh and system utilities
+  versions:
+    macos: ">=12"
+sources:
+  - title: Apple Shell Scripting Primer
+    url: https://developer.apple.com/library/archive/documentation/OpenSource/Conceptual/ShellScripting/Introduction/Introduction.html
+cards:
+  - id: example
+    kind: code
+    title: Forward every argument
+    note: Quoted "$@" preserves argument boundaries, including an empty value. Unquoted expansion can split words and expand filename patterns.
+    prerequisites:
+      - Save as demo.sh in an empty directory and run /bin/sh ./demo.sh.
+    code: |-
+      set -- 'Quarter one' '' '*.txt'
+      for arg in "$@"; do
+        printf '<%s>\n' "$arg"
+      done
+    expected: |-
+      <Quarter one>
+      <>
+      <*.txt>
+    validation:
+      status: ran
+      toolchain: macOS 27.0 /bin/sh (3.2.57)
+      date: 2026-11-19
+  - id: options
+    kind: table
+    title: Read flags before positional paths
+    headers:
+      - Task
+      - Example
+      - Behaviour
+    rows:
+      - - Parse short flags
+        - while getopts "o:v" opt; do ...; done
+        - "o: consumes an argument in OPTARG. v is a switch. Handle an unknown option by printing usage to stderr."
+      - - Advance past options
+        - shift "$((OPTIND - 1))"
+        - The remaining "$@" contains the operands. A caller can supply -- before a filename beginning with a dash.
+      - - Literal versus expanded
+        - "'*.log' and ./*.log"
+        - Quotes preserve the pattern as text. An unmatched POSIX glob remains literal. Test each candidate before processing it.
