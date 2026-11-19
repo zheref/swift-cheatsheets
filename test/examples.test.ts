@@ -25,6 +25,7 @@ import {
   parseLanguages,
   runExamples,
   snippetEnv,
+  terminalRunner,
   typescriptRunner,
 } from "../scripts/run-examples.mts";
 import { validation } from "../src/content/schema";
@@ -174,10 +175,34 @@ describe("finding toolchains", () => {
     expect(findExecutable(["tool"], { PATH: "" })).toBeNull();
   });
 
+  it("uses one resolved PowerShell executable and a clean scratch environment for probe and scripts", async () => {
+    const bin = tmp("pwsh-bin-");
+    const env = { PATH: path.relative(process.cwd(), bin), SECRET_TOKEN: "private" };
+    const root = contentRoot("powershell", [
+      { id: "ok", kind: "code", code: "echo ok", expected: "ok", validation: ran },
+      { id: "bad", kind: "code", code: "exit 3", expected: "", validation: ran },
+    ]);
+    const run = () => runExamples(root, { languages: ["powershell"], runners: { powershell: terminalRunner("powershell", env) }, log: () => {} });
+    fs.writeFileSync(path.join(bin, "pwsh"), "not executable");
+    expect((await run()).outcomes.map((o) => o.result)).toEqual(["skipped", "skipped"]);
+    fs.unlinkSync(path.join(bin, "pwsh"));
+    stub(bin, "pwsh", [
+      '[ -z "$SECRET_TOKEN" ] && [ "$HOME" -ef "$PWD" ] || exit 4',
+      'case "$*" in',
+      '  "-NoProfile -NoLogo --version") echo "PowerShell fixture" ;;',
+      '  "-NoLogo -NoProfile -NonInteractive -File demo.ps1") /bin/sh demo.ps1 ;;',
+      '  *) exit 5 ;;',
+      'esac',
+    ].join("\n"));
+    const report = await run();
+    expect(report.toolchains.powershell).toBe("PowerShell fixture");
+    expect(report.outcomes.map((o) => o.result)).toEqual(["pass", "fail"]);
+  });
+
   it("reports Kotlin and .NET as missing when nothing provides them", async () => {
     const env = { PATH: tmp("empty-"), HOME: tmp("home-") };
-    expect(await kotlinRunner(env).probe()).toEqual({ missing: "kotlinc not found (put it on PATH or set KOTLINC)" });
-    expect(await csharpRunner(env).probe()).toEqual({ missing: "dotnet not found (put it on PATH or set DOTNET)" });
+    expect(await kotlinRunner(env).probe(os.tmpdir())).toEqual({ missing: "kotlinc not found (put it on PATH or set KOTLINC)" });
+    expect(await csharpRunner(env).probe(os.tmpdir())).toEqual({ missing: "dotnet not found (put it on PATH or set DOTNET)" });
   });
 });
 
@@ -232,7 +257,7 @@ describe("running examples", () => {
   }, 60_000);
 
   it("reports a TypeScript toolchain that is not installed", async () => {
-    expect(await typescriptRunner(tmp("no-modules-")).probe()).toEqual({ missing: "typescript is not installed in node_modules (run `npm ci`)" });
+    expect(await typescriptRunner(tmp("no-modules-")).probe(os.tmpdir())).toEqual({ missing: "typescript is not installed in node_modules (run `npm ci`)" });
   });
 
   it("reports example libraries that are not installed — a skip, never a pass", async () => {
@@ -241,7 +266,7 @@ describe("running examples", () => {
     fs.writeFileSync(path.join(root, "node_modules/typescript/bin/tsc"), "");
     fs.mkdirSync(path.join(root, "examples"));
     fs.writeFileSync(path.join(root, "examples/package.json"), "{}");
-    expect(await typescriptRunner(root).probe()).toEqual({ missing: "the example libraries are not installed (run `npm ci --prefix examples`)" });
+    expect(await typescriptRunner(root).probe(os.tmpdir())).toEqual({ missing: "the example libraries are not installed (run `npm ci --prefix examples`)" });
   });
 
   it("runs an example without an examples/ package in the caller's scratch folder", async () => {
@@ -345,7 +370,7 @@ describe("running examples", () => {
     // A pinned jar whose bytes are not the pinned ones stops the Kotlin examples; it is never compiled against.
     fs.writeFileSync(path.join(lib, "b-1.0.jar"), "swapped");
     expect(pinnedJars(path.join(repo, "examples/kotlin"))).toEqual({ jars: [`${lib}/a-1.0.jar`], tampered: ["b-1.0.jar"] });
-    expect(await kotlinRunner({ PATH: `${bin}:${SYSTEM_PATH}` }, repo).probe()).toEqual({
+    expect(await kotlinRunner({ PATH: `${bin}:${SYSTEM_PATH}` }, repo).probe(os.tmpdir())).toEqual({
       missing: "examples/kotlin/lib/b-1.0.jar is not the jar pinned in jars.txt (run npm run examples:install)",
     });
     expect(pinnedJars(tmp("no-jars-"))).toEqual({ jars: [], tampered: [] });

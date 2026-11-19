@@ -63,6 +63,20 @@ function compile(h: Highlight): Compiled {
   return compiled;
 }
 
+/** A continued line inherits the preceding shell word. Escaped separators belong to that word. */
+function startsShellComment(src: string, index: number, escape: string): boolean {
+  let i = index - 1;
+  while (i >= 0) {
+    if (!/[\s;|&()]/.test(src[i]!)) return false;
+    let before = i - 1;
+    while (before >= 0 && src[before] === escape) before--;
+    if ((i - before - 1) % 2 === 0) return true;
+    if (src[i] !== "\n") return false;
+    i -= 2;
+  }
+  return true;
+}
+
 export function tokenize(src: string, h: Highlight): Token[] {
   const { rx, classes } = compile(h);
   const out: Token[] = [];
@@ -71,7 +85,7 @@ export function tokenize(src: string, h: Highlight): Token[] {
   for (let m = rx.exec(src); m !== null; m = rx.exec(src)) {
     // A hash inside a shell word (including $#) is data. Resume matching after it
     // so an actual comment or quoted string later on this line can still be coloured.
-    if ((h.dialect === "sh" || h.dialect === "powershell") && m[0].startsWith("#") && m.index > 0 && !/[\s;|&()]/.test(src[m.index - 1]!)) {
+    if ((h.dialect === "sh" || h.dialect === "powershell") && m[0].startsWith("#") && !startsShellComment(src, m.index, h.dialect === "sh" ? "\\" : "`")) {
       rx.lastIndex = m.index + 1;
       continue;
     }

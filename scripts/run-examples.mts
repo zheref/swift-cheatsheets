@@ -38,8 +38,8 @@
  * `--require-all`, a skipped example fails the run.
  *
  * Running this executes every `ran` card as a program on this machine: a content change that
- * adds or edits one is a code change. Snippets get a scratch HOME and TMPDIR and none of the
- * caller's credentials (`snippetEnv`). A C# build gets the same scrubbed
+ * adds or edits one is a code change. Snippets run with the caller's OS permissions, a scratch HOME and TMPDIR,
+ * and an allowlisted process environment (`snippetEnv`). A C# build gets the same scrubbed
  * environment, because a NuGet package runs its own MSBuild targets and source generators inside
  * the build; it ignores MSBuild files above the work folder (`MSBUILD_ISOLATION`), and every
  * package it restores, transitive ones included, must be the content pinned in
@@ -178,13 +178,18 @@ async function exec(cmd: string, args: string[], opts: { cwd?: string; env?: Nod
 export function findExecutable(candidates: (string | undefined)[], env: NodeJS.ProcessEnv = process.env): string | null {
   for (const c of candidates) {
     if (!c) continue;
-    if (c.includes("/")) {
-      if (fs.existsSync(c)) return c;
-      continue;
-    }
-    for (const dir of (env.PATH ?? "").split(path.delimiter)) {
-      const full = path.join(dir, c);
-      if (dir && fs.existsSync(full)) return full;
+    const paths = c.includes("/") || c.includes(path.sep)
+      ? [c]
+      : (env.PATH ?? "").split(path.delimiter).filter(Boolean).map((dir) => path.join(dir, c));
+    for (const candidate of paths) {
+      const absolute = path.resolve(candidate);
+      try {
+        if (!fs.statSync(absolute).isFile()) continue;
+        fs.accessSync(absolute, fs.constants.X_OK);
+        return absolute;
+      } catch {
+        // Continue searching after an absent or inaccessible candidate.
+      }
     }
   }
   return null;
@@ -232,7 +237,7 @@ export const MSBUILD_ISOLATION = [
 
 export interface Runner {
   /** The versions the toolchain reports, or why it is unavailable. */
-  probe(): Promise<{ toolchain: string } | { missing: string }>;
+  probe(scratch: string): Promise<{ toolchain: string } | { missing: string }>;
   run(examples: Example[], work: string): Promise<Outcome[]>;
 }
 
@@ -504,13 +509,15 @@ export function csharpRunner(env: NodeJS.ProcessEnv = process.env, root?: string
 type TerminalLanguage = "powershell" | "batch" | "shell";
 
 /** Run the exact script in a fresh directory. The macOS catalog also uses Apple utilities. */
-function terminalRunner(language: TerminalLanguage): Runner {
+export function terminalRunner(language: TerminalLanguage, env: NodeJS.ProcessEnv = process.env): Runner {
   const windows = process.platform === "win32";
-  const systemRoot = process.env.SystemRoot;
+  const systemRoot = env.SystemRoot;
+  const cmd = windows && systemRoot && path.isAbsolute(systemRoot)
+    ? findExecutable([path.join(systemRoot, "System32", "cmd.exe")], env) : null;
   const programs = {
-    batch: windows && systemRoot ? path.join(systemRoot, "System32", "cmd.exe") : null,
+    batch: cmd,
     shell: process.platform === "darwin" ? "/bin/sh" : null,
-    powershell: findExecutable([windows ? "pwsh.exe" : "pwsh"]),
+    powershell: findExecutable([windows ? "pwsh.exe" : "pwsh"], env),
   };
   const program = programs[language];
   const names = { batch: "demo.cmd", shell: "demo.sh", powershell: "demo.ps1" };
@@ -519,13 +526,23 @@ function terminalRunner(language: TerminalLanguage): Runner {
     shell: [names.shell],
     powershell: ["-NoLogo", "-NoProfile", "-NonInteractive", "-File", names.powershell],
   };
+  function scriptEnv(dir: string): NodeJS.ProcessEnv {
+    const clean = snippetEnv(env, dir);
+    if (windows) {
+      Object.assign(clean, { TEMP: dir, TMP: dir, USERPROFILE: dir, SystemRoot: systemRoot, ComSpec: cmd ?? undefined });
+      clean.PATH = cmd ? path.dirname(cmd) : "";
+    } else {
+      clean.PATH = "/usr/bin:/bin:/usr/sbin:/sbin";
+    }
+    return clean;
+  }
   return {
-    async probe() {
+    async probe(scratch) {
       if (!program || !fs.existsSync(program)) {
         return { missing: { batch: "requires Windows cmd.exe", shell: "requires macOS /bin/sh", powershell: "pwsh not found on PATH" }[language] };
       }
       if (language === "powershell") {
-        const version = await exec(program, ["-NoProfile", "-NoLogo", "--version"]);
+        const version = await exec(program, ["-NoProfile", "-NoLogo", "--version"], { cwd: scratch, env: scriptEnv(scratch) });
         if (version.code !== 0) return { missing: version.stderr || "pwsh version probe failed" };
         return { toolchain: version.stdout.trim() };
       }
@@ -538,11 +555,9 @@ function terminalRunner(language: TerminalLanguage): Runner {
         }
         const dir = path.join(work, fileName(example.id, index));
         fs.mkdirSync(dir);
-        const env = snippetEnv(process.env, dir, windows ? ["SystemRoot", "ComSpec"] : []);
-        if (windows) Object.assign(env, { TEMP: dir, TMP: dir, USERPROFILE: dir });
         const code = example.code + "\n";
         fs.writeFileSync(path.join(dir, names[language]), language === "batch" ? code.replace(/\r?\n/g, "\r\n") : code);
-        return judge(example, await exec(program!, args[language], { cwd: dir, env, timeout: 60_000 }));
+        return judge(example, await exec(program!, args[language], { cwd: dir, env: scriptEnv(dir), timeout: 60_000 }));
       });
     },
   };
@@ -581,7 +596,7 @@ export async function runExamples(
         log(`${language}: no compiled or run examples found`);
         continue;
       }
-      const probe = await runners[language].probe();
+      const probe = await runners[language].probe(work);
       if ("missing" in probe) {
         report.toolchains[language] = `missing: ${probe.missing}`;
         report.outcomes.push(...examples.map((e) => ({ id: e.id, status: e.status, result: "skipped" as const, detail: probe.missing })));
