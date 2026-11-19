@@ -1,0 +1,34 @@
+id: ps-practice
+concept: practice.engineering
+scope: shared
+title: Debugging and repeatable runs
+group: Programming and automation
+subtitle: Trace control flow, minimise environment assumptions and rerun safely.
+applies:
+  platforms:
+    - windows
+    - macos
+  runtime: PowerShell 7 (pwsh)
+  versions:
+    powershell: ">=7.0"
+sources:
+  - title: PowerShell documentation
+    url: https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_commonparameters
+cards:
+  - id: reference
+    kind: table
+    title: Troubleshoot a run
+    headers:
+      - Task
+      - Technique
+      - When to use it
+    rows:
+      - - Trace a decision
+        - Write-Verbose 'Loading settings'
+        - Use [CmdletBinding()] to expose -Verbose. Keep secrets out of messages.
+      - - Check before modifying
+        - Test-Path -LiteralPath $path
+        - Where a cmdlet supports -WhatIf, preview its action. Treat a later I/O failure as possible even after a successful check.
+      - - Repeat from a clean session
+        - pwsh -NoProfile -NonInteractive -File .\report.ps1
+        - Declare the working directory, required commands and encoding at the boundary.

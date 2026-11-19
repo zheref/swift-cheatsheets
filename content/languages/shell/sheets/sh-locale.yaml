@@ -1,0 +1,33 @@
+id: sh-locale
+concept: localization.practices
+scope: platform
+title: Locale and text encoding
+group: Terminal and platform
+subtitle: Choose stable output for another program and readable output for a person.
+applies:
+  platforms:
+    - macos
+  runtime: macOS /bin/sh and system utilities
+  versions:
+    macos: ">=12"
+sources:
+  - title: Apple Shell Scripting Primer
+    url: https://developer.apple.com/library/archive/documentation/OpenSource/Conceptual/ShellScripting/Introduction/Introduction.html
+cards:
+  - id: reference
+    kind: table
+    title: Choose an output format
+    headers:
+      - Task
+      - Technique
+      - When to use it
+    rows:
+      - - Reproducible order
+        - LC_ALL=C sort names.txt
+        - Apply the locale to this command only. Byte order can differ from the user's alphabetical order.
+      - - Machine timestamps
+        - date -u '+%Y-%m-%dT%H:%M:%SZ'
+        - Produces a UTC timestamp with a fixed field order.
+      - - Read user text
+        - locale charmap
+        - Preserve the encoding expected by the consumer. A byte count, character count and displayed terminal width can differ.

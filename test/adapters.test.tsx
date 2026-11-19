@@ -58,8 +58,11 @@ describe("Gatsby adapter", () => {
     const published = await run();
     expect(published.map(({ path, id }) => ({ path, id }))).toEqual([
       { path: "/", id: "swift" },
+      { path: "/batch/", id: "batch" },
       { path: "/csharp/", id: "csharp" },
       { path: "/kotlin/", id: "kotlin" },
+      { path: "/powershell/", id: "powershell" },
+      { path: "/shell/", id: "shell" },
       { path: "/typescript/", id: "typescript" },
     ]);
     expect(published[0]!.component).toMatch(/src\/adapters\/gatsby\/CatalogTemplate\.tsx$/);
@@ -189,7 +192,7 @@ describe("offline adapter", () => {
     const offline = offlineLanguages(languages, catalogs, catalogs[0]!);
     const html = renderOffline(catalogs[0]!, "", offline);
     const json = html.match(new RegExp(`<script type="application/json" id="${LANGUAGES_ELEMENT_ID}">(.*?)</script>`, "s"))![1]!;
-    expect(JSON.parse(json).map((l: { href: string | null }) => l.href)).toEqual(["index.html", "offline/typescript.html", "offline/kotlin.html", "offline/csharp.html"]);
+    expect(JSON.parse(json).map((l: { href: string | null }) => l.href)).toEqual(["index.html", "offline/typescript.html", "offline/kotlin.html", "offline/csharp.html", "offline/powershell.html", "offline/batch.html", "offline/shell.html"]);
     expect(html).toContain('id="langnav"');
   });
 
@@ -211,9 +214,7 @@ describe("offline adapter", () => {
     expect(Object.keys(document.getElementById("root")!).some((k) => k.startsWith("__reactContainer"))).toBe(true);
     expect([...document.querySelectorAll("#langlist > li")].map((li) => li.getAttribute("data-state"))).toEqual([
       "current",
-      "available",
-      "available",
-      "available",
+      ...Array(6).fill("available"),
     ]);
   });
 });

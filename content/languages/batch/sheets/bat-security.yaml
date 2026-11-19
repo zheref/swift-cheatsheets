@@ -1,0 +1,33 @@
+id: bat-security
+concept: security.auth-and-data
+scope: platform
+title: Handle input and credentials
+group: Terminal and platform
+subtitle: Pass values as data and keep credentials out of command history and diagnostics.
+applies:
+  platforms:
+    - windows
+  runtime: Windows Command Prompt (cmd.exe)
+  versions:
+    windows: ">=10"
+sources:
+  - title: Windows command reference
+    url: https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/cmd
+cards:
+  - id: reference
+    kind: table
+    title: Protect inputs and secrets
+    headers:
+      - Task
+      - Technique
+      - When to use it
+    rows:
+      - - Select inputs
+        - if /i "%mode%"=="summary" ...
+        - Use this only for controlled values. cmd expands metacharacters during parsing. Accept a fixed choice or a file containing arbitrary text.
+      - - Contain expansion
+        - setlocal DisableDelayedExpansion
+        - Protects literal exclamation marks in filenames. CALL can trigger a second expansion, so keep arbitrary data out of its command text.
+      - - Handle credentials
+        - Let the consuming program prompt or use its OS credential store.
+        - ECHO OFF only suppresses command echo. Process arguments and log files can still expose a secret.

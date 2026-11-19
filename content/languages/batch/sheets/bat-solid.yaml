@@ -1,0 +1,33 @@
+id: bat-solid
+concept: principles.solid
+scope: shared
+title: Designing replaceable commands
+group: Programming and automation
+subtitle: Apply responsibility and substitution to functions, filters and process contracts.
+applies:
+  platforms:
+    - windows
+  runtime: Windows Command Prompt (cmd.exe)
+  versions:
+    windows: ">=10"
+sources:
+  - title: Windows command reference
+    url: https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/cmd
+cards:
+  - id: reference
+    kind: table
+    title: Apply the principles to scripts
+    headers:
+      - Task
+      - Technique
+      - When to use it
+    rows:
+      - - Single responsibility
+        - Split discovery, calculation and display into labels or helper scripts.
+        - Small contracts keep quoting and ERRORLEVEL handling local.
+      - - Replaceable behaviour
+        - Call a fixed helper implementing a documented stream and exit-code contract.
+        - Replace the helper with a fixture during a test. Keep arbitrary input out of the command name.
+      - - Small interfaces
+        - Exchange one file path and a status code.
+        - Batch has no class hierarchy. Agree on the file format, encoding and failure codes before adding a second implementation.

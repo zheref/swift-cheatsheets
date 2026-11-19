@@ -1,0 +1,38 @@
+id: bat-errors
+concept: terminal.exit-status
+scope: shared
+title: Exit status and diagnostics
+group: Programming and automation
+subtitle: Report an error to a caller and preserve the failing command’s status.
+applies:
+  platforms:
+    - windows
+  runtime: Windows Command Prompt (cmd.exe)
+  versions:
+    windows: ">=10"
+sources:
+  - title: Windows command reference
+    url: https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/if
+cards:
+  - id: example
+    kind: code
+    title: Observe and propagate a failure
+    note: The caller captures the subroutine's status before ECHO can change it. Use exit /b %status% in a wrapper that must propagate the failure. Inspect error.txt in the scratch directory.
+    prerequisites:
+      - Save as demo.cmd in an empty directory and run cmd.exe /d /e:on /v:off /c demo.cmd.
+    code: |-
+      @echo off
+      setlocal
+      call :check 2>error.txt
+      set "status=%errorlevel%"
+      echo status=%status%
+      if not "%status%"=="2" exit /b 1
+      exit /b 0
+      :check
+      1>&2 echo Missing configuration
+      exit /b 2
+    expected: status=2
+    validation:
+      status: ran
+      toolchain: Windows 11 cmd.exe (10.0.26200.9445)
+      date: 2026-11-19

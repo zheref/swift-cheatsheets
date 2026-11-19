@@ -1,0 +1,33 @@
+id: bat-practice
+concept: practice.engineering
+scope: shared
+title: Debugging and repeatable runs
+group: Programming and automation
+subtitle: Trace control flow, minimise environment assumptions and rerun safely.
+applies:
+  platforms:
+    - windows
+  runtime: Windows Command Prompt (cmd.exe)
+  versions:
+    windows: ">=10"
+sources:
+  - title: Windows command reference
+    url: https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/cmd
+cards:
+  - id: reference
+    kind: table
+    title: Troubleshoot a run
+    headers:
+      - Task
+      - Technique
+      - When to use it
+    rows:
+      - - Trace a decision
+        - 1>&2 echo Reading configuration
+        - ECHO ON traces expanded commands and can print secrets. Trace selected steps instead.
+      - - Keep effects local
+        - setlocal EnableExtensions DisableDelayedExpansion
+        - End with exit /b. Use a scratch directory so a repeat run cannot overwrite a real input.
+      - - Reproduce the run
+        - cmd.exe /d /v:off /c report.cmd
+        - This sets known AutoRun and delayed-expansion behaviour. Separate logs from result files.

@@ -1,0 +1,34 @@
+id: ps-solid
+concept: principles.solid
+scope: shared
+title: Designing replaceable commands
+group: Programming and automation
+subtitle: Apply responsibility and substitution to functions, filters and process contracts.
+applies:
+  platforms:
+    - windows
+    - macos
+  runtime: PowerShell 7 (pwsh)
+  versions:
+    powershell: ">=7.0"
+sources:
+  - title: PowerShell documentation
+    url: https://learn.microsoft.com/en-us/powershell/
+cards:
+  - id: reference
+    kind: table
+    title: Apply the principles to scripts
+    headers:
+      - Task
+      - Technique
+      - When to use it
+    rows:
+      - - Single responsibility
+        - Split Get-ReportRows from Export-Report.
+        - Retrieval can change independently of display and file format.
+      - - Open/closed and substitution
+        - Pass a script block that reads rows.
+        - A test provider and a real provider must emit the same record shape and use the same failure contract.
+      - - Small interfaces and dependency inversion
+        - Accept a path or an input object as a parameter.
+        - Avoid coupling a transformation to the interactive host, global configuration or a concrete data source.

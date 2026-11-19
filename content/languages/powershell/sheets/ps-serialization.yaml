@@ -1,0 +1,33 @@
+id: ps-serialization
+concept: serialization.codecs
+scope: shared
+title: Read structured data
+group: Programming and automation
+subtitle: Decode a JSON record with a parser that understands quoting and escapes.
+applies:
+  platforms:
+    - windows
+    - macos
+  runtime: PowerShell 7 (pwsh)
+  versions:
+    powershell: ">=7.0"
+sources:
+  - title: PowerShell documentation
+    url: https://learn.microsoft.com/en-us/powershell/
+  - title: ConvertFrom-Json
+    url: https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.utility/convertfrom-json
+cards:
+  - id: example
+    kind: code
+    title: Decode a field before filtering it
+    note: ConvertFrom-Json preserves JSON types. ConvertTo-Json -Depth controls the depth of nested output. Use Import-Csv for quoted CSV.
+    prerequisites:
+      - Save as demo.ps1 in an empty directory and run pwsh -NoProfile -File ./demo.ps1.
+    code: |-
+      $row = '{"stage":"ready","count":2}' | ConvertFrom-Json
+      if ($row.count -gt 0) { $row.stage }
+    expected: ready
+    validation:
+      status: ran
+      toolchain: PowerShell 7.7.0 on macOS arm64
+      date: 2026-11-19

@@ -1,0 +1,33 @@
+id: bat-algorithms
+concept: algorithms.patterns
+scope: shared
+title: One-pass algorithms
+group: Programming and automation
+subtitle: Find a maximum with constant extra memory, including when the numbers are negative.
+applies:
+  platforms:
+    - windows
+  runtime: Windows Command Prompt (cmd.exe)
+  versions:
+    windows: ">=10"
+sources:
+  - title: Windows command reference
+    url: https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/if
+cards:
+  - id: example
+    kind: code
+    title: Compare signed integers
+    note: Use GTR for a numeric comparison. Delayed expansion reads the current best value on each loop iteration. Keep it disabled when reading arbitrary text containing exclamation marks.
+    prerequisites:
+      - Save as demo.cmd in an empty directory and run cmd.exe /d /e:on /v:off /c demo.cmd.
+    code: |-
+      @echo off
+      setlocal EnableDelayedExpansion
+      set "best=-7"
+      for %%N in (-2 -5) do if %%N GTR !best! set "best=%%N"
+      echo %best%
+    expected: "-2"
+    validation:
+      status: ran
+      toolchain: Windows 11 cmd.exe (10.0.26200.9445)
+      date: 2026-11-19

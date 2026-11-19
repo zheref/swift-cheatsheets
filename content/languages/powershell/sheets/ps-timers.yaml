@@ -1,0 +1,34 @@
+id: ps-timers
+concept: reactive.timers-and-async
+scope: platform
+title: Delays, polling and scheduling
+group: Terminal and platform
+subtitle: Limit retries and choose an OS scheduler for unattended work.
+applies:
+  platforms:
+    - windows
+    - macos
+  runtime: PowerShell 7 (pwsh)
+  versions:
+    powershell: ">=7.0"
+sources:
+  - title: PowerShell documentation
+    url: https://learn.microsoft.com/en-us/powershell/
+cards:
+  - id: reference
+    kind: table
+    title: Run once or on a schedule
+    headers:
+      - Task
+      - Technique
+      - When to use it
+    rows:
+      - - Wait once
+        - Start-Sleep -Seconds 2
+        - Ctrl+C interrupts an interactive wait.
+      - - Poll a condition
+        - foreach ($n in 1..5) { if (Test-Path -LiteralPath './ready') { break }; Start-Sleep -Seconds 1 }
+        - Check the condition again after the loop and report a timeout when still absent.
+      - - Run on a schedule
+        - Task Scheduler → Start a program
+        - Give pwsh.exe an absolute script path after -NoProfile -File. Configure the working directory and overlapping-instance policy.

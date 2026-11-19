@@ -1,0 +1,29 @@
+id: ps-strings
+concept: strings.operations
+scope: shared
+title: String operations and pattern matching
+group: Programming and automation
+subtitle: Extract a file stem and distinguish literal, wildcard and regular-expression matching.
+applies:
+  platforms:
+    - windows
+    - macos
+  runtime: PowerShell 7 (pwsh)
+  versions:
+    powershell: ">=7.0"
+sources:
+  - title: PowerShell documentation
+    url: https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_comparison_operators
+cards:
+  - id: example
+    kind: code
+    title: Extract the final extension
+    note: .NET path operations understand an extension at the end of the name. For patterns, -like takes wildcards and -match takes a regular expression.
+    prerequisites:
+      - Save as demo.ps1 in an empty directory and run pwsh -NoProfile -File ./demo.ps1.
+    code: "[IO.Path]::GetFileNameWithoutExtension('quarter.one.csv')"
+    expected: quarter.one
+    validation:
+      status: ran
+      toolchain: PowerShell 7.7.0 on macOS arm64
+      date: 2026-11-19

@@ -1,0 +1,55 @@
+id: ps-arguments
+concept: terminal.arguments
+scope: language
+title: Arguments and quoting
+group: Script syntax
+subtitle: Keep a path containing spaces in one argument.
+applies:
+  platforms:
+    - windows
+    - macos
+  runtime: PowerShell 7 (pwsh)
+  versions:
+    powershell: ">=7.0"
+sources:
+  - title: PowerShell documentation
+    url: https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_quoting_rules
+cards:
+  - id: example
+    kind: code
+    title: Preserve a complete path
+    note: Single quotes keep text literal. Double quotes expand variables. Use an argument array and splatting to pass several values.
+    prerequisites:
+      - Save as demo.ps1 in an empty directory and run pwsh -NoProfile -File ./demo.ps1.
+    code: |-
+      function Show-InputPath {
+          param([string]$Path)
+          "<$Path>"
+      }
+      $arguments = @('Quarter one/report.txt')
+      Show-InputPath @arguments
+    expected: <Quarter one/report.txt>
+    validation:
+      status: ran
+      toolchain: PowerShell 7.7.0 on macOS arm64
+      date: 2026-11-19
+  - id: parameters
+    kind: table
+    title: Define the script entry point
+    headers:
+      - Task
+      - Example
+      - Behaviour
+    rows:
+      - - Declare a named parameter
+        - param([Parameter(Mandatory)][string]$Path)
+        - Place param at the start of the script, after any script attributes or comments.
+      - - Bind a path containing spaces
+        - ./report.ps1 -Path 'Quarter One/report.csv'
+        - Pass the string to a cmdlet with -LiteralPath when it may contain wildcard characters.
+      - - Switch parameter
+        - param([switch]$Detailed)
+        - Invoke with -Detailed. The switch is false when omitted.
+      - - Expand a property inside text
+        - '"Rows: $($rows.Count)"'
+        - The subexpression evaluates member access inside the string.

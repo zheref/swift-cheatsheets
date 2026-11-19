@@ -1,0 +1,30 @@
+id: sh-algorithms
+concept: algorithms.patterns
+scope: shared
+title: One-pass algorithms
+group: Programming and automation
+subtitle: Find a maximum with constant extra memory, including when the numbers are negative.
+applies:
+  platforms:
+    - macos
+  runtime: macOS /bin/sh and system utilities
+  versions:
+    macos: ">=12"
+sources:
+  - title: Apple Shell Scripting Primer
+    url: https://developer.apple.com/library/archive/documentation/OpenSource/Conceptual/ShellScripting/Introduction/Introduction.html
+cards:
+  - id: example
+    kind: code
+    title: Scan for a maximum
+    note: Initialise on record one, then compare numerically. An empty stream emits no value. Sorting would require storage and extra comparisons.
+    prerequisites:
+      - Save as demo.sh in an empty directory and run /bin/sh ./demo.sh.
+    code: |-
+      printf '%s\n' -7 -2 -5 |
+        awk 'NR == 1 || $1+0 > best { best=$1+0 } END { if (NR) print best }'
+    expected: "-2"
+    validation:
+      status: ran
+      toolchain: macOS 27.0 /bin/sh (3.2.57)
+      date: 2026-11-19

@@ -16,6 +16,7 @@ import { UiProvider } from "../src/ui/Provider";
 import { legacySwiftCatalog, ROOT } from "./helpers";
 
 const NEW = ["typescript", "kotlin", "csharp"] as const;
+const WITH_COVERAGE = [...NEW, "powershell", "batch", "shell"] as const;
 const site = loadSite(path.join(ROOT, "content"));
 const catalog = (id: string) => site.catalogs.find((c) => c.language.id === id)!;
 const swift = catalog("swift");
@@ -61,6 +62,28 @@ describe.each(NEW)("the %s catalog", (id) => {
   });
 });
 
+describe.each(["powershell", "batch", "shell"])("the %s terminal catalog", (id) => {
+  const c = catalog(id);
+
+  it("publishes executable examples with a complete setup and verified result", () => {
+    expect(c.language).toMatchObject({ status: "published", route: `/${id}/`, requireExampleMetadata: true });
+    const cards = examples(c);
+    expect(cards.length).toBeGreaterThan(0);
+    expect(cards.flatMap(({ sheet, card }) => exampleProblems(sheet, card))).toEqual([]);
+    expect(cards.some(({ card }) => card.validation?.status === "ran")).toBe(true);
+  });
+
+  it("switches directly between terminal interpreters for the same task", () => {
+    for (const concept of ["terminal.invocation", "terminal.arguments", "terminal.pipelines", "terminal.exit-status", "terminal.filesystem"]) {
+      const sheet = c.sheets.find((s) => s.concept === concept)!;
+      for (const target of site.languages.filter((l) => ["powershell", "batch", "shell"].includes(l.id) && l.id !== id)) {
+        const match = switchLink(target, sheet.concept, id).match;
+        expect(match?.concept).toBe(concept);
+      }
+    }
+  });
+});
+
 describe("the coverage matrix (AC-4)", () => {
   const DISPOSITIONS = ["equivalent", "partial", "no counterpart"];
 
@@ -73,7 +96,7 @@ describe("the coverage matrix (AC-4)", () => {
   };
   const byTitle = (c: Catalog, title: string): Sheet | undefined => c.sheets.find((s) => s.title === title);
 
-  it.each(NEW)("%s: lists every Swift topic once, in Swift's order, with a disposition and a reason", (id) => {
+  it.each(WITH_COVERAGE)("%s: lists every Swift topic once, in Swift's order, with a disposition and a reason", (id) => {
     const rows = matrix(catalog(id));
     expect(rows.map((r) => r.topic)).toEqual(swift.sheets.map((s) => s.title));
     for (const r of rows) {
@@ -82,7 +105,7 @@ describe("the coverage matrix (AC-4)", () => {
     }
   });
 
-  it.each(NEW)("%s: an equivalent shares the Swift concept id; a partial names a sheet that does not; no counterpart names none", (id) => {
+  it.each(WITH_COVERAGE)("%s: an equivalent shares the Swift concept id; a partial names a sheet that does not; no counterpart names none", (id) => {
     const c = catalog(id);
     for (const [i, r] of matrix(c).entries()) {
       const swiftSheet = swift.sheets[i]!;
@@ -97,7 +120,7 @@ describe("the coverage matrix (AC-4)", () => {
     }
   });
 
-  it.each(NEW)("%s: every sheet reusing a Swift concept is that topic's equivalent — no silent reuse", (id) => {
+  it.each(WITH_COVERAGE)("%s: every sheet reusing a Swift concept is that topic's equivalent — no silent reuse", (id) => {
     const c = catalog(id);
     const rows = matrix(c);
     for (const s of c.sheets) {
@@ -107,7 +130,7 @@ describe("the coverage matrix (AC-4)", () => {
     }
   });
 
-  it.each(NEW)("%s: the selector lands on the equivalent from Swift, and explains the absence otherwise", (id) => {
+  it.each(WITH_COVERAGE)("%s: the selector lands on the equivalent from Swift, and explains the absence otherwise", (id) => {
     const target = site.languages.find((l) => l.id === id)!;
     for (const [i, r] of matrix(catalog(id)).entries()) {
       const link = switchLink(target, swift.sheets[i]!.concept, "swift");

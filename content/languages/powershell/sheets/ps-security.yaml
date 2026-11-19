@@ -1,0 +1,34 @@
+id: ps-security
+concept: security.auth-and-data
+scope: platform
+title: Handle input and credentials
+group: Terminal and platform
+subtitle: Pass values as data and keep credentials out of command history and diagnostics.
+applies:
+  platforms:
+    - windows
+    - macos
+  runtime: PowerShell 7 (pwsh)
+  versions:
+    powershell: ">=7.0"
+sources:
+  - title: PowerShell documentation
+    url: https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_quoting_rules
+cards:
+  - id: reference
+    kind: table
+    title: Protect inputs and secrets
+    headers:
+      - Task
+      - Technique
+      - When to use it
+    rows:
+      - - Receive credentials
+        - Get-Credential
+        - A PSCredential can be passed to cmdlets that support it. Keep secrets out of command arguments and verbose output.
+      - - Invoke a path
+        - "& $trustedTool @arguments"
+        - Fix the executable independently of user input. Avoid evaluating an assembled command string.
+      - - Read a supplied path
+        - Get-Item -LiteralPath $path
+        - Literal paths suppress wildcard expansion. If a script restricts access to a directory, validate the resolved location separately.

@@ -1,0 +1,52 @@
+id: sh-files
+concept: io.files-and-text
+scope: shared
+title: Paths, files and text
+group: Programming and automation
+subtitle: Read a file whose path contains spaces and handle a missing file.
+applies:
+  platforms:
+    - macos
+  runtime: macOS /bin/sh and system utilities
+  versions:
+    macos: ">=12"
+sources:
+  - title: Apple Shell Scripting Primer
+    url: https://developer.apple.com/library/archive/documentation/OpenSource/Conceptual/ShellScripting/Introduction/Introduction.html
+cards:
+  - id: example
+    kind: code
+    title: Read a final unterminated line
+    note: Use an empty scratch directory. Empty IFS preserves surrounding spaces and read -r preserves backslashes. Redirect the loop input to keep its variables in the current shell.
+    prerequisites:
+      - Save as demo.sh in an empty directory and run /bin/sh ./demo.sh.
+    code: |-
+      file='./daily report.txt'
+      printf 'first\nlast' > "$file" || exit 1
+      while IFS= read -r line || [ -n "$line" ]; do
+        printf '<%s>\n' "$line"
+      done < "$file"
+    expected: |-
+      <first>
+      <last>
+    validation:
+      status: ran
+      toolchain: macOS 27.0 /bin/sh (3.2.57)
+      date: 2026-11-19
+  - id: replacement
+    kind: table
+    title: Replace a report after a successful write
+    headers:
+      - Task
+      - Example
+      - Behaviour
+    rows:
+      - - Create a temporary sibling
+        - tmp=$(mktemp "./report.XXXXXX") || exit 1
+        - Keep the temporary file on the same filesystem as the destination.
+      - - Arrange cleanup
+        - trap 'rm -f "$tmp"' 0
+        - The exit trap removes an incomplete temporary file when the script exits.
+      - - Publish the result
+        - printf '%s\n' ready > "$tmp" && mv -f "$tmp" ./report.txt
+        - Publish only after the producer succeeds. Rename replaces the directory entry. Metadata and crash durability require separate handling.

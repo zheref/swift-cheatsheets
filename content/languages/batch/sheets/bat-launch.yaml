@@ -1,0 +1,54 @@
+id: bat-launch
+concept: terminal.invocation
+scope: platform
+title: Choose and launch an interpreter
+group: Terminal and platform
+subtitle: Identify the shell that reads each script and reproduce a run from a fresh terminal.
+applies:
+  platforms:
+    - windows
+  runtime: Windows Command Prompt (cmd.exe)
+  versions:
+    windows: ">=10"
+sources:
+  - title: Windows command reference
+    url: https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/cmd
+cards:
+  - id: reference
+    kind: table
+    title: Script entry points
+    headers:
+      - Task
+      - Technique
+      - When to use it
+    rows:
+      - - .cmd and .bat
+        - cmd.exe /d /c report.cmd
+        - Both extensions use cmd.exe. /d disables AutoRun and /c exits after the command.
+      - - Call a sibling script
+        - call "%~dp0helper.cmd"
+        - "%~dp0 contains the drive and directory of the current script, including a trailing separator. CALL returns to the next line."
+      - - PowerShell script
+        - pwsh -NoProfile -File report.ps1
+        - A Windows Terminal tab can host either interpreter. Identify which prompt is reading the command.
+  - id: translate
+    kind: table
+    title: The same terminal task in three shells
+    note: Switch languages from this sheet to open the equivalent launch instructions.
+    headers:
+      - Task
+      - Example
+      - Behaviour
+    rows:
+      - - Current directory
+        - "PowerShell: Get-Location"
+        - "Batch: cd     ·     macOS sh: pwd"
+      - - Read a variable
+        - "PowerShell: $env:MODE"
+        - 'Batch: %MODE%     ·     macOS sh: "$MODE"'
+      - - Send an error
+        - 'PowerShell: Write-Error "missing"'
+        - 'Batch: 1>&2 echo missing     ·     macOS sh: printf "missing\n" >&2'
+      - - Return status 2
+        - "PowerShell: exit 2"
+        - "Batch: exit /b 2     ·     macOS sh: exit 2"

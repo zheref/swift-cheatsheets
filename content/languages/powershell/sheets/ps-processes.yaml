@@ -1,0 +1,33 @@
+id: ps-processes
+concept: terminal.processes
+scope: platform
+title: Child processes and working directories
+group: Terminal and platform
+subtitle: Control which directory and environment a child inherits.
+applies:
+  platforms:
+    - windows
+    - macos
+  runtime: PowerShell 7 (pwsh)
+  versions:
+    powershell: ">=7.0"
+sources:
+  - title: PowerShell documentation
+    url: https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_environment_variables
+cards:
+  - id: example
+    kind: code
+    title: Restore a working directory
+    note: Push-Location and Pop-Location pair even when a cmdlet throws. A child process inherits environment variables, while ordinary PowerShell variables stay in the current session.
+    prerequisites:
+      - Save as demo.ps1 in an empty directory and run pwsh -NoProfile -File ./demo.ps1.
+    code: |-
+      $before = Get-Location
+      Push-Location ([IO.Path]::GetTempPath())
+      try { $null = Get-Location } finally { Pop-Location }
+      (Get-Location).Path -eq $before.Path
+    expected: "True"
+    validation:
+      status: ran
+      toolchain: PowerShell 7.7.0 on macOS arm64
+      date: 2026-11-19

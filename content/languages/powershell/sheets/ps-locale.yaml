@@ -1,0 +1,34 @@
+id: ps-locale
+concept: localization.practices
+scope: platform
+title: Locale and text encoding
+group: Terminal and platform
+subtitle: Choose stable output for another program and readable output for a person.
+applies:
+  platforms:
+    - windows
+    - macos
+  runtime: PowerShell 7 (pwsh)
+  versions:
+    powershell: ">=7.0"
+sources:
+  - title: PowerShell documentation
+    url: https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_character_encoding
+cards:
+  - id: reference
+    kind: table
+    title: Choose an output format
+    headers:
+      - Task
+      - Technique
+      - When to use it
+    rows:
+      - - Display dates
+        - Get-Date -Format D
+        - Uses the current culture. Choose it for a human-facing report.
+      - - Exchange timestamps
+        - "[DateTime]::UtcNow.ToString('o')"
+        - Round-trip format carries fractional seconds and UTC information.
+      - - Choose file encoding
+        - Set-Content -Encoding utf8
+        - PowerShell 7 defaults differ from Windows PowerShell 5.1, including UTF-8 BOM behaviour. Agree on an encoding with the reader.

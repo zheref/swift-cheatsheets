@@ -12,13 +12,15 @@ Designed to be opened on a second screen (iPad, phone, laptop) and skimmed while
 sidebar navigation, instant full-text search, syntax-highlighted snippets, dark/light
 themes, and a responsive layout that collapses to one column on small screens.
 
-A **language selector** in the top bar lists Swift, TypeScript, Kotlin and C#. Switching
+A **language selector** in the top bar lists Swift, TypeScript, Kotlin, C#, PowerShell, Windows Batch and macOS Shell. Switching
 keeps you on the same concept where the other language has it, and says so plainly where it
 does not. The TypeScript, Kotlin and C# catalogs keep shared concepts, language topics and
 platform material (Node.js and the browser, the JVM and Android, .NET) in separate groups;
 every example states its setup, platform and versions, sources, the result it produces and
 how far it was validated — and each catalog ends with a coverage matrix against the Swift
 topics (zheref/swift-cheatsheets#3).
+
+Open the [PowerShell (.ps1)](offline/powershell.html), [Windows Batch (.bat and .cmd)](offline/batch.html) or [macOS Shell (.sh)](offline/shell.html) catalog directly from disk. Each covers arguments, pipes, errors, paths and process control alongside its equivalents in the programming catalogs. The macOS examples use `/bin/sh`; the launch sheet also covers Bash, zsh and Finder `.command` files.
 
 The site is built with **Gatsby 5 + TypeScript + Chakra UI 3** from a **content catalog
 kept as data** (YAML), so another language is a new catalog folder, not a new page.
@@ -78,6 +80,8 @@ Use the project return link above the page to resume browsing.
 npm ci                 # Node 22.22+ or 24.15+ (see .nvmrc)
 
 open index.html        # just read it — the committed offline file
+
+nen shu run --repo . --target local-browser  # open the macOS Shell catalog in Safari
 
 ./serve.command        # or build and serve the site to every device on your Wi-Fi
 ```
@@ -252,6 +256,8 @@ language in `content/registry.yaml`. No page template, component or route code c
 
 ### Running the examples
 
+Run the terminal catalogs with `npm run examples -- --lang <id> --require-all`. Use `powershell` with PowerShell 7 on PATH, `batch` on Windows or `shell` on macOS. The macOS catalog uses Apple system utilities and the batch catalog uses native `cmd.exe`.
+
 `npm run examples` compiles every TypeScript, Kotlin and C# example whose `validation` says
 `ran` or `compiled`, runs the `ran` ones and compares their output with the card's `expected`
 result. The snippet on the page is the program — nothing is wrapped around it. It needs the
@@ -269,7 +275,7 @@ nothing an example imports reaches the built pages. `examples/kotlin/lib/` and
 
 Running it **executes every `ran` card as a program on your machine**, so review a content
 change that adds or edits one as you would code. Each snippet runs with a scratch `HOME` and
-`TMPDIR` and none of your environment beyond `PATH` and `LANG`; C# builds ignore MSBuild and
+`TMPDIR` and a restricted environment. Windows terminal examples also receive the system directory and command interpreter, with a scratch user profile and temp directory. C# builds ignore MSBuild and
 NuGet files above their work folder.
 
 `--lang kotlin,csharp` limits the run, and `--sheets ts-rxjs,ts-timers` limits it to the named
@@ -287,7 +293,7 @@ swift-cheatsheets/
 ├── content/registry.yaml      the languages the selector offers, in order
 ├── content/aspects.yaml       the aspects every published catalog covers, with their checklists
 ├── content/languages/swift/   the Swift catalog: language.yaml, sheets/*.yaml, diagrams/*.svg
-├── content/languages/{typescript,kotlin,csharp}/   the other catalogs, each ending in a coverage matrix
+├── content/languages/<id>/   the other catalogs, each ending in a coverage matrix
 ├── offline/<id>.html          generated — the other catalogs' offline files (committed)
 ├── src/
 │   ├── content/               renderer-independent: schema, loader, highlighter, inline markup, search

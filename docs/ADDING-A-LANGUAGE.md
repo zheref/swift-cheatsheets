@@ -87,8 +87,7 @@ instead of a sheet, with the reason. "Not written yet" is not a reason.
 
 In this order:
 
-1. **Give the language a runner.** `scripts/run-examples.mts` knows TypeScript, Kotlin and
-   C#. Any other language needs its own `Runner` there and an entry in `EXAMPLE_LANGUAGES`.
+1. **Give the language a runner.** `scripts/run-examples.mts` supports TypeScript, Kotlin, C#, PowerShell, Windows batch and macOS shell. Any other language needs its own `Runner` there and an entry in `EXAMPLE_LANGUAGES`.
 2. **Then set `requireExampleMetadata: true`**, so the loader refuses an example missing its
    setup, applicability, sources, result or validation status. Setting it before step 1
    breaks the example run for every catalog, CI's included: the runner refuses a catalog

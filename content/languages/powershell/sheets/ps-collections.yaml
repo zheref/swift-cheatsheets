@@ -1,0 +1,33 @@
+id: ps-collections
+concept: collections.types
+scope: shared
+title: Lists and lookups
+group: Programming and automation
+subtitle: Choose a representation for ordered inputs and named values.
+applies:
+  platforms:
+    - windows
+    - macos
+  runtime: PowerShell 7 (pwsh)
+  versions:
+    powershell: ">=7.0"
+sources:
+  - title: PowerShell documentation
+    url: https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_hash_tables
+cards:
+  - id: example
+    kind: code
+    title: Index an array and a hashtable
+    note: Arrays preserve order and start at index zero. A hashtable looks up a value by key. Use [ordered] when traversal order is part of the contract.
+    prerequisites:
+      - Save as demo.ps1 in an empty directory and run pwsh -NoProfile -File ./demo.ps1.
+    code: |-
+      $stages = @('build', 'test')
+      $attempts = @{ build = 1; test = 3 }
+      $stage = $stages[1]
+      "$($stage):$($attempts[$stage])"
+    expected: test:3
+    validation:
+      status: ran
+      toolchain: PowerShell 7.7.0 on macOS arm64
+      date: 2026-11-19

@@ -12,3 +12,9 @@ languages:
     name: Kotlin
   - id: csharp
     name: C#
+  - id: powershell
+    name: PowerShell
+  - id: batch
+    name: Windows Batch
+  - id: shell
+    name: macOS Shell

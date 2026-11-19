@@ -232,6 +232,8 @@ export const sheet = z
  */
 export const highlight = z
   .object({
+    /** Shell-specific quoting and keyword case rules. */
+    dialect: z.enum(["sh", "powershell", "batch"]).optional(),
     keywords: z.array(z.string().min(1)).min(1),
     lineComment: z.string().min(1).optional(),
     blockComment: z.tuple([z.string().min(1), z.string().min(1)]).optional(),

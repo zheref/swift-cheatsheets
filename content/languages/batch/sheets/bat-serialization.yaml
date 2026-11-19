@@ -1,0 +1,34 @@
+id: bat-serialization
+concept: serialization.codecs
+scope: shared
+title: Read structured data
+group: Programming and automation
+subtitle: Decode a JSON record with a parser that understands quoting and escapes.
+applies:
+  platforms:
+    - windows
+  runtime: Windows Command Prompt (cmd.exe)
+  versions:
+    windows: ">=10"
+sources:
+  - title: Windows command reference
+    url: https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/cmd
+  - title: ConvertFrom-Json
+    url: https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.utility/convertfrom-json
+cards:
+  - id: example
+    kind: code
+    title: Delegate JSON parsing
+    note: Windows PowerShell 5.1 is the JSON parser for this batch example. The command is fixed and reads the file as data. Use an empty working directory.
+    prerequisites:
+      - Save as demo.cmd in an empty directory and run cmd.exe /d /e:on /v:off /c demo.cmd.
+    code: |-
+      @echo off
+      >data.json echo {"stage":"ready"}
+      powershell.exe -NoProfile -Command "(Get-Content -Raw -LiteralPath 'data.json' | ConvertFrom-Json).stage"
+      exit /b %errorlevel%
+    expected: ready
+    validation:
+      status: ran
+      toolchain: Windows 11 cmd.exe (10.0.26200.9445)
+      date: 2026-11-19

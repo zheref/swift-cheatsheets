@@ -1,0 +1,68 @@
+id: shell
+name: macOS Shell
+title: macOS Shell Cheat Sheets
+route: /shell/
+status: published
+description: Write .sh scripts for macOS Terminal with portable quoting, pipelines, process control and explicit Bash or zsh entry points.
+locale: en
+codeLanguage: shell
+requireExampleMetadata: true
+highlight:
+  dialect: sh
+  keywords:
+    - if
+    - then
+    - else
+    - fi
+    - case
+    - esac
+    - for
+    - in
+    - while
+    - do
+    - done
+    - return
+    - exit
+    - export
+    - trap
+  lineComment: "#"
+  capitalisedTypes: false
+  members: false
+applies:
+  platforms:
+    - macos
+  runtime: macOS /bin/sh and system utilities
+  versions:
+    macos: ">=12"
+sheets:
+  - sh-essentials
+  - sh-arguments
+  - sh-modules
+  - sh-launch
+  - sh-discovery
+  - sh-navigation
+  - sh-processes
+  - sh-jobs
+  - sh-timers
+  - sh-rest
+  - sh-protocols
+  - sh-locale
+  - sh-security
+  - sh-accessibility
+  - sh-pipes
+  - sh-errors
+  - sh-files
+  - sh-collections
+  - sh-operations
+  - sh-strings
+  - sh-serialization
+  - sh-streams
+  - sh-algorithms
+  - sh-architecture
+  - sh-functional
+  - sh-solid
+  - sh-clean
+  - sh-testing
+  - sh-e2e
+  - sh-practice
+  - sh-coverage

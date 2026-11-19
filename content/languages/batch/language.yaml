@@ -1,0 +1,65 @@
+id: batch
+name: Windows Batch
+title: Windows Batch Cheat Sheets
+route: /batch/
+status: published
+description: Write .bat and .cmd scripts for Windows Command Prompt with subroutines, delayed expansion, redirection and exit codes.
+locale: en
+codeLanguage: batch
+requireExampleMetadata: true
+highlight:
+  dialect: batch
+  keywords:
+    - if
+    - not
+    - exist
+    - for
+    - in
+    - do
+    - set
+    - setlocal
+    - endlocal
+    - echo
+    - exit
+    - call
+    - goto
+  capitalisedTypes: false
+  members: false
+applies:
+  platforms:
+    - windows
+  runtime: Windows Command Prompt (cmd.exe)
+  versions:
+    windows: ">=10"
+sheets:
+  - bat-essentials
+  - bat-arguments
+  - bat-modules
+  - bat-launch
+  - bat-discovery
+  - bat-navigation
+  - bat-processes
+  - bat-jobs
+  - bat-timers
+  - bat-rest
+  - bat-protocols
+  - bat-locale
+  - bat-security
+  - bat-accessibility
+  - bat-pipes
+  - bat-errors
+  - bat-files
+  - bat-collections
+  - bat-operations
+  - bat-strings
+  - bat-serialization
+  - bat-streams
+  - bat-algorithms
+  - bat-architecture
+  - bat-functional
+  - bat-solid
+  - bat-clean
+  - bat-testing
+  - bat-e2e
+  - bat-practice
+  - bat-coverage

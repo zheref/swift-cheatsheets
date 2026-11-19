@@ -23,7 +23,10 @@ languages:
   - { id: swift, name: Swift }
   - { id: typescript, name: TypeScript }
   - { id: kotlin, name: Kotlin }
-  - { id: csharp, name: C# }
+  - { id: csharp, name: "C#" }
+  - { id: powershell, name: PowerShell }
+  - { id: batch, name: Windows Batch }
+  - { id: shell, name: macOS Shell }
 ```
 
 Each `id` names a catalog folder; `name` must equal that catalog's own `name`, and every
@@ -58,7 +61,7 @@ are scoped to the active language by construction.
 | `status` | `published` (built), `draft` (validated, not built), `fixture` (tests and previews only) |
 | `locale` | the prose's BCP-47 tag (`<html lang>`) |
 | `codeLanguage` | the code blocks' language name (`data-lang`) |
-| `highlight` | the tokenizer's data: `keywords`, `lineComment`, `blockComment`, `attributePrefix`, `directivePrefix`, `capitalisedTypes`, `members` |
+| `highlight` | the tokenizer's data: optional shell `dialect` (sh, powershell, batch), `keywords`, `lineComment`, `blockComment`, `attributePrefix`, `directivePrefix`, `capitalisedTypes`, `members` |
 | `applies` | catalog-wide applicability (see below) |
 | `requireExampleMetadata` | `true` makes every example carry the metadata below or the build fails |
 | `sheets` | sheet ids in reading order — sidebar and scroll order |
@@ -208,7 +211,7 @@ required part (its committed output is `templates/new-language/`). In short:
 2. Add sheets. Reuse the Swift catalog's `concept` IDs where the topic is genuinely
    equivalent, so a reader switching languages can land on the same concept; give
    language- or platform-specific material its own concept and the right `scope`.
-3. Add the coverage sheet (above). The runner knows TypeScript, Kotlin and C#; for any
+3. Add the coverage sheet (above). The runner knows TypeScript, Kotlin, C#, PowerShell, Windows batch and macOS shell; for any
    other language, first give it a `Runner` in `scripts/run-examples.mts` and add it to
    `EXAMPLE_LANGUAGES`. Only then set `requireExampleMetadata: true` and run
    `npm run examples -- --lang <id>` with the toolchain installed: until a language has a
@@ -219,8 +222,7 @@ required part (its committed output is `templates/new-language/`). In short:
 
 No component, template or route code changes. The fixture site in `test/fixtures/content/`
 is the working example: its own `registry.yaml` lists four fixture catalogs
-(`swift-fixture`, `typescript-fixture`, `kotlin-fixture`, `csharp-fixture`) standing in for
-the four configured languages. The test suite renders, hydrates and switches between them
+(`swift-fixture`, `typescript-fixture`, `kotlin-fixture`, `csharp-fixture`) covering the original four languages. The test suite renders, hydrates and switches between them
 through the same page, and `CHEATSHEETS_FIXTURES=1 npx gatsby build` publishes them at
 `/<id>-fixture/` beside the real site. Each content root is its own site: fixture pages
 link only to fixtures, and say on the page that they are test data, not reference material.

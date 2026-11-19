@@ -118,7 +118,8 @@
           "unsupported": "The distributable is the committed offline index.html that `build` regenerates; no separate archive step exists."
         },
         "run": {
-          "unsupported": "There is no production start: the site is served from public/ by `dev`, or the offline file is opened directly."
+          "exe": "/usr/bin/open",
+          "argv": ["-a", "Safari", "offline/shell.html"]
         },
         "deploy": {
           "unsupported": "No deploy destination has been chosen; the site is served locally over the LAN."
@@ -163,7 +164,13 @@
       ],
       "dev": [
         "darwin"
+      ],
+      "run": [
+        "darwin"
       ]
+    },
+    "launch": {
+      "local-browser": { "verb": "run", "lane": "site" }
     },
     "targets": {},
     "toolchain": {

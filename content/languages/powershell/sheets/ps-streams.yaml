@@ -1,0 +1,36 @@
+id: ps-streams
+concept: algorithms.streaming
+scope: shared
+title: Streaming records
+group: Programming and automation
+subtitle: Consume one record at a time and keep a running aggregate.
+applies:
+  platforms:
+    - windows
+    - macos
+  runtime: PowerShell 7 (pwsh)
+  versions:
+    powershell: ">=7.0"
+sources:
+  - title: PowerShell documentation
+    url: https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_pipelines
+cards:
+  - id: example
+    kind: code
+    title: Maintain a running total
+    note: ForEach-Object can process one value at a time. Group-Object and Sort-Object buffer their input, so place selective filters before those operators.
+    prerequisites:
+      - Save as demo.ps1 in an empty directory and run pwsh -NoProfile -File ./demo.ps1.
+    code: |-
+      3, 5, 2 | ForEach-Object -Begin { $sum = 0 } -Process {
+          $sum += $_
+          $sum
+      }
+    expected: |-
+      3
+      8
+      10
+    validation:
+      status: ran
+      toolchain: PowerShell 7.7.0 on macOS arm64
+      date: 2026-11-19

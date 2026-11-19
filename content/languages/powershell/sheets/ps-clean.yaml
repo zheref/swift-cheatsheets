@@ -1,0 +1,34 @@
+id: ps-clean
+concept: practice.clean-code
+scope: shared
+title: Small commands with clear contracts
+group: Programming and automation
+subtitle: Name the input, guard the failure path and return one kind of result.
+applies:
+  platforms:
+    - windows
+    - macos
+  runtime: PowerShell 7 (pwsh)
+  versions:
+    powershell: ">=7.0"
+sources:
+  - title: PowerShell documentation
+    url: https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_functions_advanced_parameters
+cards:
+  - id: example
+    kind: code
+    title: Validate a named argument
+    note: A ValidateSet constraint names the supported modes at the call site. Keep progress output outside a function whose result is consumed as data.
+    prerequisites:
+      - Save as demo.ps1 in an empty directory and run pwsh -NoProfile -File ./demo.ps1.
+    code: |-
+      function Get-ReportMode {
+          param([ValidateSet('summary', 'detail')][string]$Mode)
+          $Mode
+      }
+      Get-ReportMode -Mode summary
+    expected: summary
+    validation:
+      status: ran
+      toolchain: PowerShell 7.7.0 on macOS arm64
+      date: 2026-11-19

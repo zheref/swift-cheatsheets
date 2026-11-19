@@ -1,0 +1,33 @@
+id: bat-accessibility
+concept: accessibility.practices
+scope: platform
+title: Readable terminal output
+group: Terminal and platform
+subtitle: Make status and progress usable in a screen reader, pipe or log.
+applies:
+  platforms:
+    - windows
+  runtime: Windows Command Prompt (cmd.exe)
+  versions:
+    windows: ">=10"
+sources:
+  - title: Windows command reference
+    url: https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/cmd
+cards:
+  - id: reference
+    kind: table
+    title: Output for people and programs
+    headers:
+      - Task
+      - Technique
+      - When to use it
+    rows:
+      - - Useful status
+        - 1>&2 echo Config missing. Supply the input path.
+        - Name the problem and remedy in text. Keep stdout for results.
+      - - Prompts
+        - if "%~1"=="" exit /b 2
+        - Permit a fully noninteractive invocation. A scheduled task cannot answer a pause prompt.
+      - - Progress
+        - echo Read 100 records
+        - Use stable, occasional lines for a log. Convey success and failure in words as well as the exit status.

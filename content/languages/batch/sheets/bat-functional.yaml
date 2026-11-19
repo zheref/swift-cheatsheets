@@ -1,0 +1,39 @@
+id: bat-functional
+concept: principles.functional
+scope: shared
+title: Pure transformations
+group: Programming and automation
+subtitle: Transform each record independently so the same input gives the same result.
+applies:
+  platforms:
+    - windows
+  runtime: Windows Command Prompt (cmd.exe)
+  versions:
+    windows: ">=10"
+sources:
+  - title: Windows command reference
+    url: https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/cmd
+cards:
+  - id: example
+    kind: code
+    title: Transform a trusted list
+    note: A subroutine receives its input by position. SETLOCAL confines its working variables. Batch has no first-class function values.
+    prerequisites:
+      - Save as demo.cmd in an empty directory and run cmd.exe /d /e:on /v:off /c demo.cmd.
+    code: |-
+      @echo off
+      for %%N in (2 4) do call :scale %%N
+      exit /b 0
+      :scale
+      setlocal
+      set /a result=%1*5 >nul
+      echo %result%
+      endlocal
+      exit /b 0
+    expected: |-
+      10
+      20
+    validation:
+      status: ran
+      toolchain: Windows 11 cmd.exe (10.0.26200.9445)
+      date: 2026-11-19

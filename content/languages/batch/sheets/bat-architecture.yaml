@@ -1,0 +1,33 @@
+id: bat-architecture
+concept: architecture.approaches
+scope: shared
+title: Structure a command-line tool
+group: Programming and automation
+subtitle: Keep argument parsing, transformations and side effects independently testable.
+applies:
+  platforms:
+    - windows
+  runtime: Windows Command Prompt (cmd.exe)
+  versions:
+    windows: ">=10"
+sources:
+  - title: Windows command reference
+    url: https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/cmd
+cards:
+  - id: reference
+    kind: table
+    title: Separate the three responsibilities
+    headers:
+      - Task
+      - Technique
+      - When to use it
+    rows:
+      - - Interface
+        - "@echo off followed by setlocal"
+        - Check argument count, choose a subcommand and display usage at the script boundary.
+      - - Transformation
+        - call :summarize
+        - Give a label one job and document its inputs, output and ERRORLEVEL. Place exit /b before the label definitions.
+      - - I/O boundary
+        - call "%~dp0export.cmd"
+        - Factor complex parsing into a helper with a file or stream contract. Check its return code before the next command.

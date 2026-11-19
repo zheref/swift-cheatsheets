@@ -40,7 +40,7 @@ beforeAll(() => {
   Element.prototype.scrollIntoView ??= function () {};
 });
 
-const CONFIGURED = ["swift", "typescript", "kotlin", "csharp"];
+const FIXTURE_LANGUAGES = ["swift", "typescript", "kotlin", "csharp"];
 const fixtures = loadSite(FIXTURE_ROOT, ["fixture"]);
 const published = loadSite(path.join(ROOT, "content"));
 const catalogOf = (id: string) => fixtures.catalogs.find((c) => c.language.id === id)!;
@@ -96,30 +96,36 @@ const typeQuery = async (value: string) => {
 const visibleCards = () => [...document.querySelectorAll<HTMLElement>("article.card")].filter((c) => !c.hidden);
 
 describe("the registry", () => {
-  it("configures Swift, TypeScript, Kotlin and C#, in that order", () => {
+  it("lists all published languages in selector order", () => {
     expect(loadRegistry(path.join(ROOT, "content")).languages).toEqual([
       { id: "swift", name: "Swift" },
       { id: "typescript", name: "TypeScript" },
       { id: "kotlin", name: "Kotlin" },
       { id: "csharp", name: "C#" },
+      { id: "powershell", name: "PowerShell" },
+      { id: "batch", name: "Windows Batch" },
+      { id: "shell", name: "macOS Shell" },
     ]);
   });
 
-  it("publishes all four, each at its own route with its own topics (zheref/swift-cheatsheets#3)", () => {
-    expect(published.catalogs.map((c) => c.language.id)).toEqual(["swift", "csharp", "kotlin", "typescript"]);
+  it("publishes each catalog, each at its own route with its own topics (zheref/swift-cheatsheets#3)", () => {
+    expect(published.catalogs.map((c) => c.language.id)).toEqual(["swift", "batch", "csharp", "kotlin", "powershell", "shell", "typescript"]);
     expect(published.languages.map(({ id, href }) => ({ id, href }))).toEqual([
       { id: "swift", href: "/" },
       { id: "typescript", href: "/typescript/" },
       { id: "kotlin", href: "/kotlin/" },
       { id: "csharp", href: "/csharp/" },
+      { id: "powershell", href: "/powershell/" },
+      { id: "batch", href: "/batch/" },
+      { id: "shell", href: "/shell/" },
     ]);
     expect(published.languages[0]!.topics.length).toBeGreaterThanOrEqual(29);
     expect(published.languages.every((l) => l.topics.length > 0)).toBe(true);
   });
 
-  it("has one fixture catalog standing in for each configured language, in the same order (SC-1)", () => {
-    expect(fixtures.languages.map((l) => l.id)).toEqual(CONFIGURED.map((id) => `${id}-fixture`));
-    expect(fixtures.languages.map((l) => catalogOf(l.id).language.codeLanguage)).toEqual(CONFIGURED);
+  it("has one fixture catalog for each fixture language, in the same order (SC-1)", () => {
+    expect(fixtures.languages.map((l) => l.id)).toEqual(FIXTURE_LANGUAGES.map((id) => `${id}-fixture`));
+    expect(fixtures.languages.map((l) => catalogOf(l.id).language.codeLanguage)).toEqual(FIXTURE_LANGUAGES);
     expect(fixtures.catalogs.every((c) => c.language.status === "fixture")).toBe(true);
   });
 
@@ -214,7 +220,7 @@ describe("switching languages, as pure functions", () => {
   });
 });
 
-describe("routes and selector for all four configured languages (SC-1)", () => {
+describe("routes and selector for the four fixture languages (SC-1)", () => {
   it("creates one page per fixture language from one template, each with the whole fixture registry", async () => {
     const createPage = vi.fn();
     const prev = process.env.CHEATSHEETS_FIXTURES;
@@ -227,23 +233,23 @@ describe("routes and selector for all four configured languages (SC-1)", () => {
     }
     const pages = createPage.mock.calls.map(([p]) => p as { path: string; context: { catalog: Catalog; languages: SiteLanguage[] } });
     const fixturePages = pages.filter((p) => p.context.catalog.language.status === "fixture");
-    expect(fixturePages.map((p) => p.path).sort()).toEqual(CONFIGURED.map((id) => `/${id}-fixture/`).sort());
+    expect(fixturePages.map((p) => p.path).sort()).toEqual(FIXTURE_LANGUAGES.map((id) => `/${id}-fixture/`).sort());
     for (const p of fixturePages) {
-      expect(p.context.languages.map((l) => l.href)).toEqual(CONFIGURED.map((id) => `/${id}-fixture/`));
+      expect(p.context.languages.map((l) => l.href)).toEqual(FIXTURE_LANGUAGES.map((id) => `/${id}-fixture/`));
     }
     // The published page's selector never links to a fixture, and no fixture page links to it.
     const swift = pages.find((p) => p.path === "/")!;
-    expect(swift.context.languages.map((l) => l.id)).toEqual(CONFIGURED);
+    expect(swift.context.languages.map((l) => l.id)).toEqual(published.languages.map((l) => l.id));
     expect(JSON.stringify(swift.context.languages)).not.toMatch(/fixture/);
     expect(fixturePages.every((p) => !p.context.languages.some((l) => l.href === "/"))).toBe(true);
   });
 
-  for (const id of CONFIGURED) {
+  for (const id of FIXTURE_LANGUAGES) {
     const fixture = `${id}-fixture`;
     it(`${fixture}: the selector names the language, marks it current, and links the other three`, async () => {
       await open(catalogOf(fixture), fixtures.languages);
       const opts = options();
-      expect(opts.map((o) => o.id)).toEqual(CONFIGURED.map((c) => `${c}-fixture`));
+      expect(opts.map((o) => o.id)).toEqual(FIXTURE_LANGUAGES.map((c) => `${c}-fixture`));
       for (const o of opts) {
         if (o.id === fixture) {
           expect(o.state).toBe("current");
@@ -546,6 +552,9 @@ describe("the selector by keyboard and screen reader (AC-5)", () => {
       ["typescript", "available", "/typescript/"],
       ["kotlin", "unavailable", null],
       ["csharp", "unavailable", null],
+      ["powershell", "available", "/powershell/"],
+      ["batch", "available", "/batch/"],
+      ["shell", "available", "/shell/"],
     ]);
     for (const li of document.querySelectorAll("#langlist [data-state='unavailable'] > span")) {
       // No link to follow, and the visible hint carries the state (aria-disabled is not allowed on a generic span).
@@ -575,7 +584,7 @@ describe("the selector by keyboard and screen reader (AC-5)", () => {
 });
 
 describe("search and highlighting are scoped to the active language (AC-1)", () => {
-  for (const id of CONFIGURED) {
+  for (const id of FIXTURE_LANGUAGES) {
     const fixture = `${id}-fixture`;
     it(`${fixture}: a query shared by all four returns only this language's cards`, async () => {
       const catalog = catalogOf(fixture);

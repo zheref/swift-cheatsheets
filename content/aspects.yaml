@@ -317,3 +317,93 @@ aspects:
           - "a feature module with a public surface and hidden internals; the enforcement mechanism"
           - "interface modules and the composition root; avoiding cycles"
           - "choosing a strategy, and the pitfalls"
+
+waivers:
+  - language: powershell
+    aspect: ui-layers
+    part: ui-declarative
+    reason: This terminal exposes streams and exit status. It has no declarative view hierarchy.
+  - language: powershell
+    aspect: ui-layers
+    part: ui-programmatic
+    reason: The terminal emulator owns the graphical view tree and layout system.
+  - language: powershell
+    aspect: styling
+    part: styling
+    reason: The terminal emulator controls fonts, graphical themes, layout and adaptive view sizing.
+  - language: powershell
+    aspect: state-management
+    part: state-unidirectional
+    reason: The shell has no application store, reducer framework or view-driven effect lifecycle.
+  - language: powershell
+    aspect: state-management
+    part: state-mvvm
+    reason: The interpreter exposes commands and streams without a view-binding or observation framework.
+  - language: powershell
+    aspect: async-flows
+    part: reactive-streams
+    reason: Command pipelines convey records and completion without a native reactive subscription framework or combining operators.
+  - language: powershell
+    aspect: video-streaming
+    part: video-streaming
+    reason: Media playback, buffering and rendition selection require an external player.
+  - language: batch
+    aspect: ui-layers
+    part: ui-declarative
+    reason: This terminal exposes streams and exit status. It has no declarative view hierarchy.
+  - language: batch
+    aspect: ui-layers
+    part: ui-programmatic
+    reason: The terminal emulator owns the graphical view tree and layout system.
+  - language: batch
+    aspect: styling
+    part: styling
+    reason: The terminal emulator controls fonts, graphical themes, layout and adaptive view sizing.
+  - language: batch
+    aspect: state-management
+    part: state-unidirectional
+    reason: The shell has no application store, reducer framework or view-driven effect lifecycle.
+  - language: batch
+    aspect: state-management
+    part: state-mvvm
+    reason: The interpreter exposes commands and streams without a view-binding or observation framework.
+  - language: batch
+    aspect: structured-concurrency
+    part: async-await
+    reason: cmd.exe can synchronously wait for one process but exposes no awaitable task, structured fan-out or cancellation scope.
+  - language: batch
+    aspect: async-flows
+    part: reactive-streams
+    reason: Command pipelines convey records and completion without a native reactive subscription framework or combining operators.
+  - language: batch
+    aspect: video-streaming
+    part: video-streaming
+    reason: Media playback, buffering and rendition selection require an external player.
+  - language: shell
+    aspect: ui-layers
+    part: ui-declarative
+    reason: This terminal exposes streams and exit status. It has no declarative view hierarchy.
+  - language: shell
+    aspect: ui-layers
+    part: ui-programmatic
+    reason: The terminal emulator owns the graphical view tree and layout system.
+  - language: shell
+    aspect: styling
+    part: styling
+    reason: The terminal emulator controls fonts, graphical themes, layout and adaptive view sizing.
+  - language: shell
+    aspect: state-management
+    part: state-unidirectional
+    reason: The shell has no application store, reducer framework or view-driven effect lifecycle.
+  - language: shell
+    aspect: state-management
+    part: state-mvvm
+    reason: The interpreter exposes commands and streams without a view-binding or observation framework.
+  - language: shell
+    aspect: async-flows
+    part: reactive-streams
+    reason: Command pipelines convey records and completion without a native reactive subscription framework or combining operators.
+  - language: shell
+    aspect: video-streaming
+    part: video-streaming
+    reason: Media playback, buffering and rendition selection require an external player.

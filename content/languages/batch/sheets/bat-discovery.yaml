@@ -1,0 +1,36 @@
+id: bat-discovery
+concept: terminal.discovery
+scope: platform
+title: Find commands and inspect the environment
+group: Terminal and platform
+subtitle: Resolve a command, look up its options and locate the working directory.
+applies:
+  platforms:
+    - windows
+  runtime: Windows Command Prompt (cmd.exe)
+  versions:
+    windows: ">=10"
+sources:
+  - title: Windows command reference
+    url: https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/where
+cards:
+  - id: reference
+    kind: table
+    title: Inspect the current session
+    headers:
+      - Task
+      - Technique
+      - When to use it
+    rows:
+      - - Find an executable
+        - where.exe curl.exe
+        - Searches the current directory and PATH. Built-ins such as cd have no executable.
+      - - Inspect options
+        - for /?
+        - Use help to list built-in commands.
+      - - Change drives
+        - cd /d "D:\work area"
+        - Switches directory and drive together. dir /b lists names.
+      - - Inspect PATH
+        - set PATH
+        - Prints variables with that prefix. setlocal confines changes to this script.

@@ -1,0 +1,33 @@
+id: sh-accessibility
+concept: accessibility.practices
+scope: platform
+title: Readable terminal output
+group: Terminal and platform
+subtitle: Make status and progress usable in a screen reader, pipe or log.
+applies:
+  platforms:
+    - macos
+  runtime: macOS /bin/sh and system utilities
+  versions:
+    macos: ">=12"
+sources:
+  - title: Apple Shell Scripting Primer
+    url: https://developer.apple.com/library/archive/documentation/OpenSource/Conceptual/ShellScripting/Introduction/Introduction.html
+cards:
+  - id: reference
+    kind: table
+    title: Output for people and programs
+    headers:
+      - Task
+      - Technique
+      - When to use it
+    rows:
+      - - Useful status
+        - printf '%s\n' 'Config missing. Supply a path.' >&2
+        - Keep diagnostics human-readable. Reserve stdout for results.
+      - - Detect a terminal
+        - "[ -t 2 ]"
+        - Animate progress only on an interactive stream. Offer a plain or quiet mode.
+      - - Prompts
+        - "[ -t 0 ]"
+        - Use flags for noninteractive input. Verify the help and error flow with VoiceOver, including when colour is disabled.

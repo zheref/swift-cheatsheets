@@ -1,0 +1,51 @@
+id: bat-pipes
+concept: terminal.pipelines
+scope: shared
+title: Pipelines and redirection
+group: Programming and automation
+subtitle: Connect commands while keeping machine-readable output separate from diagnostics.
+applies:
+  platforms:
+    - windows
+  runtime: Windows Command Prompt (cmd.exe)
+  versions:
+    windows: ">=10"
+sources:
+  - title: Windows command reference
+    url: https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/cmd
+cards:
+  - id: example
+    kind: code
+    title: Filter standard output
+    note: The pipe connects stdout to stdin. Use 1>result.txt 2>errors.txt for separate files or >all.txt 2>&1 to combine streams.
+    prerequisites:
+      - Save as demo.cmd in an empty directory and run cmd.exe /d /e:on /v:off /c demo.cmd.
+    code: |-
+      @echo off
+      >stages.txt (
+        echo ready
+        echo waiting
+      )
+      type stages.txt | findstr /x /c:"ready"
+    expected: ready
+    validation:
+      status: ran
+      toolchain: Windows 11 cmd.exe (10.0.26200.9445)
+      date: 2026-11-19
+  - id: streams
+    kind: table
+    title: Keep diagnostics out of a report
+    headers:
+      - Task
+      - Example
+      - Behaviour
+    rows:
+      - - Write to stderr
+        - 1>&2 echo Input file missing
+        - Useful when another tool consumes stdout.
+      - - Capture separately
+        - report.cmd >report.txt 2>errors.txt
+        - Each stream has its own destination. Prefix with CALL when invoking from another batch file that must continue.
+      - - Discard normal output
+        - tool.exe >nul
+        - Leaves errors visible. A successful last pipeline stage can hide an upstream failure.

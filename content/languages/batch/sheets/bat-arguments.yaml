@@ -1,0 +1,55 @@
+id: bat-arguments
+concept: terminal.arguments
+scope: language
+title: Arguments and quoting
+group: Script syntax
+subtitle: Keep a path containing spaces in one argument.
+applies:
+  platforms:
+    - windows
+  runtime: Windows Command Prompt (cmd.exe)
+  versions:
+    windows: ">=10"
+sources:
+  - title: Windows command reference
+    url: https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/call
+cards:
+  - id: example
+    kind: code
+    title: Accept a quoted path
+    note: A quoted path arrives as one argument. %~1 strips the surrounding quotes. Quote the expansion again when passing an ordinary Windows path onward.
+    prerequisites:
+      - Save as demo.cmd in an empty directory and run cmd.exe /d /e:on /v:off /c demo.cmd.
+    code: |-
+      @echo off
+      setlocal DisableDelayedExpansion
+      call :filename "C:\Quarter one\report one.txt"
+      exit /b %errorlevel%
+      :filename
+      if "%~1"=="" exit /b 2
+      for %%F in ("%~1") do echo "%%~nxF"
+    expected: '"report one.txt"'
+    validation:
+      status: ran
+      toolchain: Windows 11 cmd.exe (10.0.26200.9445)
+      date: 2026-11-19
+  - id: expansion
+    kind: table
+    title: When batch expands a value
+    headers:
+      - Task
+      - Example
+      - Behaviour
+    rows:
+      - - Immediate
+        - "%count%"
+        - A parenthesized block expands percent variables when cmd parses the block. A later assignment inside it may appear invisible.
+      - - Delayed
+        - setlocal EnableDelayedExpansion
+        - Use !count! for the current iteration. Disable delayed expansion while handling filenames that can contain an exclamation mark.
+      - - Literal percent
+        - echo 50%%
+        - A batch file needs %% to print a percent sign. Interactive cmd uses a single percent.
+      - - Forward the original arguments
+        - "%*"
+        - Preserves the original argument text, even after SHIFT. Batch reparses command lines, so this is suitable for trusted arguments.

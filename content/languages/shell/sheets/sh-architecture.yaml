@@ -1,0 +1,33 @@
+id: sh-architecture
+concept: architecture.approaches
+scope: shared
+title: Structure a command-line tool
+group: Programming and automation
+subtitle: Keep argument parsing, transformations and side effects independently testable.
+applies:
+  platforms:
+    - macos
+  runtime: macOS /bin/sh and system utilities
+  versions:
+    macos: ">=12"
+sources:
+  - title: Apple Shell Scripting Primer
+    url: https://developer.apple.com/library/archive/documentation/OpenSource/Conceptual/ShellScripting/Introduction/Introduction.html
+cards:
+  - id: reference
+    kind: table
+    title: Separate the three responsibilities
+    headers:
+      - Task
+      - Technique
+      - When to use it
+    rows:
+      - - Interface
+        - getopts 'o:' option
+        - Use getopts for short options, then shift "$((OPTIND - 1))" to reach positional arguments.
+      - - Transformation
+        - summarize <input.txt
+        - Write a filter that reads stdin and emits result records. Test it against a short fixture.
+      - - I/O boundary
+        - main "$@"
+        - Keep input selection and final status in main. Load reusable definitions from a separate trusted file.

@@ -38,6 +38,16 @@ function legacyHighlight(src: string): { cls: string | null; text: string }[] {
 }
 
 describe("highlighter", () => {
+  it("respects terminal quoting, comments and keyword case", () => {
+    const catalogs = loadCatalogs(path.join(ROOT, "content"));
+    const tokens = (id: string, code: string) => tokenize(code, catalogs.find((c) => c.language.id === id)!.language.highlight).filter((t) => t.cls);
+    expect(tokens("shell", "printf '#name' $# # count")).toEqual([{ cls: "str", text: "'#name'" }, { cls: "com", text: "# count" }]);
+    expect(tokens("shell", "echo x\\ #tag # comment")).toEqual([{ cls: "com", text: "# comment" }]);
+    expect(tokens("shell", "echo x\\\n#tag # comment")).toEqual([{ cls: "com", text: "# comment" }]);
+    expect(tokens("powershell", "IF ('it''s #ok')")).toEqual([{ cls: "kw", text: "IF" }, { cls: "str", text: "'it''s #ok'" }]);
+    expect(tokens("batch", "@REM a comment\nECHO ready")).toEqual([{ cls: "com", text: "@REM a comment" }, { cls: "kw", text: "ECHO" }]);
+  });
+
   it("tokenizes every Swift code block exactly like the legacy highlighter", () => {
     const { language, sheets } = swiftCatalog();
     let blocks = 0;
@@ -114,7 +124,7 @@ describe("loader", () => {
   });
 
   it("loads only published catalogs by default", () => {
-    expect(loadCatalogs(path.join(ROOT, "content")).map((c) => c.language.id)).toEqual(["swift", "csharp", "kotlin", "typescript"]);
+    expect(loadCatalogs(path.join(ROOT, "content")).map((c) => c.language.id)).toEqual(["swift", "batch", "csharp", "kotlin", "powershell", "shell", "typescript"]);
     expect(loadCatalogs(FIXTURE_ROOT)).toEqual([]);
     expect(loadCatalogs(FIXTURE_ROOT, ["fixture"]).map((c) => c.language.id)).toEqual([
       "csharp-fixture",

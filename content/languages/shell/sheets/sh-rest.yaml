@@ -1,0 +1,35 @@
+id: sh-rest
+concept: networking.rest
+scope: platform
+title: HTTP requests from a terminal
+group: Terminal and platform
+subtitle: Bound network waits and keep the response body separate from errors.
+applies:
+  platforms:
+    - macos
+  runtime: macOS /bin/sh and system utilities
+  versions:
+    macos: ">=12"
+sources:
+  - title: Apple Shell Scripting Primer
+    url: https://developer.apple.com/library/archive/documentation/OpenSource/Conceptual/ShellScripting/Introduction/Introduction.html
+  - title: curl command-line manual
+    url: https://curl.se/docs/manpage.html
+cards:
+  - id: reference
+    kind: table
+    title: Make a request
+    headers:
+      - Task
+      - Technique
+      - When to use it
+    rows:
+      - - Fetch JSON
+        - curl -fsS --max-time 10 -o response.json "$url"
+        - Set url to an HTTPS endpoint. Check the exit status before decoding the file.
+      - - Post a JSON file
+        - "curl -fsS --max-time 10 -H 'Content-Type: application/json' --data-binary @payload.json \"$url\""
+        - Preserve file bytes and let curl select POST. Validate the response separately.
+      - - Retry
+        - curl --retry 2 --retry-max-time 20
+        - Apply to repeatable requests. A retry after a timed-out write can duplicate its effect.

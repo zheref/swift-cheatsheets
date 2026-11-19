@@ -1,0 +1,30 @@
+id: bat-strings
+concept: strings.operations
+scope: shared
+title: String operations and pattern matching
+group: Programming and automation
+subtitle: Extract a file stem and distinguish literal, wildcard and regular-expression matching.
+applies:
+  platforms:
+    - windows
+  runtime: Windows Command Prompt (cmd.exe)
+  versions:
+    windows: ">=10"
+sources:
+  - title: Windows command reference
+    url: https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/for
+cards:
+  - id: example
+    kind: code
+    title: Separate the name and extension
+    note: Use %%~nF for the stem and %%~xF for the last extension. FINDSTR /l searches literal text, while /r uses its limited regular expression syntax.
+    prerequisites:
+      - Save as demo.cmd in an empty directory and run cmd.exe /d /e:on /v:off /c demo.cmd.
+    code: |-
+      @echo off
+      for %%F in ("quarter.one.csv") do echo %%~nF %%~xF
+    expected: quarter.one .csv
+    validation:
+      status: ran
+      toolchain: Windows 11 cmd.exe (10.0.26200.9445)
+      date: 2026-11-19

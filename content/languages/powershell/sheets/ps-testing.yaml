@@ -1,0 +1,32 @@
+id: ps-testing
+concept: testing.approaches
+scope: shared
+title: Test a script contract
+group: Programming and automation
+subtitle: Assert data and failure status using a repeatable fixture.
+applies:
+  platforms:
+    - windows
+    - macos
+  runtime: PowerShell 7 (pwsh)
+  versions:
+    powershell: ">=7.0"
+sources:
+  - title: PowerShell documentation
+    url: https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_throw
+cards:
+  - id: example
+    kind: code
+    title: Assert exact output
+    note: Throw on a mismatch so an unattended run reports failure. Pester can promote this assertion to a named test and mock commands at the filesystem boundary.
+    prerequisites:
+      - Save as demo.ps1 in an empty directory and run pwsh -NoProfile -File ./demo.ps1.
+    code: |-
+      function Get-Label([string]$Name) { $Name.Trim().ToUpperInvariant() }
+      if ((Get-Label ' test ') -cne 'TEST') { throw 'unexpected label' }
+      'pass'
+    expected: pass
+    validation:
+      status: ran
+      toolchain: PowerShell 7.7.0 on macOS arm64
+      date: 2026-11-19

@@ -2,6 +2,7 @@
   "$schema": "nen.workflow/v0.1",
   "$comment": "Hand-written at adoption on 2026-11-10 (nen scaffold init had no lane to write it from). Since zheref/swift-cheatsheets#1 (2026-11-11) the site is Gatsby + TypeScript: the iteration checks are `build` (Gatsby site + offline index.html) then `lint` (tsc and scripts/verify.mts on both built pages), and `test` is the vitest suite, required. review.scopes starts from Hatsu's own rows cut down to what this repository has: code (every path), security (CI workflows, scripts, the serve scripts, the contract) and ui (the shared components, the adapters, the diagrams and the generated page). Values below marked with a $<key> sibling were written at their catalogue default by config_values.sh fill and are the repository's own once set.",
   "branch": { "template": "{model}/{persona}/{descriptor}", "base": "main" },
+  "launch": { "default": "local-browser", "fallback": null },
   "iteration": { "checks": ["build", "lint"], "lane": "site" },
   "tests": { "required": ["test"], "extra": [] },
   "commits": {

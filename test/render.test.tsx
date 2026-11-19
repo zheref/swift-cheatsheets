@@ -262,17 +262,23 @@ describe("offline artifact opened from disk (AC-5)", () => {
     expect([...d.querySelectorAll("#side a")].map((a) => a.getAttribute("href"))).toEqual(
       swiftCatalog().sheets.map((s) => `#${s.id}`),
     );
-    // The selector: Swift current, the other three linking to their offline files beside it.
+    // The selector: Swift current, the others linking to their offline files beside it.
     expect([...d.querySelectorAll("#langlist > li")].map((li) => [li.getAttribute("data-lang-option"), li.getAttribute("data-state")])).toEqual([
       ["swift", "current"],
       ["typescript", "available"],
       ["kotlin", "available"],
       ["csharp", "available"],
+      ["powershell", "available"],
+      ["batch", "available"],
+      ["shell", "available"],
     ]);
     expect([...d.querySelectorAll("#langlist a")].map((a) => a.getAttribute("href")!.replace(/#.*$/, ""))).toEqual([
       "offline/typescript.html",
       "offline/kotlin.html",
       "offline/csharp.html",
+      "offline/powershell.html",
+      "offline/batch.html",
+      "offline/shell.html",
     ]);
     const toggle = d.getElementById("lang-toggle")!;
     toggle.click();
