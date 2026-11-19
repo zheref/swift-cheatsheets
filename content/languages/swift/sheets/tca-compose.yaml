@@ -198,7 +198,7 @@ cards:
   - id: common-tca-pitfalls
     kind: table
     title: Common TCA pitfalls
-    note: The things interviewers poke at.
+    note: The tradeoffs to examine during code review.
     headers:
       - Symptom
       - Cause

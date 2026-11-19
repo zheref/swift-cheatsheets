@@ -3,6 +3,7 @@ import { CodeBlock as PrimitiveCodeBlock } from "../bankai";
 import { tokenize } from "../content/highlight";
 import { parseInline } from "../content/inline";
 import type { Highlight, Tone } from "../content/schema";
+import { REFERENCE_HREF } from "../content/ids";
 
 /** Rule and table text: `code` spans and **bold**, every character escaped by React. */
 export const InlineText = memo(function InlineText({ text }: { text: string }) {
@@ -10,6 +11,10 @@ export const InlineText = memo(function InlineText({ text }: { text: string }) {
     <>
       {parseInline(text).map((seg, i) => {
         const inner = seg.bold ? <b>{seg.text}</b> : seg.text;
+        const href = seg.text.replace(/^index\.html(?=#)/, "");
+        if (seg.code && seg.text.startsWith("index.html#") && REFERENCE_HREF.test(href)) {
+          return <a className="reference-link" href={href} key={i}><code className="inline">{inner}</code></a>;
+        }
         return seg.code ? (
           <code className="inline" key={i}>
             {inner}

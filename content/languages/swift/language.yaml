@@ -1,6 +1,6 @@
 id: swift
 name: Swift
-title: Swift Interview Cheat Sheets
+title: Swift Reference Sheets
 route: /
 status: published
 description: Dense Swift and Apple-platform cheat sheets — SwiftUI, UIKit, TCA, MVVM, concurrency, Combine, RxSwift, networking, video, security, accessibility, localization, collections, strings, principles, testing, algorithms and I/O — for a second screen while you code.
@@ -96,7 +96,6 @@ highlight:
 applies:
   runtime: Swift toolchain
 sheets:
-  - project-bluebird
   - swiftui-state
   - swiftui-views
   - swiftui-uikit
@@ -139,3 +138,4 @@ sheets:
   - networking-protocols
   - video-streaming
   - core-bluetooth
+  - project-bluebird

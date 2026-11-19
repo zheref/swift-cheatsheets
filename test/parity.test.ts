@@ -8,8 +8,8 @@
  *
  * The catalog grows by ADDING sheets among the originals (content/aspects.yaml asks every catalog for topics
  * the legacy page never had). So parity is held on the 29 legacy sheets: each is still
- * there, byte for byte, in the same relative order — and nothing new is checked against
- * an inventory that never contained it.
+ * there in the same relative order, with the approved editorial wording recorded in the
+ * inventory. Code and anchors retain their original values.
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -35,7 +35,7 @@ interface Legacy {
 }
 
 const legacy = JSON.parse(fs.readFileSync(path.join(ROOT, "test/fixtures/legacy-inventory.json"), "utf8")) as Legacy;
-const LEGACY_KIND: Record<Card["kind"], string> = { code: "code", compare: "cmp", rules: "rules", table: "table", diagram: "svg" };
+const LEGACY_KIND: Record<Card["kind"], string> = { code: "code", compare: "cmp", rules: "rules", table: "table", diagram: "svg", navigation: "navigation" };
 const codeBlocks = (c: Card) => (c.kind === "code" ? [c.code] : c.kind === "compare" ? c.columns.map((k) => k.code) : []);
 
 describe("Swift catalog parity with the pre-migration page (AC-1, AC-2, SC-1)", () => {

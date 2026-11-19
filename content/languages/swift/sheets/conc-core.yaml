@@ -30,7 +30,7 @@ cards:
   - id: structured-vs-unstructured
     kind: rules
     title: Structured vs unstructured
-    note: Interviewers love this distinction.
+    note: Choose the isolation boundary before starting concurrent work.
     items:
       - tone: good
         text: "**Structured**: `async let`, `TaskGroup`. Child tasks cannot outlive the scope; cancellation and errors propagate automatically."

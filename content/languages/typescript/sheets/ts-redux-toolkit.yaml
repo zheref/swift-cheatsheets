@@ -660,7 +660,7 @@ cards:
   - id: rtk-pitfalls
     kind: table
     title: Common Redux Toolkit pitfalls
-    note: The things code review and interviewers poke at.
+    note: The tradeoffs to examine during code review.
     headers: [Symptom, Cause, Fix]
     rows:
       - - "\"A non-serializable value was detected\""

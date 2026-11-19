@@ -467,7 +467,7 @@ cards:
     validation: *ran
   - id: related-principles
     kind: rules
-    title: Related principles an interviewer may also ask
+    title: Related design principles
     note: Each one is a trade-off; say when you would break it.
     items:
       - tone: neutral

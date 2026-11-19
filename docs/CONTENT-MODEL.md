@@ -71,6 +71,7 @@ are scoped to the active language by construction.
 | `concept` | language-neutral concept ID shared by equivalent sheets across languages, e.g. `concurrency.isolation` |
 | `scope` | `shared` (a concept other languages also have), `language` (a feature of this language), `platform` (tied to a framework or OS) |
 | `title`, `group`, `subtitle` | heading, sidebar group (sheets sharing a group must be adjacent), one-line summary |
+| `project` | optional `true` for a practical project with a compact navigation grid, listed after all topic sheets |
 | `applies`, `sources` | optional applicability and citations for the whole sheet |
 | `cards` | at least one card |
 
@@ -86,8 +87,14 @@ Common fields: `id` (stable, unique in its sheet; the card's global id and DOM a
 | `rules` | `items: [{tone, text}]` | colour-coded guidance; text supports `` `code` `` and `**bold**` |
 | `table` | `headers`, `rows` (one cell per header) | comparisons; cells support the same inline markup |
 | `diagram` | `svg`: a file in `diagrams/` | an infographic, 940 units wide, coloured by theme variables; checked against an element/attribute allowlist, referencing only `url(#id)` inside itself |
+| `navigation` | `links: [{label, href, icon?}]`, optional `icon` and `layout` | compact reference cards, with `layout: overview` for a full-width shortcut grid |
 
 `tone` is one of `good`, `bad`, `modern`, `legacy`, `neutral`.
+
+Navigation links use local fragments such as `#networking--typed-get-and-post`. The loader checks
+every destination against the catalog. They work on both the hosted page and the offline file.
+References written as inline code with `index.html#sheet--card` also become
+clickable in prose. Project titles use their project names under the final `Projects` group.
 
 ## Applicability and sources
 

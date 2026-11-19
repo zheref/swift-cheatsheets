@@ -10,7 +10,7 @@
  * primitives (src/bankai/); this page composes them around one catalog.
  */
 import { chakra, Grid, Heading, Text } from "@chakra-ui/react";
-import { memo, useCallback, useDeferredValue, useEffect, useMemo, useState } from "react";
+import { memo, useCallback, useDeferredValue, useEffect, useMemo, useState, type MouseEvent } from "react";
 import { AppShell, colorVar, media, radius, SearchField, ThemeToggle, TopicNav } from "../bankai";
 import { soleLanguage } from "../content/languages";
 import type { Catalog, Highlight, Sheet, SiteLanguage } from "../content/schema";
@@ -37,8 +37,9 @@ const SheetSection = memo(function SheetSection({
 }) {
   return (
     <chakra.section
-      className="sheet"
+      className={`sheet${sheet.project ? " project" : ""}`}
       id={sheet.id}
+      tabIndex={-1}
       data-group={sheet.group}
       data-concept={sheet.concept}
       data-scope={sheet.scope}
@@ -60,9 +61,9 @@ const SheetSection = memo(function SheetSection({
       </chakra.header>
       <Grid
         className="grid"
-        templateColumns={`repeat(auto-fill, minmax(${pageSize.cardMin}, 1fr))`}
+        templateColumns={`repeat(auto-fill, minmax(min(${sheet.project ? pageSize.navigationMin : pageSize.cardMin}, 100%), 1fr))`}
         gap="3"
-        alignItems="start"
+        alignItems={sheet.project ? "stretch" : "start"}
         css={{ [NARROW]: { gridTemplateColumns: "1fr" } }}
       >
         {sheet.cards.map((c) => (
@@ -100,11 +101,28 @@ export function CatalogPage({ catalog, languages: given }: { catalog: Catalog; l
   const index = useMemo(() => buildIndex(catalog), [catalog]);
   const [query, setQuery] = useState("");
   const deferred = useDeferredValue(query);
-  // A topic chosen from the absence notice: the search is cleared first, and the address
-  // moves to the sheet only once it is shown again (a hidden section cannot be scrolled to).
+  // Clear search before following a local reference so the destination is visible.
   const [chosen, setChosen] = useState<string | null>(null);
-  const result = useMemo(() => search(index, deferred), [index, deferred]);
   const [navOpen, setNavOpen] = useState(false);
+  const [returnTo, setReturnTo] = useState<{ href: string; label: string } | null>(null);
+  const followReference = useCallback((event: MouseEvent<HTMLElement>) => {
+    if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+    const link = (event.target as Element).closest<HTMLAnchorElement>('a[href^="#"]');
+    if (!link) return;
+    const href = link.getAttribute("href")!;
+    if (!document.getElementById(href.slice(1))) return;
+    event.preventDefault();
+    const origin = link.closest<HTMLElement>(".project article[data-kind=navigation]");
+    if (origin) {
+      setReturnTo({ href: `#${origin.id}`, label: origin.closest("section")!.querySelector("h2")!.textContent! });
+    } else if (href === returnTo?.href) {
+      setReturnTo(null);
+    }
+    setQuery("");
+    setChosen(href.slice(1));
+    setNavOpen(false);
+  }, [returnTo]);
+  const result = useMemo(() => search(index, deferred), [index, deferred]);
   const ids = useMemo(() => sheets.map((s) => s.id), [sheets]);
   const active = useActiveSection(ids);
   const conceptAt = useCallback(() => {
@@ -125,6 +143,9 @@ export function CatalogPage({ catalog, languages: given }: { catalog: Catalog; l
   useEffect(() => {
     if (chosen === null || deferred !== "") return;
     window.location.hash = chosen;
+    const target = document.getElementById(chosen);
+    target?.scrollIntoView();
+    target?.focus({ preventScroll: true });
     setChosen(null);
   }, [chosen, deferred]);
   useEffect(() => {
@@ -143,7 +164,7 @@ export function CatalogPage({ catalog, languages: given }: { catalog: Catalog; l
       navLabel={`${language.name} sheets`}
       menuLabel="Show sheet navigation"
       rootProps={{ "data-lang": language.id }}
-      nav={<Sidebar catalog={catalog} active={active} onNavigate={closeNav} />}
+      nav={<div onClick={followReference}><Sidebar catalog={catalog} active={active} onNavigate={closeNav} /></div>}
       bar={
         <>
           <SearchField
@@ -155,6 +176,12 @@ export function CatalogPage({ catalog, languages: given }: { catalog: Catalog; l
           />
           <LanguageSelector languages={languages} current={language.id} conceptAt={conceptAt} />
           <ThemeToggle id="theme" scheme={mode} onToggle={toggleTheme} />
+          {returnTo ? (
+            <nav className="project-return" aria-label="Return to project" onClick={followReference}>
+              <a href={returnTo.href}><span aria-hidden="true">←</span> {returnTo.label}</a>
+              <span>Return to your topic</span>
+            </nav>
+          ) : null}
         </>
       }
     >
@@ -174,16 +201,18 @@ export function CatalogPage({ catalog, languages: given }: { catalog: Catalog; l
           No {language.name} card matches. Search covers this language only — try other words, or switch language.
         </Text>
       ) : null}
-      {sheets.map((s) => (
-        <SheetSection
-          key={s.id}
-          sheet={s}
-          highlight={language.highlight}
-          lang={language.codeLanguage}
-          visibleCards={result.visibleCards}
-          hidden={result.visibleSheets !== null && !result.visibleSheets.has(s.id)}
-        />
-      ))}
+      <div onClick={followReference}>
+        {sheets.map((s) => (
+          <SheetSection
+            key={s.id}
+            sheet={s}
+            highlight={language.highlight}
+            lang={language.codeLanguage}
+            visibleCards={result.visibleCards}
+            hidden={result.visibleSheets !== null && !result.visibleSheets.has(s.id)}
+          />
+        ))}
+      </div>
     </AppShell>
   );
 }

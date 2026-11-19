@@ -290,7 +290,7 @@ aspects:
         covers:
           - "each of the five principles as a before and after in the language's own idiom"
           - "the one-line version of each"
-          - "related principles an interviewer may also ask (DRY, KISS, YAGNI, composition over inheritance, Law of Demeter)"
+          - "related principles to apply in practice (DRY, KISS, YAGNI, composition over inheritance, Law of Demeter)"
 
   - id: functional-programming
     title: Functional programming capabilities

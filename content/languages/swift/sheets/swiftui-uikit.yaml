@@ -168,7 +168,7 @@ cards:
       cell.contentConfiguration = UIHostingConfiguration { RowView(item: item) }
   - id: interview-talking-points
     kind: rules
-    title: Interview talking points
+    title: Key concepts
     note: ""
     items:
       - tone: modern

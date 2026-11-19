@@ -219,7 +219,7 @@ cards:
   - id: what-re-runs
     kind: table
     title: What re-runs on an update
-    note: The one question that separates the three models — and the one interviewers ask.
+    note: The key distinction between the three UI models.
     headers: [On…, jQuery, React, SolidJS]
     rows:
       - ["ticking one task", "your `change` handler: the task's data and the count text", "`TaskScreen` re-renders, every row is re-rendered and diffed, one checkbox and the count are patched", "that row's `checked` binding and the count text node"]
@@ -369,7 +369,7 @@ cards:
       jsx: react
   - id: interview-talking-points
     kind: rules
-    title: Interview talking points
+    title: Key concepts
     note: The answers to "how do jQuery, React and Solid differ?" — one breath each.
     items:
       - tone: legacy

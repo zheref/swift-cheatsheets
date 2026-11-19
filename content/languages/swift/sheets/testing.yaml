@@ -248,4 +248,4 @@ cards:
       - tone: bad
         text: Chasing 100% coverage; coverage is a smoke detector, not a goal.
       - tone: neutral
-        text: "TDD in an interview: state the cycle (red → green → refactor) and *actually* write the failing test first if asked."
+        text: "TDD follows the cycle red → green → refactor. Write the failing test first."

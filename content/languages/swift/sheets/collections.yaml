@@ -23,7 +23,7 @@ cards:
   - id: costs-per-type
     kind: table
     title: Costs, per type
-    note: The table interviewers and profilers both care about.
+    note: The costs that matter when choosing and profiling a collection.
     headers:
       - Type
       - Lookup

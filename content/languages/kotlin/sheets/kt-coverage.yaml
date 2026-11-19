@@ -22,7 +22,6 @@ cards:
     note: In the Swift catalog's reading order.
     headers: [Swift topic, Disposition, Here, Why]
     rows:
-      - ["Interview: Project Bluebird", "no counterpart", "—", "The interview walkthrough assembles SwiftUI and iOS platform APIs into a single exercise."]
       - ["SwiftUI — State & Data Flow", "equivalent", "Jetpack Compose — State & Data Flow", "the same decision: local state, hoisting, an observable model, environment and view-scoped tasks"]
       - ["SwiftUI — Views, Layout & Animation", "equivalent", "Jetpack Compose — Layout, Lists, Navigation & Animation", "composables and modifier order, lazy lists with keys, Scaffold, navigation, animation and the rules that keep recomposition cheap"]
       - ["SwiftUI vs UIKit", "equivalent", "Compose vs Views", "the same screen in Compose and in Android Views, interop in both directions and a migration plan"]
@@ -65,3 +64,4 @@ cards:
       - ["Networking — SOAP, gRPC & GraphQL", "equivalent", "Networking — SOAP, gRPC & GraphQL", "the same three protocols from a Kotlin client, plus WebSockets, and when each is the right one"]
       - ["Video Streaming — HLS & AVPlayer", "equivalent", "Video Streaming — Media3 ExoPlayer, HLS & DASH", "adaptive playback with Media3, track selection, live and DRM, errors, lifecycle and downloads"]
       - ["Core Bluetooth (BLE)", "no counterpart", "—", "an Apple framework; Android's `android.bluetooth.le` is the counterpart and is not written up yet"]
+      - ["Project Bluebird", "no counterpart", "—", "The project walkthrough assembles SwiftUI and iOS platform APIs into a single exercise."]
