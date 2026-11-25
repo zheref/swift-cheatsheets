@@ -110,7 +110,12 @@ describe("loader", () => {
     expect(broken((dir) => {
       fs.appendFileSync(path.join(dir, "sheets/fixture-collections.yaml"), "\nproject: true\n");
     })).toContain("project sheets must follow all topic sheets");
-    expect(swiftCatalog().sheets.at(-1)).toMatchObject({ id: "project-bluebird", title: "Project Bluebird", project: true });
+    const { sheets } = swiftCatalog();
+    const firstProject = sheets.findIndex((sheet) => sheet.project);
+    expect(sheets.slice(firstProject)).toMatchObject([
+      { id: "project-bluebird", title: "Project Bluebird", group: "Projects", project: true },
+      { id: "project-osprey", title: "Project Osprey", group: "Projects", project: true },
+    ]);
   });
 
   it("loads only published catalogs by default", () => {

@@ -68,3 +68,4 @@ cards:
       - ["Video Streaming — HLS & AVPlayer", "equivalent", "Video Streaming — Media3 ExoPlayer, HLS & DASH", "adaptive playback with Media3, track selection, live and DRM, errors, lifecycle and downloads"]
       - ["Core Bluetooth (BLE)", "no counterpart", "—", "an Apple framework; Android's `android.bluetooth.le` is the counterpart and is not written up yet"]
       - ["Project Bluebird", "no counterpart", "—", "The project walkthrough assembles SwiftUI and iOS platform APIs into a single exercise."]
+      - ["Project Osprey", "no counterpart", "—", "This iOS release exercise depends on TestFlight, Xcode and App Store Connect."]

@@ -70,7 +70,10 @@ describe("Swift page: static render then hydration (AC-3)", () => {
   it("opens project references through a search filter and returns to the originating topic", async () => {
     await hydrate(swiftCatalog());
     expect(document.querySelector("#side a[href='#project-bluebird']")!.textContent).toBe("Project Bluebird");
-    expect([...document.querySelectorAll("#side a[href^='#']")].at(-1)!.getAttribute("href")).toBe("#project-bluebird");
+    const lastGroup = [...document.querySelectorAll("#side .navgroup")].at(-1)!;
+    expect(lastGroup.textContent).toBe("Projects");
+    const projectLinks = document.querySelectorAll<HTMLAnchorElement>("#side .navgroup:last-of-type ~ a");
+    expect([...projectLinks].map((link) => link.hash)).toEqual(["#project-bluebird", "#project-osprey"]);
     const icon = document.querySelector("#project-bluebird--image-cache .reference-icon")!;
     expect(icon.getAttribute("aria-hidden")).toBe("true");
     await typeQuery("bluebird");

@@ -68,3 +68,4 @@ cards:
       - ["Video Streaming — HLS & AVPlayer", "equivalent", "Video Streaming — HLS, DASH & Media Source", "adaptive playback with hls.js and dash.js over Media Source Extensions, quality, captions, errors and DRM"]
       - ["Core Bluetooth (BLE)", "no counterpart", "—", "an Apple framework; Web Bluetooth exists only in Chromium-based browsers and is not covered"]
       - ["Project Bluebird", "no counterpart", "—", "The project walkthrough assembles SwiftUI and iOS platform APIs into a single exercise."]
+      - ["Project Osprey", "no counterpart", "—", "This iOS release exercise depends on TestFlight, Xcode and App Store Connect."]

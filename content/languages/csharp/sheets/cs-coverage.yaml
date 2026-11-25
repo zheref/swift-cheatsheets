@@ -68,3 +68,4 @@ cards:
       - ["Video Streaming — HLS & AVPlayer", "equivalent", "Video Streaming — HLS, DASH & MediaElement", "which player plays which protocol on each .NET UI stack, renditions, errors, live, DRM and lifecycle"]
       - ["Core Bluetooth (BLE)", "no counterpart", "—", "an Apple framework; Windows has `Windows.Devices.Bluetooth`, not written up yet"]
       - ["Project Bluebird", "no counterpart", "—", "The project walkthrough assembles SwiftUI and iOS platform APIs into a single exercise."]
+      - ["Project Osprey", "no counterpart", "—", "This iOS release exercise depends on TestFlight, Xcode and App Store Connect."]
