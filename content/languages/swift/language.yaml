@@ -133,6 +133,7 @@ sheets:
   - ai-workflows
   - release-engineering
   - ci-cd
+  - build-configuration
   - algorithms
   - streams
   - files
