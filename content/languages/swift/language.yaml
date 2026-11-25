@@ -132,6 +132,7 @@ sheets:
   - localization
   - ai-workflows
   - release-engineering
+  - ci-cd
   - algorithms
   - streams
   - files

@@ -1,0 +1,365 @@
+id: ci-cd
+concept: ios.ci-cd
+scope: platform
+title: CI/CD for iOS
+group: iOS Practice
+subtitle: Choose a lane by the decision it supports. Keep distribution credentials on trusted release infrastructure.
+cards:
+  - id: four-lanes
+    kind: table
+    title: Four lanes from PR to release
+    note: Promote the beta build that passed regression. Record its commit, archive and store build number so the
+      release job can select it.
+    headers:
+      - Lane / trigger
+      - Work and evidence
+      - Distribution signing
+    rows:
+      - - PR · proposed change
+        - Build changed schemes and dependents, run unit tests and checkout smoke on a simulator. Cancel
+          superseded work.
+        - None. Use an ephemeral runner without store secrets.
+      - - Main · integrated commit
+        - Run integration tests and a clean simulator build. Keep results by commit.
+        - None by default. A separately approved beta job may archive.
+      - - Nightly · schedule
+        - Broaden the device / OS matrix. Run upgrade, UI, performance and quarantined tests.
+        - Device tests may use development signing. Keep distribution assets out.
+      - - Release · protected release ref
+        - Human approves a candidate. Archive once for beta, validate it, then approve promotion of its exact
+          version and build.
+        - Trusted macOS archive job signs. Submission of the selected build needs store API access only.
+  - id: platforms-compared
+    kind: table
+    title: Choose the CI operating model
+    note: Start with who maintains the Macs, who can sign and how easily a lane can move. Compare the cost of
+      queueing and maintenance alongside usage.
+    headers:
+      - Platform / maintenance
+      - Signing / caching
+      - Cost / portability
+    rows:
+      - - Xcode Cloud · managed Xcode workflows
+        - Managed signing and build caching. Put custom hooks in ci_scripts.
+        - Membership includes 25 compute hours/month. Additional subscriptions buy capacity. Workflows use
+          Xcode integration.
+      - - GitHub Actions · hosted macOS or self-hosted Macs
+        - Import assets on a protected runner. Key a dependency cache to the lockfile.
+        - Hosted usage depends on plan and runner. Self-hosted Macs need capacity and patching. Workflow YAML
+          and actions are service-specific.
+      - - Buildkite · hosted or own agents
+        - Choose managed Mac capacity or isolate your own signing agent. Use cache volumes or agent-local
+          dependencies.
+        - Plan and compute costs depend on hosting. Shell steps move easily, queues and plugins need mapping.
+      - - Bitrise · managed mobile stacks
+        - Use signing steps with managed profiles or uploaded assets. Restore dependency caches on matching
+          stacks.
+        - Plan and capacity determine spend. Workflow steps reduce setup and need equivalents when migrating.
+      - - Jenkins · operate controller and Mac agents
+        - Scope credential bindings to trusted jobs. Maintain agent keychains and your own cache lifecycle.
+        - Budget infrastructure, upgrades and operator time. Jenkinsfile and plugin choices shape migration.
+      - - Azure Pipelines · hosted or self-hosted agents
+        - Install certificate and profile from secure files. Use a keyed pipeline cache.
+        - Parallel-job capacity and agent hosting drive cost. YAML tasks and service connections need mapping.
+    sources:
+      - title: Xcode Cloud overview · retrieved 2026-11-25
+        url: https://developer.apple.com/xcode-cloud/
+      - title: Actions runner billing · retrieved 2026-11-25
+        url: https://docs.github.com/en/billing/concepts/product-billing/github-actions
+      - title: Signing on macOS runners · retrieved 2026-11-25
+        url: https://docs.github.com/en/actions/how-tos/deploy/deploy-to-third-party-platforms/sign-xcode-applications
+      - title: Buildkite plans and compute · retrieved 2026-11-25
+        url: https://buildkite.com/pricing/
+      - title: Agent cache volumes · retrieved 2026-11-25
+        url: https://buildkite.com/docs/agent/buildkite-hosted/cache-volumes
+      - title: Bitrise plans · retrieved 2026-11-25
+        url: https://bitrise.io/pricing
+      - title: Mobile signing steps · retrieved 2026-11-25
+        url: https://docs.bitrise.io/en/bitrise-ci/code-signing/ios-code-signing/managing-ios-code-signing-files---automatic-provisioning
+      - title: Jenkins agents and maintenance · retrieved 2026-11-25
+        url: https://www.jenkins.io/doc/book/scaling/architecting-for-scale/
+      - title: Pipeline capacity · retrieved 2026-11-25
+        url: https://learn.microsoft.com/en-us/azure/devops/pipelines/licensing/concurrent-jobs
+      - title: Mobile app signing · retrieved 2026-11-25
+        url: https://learn.microsoft.com/en-us/azure/devops/pipelines/apps/mobile/app-signing
+  - id: fastfile-lanes
+    kind: code
+    title: Fastfile · test, upload, promote
+    note: The beta lane owns the archive. The release lane submits the tested store build after a human approves
+      its version and number.
+    applies:
+      platforms:
+        - macos
+      runtime: a Fastfile in an iOS repository
+    prerequisites:
+      - A pinned Gemfile.lock, a shared Shop Demo scheme, configured match storage and a protected upload job
+        with CI_BUILD_NUMBER.
+      - Provide store key fields and match credentials from the secret store. Bind APP_VERSION and
+        APPROVED_BUILD to the approved candidate record.
+    code: |-
+      lane :test do
+        run_tests(scheme: "Shop Demo", cloned_source_packages_path: ".spm")
+      end
+
+      private_lane :store_key do
+        app_store_connect_api_key(key_id: ENV.fetch("ASC_KEY_ID"),
+          issuer_id: ENV.fetch("ASC_ISSUER_ID"),
+          key_content: ENV.fetch("ASC_KEY_BASE64"), is_key_content_base64: true)
+      end
+
+      lane :beta do
+        setup_ci # Give the ephemeral Mac a temporary keychain.
+        key = store_key
+        match(type: "appstore", readonly: true, api_key: key) # CI consumes issued assets.
+        increment_build_number(build_number: ENV.fetch("CI_BUILD_NUMBER"))
+        ipa = build_app(scheme: "Shop Demo", export_method: "app-store")
+        upload_to_testflight(api_key: key, ipa: ipa)
+      end
+
+      lane :release do
+        deliver(api_key: store_key, app_version: ENV.fetch("APP_VERSION"),
+          build_number: ENV.fetch("APPROVED_BUILD"), skip_binary_upload: true,
+          submit_for_review: true, automatic_release: false)
+      end
+    expected: The release keeps manual launch enabled.
+    validation:
+      status: excerpt
+      host: a Fastfile in an iOS repository
+    sources:
+      - title: Fastlane setup_ci · retrieved 2026-11-25
+        url: https://docs.fastlane.tools/actions/setup_ci/
+      - title: Fastlane match · retrieved 2026-11-25
+        url: https://docs.fastlane.tools/actions/match/
+      - title: Fastlane deliver · retrieved 2026-11-25
+        url: https://docs.fastlane.tools/actions/deliver/
+  - id: github-actions-workflow
+    kind: code
+    title: Actions · separate PR checks from release approval
+    note: PRs receive a read-only token. Release secrets are scoped to a protected environment and its approved
+      refs. A rerun selects the same approved candidate.
+    applies:
+      platforms:
+        - macos
+      runtime: two GitHub Actions workflow files for a macOS runner
+    prerequisites:
+      - Split the excerpts into two workflow files. Replace each all-zero SHA with the verified full commit of
+        its own action.
+      - Configure the release environment with required reviewers and restricted release branches. Set its
+        version and build variables from the candidate record before approval.
+      - Select the Xcode from .xcode-version on the runner before invoking the lane. Commit Package.resolved
+        and Gemfile.lock.
+    code: |-
+      # pr.yml
+      on: pull_request
+      permissions: { contents: read }
+      concurrency: { group: 'pr-${{ github.event.number }}', cancel-in-progress: true }
+      jobs:
+        test:
+          runs-on: macos-latest
+          steps:
+            - uses: actions/checkout@0000000000000000000000000000000000000000
+            - uses: actions/cache@0000000000000000000000000000000000000000
+              with:
+                path: .spm
+                key: spm-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.xcode-version', '**/Package.resolved') }}
+            - run: bundle install && bundle exec fastlane test
+
+      # release.yml (separate file)
+      on: workflow_dispatch
+      permissions: { contents: read }
+      concurrency: { group: shop-demo-store-release, cancel-in-progress: false }
+      jobs:
+        submit:
+          runs-on: macos-latest
+          environment: release
+          steps:
+            - uses: actions/checkout@0000000000000000000000000000000000000000
+            - run: bundle install && bundle exec fastlane release
+              env:
+                APP_VERSION: ${{ vars.APP_VERSION }}
+                APPROVED_BUILD: ${{ vars.APPROVED_BUILD }}
+                ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+                ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+                ASC_KEY_BASE64: ${{ secrets.ASC_KEY_BASE64 }}
+    expected: Superseded PR work can be cancelled. Store submissions run one at a time.
+    validation:
+      status: excerpt
+      host: two GitHub Actions workflow files for a macOS runner
+    sources:
+      - title: Secure use of actions · retrieved 2026-11-25
+        url: https://docs.github.com/en/actions/reference/security/secure-use
+      - title: Deployment environments · retrieved 2026-11-25
+        url: https://docs.github.com/en/actions/how-tos/deploy/configure-and-manage-deployments/manage-environments
+  - id: xcode-cloud-ci-scripts
+    kind: code
+    title: Xcode Cloud · clone and build hooks
+    note: Use CI_* values to locate the checkout and identify the active scheme and action. Let the workflow
+      manage distribution signing.
+    applies:
+      platforms:
+        - macos
+      runtime: executable Bash hooks in an Xcode Cloud workflow
+    prerequisites:
+      - Create separate executable files in ci_scripts beside the project. Each file starts at its shebang.
+      - Select the shared scheme, Xcode version and archive distribution option in the workflow.
+    code: |-
+      # ci_scripts/ci_post_clone.sh
+      #!/bin/bash
+      set -eu
+      cd "${CI_PRIMARY_REPOSITORY_PATH:?}"
+      test -s "Shop Demo.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved"
+
+      # ci_scripts/ci_pre_xcodebuild.sh
+      #!/bin/bash
+      set -eu
+      printf 'Preparing %s for %s\n' "${CI_XCODEBUILD_ACTION:?}" "${CI_XCODE_SCHEME:?}"
+    expected: A missing package lock stops the build early. The second hook logs the action and scheme.
+    validation:
+      status: excerpt
+      host: executable Bash hooks in an Xcode Cloud workflow
+    sources:
+      - title: Cloud build scripts · retrieved 2026-11-25
+        url: https://developer.apple.com/documentation/xcode/writing-custom-build-scripts
+      - title: Cloud environment variables · retrieved 2026-11-25
+        url: https://developer.apple.com/documentation/xcode/environment-variable-reference
+      - title: Xcode Cloud overview · retrieved 2026-11-25
+        url: https://developer.apple.com/xcode-cloud/
+  - id: signing-at-scale
+    kind: rules
+    title: Keep one signing authority
+    note: Choose an encrypted match repository or cloud-managed signing as the source of truth.
+      `index.html#security--where-does-this-secret-go`.
+    items:
+      - tone: neutral
+        text: Separate provisioning from consumption. A designated owner issues and rotates certificates and profiles.
+          A match-based CI download is read-only.
+      - tone: neutral
+        text: Use a least-privileged App Store Connect API key for automation. The distribution private key signs the
+          binary. The API key authenticates store requests.
+      - tone: neutral
+        text: Calendar certificate and profile expiry, name a backup owner and rehearse renewal. Verify a fresh
+          archive before revoking an old identity.
+  - id: signing-by-lane
+    kind: table
+    title: Match the identity to the artifact
+    note: Make the trust boundary explicit for each Shop Demo build.
+    headers:
+      - Artifact
+      - Signing choice
+      - Check
+    rows:
+      - - Debug on device
+        - Automatic development signing
+        - The team and device are eligible. Simulator checks need no distribution identity.
+      - - Release archive with match
+        - Manual distribution identity and pinned profiles
+        - Validate the app and each extension entitlement against its profile.
+      - - Cloud-managed release
+        - Managed identity in the trusted archive workflow
+        - Restrict workflow access. Keep manual profiles out of this path.
+  - id: caching-that-helps
+    kind: rules
+    title: Cache inputs you can identify
+    note: Start with dependency downloads. Always keep a clean-build path.
+    items:
+      - tone: neutral
+        text: Cache SwiftPM sources by runner OS, architecture, Xcode version and Package.resolved digest. Point the
+          build at the restored path.
+      - tone: neutral
+        text: Key gems by Ruby version, architecture and Gemfile.lock. Pin Xcode and verify the selected developer
+          directory.
+      - tone: neutral
+        text: Measure restore time, miss rate and clean versus warm end-to-end time before caching DerivedData.
+          Invalidate across toolchain or build-setting changes.
+      - tone: neutral
+        text: Keep signing material outside caches. Keep cache writers from untrusted PRs isolated from trusted
+          release jobs.
+  - id: build-time-measure-then-cut
+    kind: table
+    title: Find the build critical path
+    note: Measure the same scheme, hardware and revision cold and warm. Change one cause and remeasure.
+    headers:
+      - Signal
+      - Intervention to try
+    rows:
+      - - Build timeline and -showBuildTimingSummary
+        - Find serial targets, slow compile tasks and idle workers. Compare wall time when changing static or
+          dynamic linking.
+      - - Slow type checking
+        - In a diagnostic build pass -Xfrontend -warn-long-function-bodies=<ms> and -Xfrontend
+          -warn-long-expression-type-checking=<ms>. Split the reported expression, then repeat.
+      - - Run scripts on every incremental build
+        - Declare real inputs and outputs, including file lists. Check that an input edit still reruns the
+          script.
+      - - Expensive PR work
+        - Skip archives. Select affected schemes plus reverse dependencies. Shard independent tests and
+          measure queue and setup overhead.
+      - - Compilation bottleneck
+        - Benchmark an Apple-silicon runner on the same workload. For dependency fan-out see
+          `index.html#modularization--a-module-graph-that-scales` and
+          `index.html#modularization--interface-modules-strategy-comparison`.
+    sources:
+      - title: Incremental builds · retrieved 2026-11-25
+        url: https://developer.apple.com/documentation/xcode/improving-the-speed-of-incremental-builds
+  - id: test-pyramid-in-ci
+    kind: rules
+    title: Use a checkout smoke test and own flakes
+    note: Keep one critical journey small enough to run on each PR. Broaden coverage on the integrated candidate.
+    items:
+      - tone: neutral
+        text: Use synthetic inventory, add to cart, authorize a fake payment and assert one confirmation. Stub
+          external services. See `index.html#testing--the-pyramid-ios-edition`.
+      - tone: neutral
+        text: Quarantine with an owner, tracking issue and expiry. Run quarantined cases nightly and require clean
+          repeats before reinstating. Keep the first failure and its diagnostics. See
+          `index.html#ui-testing--flake-checklist`.
+      - tone: neutral
+        text: Split plans by runtime and investigate retry-only passes. See
+          `index.html#ui-testing--test-plans-parallel-runs-and-retries-in-ci`. Track measured launch
+          regressions via `index.html#ui-testing--performance-tests-with-xctmetric`.
+  - id: pipeline-metrics
+    kind: table
+    title: Measure feedback and production delivery
+    note: Use a consistent service, environment and reporting window. The classic four DORA measures sit alongside
+      CI feedback signals.
+    headers:
+      - Measure
+      - Definition
+    rows:
+      - - PR CI p50 / p90
+        - Median and 90th percentile elapsed time from PR check trigger to required verdict. Inspect the slow
+          tail separately.
+      - - Queue time
+        - Time from an eligible job becoming runnable to an agent starting it. Separate runner capacity from
+          execution time.
+      - - Flaky rate
+        - Fraction of repeated, comparable test cases whose outcome changes on the same code and inputs. Count
+          retry-only passes.
+      - - Deployment frequency
+        - How often a change reaches production. For iOS, choose and document a consistent store availability
+          event.
+      - - Change lead time
+        - Elapsed time from commit to production availability, including review and release waits.
+      - - Change failure rate
+        - Share of production deployments that require immediate intervention such as a hotfix or feature
+          disable.
+      - - Failed deployment recovery time
+        - Elapsed time to restore service after a failed deployment. Record when checkout recovered, even if
+          the replacement binary came later.
+    sources:
+      - title: DORA delivery metrics and their evolution · retrieved 2026-11-25
+        url: https://dora.dev/guides/dora-metrics-four-keys/
+  - id: pitfalls
+    kind: rules
+    title: Pipeline pitfalls
+    note: Walk a failed release backwards to the exact build and credential boundary.
+    items:
+      - tone: neutral
+        text: Protect release branches and review changes to CI itself. Keep fork code away from persistent signing
+          agents.
+      - tone: neutral
+        text: Never infer the tested candidate from the latest upload. Record the commit, build, archive and symbol
+          identifiers together.
+      - tone: neutral
+        text: An empty test selection can look green. Require the checkout smoke and fail the lane when its plan
+          discovers no tests.

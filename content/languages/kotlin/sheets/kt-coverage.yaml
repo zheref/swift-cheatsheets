@@ -58,6 +58,7 @@ cards:
       - ["Localization & Internationalization", "equivalent", "Localization & Internationalization", "string resources, plurals, dates, numbers and money per locale, per-app languages, RTL and pseudolocales"]
       - ["AI Workflows for Swift (Cursor + Claude)", "no counterpart", "—", "Swift-specific by design: it is about why Swift is harder for models and wiring Xcode to an agent"]
       - ["Release engineering", "no counterpart", "—", "This catalog has no walkthrough for TestFlight, store review and phased iOS updates."]
+      - ["CI/CD for iOS", "no counterpart", "—", "No equivalent sheet covers signing, caching and App Store promotion for these iOS pipeline lanes."]
       - ["Algorithmic Patterns & Complexity", "equivalent", "Algorithmic Patterns & Complexity", "the JVM collections' costs and the same patterns, with a heap and a deque built in"]
       - ["Streaming & Time-Series Patterns", "equivalent", "Streaming & Time-Series Patterns", "windows, sketches, rate limits, deduplication and backpressure, in plain Kotlin and over Flow and Channel"]
       - ["Files, Text & Atomic I/O", "equivalent", "JVM — Files, Text & Atomic I/O", "the same file-safety questions on java.nio"]
