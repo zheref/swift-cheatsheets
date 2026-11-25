@@ -1,0 +1,128 @@
+id: build-configuration
+concept: ios.build-configuration
+scope: platform
+title: Build configuration
+group: iOS Practice
+subtitle: Trace an archive from scheme action to resolved setting, export method and matching symbols.
+cards:
+  - id: schemes-and-configurations
+    kind: table
+    title: Make Staging a real configuration
+    note: A scheme chooses targets and actions. A configuration supplies the build settings used by each action.
+      Inspect the Archive action explicitly.
+    headers:
+      - Choice
+      - Shop Demo setup
+      - Verification
+    rows:
+      - - Configuration
+        - Create Staging from Release for a distribution-like test build. Assign the configuration to the
+          project and every target that participates.
+        - Inspect the effective settings for the app and its extensions.
+      - - Shared scheme
+        - Commit a shared Shop Demo Staging scheme. Map Run, Test and Archive deliberately. Use Release for
+          the production scheme’s Archive action.
+        - List schemes from a clean checkout. Select the same workspace, scheme, SDK and configuration in CI.
+      - - Environment identity
+        - Give Staging its own bundle ID, endpoint and signing assets. Production uses com.example.shopdemo.
+        - Install both variants side by side. Confirm the archive points to the intended backend.
+    sources:
+      - title: Target build settings · retrieved 2026-11-25
+        url: https://developer.apple.com/documentation/xcode/configuring-the-build-settings-of-a-target/
+  - id: xcconfig-layering
+    kind: table
+    title: Follow a setting into the bundle
+    note: Put common values in Base.xcconfig. Include it first in the file assigned to each configuration, then
+      apply environment-specific overrides.
+    headers:
+      - Where
+      - Example
+      - What to inspect
+    rows:
+      - - Staging.xcconfig
+        - '`#include "Base.xcconfig"`'
+        - Use the target’s configuration file mapping. Inline target settings can override the file.
+      - - Additive setting
+        - "`OTHER_SWIFT_FLAGS = $(inherited) -D SHOP_STAGING`"
+        - Preserve inherited flags when appending. Keep conditional compilation at the build boundary.
+      - - Public URL
+        - "`API_BASE_URL = https:/$()/staging.example.com`"
+        - The empty expansion keeps the two slashes apart while the file is parsed. The resolved value is an
+          HTTPS URL.
+      - - Info.plist
+        - Use `$(API_BASE_URL)` as a string value, then inspect the built plist.
+        - Read and validate the resolved value once at startup. See
+          `index.html#best-practices--configuration-secrets-feature-flags`. Keep secrets off the device.
+    sources:
+      - title: Build configuration files · retrieved 2026-11-25
+        url: https://developer.apple.com/documentation/xcode/adding-a-build-configuration-file-to-your-project/
+      - title: Target build settings · retrieved 2026-11-25
+        url: https://developer.apple.com/documentation/xcode/configuring-the-build-settings-of-a-target/
+  - id: archive-fails-debug-runs
+    kind: rules
+    title: Debug runs, Release archive fails
+    note: Reproduce the Archive action on the same commit, Xcode and generic iOS destination. Locate the first
+      failing build step.
+    items:
+      - tone: neutral
+        text: Compare resolved Release and Debug settings with xcodebuild -showBuildSettings. Check the SDK,
+          deployment target, search paths, compiler flags and missing configuration includes.
+      - tone: neutral
+        text: If CI cannot find the scheme or a resource, inspect shared scheme membership, target membership, casing,
+          lockfiles and locally generated files.
+      - tone: neutral
+        text: For signing failures compare the archived app and each extension’s bundle ID, team, entitlements and
+          profile. Separate an archive failure from a later export failure.
+      - tone: neutral
+        text: If only the optimized app fails at runtime, install the signed release candidate and exercise the
+          failing journey against the configured environment.
+    sources:
+      - title: Target build settings · retrieved 2026-11-25
+        url: https://developer.apple.com/documentation/xcode/configuring-the-build-settings-of-a-target/
+      - title: Archive and export from the command line · retrieved 2026-11-25
+        url: https://developer.apple.com/library/archive/technotes/tn2339/_index.html
+  - id: export-options
+    kind: table
+    title: Export the archived candidate
+    note: Record the archive identity. Exporting an existing xcarchive uses distribution settings for that
+      archive. Rebuilding would create a different candidate.
+    headers:
+      - ExportOptions.plist field
+      - Decision
+    rows:
+      - - method
+        - Choose the distribution method supported by the selected Xcode. For current store exports check
+          app-store-connect in xcodebuild -help.
+      - - teamID / signingStyle
+        - Select team ABCDE12345 and the signing model compatible with the archive.
+      - - provisioningProfiles
+        - For a manual export map com.example.shopdemo and each extension ID to the matching distribution
+          profile.
+      - - destination / build number
+        - Choose export or upload explicitly. If CI owns the stamp, disable automatic build-number management
+          for the store export.
+      - - Command
+        - Run xcodebuild -exportArchive with -archivePath, -exportPath and -exportOptionsPlist. Keep the
+          archive, export options and logs together.
+    sources:
+      - title: Archive and export from the command line · retrieved 2026-11-25
+        url: https://developer.apple.com/library/archive/technotes/tn2339/_index.html
+      - title: Prepare an app for distribution · retrieved 2026-11-25
+        url: https://developer.apple.com/documentation/xcode/preparing-your-app-for-distribution
+  - id: dsym-handoff
+    kind: rules
+    title: Prove the symbols match the build
+    note: Keep the archive and its symbols for the entire support life of that build.
+    items:
+      - tone: neutral
+        text: For Release, select DWARF with dSYM File. Preserve the dSYMs for the app, extensions and embedded
+          binaries that you maintain.
+      - tone: neutral
+        text: Compare dwarfdump --uuid for the archived executable and its dSYM against the crash report’s binary UUID
+          and architecture.
+      - tone: neutral
+        text: Upload matching dSYMs to the crash service from the protected pipeline. Symbolicate a synthetic crash
+          and attach the result to the candidate record.
+    sources:
+      - title: Include debugging information · retrieved 2026-11-25
+        url: https://developer.apple.com/documentation/xcode/building-your-app-to-include-debugging-information

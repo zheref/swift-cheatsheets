@@ -72,6 +72,41 @@ Use the project return link above the page to resume browsing.
 
 ---
 
+## Project Osprey
+
+Practice releasing Shop Demo, a synthetic retail iOS app, from a candidate build through checkout recovery. [Open Project Osprey](index.html#project-osprey) under **Projects**. Use the [whiteboard frame](index.html#project-osprey--whiteboard-pipeline) to sketch the pipeline, then rehearse the [hotfix drill](index.html#project-osprey--hotfix-drill).
+
+### [60-second scan](index.html#project-osprey--60-second-scan)
+
+- Cut the train and defer missed changes. [Reference](index.html#release-engineering--branching-and-trains)
+- Resolve checkout flags at startup. [Reference](index.html#release-engineering--feature-flags-with-safe-defaults)
+- Pause automatic delivery. [Reference](index.html#release-engineering--phased-release-and-pause)
+- Compare the candidate with its baseline. [Reference](index.html#release-engineering--rollout-gate)
+- Contain checkout failures before rebuilding. [Reference](index.html#release-engineering--hotfix-flow)
+- Budget for beta and store review. [Reference](index.html#release-engineering--app-review-and-testflight)
+- Give each pipeline lane a decision. [Reference](index.html#ci-cd--four-lanes)
+- Promote the tested build. [Reference](index.html#ci-cd--fastfile-lanes)
+- Keep signing credentials on trusted jobs. [Reference](index.html#ci-cd--signing-at-scale)
+- Measure the build critical path. [Reference](index.html#ci-cd--build-time-measure-then-cut)
+
+### Follow-up references
+
+- [Release strategy](index.html#project-osprey--release-strategy) — [Train choices](index.html#release-engineering--branching-and-trains), [Owners and gates](index.html#release-engineering--release-flow-at-a-glance), [Peak readiness](index.html#release-engineering--peak-readiness), [Release pitfalls](index.html#release-engineering--pitfalls).
+- [Versioning](index.html#project-osprey--versioning) — [Version and CI build stamp](index.html#release-engineering--versioning-and-build-numbers), [Minimum supported version](index.html#release-engineering--minimum-version-gate).
+- [Feature flags](index.html#project-osprey--feature-flags) — [Resolve flags at the root](index.html#release-engineering--feature-flags-with-safe-defaults), [Flag ownership and cleanup](index.html#release-engineering--flag-hygiene), [Configuration and secrets](index.html#best-practices--configuration-secrets-feature-flags).
+- [Phased rollout and gates](index.html#project-osprey--phased-rollout-and-gates) — [Store controls](index.html#release-engineering--phased-release-and-pause), [Rollout evaluator](index.html#release-engineering--rollout-gate).
+- [Hotfix](index.html#project-osprey--hotfix) — [Contain and roll forward](index.html#release-engineering--hotfix-flow), [Spoken incident drill](index.html#project-osprey--hotfix-drill).
+- [App Review and TestFlight](index.html#project-osprey--app-review-and-testflight) — [Groups, reviews and manual release](index.html#release-engineering--app-review-and-testflight), [Candidate handoffs](index.html#release-engineering--release-flow-at-a-glance).
+- [Pipeline design](index.html#project-osprey--pipeline-design) — [PR through release](index.html#ci-cd--four-lanes), [CI platforms](index.html#ci-cd--platforms-compared), [PR and release workflows](index.html#ci-cd--github-actions-workflow), [Cloud build hooks](index.html#ci-cd--xcode-cloud-ci-scripts), [Delivery metrics](index.html#ci-cd--pipeline-metrics), [Pipeline pitfalls](index.html#ci-cd--pitfalls), [Whiteboard frame](index.html#project-osprey--whiteboard-pipeline).
+- [Fastlane](index.html#project-osprey--fastlane) — [Fastfile lanes](index.html#ci-cd--fastfile-lanes), [Release approval and secrets](index.html#ci-cd--github-actions-workflow).
+- [Signing](index.html#project-osprey--signing) — [Signing authority](index.html#ci-cd--signing-at-scale), [Identity by lane](index.html#ci-cd--signing-by-lane), [Secret placement](index.html#security--where-does-this-secret-go).
+- [Caching and build time](index.html#project-osprey--caching-and-build-time) — [Measure and cut](index.html#ci-cd--build-time-measure-then-cut), [Cache policy](index.html#ci-cd--caching-that-helps), [Module graph](index.html#modularization--a-module-graph-that-scales).
+- [Modularization](index.html#project-osprey--modularization) — [Module graph](index.html#modularization--a-module-graph-that-scales), [Interface choices](index.html#modularization--interface-modules-strategy-comparison), [Feature package manifest](index.html#modularization--package-swift-for-a-feature-module), [Interface composition root](index.html#modularization--interface-module-composition-root).
+- [Test pyramid](index.html#project-osprey--test-pyramid) — [CI smoke and quarantine](index.html#ci-cd--test-pyramid-in-ci), [iOS test pyramid](index.html#testing--the-pyramid-ios-edition), [Parallel plans and retries](index.html#ui-testing--test-plans-parallel-runs-and-retries-in-ci), [Flake checklist](index.html#ui-testing--flake-checklist), [Performance tests](index.html#ui-testing--performance-tests-with-xctmetric).
+- [Configuration](index.html#project-osprey--configuration) — [Schemes and configurations](index.html#build-configuration--schemes-and-configurations), [Layered xcconfig](index.html#build-configuration--xcconfig-layering), [Configuration and flags](index.html#best-practices--configuration-secrets-feature-flags), [Archive failure checklist](index.html#build-configuration--archive-fails-debug-runs), [Export options](index.html#build-configuration--export-options), [dSYM handoff](index.html#build-configuration--dsym-handoff).
+
+---
+
 ## Quick start
 
 ```bash

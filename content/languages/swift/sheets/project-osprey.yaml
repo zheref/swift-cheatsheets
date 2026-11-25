@@ -1,0 +1,258 @@
+id: project-osprey
+concept: ios.project-osprey
+scope: platform
+title: Project Osprey
+group: Projects
+subtitle: Ship an iOS app safely at scale. Browse topics below or jump straight to a sample.
+cards:
+  - id: 60-second-scan
+    kind: navigation
+    title: 60-second scan
+    note: Choose a reminder to open its example or reference.
+    layout: overview
+    links:
+      - icon: 🚆
+        label: Cut the train and defer missed changes
+        href: "#release-engineering--branching-and-trains"
+      - icon: 🎚️
+        label: Resolve checkout flags at startup
+        href: "#release-engineering--feature-flags-with-safe-defaults"
+      - icon: ⏸️
+        label: Pause automatic delivery
+        href: "#release-engineering--phased-release-and-pause"
+      - icon: 📊
+        label: Compare the candidate with its baseline
+        href: "#release-engineering--rollout-gate"
+      - icon: 🧯
+        label: Contain checkout failures before rebuilding
+        href: "#release-engineering--hotfix-flow"
+      - icon: 🧪
+        label: Budget for beta and store review
+        href: "#release-engineering--app-review-and-testflight"
+      - icon: 🛤️
+        label: Give each pipeline lane a decision
+        href: "#ci-cd--four-lanes"
+      - icon: 📦
+        label: Promote the tested build
+        href: "#ci-cd--fastfile-lanes"
+      - icon: 🔑
+        label: Keep signing credentials on trusted jobs
+        href: "#ci-cd--signing-at-scale"
+      - icon: ⏱️
+        label: Measure the build critical path
+        href: "#ci-cd--build-time-measure-then-cut"
+  - id: release-strategy
+    kind: navigation
+    title: Release strategy
+    note: Choose a cut owner and say what happens when a feature misses the train.
+    icon: 🚆
+    links:
+      - label: Train choices
+        href: "#release-engineering--branching-and-trains"
+      - label: Owners and gates
+        href: "#release-engineering--release-flow-at-a-glance"
+      - label: Peak readiness
+        href: "#release-engineering--peak-readiness"
+      - label: Release pitfalls
+        href: "#release-engineering--pitfalls"
+  - id: versioning
+    kind: navigation
+    title: Versioning
+    note: Separate customer-visible compatibility from the identity of each upload.
+    icon: 🏷️
+    links:
+      - label: Version and CI build stamp
+        href: "#release-engineering--versioning-and-build-numbers"
+      - label: Minimum supported version
+        href: "#release-engineering--minimum-version-gate"
+  - id: feature-flags
+    kind: navigation
+    title: Feature flags
+    note: Name the offline default, who can disable checkout and when the old path goes away.
+    icon: 🎚️
+    links:
+      - label: Resolve flags at the root
+        href: "#release-engineering--feature-flags-with-safe-defaults"
+      - label: Flag ownership and cleanup
+        href: "#release-engineering--flag-hygiene"
+      - label: Configuration and secrets
+        href: "#best-practices--configuration-secrets-feature-flags"
+  - id: phased-rollout-and-gates
+    kind: navigation
+    title: Phased rollout and gates
+    note: Distinguish the installed build from the feature cohort. Pick a signal and an operator action.
+    icon: 📊
+    links:
+      - label: Store controls
+        href: "#release-engineering--phased-release-and-pause"
+      - label: Rollout evaluator
+        href: "#release-engineering--rollout-gate"
+  - id: hotfix
+    kind: navigation
+    title: Hotfix
+    note: Restore checkout first, then ship the tested correction from the released tag.
+    icon: 🧯
+    links:
+      - label: Contain and roll forward
+        href: "#release-engineering--hotfix-flow"
+      - label: Spoken incident drill
+        href: "#project-osprey--hotfix-drill"
+  - id: app-review-and-testflight
+    kind: navigation
+    title: App Review and TestFlight
+    note: Walk one candidate through both reviews and identify the human launch decision.
+    icon: 🧪
+    links:
+      - label: Groups, reviews and manual release
+        href: "#release-engineering--app-review-and-testflight"
+      - label: Candidate handoffs
+        href: "#release-engineering--release-flow-at-a-glance"
+  - id: pipeline-design
+    kind: navigation
+    title: Pipeline design
+    note: Put each job on the lane whose decision depends on it.
+    icon: 🛤️
+    links:
+      - label: PR through release
+        href: "#ci-cd--four-lanes"
+      - label: CI platforms
+        href: "#ci-cd--platforms-compared"
+      - label: PR and release workflows
+        href: "#ci-cd--github-actions-workflow"
+      - label: Cloud build hooks
+        href: "#ci-cd--xcode-cloud-ci-scripts"
+      - label: Delivery metrics
+        href: "#ci-cd--pipeline-metrics"
+      - label: Pipeline pitfalls
+        href: "#ci-cd--pitfalls"
+      - label: Whiteboard frame
+        href: "#project-osprey--whiteboard-pipeline"
+  - id: fastlane
+    kind: navigation
+    title: Fastlane
+    note: Keep the store build number as the handoff between beta and submission.
+    icon: 📦
+    links:
+      - label: Fastfile lanes
+        href: "#ci-cd--fastfile-lanes"
+      - label: Release approval and secrets
+        href: "#ci-cd--github-actions-workflow"
+  - id: signing
+    kind: navigation
+    title: Signing
+    note: Explain who rotates each identity and which job may read it.
+    icon: 🔑
+    links:
+      - label: Signing authority
+        href: "#ci-cd--signing-at-scale"
+      - label: Identity by lane
+        href: "#ci-cd--signing-by-lane"
+      - label: Secret placement
+        href: "#security--where-does-this-secret-go"
+  - id: caching-and-build-time
+    kind: navigation
+    title: Caching and build time
+    note: Time the critical path before changing caches, targets or hardware.
+    icon: ⏱️
+    links:
+      - label: Measure and cut
+        href: "#ci-cd--build-time-measure-then-cut"
+      - label: Cache policy
+        href: "#ci-cd--caching-that-helps"
+      - label: Module graph
+        href: "#modularization--a-module-graph-that-scales"
+  - id: modularization
+    kind: navigation
+    title: Modularization
+    note: Trace a checkout dependency from the package manifest to the app root.
+    icon: 🧩
+    links:
+      - label: Module graph
+        href: "#modularization--a-module-graph-that-scales"
+      - label: Interface choices
+        href: "#modularization--interface-modules-strategy-comparison"
+      - label: Feature package manifest
+        href: "#modularization--package-swift-for-a-feature-module"
+      - label: Interface composition root
+        href: "#modularization--interface-module-composition-root"
+  - id: test-pyramid
+    kind: navigation
+    title: Test pyramid
+    note: Keep a critical-journey smoke test and make every quarantined failure somebody’s responsibility.
+    icon: 🔬
+    links:
+      - label: CI smoke and quarantine
+        href: "#ci-cd--test-pyramid-in-ci"
+      - label: iOS test pyramid
+        href: "#testing--the-pyramid-ios-edition"
+      - label: Parallel plans and retries
+        href: "#ui-testing--test-plans-parallel-runs-and-retries-in-ci"
+      - label: Flake checklist
+        href: "#ui-testing--flake-checklist"
+      - label: Performance tests
+        href: "#ui-testing--performance-tests-with-xctmetric"
+  - id: configuration
+    kind: navigation
+    title: Configuration
+    note: Trace staging settings through the archive, export and symbol upload.
+    icon: ⚙️
+    links:
+      - label: Schemes and configurations
+        href: "#build-configuration--schemes-and-configurations"
+      - label: Layered xcconfig
+        href: "#build-configuration--xcconfig-layering"
+      - label: Configuration and flags
+        href: "#best-practices--configuration-secrets-feature-flags"
+      - label: Archive failure checklist
+        href: "#build-configuration--archive-fails-debug-runs"
+      - label: Export options
+        href: "#build-configuration--export-options"
+      - label: dSYM handoff
+        href: "#build-configuration--dsym-handoff"
+  - id: whiteboard-pipeline
+    kind: table
+    title: Design CI/CD for a multi-team retail iOS app
+    note: Fill each blank aloud for Shop Demo. Draw the flow from a feature PR through a customer completing
+      checkout.
+    headers:
+      - Prompt
+      - Answer frame
+    rows:
+      - - Ownership and cut
+        - Feature teams own ___. The release captain cuts ___ from ___ when ___. Late changes ___.
+      - - Fast feedback
+        - A PR runs ___ on ___. A change to a shared module also tests ___. Main and nightly add ___.
+      - - Identity and approval
+        - The protected job signs ___ using ___. We promote the exact build ___ after ___ approves ___.
+      - - Exposure and evidence
+        - The store controls ___. Our flag controls ___. We compare ___ with ___ and pause when ___.
+      - - Recovery
+        - On-call can disable ___ without a binary. A patch starts at ___ and recovery is confirmed by ___.
+  - id: hotfix-drill
+    kind: rules
+    title: Hotfix drill · checkout crashes during the 5% phase
+    note: Set a one-minute timer. Checkout crashes for some sessions after the 5% phased release. Speak as the
+      on-call engineer and hand the release decision to the captain.
+    items:
+      - tone: neutral
+        text: "**Contain.** “I’ll disable the new checkout path, page the captain and pause automatic updates.
+          Customers who already updated still need a working checkout.”"
+      - tone: neutral
+        text: "**Diagnose.** “I’ll compare affected and healthy builds, flag cohorts and checkout completions. I’ll
+          symbolicate a crash using the matching dSYM and reproduce it with a synthetic cart.”"
+      - tone: neutral
+        text: "**Repair.** “I’ll branch from the store tag, fix and forward-port to main. The patch gets a fresh build
+          number, a regression test for the crash and a signed checkout smoke run.”"
+      - tone: neutral
+        text: "**Recover.** “With approval we’ll submit the tested build and request expedited review if warranted.
+          We’ll watch successful checkouts and crashes by build before restoring exposure.”"
+    sources:
+      - title: Phased release · retrieved 2026-11-25
+        url: https://developer.apple.com/help/app-store-connect/update-your-app/release-a-version-update-in-phases/
+      - title: App Review timing and expedite requests · retrieved 2026-11-25
+        url: https://developer.apple.com/distribute/app-review/
+project: true
+applies:
+  platforms:
+    - ios
+  runtime: Swift toolchain

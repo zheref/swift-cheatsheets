@@ -131,6 +131,9 @@ sheets:
   - accessibility
   - localization
   - ai-workflows
+  - release-engineering
+  - ci-cd
+  - build-configuration
   - algorithms
   - streams
   - files
@@ -139,3 +142,4 @@ sheets:
   - video-streaming
   - core-bluetooth
   - project-bluebird
+  - project-osprey

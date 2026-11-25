@@ -166,6 +166,18 @@ cards:
         - no counterpart
         - —
         - "TODO: does the topic not exist here, or is it not written yet?"
+      - - Release engineering
+        - no counterpart
+        - —
+        - "TODO: does the topic not exist here, or is it not written yet?"
+      - - CI/CD for iOS
+        - no counterpart
+        - —
+        - "TODO: does the topic not exist here, or is it not written yet?"
+      - - Build configuration
+        - no counterpart
+        - —
+        - "TODO: does the topic not exist here, or is it not written yet?"
       - - Algorithmic Patterns & Complexity
         - no counterpart
         - —
@@ -195,6 +207,10 @@ cards:
         - —
         - "TODO: does the topic not exist here, or is it not written yet?"
       - - Project Bluebird
+        - no counterpart
+        - —
+        - "TODO: does the topic not exist here, or is it not written yet?"
+      - - Project Osprey
         - no counterpart
         - —
         - "TODO: does the topic not exist here, or is it not written yet?"
