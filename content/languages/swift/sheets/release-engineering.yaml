@@ -1,0 +1,381 @@
+id: release-engineering
+concept: ios.release-engineering
+scope: platform
+title: Release engineering
+group: iOS Practice
+subtitle: Take one Shop Demo candidate from a release branch to monitored checkout traffic.
+cards:
+  - id: release-flow-at-a-glance
+    kind: table
+    title: From cut to full availability
+    note: The release captain tracks one candidate by commit, marketing version and build. A changed binary goes
+      back through regression.
+    headers:
+      - Stage
+      - Owner
+      - Evidence to advance
+    rows:
+      - - Cut
+        - Captain
+        - Record the release ref and scope. Derive user-facing notes from the included changes.
+      - - Regression
+        - Quality lead
+        - Exercise upgrade, login and checkout on the candidate. Record risks and the go/no-go owner.
+      - - Internal TestFlight
+        - iOS lead
+        - Team installs the signed build on devices and verifies diagnostics.
+      - - External TestFlight
+        - Beta lead
+        - First external build clears Beta App Review. Triage feedback on the same build.
+      - - Submit
+        - Release manager
+        - A human approves submission. Select the tested build, review notes and release option.
+      - - Phased release
+        - On-call engineer
+        - Watch the new build against the previous build by device and OS. Escalate a breach.
+      - - 100% available
+        - Captain
+        - Confirm store availability, keep monitoring adoption and errors through the soak, then close the
+          train.
+    sources:
+      - title: Phased release · retrieved 2026-11-25
+        url: https://developer.apple.com/help/app-store-connect/update-your-app/release-a-version-update-in-phases/
+      - title: TestFlight groups and build lifetime · retrieved 2026-11-25
+        url: https://developer.apple.com/help/app-store-connect/test-a-beta-version/testflight-overview/
+      - title: Manual release · retrieved 2026-11-25
+        url: https://developer.apple.com/help/app-store-connect/manage-your-apps-availability/select-an-app-store-version-release-option/
+  - id: versioning-and-build-numbers
+    kind: code
+    title: Compare versions and stamp the upload
+    note: Use the numeric major.minor.patch core for the store. Internal SemVer tags may also carry prerelease or
+      build identifiers. Shop Demo allocates a higher CI stamp for every upload, including retries. iOS
+      permits a reset on a new marketing version.
+    applies:
+      platforms:
+        - macos
+      runtime: Swift command line
+    prerequisites:
+      - Save as main.swift. Run CI_BUILD_NUMBER=2 swift main.swift for the synthetic printout.
+      - In CI, reserve the next integer atomically in one persistent sequence and serialize uploads across
+        branches.
+    code: |-
+      import Foundation
+
+      struct AppVersion: Comparable {
+          private let core: [Substring], prerelease: [Substring]
+
+          init?(_ text: String) {
+              let number = #"(0|[1-9][0-9]*)"#
+              let ids = #"[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*"#
+              let pattern = #"\A\#(number)\.\#(number)\.\#(number)(?:-\#(ids))?(?:\+\#(ids))?\z"#
+              guard text.range(of: pattern, options: .regularExpression) != nil else { return nil }
+              let version = text.prefix { $0 != "+" } // Metadata has no precedence.
+              let fields = version.split(separator: "-", maxSplits: 1)
+              core = fields[0].split(separator: ".")
+              prerelease = fields.count == 2 ? fields[1].split(separator: ".") : []
+              guard prerelease.allSatisfy({ id in
+                  !id.allSatisfy(\.isNumber) || id == "0" || id.first != "0"
+              }) else { return nil }
+          }
+
+          private static func precedes(_ a: Substring, _ b: Substring) -> Bool {
+              let numericA = a.allSatisfy(\.isNumber), numericB = b.allSatisfy(\.isNumber)
+              if numericA != numericB { return numericA }
+              if numericA && a.count != b.count { return a.count < b.count }
+              return a < b
+          }
+
+          static func < (lhs: Self, rhs: Self) -> Bool {
+              if lhs.core != rhs.core {
+                  return lhs.core.lexicographicallyPrecedes(rhs.core, by: precedes)
+              }
+              if lhs.prerelease.isEmpty != rhs.prerelease.isEmpty { return rhs.prerelease.isEmpty }
+              return lhs.prerelease.lexicographicallyPrecedes(rhs.prerelease, by: precedes)
+          }
+      }
+
+      let environment = ProcessInfo.processInfo.environment
+      guard let stamp = environment["CI_BUILD_NUMBER"], let build = UInt(stamp),
+            build > 0, String(build) == stamp else { fatalError("Missing or invalid CI allocation") }
+      print(AppVersion("1.10.0-rc.2")! < AppVersion("1.10.0")!)
+      print(build)
+    expected: |-
+      true
+      2
+    validation:
+      status: ran
+      toolchain: Apple Swift 6.4
+      date: 2026-11-25
+    sources:
+      - title: Set the next build number · retrieved 2026-11-25
+        url: https://developer.apple.com/documentation/xcode/setting-the-next-build-number-for-xcode-cloud-builds/
+      - title: Create a new version · retrieved 2026-11-25
+        url: https://developer.apple.com/help/app-store-connect/update-your-app/create-a-new-version/
+      - title: Semantic Versioning specification · retrieved 2026-11-25
+        url: https://semver.org/spec/v2.0.0.html
+  - id: branching-and-trains
+    kind: table
+    title: Choose the release train
+    note: A train leaves at its cut. A feature that misses it waits for the next cut or stays disabled. The
+      captain owns exceptions, risk and handoff.
+    headers:
+      - Model
+      - How work moves
+      - Cost at the cut
+    rows:
+      - - Trunk + release branch
+        - Integrate small changes on main behind safe defaults. Cut release/* from a known green commit.
+        - Stabilize only the candidate. Bring each accepted fix back to main and record its origin.
+      - - Long-lived develop / Gitflow
+        - Integrate on develop. Stabilize on release, promote to the production branch and reconcile develop.
+        - Useful for parallel supported lines when the team can afford repeated merges and explicit backports.
+  - id: feature-flags-with-safe-defaults
+    kind: code
+    title: Resolve checkout flags at the composition root
+    note: Inject the resolved decision into checkout. A successful fetch updates the cache. A failed fetch keeps
+      the last complete snapshot. See `index.html#best-practices--configuration-secrets-feature-flags`.
+    applies:
+      platforms:
+        - macos
+      runtime: Swift command line
+    prerequisites:
+      - Use the Swift command line. Supply decoded remote snapshots only after validating the entire response.
+    code: |-
+      enum Flag: Hashable { case newCheckout, disableNewCheckout }
+
+      struct FlagStore {
+          private var lastKnown: [Flag: Bool] = [:]
+
+          mutating func resolve(fetched: [Flag: Bool]?) -> Bool {
+              if let fetched { lastKnown = fetched }
+              let enabled = lastKnown[.newCheckout] ?? false
+              let disabledByOps = lastKnown[.disableNewCheckout] ?? false
+              return enabled && !disabledByOps
+          }
+      }
+
+      // The app root owns this cache and injects the result into checkout.
+      var store = FlagStore()
+      print(store.resolve(fetched: nil))
+      _ = store.resolve(fetched: [.newCheckout: true])
+      print(store.resolve(fetched: nil))
+      print(store.resolve(fetched: [.newCheckout: true, .disableNewCheckout: true]))
+    expected: |-
+      false
+      true
+      false
+    validation:
+      status: ran
+      toolchain: Apple Swift 6.4
+      date: 2026-11-25
+  - id: flag-hygiene
+    kind: rules
+    title: Give each flag an exit
+    note: Track rollout as temporary production behavior.
+    items:
+      - tone: neutral
+        text: Record an owner, expiry, safe default and removal ticket when introducing the flag.
+      - tone: neutral
+        text: Exercise both states of critical flags, an unavailable service and an older cached configuration.
+      - tone: neutral
+        text: Keep evaluation at a dependency boundary. Reserve compile-time conditions for build differences.
+      - tone: neutral
+        text: After 100% feature exposure and a healthy soak, remove the old path. Retire remote keys after older
+          supported clients can tolerate their absence.
+  - id: phased-release-and-pause
+    kind: table
+    title: Decide which rollout to pause
+    note: Separate binary adoption from exposure to the new checkout. An installed build can keep serving the old
+      checkout.
+    headers:
+      - Control
+      - Who receives what
+      - Operator decision
+    rows:
+      - - Automatic updates
+        - Days 1–7 offer the update to 1%, 2%, 5%, 10%, 20%, 50%, then 100% of eligible automatic-update users.
+        - Compare similar cohorts by build and feature exposure.
+      - - Manual download
+        - Anyone can fetch the update manually during the phase.
+        - Treat each released binary as publicly reachable.
+      - - Pause / resume
+        - Pause automatic progression for up to 30 days in total across pauses. Resume at the same phase.
+        - Use the feature switch for devices already updated.
+      - - Release to all
+        - Once Ready for Distribution, the operator can release to all at any time.
+        - Keep watching adoption after availability reaches 100%.
+      - - Server percentage
+        - A stable account or installation bucket selects behavior among compatible clients.
+        - Reduce the cohort or disable the flag independently of store delivery.
+    sources:
+      - title: Phased release · retrieved 2026-11-25
+        url: https://developer.apple.com/help/app-store-connect/update-your-app/release-a-version-update-in-phases/
+  - id: rollout-gate
+    kind: code
+    title: Continue, pause or halt
+    note: Compare matched windows with adequate volume. Crash-free session share falls when stability worsens.
+      Hangs per session and launch duration rise. Pass policy tolerances in those same units.
+    applies:
+      platforms:
+        - macos
+      runtime: Swift command line
+    prerequisites:
+      - Use one observation window and launch percentile for both builds. The fixture values are unitless
+        examples of the decision logic.
+    code: |-
+      struct Signals {
+          let crashFree: Double, hangs: Double, launch: Double
+      }
+      enum Action: String { case `continue`, pause, halt }
+      struct Verdict { let action: Action, reason: String }
+
+      func evaluate(candidate: Signals, baseline: Signals, tolerance: Signals) -> Verdict {
+          let changes = [
+              ("crash-free sessions", baseline.crashFree - candidate.crashFree, tolerance.crashFree),
+              ("hang rate", candidate.hangs - baseline.hangs, tolerance.hangs),
+              ("launch", candidate.launch - baseline.launch, tolerance.launch)
+          ]
+          guard changes.allSatisfy({ $0.1.isFinite && $0.2.isFinite && $0.2 >= 0 })
+          else { return Verdict(action: .pause, reason: "unusable evidence") }
+          for (signal, regression, limit) in changes where regression > limit {
+              return Verdict(action: signal == "launch" ? .pause : .halt,
+                             reason: signal + " regression")
+          }
+          return Verdict(action: .continue, reason: "within policy")
+      }
+
+      let baseline = Signals(crashFree: 1, hangs: 0, launch: 1)
+      let candidate = Signals(crashFree: 1, hangs: 0, launch: 2)
+      let result = evaluate(candidate: candidate, baseline: baseline,
+                            tolerance: Signals(crashFree: 0, hangs: 0, launch: 0))
+      print("\(result.action.rawValue): \(result.reason)")
+    expected: "pause: launch regression"
+    validation:
+      status: ran
+      toolchain: Apple Swift 6.4
+      date: 2026-11-25
+  - id: hotfix-flow
+    kind: rules
+    title: Contain first, then ship the patch
+    note: An installed binary stays installed. Restore safe behavior immediately, then roll forward.
+    items:
+      - tone: neutral
+        text: "**Step zero.** Disable the affected path or change server configuration. Pause the phased update and
+          confirm customers can complete checkout."
+      - tone: neutral
+        text: Branch from the tag of the affected store build. Reproduce the failure, make the smallest compatible fix
+          and cherry-pick that fix to main.
+      - tone: neutral
+        text: Bump the patch and reserve a new build number. Run the failing journey, upgrade path and adjacent
+          payment flows on the signed candidate.
+      - tone: neutral
+        text: With human approval, submit the tested build. For a critical bug, request expedited review with
+          reproduction steps and customer impact.
+      - tone: neutral
+        text: After approval, release and watch checkout completions, symbolicated crashes and adoption by build.
+          Restore the flag only after recovery.
+    sources:
+      - title: Create a new version · retrieved 2026-11-25
+        url: https://developer.apple.com/help/app-store-connect/update-your-app/create-a-new-version/
+      - title: App Review timing and expedite requests · retrieved 2026-11-25
+        url: https://developer.apple.com/distribute/app-review/
+      - title: Phased release · retrieved 2026-11-25
+        url: https://developer.apple.com/help/app-store-connect/update-your-app/release-a-version-update-in-phases/
+  - id: app-review-and-testflight
+    kind: table
+    title: Get a tested build through review
+    note: Use beta feedback to choose a candidate, then manage store approval and launch timing separately.
+    headers:
+      - Decision
+      - What to verify
+    rows:
+      - - Internal beta
+        - Up to 100 eligible App Store Connect users with access to the app. Assign the build to the intended
+          group.
+      - - External beta
+        - Up to 10,000 testers. The first external build goes through Beta App Review. Later builds can still
+          require review.
+      - - Expiry
+        - A TestFlight build is testable for up to 90 days. Distribute a replacement before testers lose
+          access.
+      - - Store review
+        - Typically at least 50% of submissions are reviewed in under 24 hours and 90% in under 48 hours.
+          Leave scheduling slack.
+      - - Guideline 2.1
+        - Exercise the app on device. Provide working URLs, complete metadata, live backend, usable demo login
+          and accessible purchases.
+      - - Expedite
+        - Request an expedited review for a critical fix or directly associated imminent event. Include
+          reproduction steps or the event date and connection.
+      - - Manual launch
+        - Select manual release before submission. Approval puts the version in Pending Developer Release
+          until the release manager acts.
+    sources:
+      - title: TestFlight groups and build lifetime · retrieved 2026-11-25
+        url: https://developer.apple.com/help/app-store-connect/test-a-beta-version/testflight-overview/
+      - title: App Review timing and expedite requests · retrieved 2026-11-25
+        url: https://developer.apple.com/distribute/app-review/
+      - title: Review guidelines · App Completeness · retrieved 2026-11-25
+        url: https://developer.apple.com/app-store/review/guidelines/
+      - title: Manual release · retrieved 2026-11-25
+        url: https://developer.apple.com/help/app-store-connect/manage-your-apps-availability/select-an-app-store-version-release-option/
+  - id: minimum-version-gate
+    kind: code
+    title: Choose a forced or soft update
+    note: The server publishes a minimum supported version and a recommended version. Validate the policy and
+      confirm an upgrade is available to this device and storefront before blocking.
+    applies:
+      platforms:
+        - macos
+      runtime: Swift command line
+    prerequisites:
+      - Place this function below the AppVersion definition in
+        `index.html#release-engineering--versioning-and-build-numbers`.
+    code: |-
+      enum Update { case allowed, suggested, required }
+
+      func updatePolicy(installed: AppVersion, minimum: String, recommended: String,
+                        available: AppVersion?) -> Update {
+          guard let floor = AppVersion(minimum), let target = AppVersion(recommended),
+                floor <= target, let available, installed < available else { return .allowed }
+          if installed < floor && floor <= available { return .required }
+          if installed < target { return .suggested }
+          return .allowed
+      }
+    expected: "Below minimum: required. Below recommended: suggested. Unusable policy or unavailable update: keep
+      access."
+    validation:
+      status: compiled
+      toolchain: Apple Swift 6.4
+      date: 2026-11-25
+  - id: peak-readiness
+    kind: rules
+    title: Prepare for peak traffic
+    note: Walk checkout end to end before freezing the train.
+    items:
+      - tone: neutral
+        text: Agree on freeze exceptions, escalation contacts and who can call a pause. Staff the soak and rehearse
+          the runbook.
+      - tone: neutral
+        text: Drill the kill-switch on a test cohort. Upload matching dSYMs and confirm a synthetic crash resolves to
+          a source line.
+      - tone: neutral
+        text: Exercise backend capacity, timeouts and graceful degradation. Keep API changes compatible with older
+          clients.
+      - tone: neutral
+        text: Coordinate with the Android train on flag keys, server contracts, rollout order and which cohorts can be
+          disabled independently.
+  - id: pitfalls
+    kind: rules
+    title: Release pitfalls
+    note: Ask which control can still change after a binary reaches a device.
+    items:
+      - tone: neutral
+        text: A quiet dashboard may reflect delayed telemetry. Compare sample sizes, reporting lag and the same slices
+          before widening.
+      - tone: neutral
+        text: A forced update can strand users when a storefront or device cannot install the replacement. Verify
+          availability before raising the minimum.
+      - tone: neutral
+        text: Keep the promoted build identifiable. A rebuild with a different toolchain invalidates the evidence
+          collected from beta.

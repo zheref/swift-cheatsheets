@@ -57,6 +57,7 @@ cards:
       - ["Accessibility on Apple Platforms", "equivalent", "Accessibility in .NET UI", "names, roles and values for screen readers, focus and keyboard, announcements, text scaling and testing it"]
       - ["Localization & Internationalization", "equivalent", "Localization & Globalization", "cultures, translated resources, plurals, dates, money and sorting per culture, right-to-left and pseudo-localization"]
       - ["AI Workflows for Swift (Cursor + Claude)", "no counterpart", "—", "Swift-specific by design: it is about why Swift is harder for models and wiring Xcode to an agent"]
+      - ["Release engineering", "no counterpart", "—", "This catalog has no walkthrough for TestFlight, store review and phased iOS updates."]
       - ["Algorithmic Patterns & Complexity", "equivalent", "Algorithmic Patterns & Complexity", "the BCL's costs and the same patterns, with `PriorityQueue` and `BinarySearch` included"]
       - ["Streaming & Time-Series Patterns", "equivalent", "Streaming & Time-Series Patterns", "windows and watermarks, sketches, rate limits and backpressure over `IAsyncEnumerable`, channels and Rx"]
       - ["Files, Text & Atomic I/O", "equivalent", ".NET — Files, Text & Atomic I/O", "the same file-safety questions on System.IO"]

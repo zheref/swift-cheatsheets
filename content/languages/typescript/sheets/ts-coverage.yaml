@@ -57,6 +57,7 @@ cards:
       - ["Accessibility on Apple Platforms", "equivalent", "Accessibility on the Web", "semantics first, names and roles, focus management, live regions, reduced motion and testing it"]
       - ["Localization & Internationalization", "equivalent", "Localization with Intl", "messages with plurals, numbers, dates, lists and collation with `Intl`, right-to-left layout and pseudo-locales"]
       - ["AI Workflows for Swift (Cursor + Claude)", "no counterpart", "—", "Swift-specific by design: it is about why Swift is harder for models and wiring Xcode to an agent"]
+      - ["Release engineering", "no counterpart", "—", "This catalog has no walkthrough for TestFlight, store review and phased iOS updates."]
       - ["Algorithmic Patterns & Complexity", "equivalent", "Algorithmic Patterns & Complexity", "built-in costs and the same patterns, from two pointers to tries and union-find"]
       - ["Streaming & Time-Series Patterns", "equivalent", "Streaming & Time-Series Patterns", "ring buffers, running statistics, sketches, rate limiting, backpressure and batching"]
       - ["Files, Text & Atomic I/O", "equivalent", "Node.js — Files, Text & Atomic I/O", "the same file-safety questions on Node's fs"]
